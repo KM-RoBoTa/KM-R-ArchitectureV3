@@ -1,0 +1,15 @@
+[package]
+name = "kmr_ffi"
+version = "0.1.0"
+edition = "2024"
+
+# C ABI shim over the public `kmr_api` crate.
+# Produces a C-callable shared library (cdylib) and a static archive
+# (staticlib) so non-Rust hosts (C, Python via ctypes, ...) can drive the
+# control loop. `kmr_core` stays hidden — only `kmr_api`'s surface is wrapped.
+[lib]
+name = "kmr_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+kmr_api = { path = "../kmr_api" }
