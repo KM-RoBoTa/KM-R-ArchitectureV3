@@ -350,19 +350,43 @@ fn main() {
         buttons: u8,
     }
 
+    // The pad is written on the gamepad THREAD and read on the main loop by
+    // `use_gamepad`. That's two threads touching one value — the ONE situation
+    // where a lock is genuinely required. So the shared pad is an
+    // `Arc<Mutex<GamepadInput>>`. (Unlike the fake "share a flag between two
+    // main-loop controllers" case, this sharing is real, so the lock is earned.)
+    type SharedPad = Arc<Mutex<GamepadInput>>;
+
     // A controller that belongs on its OWN thread: a gamepad reader. It runs its
     // own blocking poll loop at its own rate — you don't want that stalling the
     // tick loop, and it must NOT touch robot state (that stays single-writer on
     // the main loop, so no actuator-write races are possible).
     //
-    // So a threaded controller gets ONLY `&mut T` — your data, whatever you want
-    // to track. No `State`, no `Sensors`. Read the pad, stash it in `T`. A
-    // main-loop controller later reads `T` and turns it into robot commands.
-    fn gamepad_controller(pad: &mut GamepadInput, _time: &Time) {
+    // A threaded controller gets ONLY `&mut T`. Here `T = SharedPad`: it locks,
+    // writes the latest reading, unlocks. The main loop reads it via `use_gamepad`.
+    fn gamepad_controller(pad: &mut SharedPad, _time: &Time) {
         // let ev = read_gamepad();  // your blocking poll
-        pad.x = 0.0;
-        pad.y = 0.0;
-        pad.buttons = 0;
+        let mut input = pad.lock().unwrap();
+        input.x = 0.0;
+        input.y = 0.0;
+        input.buttons = 0;
+    }
+
+    // The other half: a MAIN-LOOP controller that uses the gamepad to command
+    // the robot. It needs `&mut State`, so it can't be threaded — and that's
+    // fine: it reaches the pad through the same `SharedPad`. Lock, copy out what
+    // you need, unlock FAST (don't hold the lock while doing heavy work — that
+    // would stall the gamepad thread).
+    fn use_gamepad(pad: &mut SharedPad, _time: &Time, robot: &mut State, _sensors: &Sensors) {
+        let (x, _y) = {
+            let input = pad.lock().unwrap();
+            (input.x, input.y)
+        }; // lock released here
+
+        // Turn the stick into a robot command.
+        let current = robot.q();
+        let desired = current.unwrap().map(|q| q + Q(x));
+        robot.set_all_q(desired);
     }
 
     // This function showcases how you would read the sensors pre-installed
@@ -393,10 +417,10 @@ fn main() {
     let mut own_tracker = UserDefinedDataTracker::default();
     own_tracker.write_flag(true); // your one-time init
 
-    // The gamepad thread's data. Built ONCE here, moved into the API below,
-    // which keeps it alive for the whole run and lends it to the thread as
-    // `&mut` — NOT reconstructed each tick.
-    let gamepad = GamepadInput::default();
+    // The shared gamepad. Built ONCE here. `Arc::clone` gives a cheap second
+    // handle to the SAME pad — one goes to the gamepad thread (writer), the
+    // other to `use_gamepad` on the main loop (reader).
+    let pad: SharedPad = Arc::new(Mutex::new(GamepadInput::default()));
 
     Robot::new()
         // Settings
@@ -418,10 +442,11 @@ fn main() {
         // Own-data controller: no closure, no Arc/Mutex. We move the already
         // initialized `own_tracker` in — the API keeps it alive across ticks.
         .add_controller_with(PerTick, own_tracker, context_controller)
-        // Gamepad reader on its OWN thread. It gets ONLY its data (`GamepadInput`)
-        // — no robot state, so it can never race the actuator commands. Runs its
-        // own poll loop off the tick loop.
-        .add_controller_as_thread(PerTick, gamepad, gamepad_controller)
+        // Gamepad WRITER on its own thread. No robot state → can't race commands.
+        .add_controller_as_thread(PerTick, Arc::clone(&pad), gamepad_controller)
+        // Gamepad READER on the main loop: needs State, so not threaded. Same
+        // pad, other handle. This is the bridge from thread back to the robot.
+        .add_controller_with(PerTick, Arc::clone(&pad), use_gamepad)
         .add_controller(PerTick, use_sensors)
         .run();
 }
