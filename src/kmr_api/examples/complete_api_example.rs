@@ -321,49 +321,6 @@ fn main() {
         }
     }
 
-    // The next two functions showcase how you can safely share data between
-    // threads.
-    //
-    // This basic example still uses [`UserDefinedDataTracker`].
-    // We just want to read a boolean flag and set it to true, then false.
-    // Note that threads are not guaranteed to run in this defined order.
-    //
-    // We encourage reasing chapter 16 of the rust book to better understand
-    // rust concurrency.
-    //
-    // https://doc.rust-lang.org/book/ch16-00-concurrency.html
-    fn read_write_shared_flag_1(
-        tracker: Arc<Mutex<UserDefinedDataTracker>>,
-    ) -> impl FnMut(&Time, &mut State, &Sensors) {
-        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| {
-            let mut mutex = tracker.lock().unwrap();
-
-            mutex.read_flag();
-
-            mutex.write_flag(true);
-        }
-    }
-
-    fn read_write_shared_flag_2(
-        tracker: Arc<Mutex<UserDefinedDataTracker>>,
-    ) -> impl FnMut(&Time, &mut State, &Sensors) {
-        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| {
-            let mut mutex = tracker.lock().unwrap();
-
-            mutex.read_flag();
-
-            mutex.write_flag(false);
-        }
-    }
-
-    // Quick note on closures.
-    //
-    // We realize that
-    // fn name(/*args*/) -> impl FnMut(RobotState) {}
-    // as a function is hard to read.
-    //
-    // Here's an begginer friendly alternative if you'd prefer.
-    // Both are completely valid and do exactly the same.
     type ArcMutTracker = Arc<Mutex<UserDefinedDataTracker>>;
 
     // If your controller only needs ITS OWN data (not shared with other
@@ -385,20 +342,27 @@ fn main() {
         tracker.write_flag(false);
     }
 
-    // A controller that must run on its OWN dedicated thread (e.g. a slow job
-    // you don't want blocking the main tick loop). Because it runs elsewhere
-    // AND shares data with other controllers, the data comes wrapped in
-    // `Arc<Mutex<..>>` — you lock it, touch it, done. This is the ONLY tier
-    // where locking is justified; the main-loop tiers above never need it.
-    fn threaded_controller(
-        tracker: &mut ArcMutTracker,
-        _time: &Time,
-        _robot: &mut State,
-        _sensors: &Sensors,
-    ) {
-        let mut guard = tracker.lock().unwrap();
-        guard.read_flag();
-        guard.write_flag(false);
+    // Whatever a threaded controller wants to track. Here: latest gamepad input.
+    #[derive(Default)]
+    struct GamepadInput {
+        x: f32,
+        y: f32,
+        buttons: u8,
+    }
+
+    // A controller that belongs on its OWN thread: a gamepad reader. It runs its
+    // own blocking poll loop at its own rate — you don't want that stalling the
+    // tick loop, and it must NOT touch robot state (that stays single-writer on
+    // the main loop, so no actuator-write races are possible).
+    //
+    // So a threaded controller gets ONLY `&mut T` — your data, whatever you want
+    // to track. No `State`, no `Sensors`. Read the pad, stash it in `T`. A
+    // main-loop controller later reads `T` and turns it into robot commands.
+    fn gamepad_controller(pad: &mut GamepadInput, _time: &Time) {
+        // let ev = read_gamepad();  // your blocking poll
+        pad.x = 0.0;
+        pad.y = 0.0;
+        pad.buttons = 0;
     }
 
     // This function showcases how you would read the sensors pre-installed
@@ -429,6 +393,11 @@ fn main() {
     let mut own_tracker = UserDefinedDataTracker::default();
     own_tracker.write_flag(true); // your one-time init
 
+    // The gamepad thread's data. Built ONCE here, moved into the API below,
+    // which keeps it alive for the whole run and lends it to the thread as
+    // `&mut` — NOT reconstructed each tick.
+    let gamepad = GamepadInput::default();
+
     Robot::new()
         // Settings
         .dt_ms(1) // NOTE: or .dt_us(10000)
@@ -446,15 +415,13 @@ fn main() {
         // .add_controller(OnCollision, (previous_state_at))
         // .add_controller(OnCollision, (pause, previous_state, stop))
         .add_controller(PerTick, error_handling)
-        .add_controller(PerTick, read_write_shared_flag_1(Arc::clone(&tracker)))
-        .add_controller(PerTick, read_write_shared_flag_2(Arc::clone(&tracker)))
         // Own-data controller: no closure, no Arc/Mutex. We move the already
         // initialized `own_tracker` in — the API keeps it alive across ticks.
         .add_controller_with(PerTick, own_tracker, context_controller)
-        // Shared-data controller on its OWN thread. A dedicated thread means
-        // the data really is touched concurrently, so `Arc<Mutex<..>>` earns
-        // its place HERE (not in the main-loop controllers above).
-        .add_controller_as_thread(PerTick, Arc::clone(&tracker), threaded_controller)
+        // Gamepad reader on its OWN thread. It gets ONLY its data (`GamepadInput`)
+        // — no robot state, so it can never race the actuator commands. Runs its
+        // own poll loop off the tick loop.
+        .add_controller_as_thread(PerTick, gamepad, gamepad_controller)
         .add_controller(PerTick, use_sensors)
         .run();
 }

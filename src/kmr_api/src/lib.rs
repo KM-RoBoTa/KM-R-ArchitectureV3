@@ -546,21 +546,25 @@ impl Robot {
         todo!()
     }
 
-    // Same shape as [`add_controller_with`], but this controller runs on its
-    // OWN dedicated thread instead of inline in the main tick loop.
+    // Runs a controller on its OWN dedicated thread instead of inline in the
+    // main tick loop. For work that has its own rhythm or blocks — a gamepad
+    // reader, a network link, a slow planner. Most controllers do NOT need this.
     //
-    // Use it for work that shouldn't stall the loop (long computation, blocking
-    // I/O). Not every controller needs this — most belong on the main loop.
+    // Deliberately, a threaded controller gets ONLY `&mut T` — your own data,
+    // whatever you need to track. It has NO access to robot `State`:
     //
-    // Because the controller now runs on another thread, both `ctx` and the
-    // closure must be `Send + 'static`. If this controller shares data with the
-    // main-loop ones, wrap that data in `Arc<Mutex<..>>` and pass a clone as
-    // `ctx` — that's exactly the case where locking is warranted.
+    //   - Robot commands (`desired`) stay single-writer on the main loop, so
+    //     two controllers can never race to write the actuators.
+    //   - No shared `State` means no cross-thread borrow of the tick loop's data.
+    //
+    // To act on the robot, the thread writes what it learned into `T`; a
+    // main-loop controller reads `T` and turns it into commands. `ctx` and the
+    // closure must be `Send + 'static` so they can move to the new thread.
     pub fn add_controller_as_thread<S, T, F>(self, schedule: S, ctx: T, f: F) -> Self
     where
         S: FakeSchedule,
         T: Send + 'static,
-        F: FnMut(&mut T, &Time, &mut State, &Sensors) + Send + 'static,
+        F: FnMut(&mut T, &Time) + Send + 'static,
     {
         todo!()
     }
