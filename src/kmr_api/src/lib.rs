@@ -518,6 +518,53 @@ impl Robot {
         todo!()
     }
 
+    // Same as [`add_controller`], but for controllers that need their OWN
+    // persistent data across ticks.
+    //
+    // You hand us the data `ctx` once. We own it, keep it alive for the whole
+    // run, and lend it back to you (`&mut T`) on every tick. Your controller
+    // becomes a plain `fn` — no `move`, no closure, no `Arc<Mutex<..>>`.
+    //
+    // ```
+    // struct Counter { ticks: u32 }
+    //
+    // fn count(c: &mut Counter, _t: &Time, _r: &mut State, _s: &Sensors) {
+    //     c.ticks += 1;
+    // }
+    //
+    // robot.add_controller_with(PerTick, Counter { ticks: 0 }, count);
+    // ```
+    //
+    // `T` is whatever you want: a struct, a number, a `Vec`... your data.
+    // Because we lend it as `&mut T`, access is exclusive and single-threaded,
+    // so you never need locks here.
+    pub fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Self
+    where
+        S: FakeSchedule,
+        F: FnMut(&mut T, &Time, &mut State, &Sensors),
+    {
+        todo!()
+    }
+
+    // Same shape as [`add_controller_with`], but this controller runs on its
+    // OWN dedicated thread instead of inline in the main tick loop.
+    //
+    // Use it for work that shouldn't stall the loop (long computation, blocking
+    // I/O). Not every controller needs this — most belong on the main loop.
+    //
+    // Because the controller now runs on another thread, both `ctx` and the
+    // closure must be `Send + 'static`. If this controller shares data with the
+    // main-loop ones, wrap that data in `Arc<Mutex<..>>` and pass a clone as
+    // `ctx` — that's exactly the case where locking is warranted.
+    pub fn add_controller_as_thread<S, T, F>(self, schedule: S, ctx: T, f: F) -> Self
+    where
+        S: FakeSchedule,
+        T: Send + 'static,
+        F: FnMut(&mut T, &Time, &mut State, &Sensors) + Send + 'static,
+    {
+        todo!()
+    }
+
     pub fn run(self) {
         // if self.controllers.is_empty() { return Err("No controller defined") }
         todo!()

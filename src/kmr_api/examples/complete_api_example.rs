@@ -366,40 +366,39 @@ fn main() {
     // Both are completely valid and do exactly the same.
     type ArcMutTracker = Arc<Mutex<UserDefinedDataTracker>>;
 
-    fn named_closure(tracker: ArcMutTracker) -> impl FnMut(&Time, &mut State, &Sensors) {
-        // Clean signature, no `move |..|` noise.
-        fn logic(tracker: &ArcMutTracker) {
-            let mut guard = tracker.lock().unwrap();
-            guard.read_flag();
-            guard.write_flag(false);
-        }
+    // If your controller only needs ITS OWN data (not shared with other
+    // controllers), you don't need a closure, `move`, `Arc`, or `Mutex` at all.
+    //
+    // Write a plain `fn` whose FIRST parameter is your data as `&mut T`, then
+    // register it with [`add_controller_with`], handing over the data once.
+    // The API owns that data, keeps it alive across every tick, and lends it
+    // back to you exclusively — no locking needed.
+    //
+    // Compare with the `move |..|` version below: same behavior, zero noise.
+    fn context_controller(
+        tracker: &mut UserDefinedDataTracker,
+        _time: &Time,
+        _robot: &mut State,
+        _sensors: &Sensors,
+    ) {
+        tracker.read_flag();
+        tracker.write_flag(false);
+    }
 
-        // But its still fundamentally unavoidable because you need to
-        // somehow use more parameters than we actually give you permission.
-        //
-        // Looking at the required return type `impl FnMut(RobotState)`,
-        // you are required to return a function that takes one parameter.
-        //
-        // This notation, called closure, actually allows you to respect that
-        // by creating a function which takes ONE parameter `|robot: RobotState|`
-        // but has a nammed function that can CAPTURE "tracker" from the
-        // current scope.
-        //
-        // Why is it mandatory ?
-        //
-        // Two reasons.
-        //
-        // 1) Because we can't plan for "tracker". This is your code !
-        // We just cannot know in advance what you will write.
-        //
-        // We made the choice to let you do whatever you want, but you must
-        // respect rust's rules in return.
-        //
-        // 2) We want to be sure you proprely take ownership of [`RobotState`]
-        // so that you actually use it ! It's the do-all structure, your main
-        // tool. Making it optional would require even more difficult code
-        // just to use this fundamental data structure.
-        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| logic(&tracker)
+    // A controller that must run on its OWN dedicated thread (e.g. a slow job
+    // you don't want blocking the main tick loop). Because it runs elsewhere
+    // AND shares data with other controllers, the data comes wrapped in
+    // `Arc<Mutex<..>>` — you lock it, touch it, done. This is the ONLY tier
+    // where locking is justified; the main-loop tiers above never need it.
+    fn threaded_controller(
+        tracker: &mut ArcMutTracker,
+        _time: &Time,
+        _robot: &mut State,
+        _sensors: &Sensors,
+    ) {
+        let mut guard = tracker.lock().unwrap();
+        guard.read_flag();
+        guard.write_flag(false);
     }
 
     // This function showcases how you would read the sensors pre-installed
@@ -424,13 +423,21 @@ fn main() {
     // This prevents remote flashing and just convinent compilation workflow.
     // It'll better to check presence at runtime instead (at init phase).
 
+    // The own-data controller's tracker. Built and initialized ONCE, here —
+    // not on every tick. We hand ownership to the API below; from then on it
+    // lends this exact value back to `context_controller` as `&mut`.
+    let mut own_tracker = UserDefinedDataTracker::default();
+    own_tracker.write_flag(true); // your one-time init
+
     Robot::new()
         // Settings
         .dt_ms(1) // NOTE: or .dt_us(10000)
         // Controllers
         .add_controller(Initialization, initialization)
         .add_controller(PerTick, replace_all_q)
-        .add_controller(PerTick, replace_all_q)
+        .add_controller(PerTick, replace_all_q) // just to show you can call the same controller
+        // multiple times if you wish so.
+        //
         // `Arc::clone` makes another handle to the SAME tracker (cheap — just
         // bumps a counter). Both controllers below now read/write one tracker.
         .add_controller(PerTick, tracking_controller(Arc::clone(&tracker)))
@@ -441,7 +448,13 @@ fn main() {
         .add_controller(PerTick, error_handling)
         .add_controller(PerTick, read_write_shared_flag_1(Arc::clone(&tracker)))
         .add_controller(PerTick, read_write_shared_flag_2(Arc::clone(&tracker)))
-        .add_controller(PerTick, named_closure(Arc::clone(&tracker)))
+        // Own-data controller: no closure, no Arc/Mutex. We move the already
+        // initialized `own_tracker` in — the API keeps it alive across ticks.
+        .add_controller_with(PerTick, own_tracker, context_controller)
+        // Shared-data controller on its OWN thread. A dedicated thread means
+        // the data really is touched concurrently, so `Arc<Mutex<..>>` earns
+        // its place HERE (not in the main-loop controllers above).
+        .add_controller_as_thread(PerTick, Arc::clone(&tracker), threaded_controller)
         .add_controller(PerTick, use_sensors)
         .run();
 }
