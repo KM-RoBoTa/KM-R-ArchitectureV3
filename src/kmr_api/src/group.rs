@@ -50,7 +50,7 @@
 //!   in a single tick is the job of the deferred per-tick write-mask, not this
 //!   layer.
 
-use crate::{Q, Qd, State, StateError, Tau};
+use crate::{PrivateStateError, Q, Qd, State, Tau};
 
 impl State {
     /// View a fixed set of joint `indices` as a [`GroupView`]. Indices may be
@@ -104,8 +104,8 @@ fn gather<T, const K: usize>(
 #[inline]
 fn try_gather<T, const K: usize>(
     indices: [usize; K],
-    mut at: impl FnMut(usize) -> Result<T, StateError>,
-) -> Result<[T; K], StateError> {
+    mut at: impl FnMut(usize) -> Result<T, PrivateStateError>,
+) -> Result<[T; K], PrivateStateError> {
     let mut staged: [Option<T>; K] = std::array::from_fn(|_| None);
     for (slot, index) in staged.iter_mut().zip(indices) {
         *slot = Some(at(index)?); // `?` moves the first error out — no clone
@@ -126,9 +126,9 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// breaks — revisit here, and the `N == JOINTS` assumption, if the core
     /// gains a runtime joint length.
     #[inline]
-    fn check_indices(&self) -> Result<(), StateError> {
+    fn check_indices(&self) -> Result<(), PrivateStateError> {
         match self.indices.into_iter().find(|&index| index >= crate::N) {
-            Some(index) => Err(StateError::OutOfRange {
+            Some(index) => Err(PrivateStateError::OutOfRange {
                 index,
                 len: crate::N,
             }),
@@ -155,7 +155,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// `Q` for each group joint, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
-    pub fn prev_q(&self, depth: usize) -> Result<[Q; K], StateError> {
+    pub fn prev_q(&self, depth: usize) -> Result<[Q; K], PrivateStateError> {
         try_gather(self.indices, |i| self.robot.prev_q_at(i, depth))
     }
 
@@ -165,7 +165,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// Atomic: all indices are validated before any value is staged, so an
     /// out-of-range index returns `Err` with nothing written.
     #[inline]
-    pub fn set_all_q(&mut self, values: [Q; K]) -> Result<(), StateError> {
+    pub fn set_all_q(&mut self, values: [Q; K]) -> Result<(), PrivateStateError> {
         self.check_indices()?;
         values
             .into_iter()
@@ -192,7 +192,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// `Qd` for each group joint, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
-    pub fn prev_qd(&self, depth: usize) -> Result<[Qd; K], StateError> {
+    pub fn prev_qd(&self, depth: usize) -> Result<[Qd; K], PrivateStateError> {
         try_gather(self.indices, |i| self.robot.prev_qd_at(i, depth))
     }
 
@@ -202,7 +202,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// Atomic: all indices are validated before any value is staged, so an
     /// out-of-range index returns `Err` with nothing written.
     #[inline]
-    pub fn set_all_qd(&mut self, values: [Qd; K]) -> Result<(), StateError> {
+    pub fn set_all_qd(&mut self, values: [Qd; K]) -> Result<(), PrivateStateError> {
         self.check_indices()?;
         values
             .into_iter()
@@ -235,7 +235,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// `Tau` for each group joint, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
-    pub fn prev_tau(&self, depth: usize) -> Result<[Tau; K], StateError> {
+    pub fn prev_tau(&self, depth: usize) -> Result<[Tau; K], PrivateStateError> {
         try_gather(self.indices, |i| self.robot.prev_tau_at(i, depth))
     }
 
@@ -245,7 +245,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
     /// Atomic: all indices are validated before any value is staged, so an
     /// out-of-range index returns `Err` with nothing written.
     #[inline]
-    pub fn set_all_tau(&mut self, values: [Tau; K]) -> Result<(), StateError> {
+    pub fn set_all_tau(&mut self, values: [Tau; K]) -> Result<(), PrivateStateError> {
         self.check_indices()?;
         values
             .into_iter()

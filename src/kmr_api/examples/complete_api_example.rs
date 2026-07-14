@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 // }
 
 fn main() {
-    fn replace_all_q(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn replace_all_q(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         // Let's start this example with a simple example.
         // Here, we want to repalace all Q (positions) to an arbitrary
         // value.
@@ -42,7 +42,7 @@ fn main() {
         robot.set_all_q(desired);
     }
 
-    fn replace_one_q(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn replace_one_q(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         let index: usize = 0;
         let current_q = robot.q_at(index);
 
@@ -54,7 +54,7 @@ fn main() {
     // A group is a fixed set of joint indices — non-contiguous allowed, e.g.
     // [1, 3, 4]. Here, the right arm: joints 3, 4, 5.
     const R_ARM: [usize; 3] = [3, 4, 5];
-    fn use_groups(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn use_groups(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         let mut r_arm = robot.group(R_ARM);
 
         // Group reads gather into a `[Q; K]` (here K = 3), not the whole-robot
@@ -68,7 +68,7 @@ fn main() {
         r_arm.set_all_q(desired).unwrap();
     }
 
-    fn initialization(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn initialization(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         // NOTE: home_state returns ANY state. To ensure home_state() knows what
         // to return you, you must specify the type you wish. In that case,
         // this is done by the `let variable: Type` notation.
@@ -77,10 +77,10 @@ fn main() {
         // NOTE: You can also write it with the "turbofish" notation if you desire.
         let desired = robot.initial_state::<Q>();
 
-        robot.set_all_q(desired);
+        &robot.set_all_q(desired);
     }
 
-    fn error_handling(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn error_handling(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         let current: Option<[Q; N]> = robot.q();
         // `robot.q()` returns an Option<[Q;N]>.
         // This is because an internal bug can occure, let's say because of an I/O
@@ -183,7 +183,7 @@ fn main() {
     //     a.map(|x| Q(0_f32))
     // }
 
-    fn previous_state_at(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn previous_state_at(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         let index: usize = 1;
         let history_depth = 2;
         let current = robot.prev_q_at(index, history_depth).unwrap();
@@ -192,7 +192,7 @@ fn main() {
         robot.set_q_at(desired, index).unwrap();
     }
 
-    fn previous_state(_time: Time, mut robot: State, _sensors: Sensors) {
+    fn previous_state(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         let history_depth = 2;
         let _previous = robot.prev_q(history_depth);
     }
@@ -247,8 +247,8 @@ fn main() {
     // payload.
     fn use_payload(
         tracker: Arc<Mutex<UserDefinedDataTracker>>,
-    ) -> impl FnMut(Time, State, Sensors) {
-        move |_time: Time, _robot: State, _sensors: Sensors| {
+    ) -> impl FnMut(&Time, &mut State, &Sensors) {
+        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| {
             // Let's imagine a 3 DOF arm with a camera at the EE.
 
             type Degrees = u32;
@@ -312,8 +312,8 @@ fn main() {
     // structures.
     fn tracking_controller(
         tracker: Arc<Mutex<UserDefinedDataTracker>>,
-    ) -> impl FnMut(Time, State, Sensors) {
-        move |_time: Time, mut robot: State, _sensors: Sensors| {
+    ) -> impl FnMut(&Time, &mut State, &Sensors) {
+        move |_time: &Time, robot: &mut State, _sensors: &Sensors| {
             tracker.lock().unwrap().save_q(&robot.q().unwrap());
 
             let desired = robot.q().unwrap().map(|q| q + 100.0.into());
@@ -334,8 +334,8 @@ fn main() {
     // https://doc.rust-lang.org/book/ch16-00-concurrency.html
     fn read_write_shared_flag_1(
         tracker: Arc<Mutex<UserDefinedDataTracker>>,
-    ) -> impl FnMut(Time, State, Sensors) {
-        move |_time: Time, _robot: State, _sensors: Sensors| {
+    ) -> impl FnMut(&Time, &mut State, &Sensors) {
+        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| {
             let mut mutex = tracker.lock().unwrap();
 
             mutex.read_flag();
@@ -346,8 +346,8 @@ fn main() {
 
     fn read_write_shared_flag_2(
         tracker: Arc<Mutex<UserDefinedDataTracker>>,
-    ) -> impl FnMut(Time, State, Sensors) {
-        move |_time: Time, _robot: State, _sensors: Sensors| {
+    ) -> impl FnMut(&Time, &mut State, &Sensors) {
+        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| {
             let mut mutex = tracker.lock().unwrap();
 
             mutex.read_flag();
@@ -366,7 +366,7 @@ fn main() {
     // Both are completely valid and do exactly the same.
     type ArcMutTracker = Arc<Mutex<UserDefinedDataTracker>>;
 
-    fn named_closure(tracker: ArcMutTracker) -> impl FnMut(Time, State, Sensors) {
+    fn named_closure(tracker: ArcMutTracker) -> impl FnMut(&Time, &mut State, &Sensors) {
         // Clean signature, no `move |..|` noise.
         fn logic(tracker: &ArcMutTracker) {
             let mut guard = tracker.lock().unwrap();
@@ -399,7 +399,7 @@ fn main() {
         // so that you actually use it ! It's the do-all structure, your main
         // tool. Making it optional would require even more difficult code
         // just to use this fundamental data structure.
-        move |_time: Time, _robot: State, _sensors: Sensors| logic(&tracker)
+        move |_time: &Time, _robot: &mut State, _sensors: &Sensors| logic(&tracker)
     }
 
     // This function showcases how you would read the sensors pre-installed
@@ -407,7 +407,7 @@ fn main() {
     //
     // 1) A humidity sensor
     // 2) A camera sensor
-    fn use_sensors(_time: Time, _robot: State, mut sensors: Sensors) {
+    fn use_sensors(_time: &Time, _robot: &mut State, sensors: &Sensors) {
         // let humidity: f32 = sensors.humidity();
         // let imu = sensors.imu();
     }

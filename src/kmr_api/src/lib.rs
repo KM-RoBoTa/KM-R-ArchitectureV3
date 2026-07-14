@@ -34,7 +34,7 @@ pub enum StateError {
 /// library fills these fields when it builds the error; the user never inputs
 /// them. To match the cause without touching the numbers, use [`StateError::kind`].
 #[derive(Debug, PartialEq, thiserror::Error)]
-enum PrivateStateError {
+pub enum PrivateStateError {
     /// A joint/sample index exceeded the number of recorded entries.
     #[error("index {index} is out of range: only {len} entries are available")]
     OutOfRange { index: usize, len: usize },
@@ -513,7 +513,7 @@ impl Robot {
     pub fn add_controller<S, F>(self, schedule: S, f: F) -> Self
     where
         S: FakeSchedule,
-        F: FnMut(Time, State, Sensors),
+        F: FnMut(&Time, &mut State, &Sensors),
     {
         todo!()
     }
