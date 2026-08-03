@@ -1,0 +1,8 @@
+disallowed-types = [
+  "std::boxed::Box",
+  "std::vec::Vec",
+  "std::string::String",
+  "std::rc::Rc",
+  "std::sync::Arc",
+  "std::collections::HashMap",
+]
