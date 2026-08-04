@@ -1,14 +1,13 @@
 [workspace]
-members = ["src/kmr_api",
+members = [
     "src/kmr_core",
-    "src/kmr_ffi",
 ]
 
 [workspace.dependencies]
 thiserror = "2.0.18"
 rstest = "0.26.1"
 kmr_core = { path = "src/kmr_core" }
-circular-buffer = "1.2.0"
+circular-buffer = "2.0.0"
 derive_more = { version = "2.1.1", features = ["add", "mul"] }
 
 [package]
