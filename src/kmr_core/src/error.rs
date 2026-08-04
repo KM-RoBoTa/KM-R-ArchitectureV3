@@ -1,5 +1,3 @@
-use thiserror::Error;
-
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error(transparent)]
@@ -21,4 +19,12 @@ pub enum StateError {
 
     #[error("Value requested is unavailable.")]
     CriticalValueMissing,
+}
+
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum ApiError {
+    #[error(
+        "Robot has no controllers — add at least one with `.add_controller(...)` before calling `.run()`"
+    )]
+    NoControllers,
 }
