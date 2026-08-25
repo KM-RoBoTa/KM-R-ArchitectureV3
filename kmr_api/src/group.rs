@@ -52,7 +52,7 @@
 
 use crate::{Q, Qd, State, StateError, Tau};
 
-impl State {
+impl State<'_> {
     /// View a fixed set of joint `indices` as a [`GroupView`]. Indices may be
     /// non-contiguous and in any order; reads and writes preserve that order.
     ///
@@ -64,6 +64,7 @@ impl State {
     /// ```
     #[inline]
     pub fn group<const K: usize>(&mut self, indices: [usize; K]) -> GroupView<'_, K> {
+        todo!("Fix the invariance issue");
         GroupView {
             robot: self,
             indices,
@@ -79,7 +80,7 @@ impl State {
 /// or scatters per index — so a group write never disturbs joints outside the
 /// group.
 pub struct GroupView<'a, const K: usize> {
-    robot: &'a mut State,
+    robot: &'a mut State<'a>,
     indices: [usize; K],
 }
 

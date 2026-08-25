@@ -1,15 +1,20 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-use kmr_api::{
-    Init, N, EachTick, Q, Robot, Sensors, State, StateErrorKind as StateError, Time,
+use kmr_api::{EachTick, Init, N, Q, Robot, Sensors, State, StateErrorKind as StateError, Time};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
 };
-use std::sync::{Arc, Mutex};
 
 // fn stop(robot: RobotState) {
 //     a.map(|x| Q(0_f32))
 //     robot.command
 // }
 
+#[derive(Clone)]
+struct Foo {
+    name: String,
+}
 fn main() -> color_eyre::Result<()> {
     // color_eyre is optional but it's nicer to work with.
     // We already provide plenty human readable error messages.
@@ -499,7 +504,7 @@ fn main() -> color_eyre::Result<()> {
 
     Robot::new()
         // Settings
-        .dt_ms(1) // NOTE: or .dt_us(10000)
+        .set_dt(Duration::from_millis(1u64)) // NOTE: or .dt_us(10000)
         // .history_depth(1_usize) // with a maximum recommended of 5.
         // Controllers
         .add_controller(Init, initialization)

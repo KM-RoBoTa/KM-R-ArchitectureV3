@@ -99,19 +99,23 @@ impl Field for Tau {}
 /// field). If a refactor ever exposes the inner type, this doc-test breaks.
 ///
 /// ```compile_fail,E0616
-/// use kmr_api::RobotState;
-///
-/// fn leak(robot: RobotState) {
-///     // error[E0616]: field `0` of struct `RobotState` is private
+/// fn leak(robot: kmr_api::State) {
+///     // error[E0616]: field `0` of struct `State` is private
 ///     let _core = robot.0;
 /// }
 /// ```
-pub struct State(kmr_core::RobotState<N>);
+pub struct State<'a>(&'a mut kmr_core::RobotState<N>);
 
-impl State {
+impl<'a> State<'a> {
+    /// Wrap the borrowed core state the runtime lends for one tick. Called only
+    /// at the api→core boundary (`ApiInline::call`); never by users.
+    pub(crate) fn new(inner: &'a mut kmr_core::RobotState<N>) -> Self {
+        State(inner)
+    }
+
     pub fn initial_state<T: Field>(&self) -> [T; N] {
-        // self.0.home_state();
-        todo!("return home state for specigied state field")
+        todo!("return home state for specified state field");
+        // self.0.home_state()
     }
 
     // ---------------------------------------------------------------------------

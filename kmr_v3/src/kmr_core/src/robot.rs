@@ -1,145 +1,218 @@
-// ===========================================================================
-// This module holds ALL the machinery: the config, the heterogeneous list of
-// controllers, and the `Robot<L>` builder that owns them. `kmr_api` only wraps
-// `Robot<L>` in a newtype, so everything here is the protected IP; the public
-// crate adds no logic of its own.
-// ===========================================================================
+//! Module that holds the Robot data structure and its implementation.
+//!
+//! [`Robot`] is meant to be a builder following the Builder Pattern.
+//! It is the primary user interface.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use kmr_core::robot::Robot;
+//! fn foo() {
+//!     println!("hello world");
+//! }
+//!
+//! # fn main() {
+//!
+//!    Robot::new()
+//!        // Settings
+//!        .dt_ms(1)
+//!        // Controllers
+//!        .add_controller(EachTick, foo)
+//!        .run();
+//! # }
+//! ````
 
-// ===========================================================================
-// (A) The HList — provided by `frunk`. Knows NOTHING about robots.
-//
-//   HNil                        empty list
-//   HCons<H, T>                 one element `H` on top of a tail list `T`
-//
-// We re-export these so `kmr_api` can NAME them in its return types without a
-// direct `frunk` dependency. The list SHAPE being public is fine: the IP lives
-// in the controller node types (`Plain`/`With`/`AsThread`) below, whose fields
-// are `pub(crate)` and whose constructors are `#[doc(hidden)]` — a user can
-// hold an `HCons` but can neither forge a node to put in one nor read one out.
-// ===========================================================================
+use std::time::Duration;
 
 pub use frunk::hlist::HList;
 pub use frunk::{HCons, HNil};
 
+use crate::clock::Time;
 use crate::config::user_config::RobotConfig;
-use crate::controllers::{Inline, InlineWith, Threaded};
+use crate::controllers::{
+    ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
+};
 use crate::error::ApiError;
-use crate::schedule::Schedule;
+use crate::schedule::{Drive, Insert, Schedule};
+use crate::state::RobotState;
+use crate::{Scheduled, Sensors, runtime};
 
-// ===========================================================================
-// (B) The controller node types — the elements stored in the HList.
-//
-// Each is an opaque, generic container. The core stores the user's schedule
-// `S`, optional context `T`, and function `F`, WITHOUT ever naming the api-side
-// `Time`/`State`/`Sensors` (that would make `kmr_core` depend on `kmr_api` — a
-// cycle). `kmr_api` instantiates each node with a concrete controller `F`.
-//
-// Fields are `pub(crate)`, construction is `#[doc(hidden)]`. User code only
-// ever sees `kmr_api`, so it can neither forge a node nor read one.
-// ===========================================================================
+// todo: build time variable from model, not implemented yet
+pub const JOINTS: usize = 4;
 
-// ===========================================================================
-// (D) The builder. `Robot` HAS-A list `L` (a field) — it is not the list.
-//
-// `L` starts as `HNil` and each `add_controller*` prepends a node, growing the
-// TYPE by one `HCons` layer. Settings keep `L` unchanged.
-// ===========================================================================
-
-pub struct Robot<L: HList = HNil> {
-    config: RobotConfig,
-    list: L,
+/// The primary librairy API.
+///
+/// CS means Core Scheduled. This is useful to differenciate between
+/// the user specified schedule label (named `S` in the impl blocks) and the
+/// generic representation within the core.
+pub struct Robot<CS = Scheduled> {
+    pub(crate) config: RobotConfig,
+    pub(crate) controllers: CS,
 }
 
-impl Robot<HNil> {
+impl Robot<Scheduled> {
+    /// Returns a default Robot.
+    ///
+    /// This is the main entry point for the API User.
+    ///
+    /// # Usage
+    ///
+    /// Assuming the most minimal control possible,
+    ///
+    /// ```ignore
+    /// use kmr_core::robot::Robot;
+    ///
+    /// fn hello_world(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
+    ///     println!("Hello World !");
+    /// }
+    ///
+    /// Robot::new()
+    ///     .add_controller(EachTick, hello_world)
+    ///     .run()
+    ///     .unwrap();
+    /// ```
     pub fn new() -> Self {
         Robot {
             config: RobotConfig::default(),
-            list: HNil,
+            controllers: Scheduled::new(),
         }
     }
 }
 
-impl Default for Robot<HNil> {
+// The impl is meant to be the API wrapper.
+//
+// If you want to access the config to perform internal actions, use the
+// fields directly as namespaces.
+//
+// E.g: To set the elapsed time, an action disallowed to the user, call
+// directly `robot.config.time.set_elapsed(t)`.
+impl<CS> Robot<CS> {
+    /// Allows the user to set the value of [`Time::delta`].
+    pub fn set_dt(mut self, dt: Duration) -> Self {
+        self.config.time.set_delta(dt);
+        self
+    }
+
+    /// Private generic method to insert any state.
+    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<CS::Output>
+    where
+        C: Controller,
+        S: Schedule,
+        CS: Insert<S, C>,
+    {
+        let _ = schedule;
+        Robot {
+            config: self.config,
+            controllers: self.controllers.insert(controller),
+        }
+    }
+
+    /// Adds a new plain user defined controller.
+    ///
+    /// Direct-core callers pass a bare closure (inference fills the argument
+    /// types from the `Fn` bound). `kmr_api` does NOT use this entry — it goes
+    /// through [`Robot::add_control_fn`] with its own [`ControlFn`] wrapper so
+    /// it can hide the core argument types behind api newtypes.
+    pub fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<CS::Output>
+    where
+        CS: Insert<S, Inline<F>>,
+        F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors),
+        S: Schedule,
+    {
+        self.insert_controller(schedule, Inline(f))
+    }
+
+    /// Inserts a pre-wrapped inline controller — the entry `kmr_api` uses.
+    ///
+    /// It hands us a value that already implements [`ControlFn`] (its api→core
+    /// translation wrapper). Because the node type is a plain named type (not
+    /// an unnameable closure), the builder's type-state still threads through
+    /// the return type, yet the public signature never names the core argument
+    /// types the api is hiding.
+    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<CS::Output>
+    where
+        CS: Insert<S, Inline<C>>,
+        C: ControlFn,
+        S: Schedule,
+    {
+        self.insert_controller(schedule, Inline(controller))
+    }
+
+    /// Adds a new plain user defined controller with a persistant context
+    /// managed by the user.
+    pub fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
+    where
+        CS: Insert<S, InlineWith<F, T>>,
+        F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors, &mut T),
+        S: Schedule,
+    {
+        self.insert_controller(schedule, InlineWith(f, ctx))
+    }
+
+    /// Pre-wrapped `add_controller_with` — the entry `kmr_api` uses. See
+    /// [`Robot::add_control_fn`]; the `T` context is threaded through unchanged.
+    pub fn add_control_fn_with<S, T, C>(
+        self,
+        schedule: S,
+        ctx: T,
+        controller: C,
+    ) -> Robot<CS::Output>
+    where
+        CS: Insert<S, InlineWith<C, T>>,
+        C: ControlFnWith<T>,
+        S: Schedule,
+    {
+        self.insert_controller(schedule, InlineWith(controller, ctx))
+    }
+
+    /// Adds a new plain user defined threaded controller with a persistant
+    /// context managed by the user.
+    ///
+    /// A threaded controller is not allowed to write the
+    /// [`crate::state::RobotState`] — it gets only its context `T` and the clock.
+    pub fn add_controller_as_thread<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
+    where
+        CS: Insert<S, Threaded<F, T>>,
+        T: Sync + Send,
+        F: Fn(&Time, &mut T),
+        S: Schedule,
+    {
+        self.insert_controller(schedule, Threaded(f, ctx))
+    }
+
+    /// Pre-wrapped `add_controller_as_thread` — the entry `kmr_api` uses.
+    pub fn add_control_fn_as_thread<S, T, C>(
+        self,
+        schedule: S,
+        ctx: T,
+        controller: C,
+    ) -> Robot<CS::Output>
+    where
+        CS: Insert<S, Threaded<C, T>>,
+        T: Sync + Send,
+        C: ThreadFn<T>,
+        S: Schedule,
+    {
+        self.insert_controller(schedule, Threaded(controller, ctx))
+    }
+
+    /// Runs the robot.
+    ///
+    /// The `Drive` bound is the schedule-walk trait: it's `pub` but
+    /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
+    /// so users never trip it. `kmr_api` forwards this same one bound from its
+    /// own `run`.
+    pub fn run(self) -> Result<(), ApiError>
+    where
+        CS: Drive,
+    {
+        runtime::runtime(self);
+        Ok(())
+    }
+}
+
+impl Default for Robot<Scheduled> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<L: HList> Robot<L> {
-    // ---- time: the only `Time` knob exposed to the user. Everything else on
-    // `Time` is `pub(crate)` — written/read by the runtime only. ----
-
-    pub fn set_dt_ms(mut self, ms: u32) -> Self {
-        self.config.time.set_delta_ms(ms);
-        self
-    }
-
-    pub fn set_dt_us(mut self, us: u32) -> Self {
-        self.config.time.set_delta_us(us);
-        self
-    }
-
-    // ---- controllers: grow the list by one `HCons` ----
-    //
-    // Deliberately generic over `S`/`T`/`F` with NO trait bounds that name
-    // api types. `kmr_api` applies its own bounds (`FakeSchedule`, `Send`) and
-    // pins `F` to a concrete controller signature at its boundary.
-
-    // pub fn config(self) -> &RobotConfig {
-    //     &self.config
-    // }
-
-    pub fn add_controller<S: Schedule, F>(
-        self,
-        schedule: S,
-        f: F,
-    ) -> Robot<HCons<Inline<S, F>, L>> {
-        Robot {
-            config: self.config,
-            list: self.list.prepend(Inline::new(schedule, f)),
-        }
-    }
-
-    pub fn add_controller_with<S: Schedule, T, F>(
-        self,
-        schedule: S,
-        ctx: T,
-        f: F,
-    ) -> Robot<HCons<InlineWith<S, T, F>, L>> {
-        Robot {
-            config: self.config,
-            list: self.list.prepend(InlineWith::new(schedule, ctx, f)),
-        }
-    }
-
-    pub fn add_controller_as_thread<S: Schedule, T, F>(
-        self,
-        schedule: S,
-        ctx: T,
-        f: F,
-    ) -> Robot<HCons<Threaded<S, T, F>, L>> {
-        Robot {
-            config: self.config,
-            list: self.list.prepend(Threaded::new(schedule, ctx, f)),
-        }
-    }
-
-    // Runtime check: `Robot<HNil>` has `L::LEN == 0`, panics with a plain
-    // message instead of a compile-time trait-bound gate — the compiled rlib
-    // otherwise spills internal paths/types (`frunk_core::hlist::HCons`,
-    // `kmr_core`'s own file layout) into E0277 diagnostics at the call site.
-    pub fn run(self) -> Result<(), ApiError> {
-        if L::LEN == 0 {
-            return Err(ApiError::NoControllers);
-        }
-
-        let Robot { config, list } = self;
-        let _ = (config, list);
-        // TODO: hand `config` + the `list` (walked via a `Tick` impl over the
-        // HList) to `crate::runtime`. The tick-walk touches api types, so it is
-        // driven from `kmr_api`'s side or through a core-generic environment —
-        // see runtime.rs.
-        todo!("drive config + controller list through the runtime");
-        Ok(())
     }
 }

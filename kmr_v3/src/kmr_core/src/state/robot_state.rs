@@ -5,6 +5,9 @@ use super::history::History;
 use crate::error::StateError;
 
 #[derive(Default)]
+/// The robot state abstraction.
+///
+/// It holds both the desired values, and the history of states.
 pub struct RobotState<const DEPTH: usize> {
     pub(in crate::state) desired: Desired,
     pub(in crate::state) history: History<JOINTS, DEPTH>,
@@ -38,8 +41,10 @@ impl RobotState<JOINTS> {
     }
 
     // ── State getters ───────────────────────────────────────────────────
+    /// Returns the array [`StateField`] defined as the home position for the
+    /// current robot model.
     pub fn home_state<T: StateField>(&self) -> [T; JOINTS] {
-        todo!("return home state for specigied state field")
+        todo!("return home state for specified state field")
     }
 
     /// Newest entry's slot for field type `T`. None if history is empty.
@@ -77,6 +82,18 @@ impl RobotState<JOINTS> {
             })
     }
 
+    /// Returns the previous state at the specified depth.
+    ///
+    /// A "previous state" means "the state values at the previous tick number N"
+    ///
+    /// If Q[0] increases by +5 each tick, starting from 0:
+    /// At tick 10, Q[0] equals 50.
+    /// At tick 10, the previous Q[0] of depth 2 refers to the value of Q[0]
+    /// at tick 8. So prev_at() in this example would return Q[0] == 40.
+    ///
+    /// For memory reasons, the history is not infinite.
+    /// If you need more depth, you can modify it's maximum value with ...
+    /// TODO: add the method for setting the max depth
     pub fn prev_at<T>(&self, history_depth: usize, index: usize) -> Result<&T, StateError>
     where
         T: StateField,

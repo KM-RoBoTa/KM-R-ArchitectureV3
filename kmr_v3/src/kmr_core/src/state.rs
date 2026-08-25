@@ -1,7 +1,10 @@
 use crate::error::StateError;
 
 // todo: build time variable from model, not implemented yet — keep here, not in a submodule
+
+/// The compile-time generated joint const. Generated from kmr_model. WIP
 pub const JOINTS: usize = 4;
+/// Amount of ticks the history of the state is kept for. WIP
 pub const HISTORY_DEPTH: usize = 4;
 
 // ── types: joint-space value newtypes ───────────────────────────────────────
