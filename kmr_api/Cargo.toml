@@ -1,21 +1,17 @@
 [package]
 name = "kmr_api"
-version = "0.1.0"
-edition = "2024"
-
-# Standalone: kmr_api is its OWN workspace, outside the closed kmr_core repo.
-[workspace]
+description = "The public kmr API: write robot controllers as plain functions on schedules."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-thiserror = "2.0.18"
-derive_more = { version = "2.1.1", features = ["add", "mul"] }
-# DEV ONLY — real kmr_core source, for cargo build/check + rust-analyzer.
-# NEVER ships: scripts/run-prod.sh restores the rlib-only Cargo.toml before
-# any release build, and this file is not part of the customer tarball.
-kmr_core = { path = "../kmr_v3/src/kmr_core" }
+kmr_core.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-color-eyre = { version = "0.6", default-features = false }
+color-eyre.workspace = true
 
 [[example]]
 name = "complete_api_example"

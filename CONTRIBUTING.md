@@ -29,26 +29,26 @@ confirm their agreement when that happens.
 
 Prerequisites: a stable Rust toolchain supporting edition 2024.
 
-The git root holds two separate Cargo workspaces:
+The git root is one Cargo workspace:
 
-| Path       | Crate      | Role                                                       |
-|------------|------------|------------------------------------------------------------|
-| `kmr_v3/`  | `kmr_core` | The engine: state, schedules, runtime, signal bus, clock. |
-| `kmr_api/` | `kmr_api`  | The public, minimal user API. Re-exposes the engine.      |
+| Path           | Role                                                          |
+|----------------|---------------------------------------------------------------|
+| `kmr_core/`    | The engine: state, schedules, runtime, signal bus, clock.     |
+| `kmr_api/`     | The public user API: thin wrappers and the convenience layer. |
+| `controllers/` | Where controllers are written. Depends on `kmr_api` only.     |
 
 ```sh
-# engine
-cd kmr_v3
-cargo build && cargo test && cargo clippy && cargo fmt --check
-
-# public API (dev manifest, depends on kmr_core by path)
-cd ../kmr_api
-cargo check --examples && cargo test
-cargo run --example complete_api_example
+# from the git root
+cargo build --workspace
+cargo test --workspace --no-fail-fast
+cargo test -p kmr_core bus       # single test by name substring
+cargo clippy --workspace         # clippy.toml bans heap types — see below
+cargo fmt --all --check
+cargo run -p kmr_api --example complete_api_example
 ```
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before touching the
-engine, and [`kmr_v3/docs/ROADMAP.md`](kmr_v3/docs/ROADMAP.md) to see what is
+engine, and [`docs/ROADMAP.md`](docs/ROADMAP.md) to see what is
 open.
 
 ## Engineering rules
@@ -56,9 +56,10 @@ open.
 These are enforced by the compiler and clippy where possible, and by review
 where not.
 
-1. **No heap on the control path.** `Box`, `Vec`, `String`, `Rc`, `Arc`,
-   `HashMap` are banned in `kmr_core` (`kmr_v3/clippy.toml`, forbidden in
-   `lib.rs`). Use fixed arrays, const generics and `'static`s.
+1. **No heap, except in the API.** `Box`, `Vec`, `String`, `Rc`, `Arc`,
+   `HashMap` are banned workspace-wide by the root `clippy.toml`, and
+   forbidden in `kmr_core`. Only `kmr_api` opts out (`kmr_api/clippy.toml`).
+   Use fixed arrays, const generics and `'static`s.
 2. **No `unwrap()` in the engine.** Propagate or handle errors.
 3. **No `dyn`.** Controllers are dispatched statically through the HList. If
    your change needs dynamic dispatch, open an issue first.
@@ -102,8 +103,8 @@ touching the ROADMAP's open questions) start as an **issue**, not a PR.
 
 Before requesting review:
 
-- [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` pass in both
-      workspaces.
+- [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` pass for the
+      whole workspace.
 - [ ] New behaviour has tests; changed behaviour has updated tests.
 - [ ] Public API changes are reflected in `kmr_api` docs and the example.
 - [ ] You re-read the whole diff and can justify every line.

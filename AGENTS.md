@@ -76,18 +76,18 @@ the control loop, state, timing, and hardware. The mental model is borrowed
 from Bevy's ECS (functions on schedules) but **deliberately stops short of a
 query system** — a robot has one fixed-shape state, not an open world of
 entities. Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-[`kmr_v3/docs/ROADMAP.md`](kmr_v3/docs/ROADMAP.md) before large changes.
+[`docs/ROADMAP.md`](docs/ROADMAP.md) before large changes.
 
-## Repo layout — two separate workspaces
+## Repo layout — one Cargo workspace
 
-The git root holds two sibling crates, each its own Cargo workspace:
+The git root is a single Cargo workspace with three crates:
 
-- `kmr_v3/` — workspace whose only member is `src/kmr_core`, the **engine**.
-- `kmr_api/` — standalone workspace: the **public, minimal user API**. It
-  depends on `kmr_core` by path in dev. A legacy prod setup
-  (`Cargo.prod.toml`, `.cargo/config.prod.toml`, `scripts/run-prod.sh`) links
-  `kmr_core` as a prebuilt rlib instead; it dates from the closed-source era and
-  is under review (see ROADMAP).
+- `kmr_core/` — the **engine**. May use advanced Rust; exposes only what is
+  really needed.
+- `kmr_api/` — the **public user API**: thin wrappers and the convenience
+  layer. Must stay easy to read for users.
+- `controllers/` — where controllers are written. Depends on `kmr_api` only,
+  so Cargo itself refuses `use kmr_core::…` there.
 
 `kmr_api` is a **convenience layer**, not a DTO layer. The value types
 `Q`/`Qd`/`Tau` are defined once, in `kmr_core`, and `kmr_api` re-exports them
@@ -102,29 +102,24 @@ user-facing method set stays a deliberate choice.
 ## Commands
 
 ```sh
-# from kmr_v3/
-cargo build
-cargo test                       # kmr_core unit tests
-cargo test -p kmr_core bus       # single test by name substring
-cargo clippy                     # clippy.toml bans heap types — see below
-cargo fmt --check
-
-# from kmr_api/
-cargo check --examples
-cargo test
-
 # from the git root
-./scripts/run-dev.sh             # rebuild core, swap kmr_api to the dev manifest
-./kmr_v3/scripts/test_kmr_core_isolation.sh   # users cannot import kmr_core
+cargo build --workspace
+cargo test --workspace --no-fail-fast
+cargo test -p kmr_core bus       # single test by name substring
+cargo clippy --workspace         # clippy.toml bans heap types — see below
+cargo fmt --all --check
+cargo run -p kmr_api --example complete_api_example
 ```
 
 Rust edition 2024.
 
 ## Hard constraints
 
-- **No heap allocation on the control path.** `kmr_v3/clippy.toml` sets
-  `disallowed-types` = `Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap`. Use
-  fixed arrays and `'static`s. `kmr_core/src/lib.rs` also
+- **No heap allocation, except in the API.** The root `clippy.toml` sets
+  `disallowed-types` = `Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap` for the
+  whole workspace. `kmr_api/clippy.toml` overrides it with an empty list: the
+  API is the one crate where heap types are allowed. Elsewhere use fixed
+  arrays and `'static`s. `kmr_core/src/lib.rs` also
   `#![forbid(clippy::disallowed_types)]` and `#![forbid(clippy::unwrap_used)]`.
 - **Everything is `pub(crate)` by default.** Only what `kmr_api` must name is
   `pub`. When adding a type, default to private and widen only if `kmr_api`

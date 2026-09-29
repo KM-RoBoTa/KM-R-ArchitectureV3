@@ -1,0 +1,3 @@
+# kmr_api is the user-facing convenience layer: heap types are allowed here.
+# This file overrides the workspace-wide ban in ../clippy.toml.
+disallowed-types = []

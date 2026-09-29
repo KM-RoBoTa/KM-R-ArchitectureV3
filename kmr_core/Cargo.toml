@@ -1,0 +1,17 @@
+[package]
+name = "kmr_core"
+description = "The kmr engine: state, schedules, control loop, timing and signals."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+rstest.workspace = true
+circular-buffer.workspace = true
+ctrlc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+derive_more.workspace = true
+frunk.workspace = true

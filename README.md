@@ -10,7 +10,7 @@ entities.
 
 > **Status: early development.** The public API is taking shape; the runtime
 > control loop is not implemented yet. Expect breaking changes. See the
-> [roadmap](kmr_v3/docs/ROADMAP.md).
+> [roadmap](docs/ROADMAP.md).
 
 ```rust
 use kmr_api::{EachTick, Init, Q, Robot, Sensors, State, Time};
@@ -50,19 +50,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Path                    | What                                                           |
 |-------------------------|----------------------------------------------------------------|
-| `kmr_api/`              | Public user API (`kmr_api` crate). Start here as a user.       |
-| `kmr_v3/src/kmr_core/`  | The engine (`kmr_core` crate).                                 |
-| `docs/ARCHITECTURE.md`  | Design principles and how the engine works.                    |
-| `kmr_v3/docs/`          | Roadmap and product brief.                                     |
-| `scripts/`              | Dev/prod manifest switching for `kmr_api`.                     |
+| `kmr_core/`             | The engine (`kmr_core` crate).                                 |
+| `kmr_api/`              | Public user API (`kmr_api` crate).                             |
+| `controllers/`          | Write your controllers here. Depends on `kmr_api` only.        |
+| `docs/`                 | Architecture, roadmap and product brief.                       |
 
 ## Building
 
-Requires a stable Rust toolchain with edition 2024.
+Requires a stable Rust toolchain with edition 2024. The repository is a single
+Cargo workspace; run everything from the root.
 
 ```sh
-cd kmr_v3 && cargo build && cargo test
-cd ../kmr_api && cargo run --example complete_api_example
+cargo build --workspace
+cargo test --workspace --no-fail-fast
+cargo run -p kmr_api --example complete_api_example
 ```
 
 ## Contributing

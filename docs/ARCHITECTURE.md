@@ -1,11 +1,14 @@
 # Architecture
 
-`kmr` is split in two crates:
+`kmr` is one Cargo workspace. Two crates make the framework, a third holds
+user code:
 
-- **`kmr_core`** (`kmr_v3/src/kmr_core`) — the engine. Owns state, schedules,
+- **`kmr_core`** (`kmr_core/`) — the engine. Owns state, schedules,
   the control loop, timing, the signal bus and (eventually) hardware I/O.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
   that re-exposes what users need and nothing else.
+- **`controllers`** (`controllers/`) — where controllers are written. It
+  depends on `kmr_api` only.
 
 The mental model is borrowed from [Bevy](https://bevyengine.org/)'s ECS —
 plain functions registered against schedules — but it deliberately stops short
@@ -137,7 +140,7 @@ loop { first → each_tick → state_transition → last }
 
 `last` is where elapsed time, overrun and accumulated overrun are computed and
 the loop sleeps until the next tick. Most of the runtime is still being
-implemented — see the [roadmap](../kmr_v3/docs/ROADMAP.md).
+implemented — see the [roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
 

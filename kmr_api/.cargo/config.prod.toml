@@ -1,7 +1,0 @@
-[build]
-rustflags = [
-    "--extern",
-    "kmr_core=/home/ovsiankina/Documents/km-robota/projects/Architecture/kmr_v3/kmr_v3/target/debug/libkmr_core.rlib",
-    "-L",
-    "dependency=/home/ovsiankina/Documents/km-robota/projects/Architecture/kmr_v3/kmr_v3/target/debug/deps",
-]
