@@ -13,7 +13,7 @@ use tracing::trace;
 use crate::controllers::Env;
 use crate::schedule::Drive;
 use crate::state::RobotState;
-use crate::{JOINTS, Robot, Sensors, shutdown};
+use crate::{Robot, Sensors, shutdown};
 
 /// The initialization phase, organized in 3 "sub-phases".
 ///
@@ -28,7 +28,7 @@ mod init_phase {
     use crate::clock::Time;
     use crate::controllers::Env;
     use crate::schedule::Drive;
-    use crate::{JOINTS, Robot, State};
+    use crate::{Robot, State};
     use crate::{RobotState, Sensors};
 
     /// Installs the tracing subscriber from the [`tracing`] crate.
@@ -63,7 +63,7 @@ mod init_phase {
     /// optional/mandatory systems such as [`Time`].
     ///
     /// Returns owned values for [`Time`], [`RobotState`] and [`Sensors`].
-    pub(super) fn pre_init() -> (Time, RobotState<JOINTS>, Sensors) {
+    pub(super) fn pre_init() -> (Time, RobotState, Sensors) {
         install_tracing();
 
         trace!("Executing pre-init phase ...");
@@ -75,7 +75,7 @@ mod init_phase {
         // sensor being part of Env is weird. Something went wrong in the
         // design
         let time = Time::default();
-        let state = RobotState::<JOINTS>::default();
+        let state = <RobotState>::default();
         let sensors = Sensors {};
 
         (time, state, sensors)

@@ -7,7 +7,7 @@ use super::joint_state::{Q, Qd, Tau};
 /// The current state of the robot.
 ///
 ///
-pub struct State<const N: usize> {
+pub(crate) struct State<const N: usize> {
     /// Array of all joint's position (as radiants).
     /// See [`super::joint_state::Q`]
     pub(crate) q: [Q; N],
@@ -29,7 +29,7 @@ impl State<JOINTS> {
     /// Returns a completely zeroed-out state.
     ///
     /// It is only meant to be used ONCE at the initialization phase.
-    pub fn zeroed() -> Self {
+    pub(crate) fn zeroed() -> Self {
         // WARN: default must depend on the robot model
         Self {
             q: [Q(0.0); JOINTS],
@@ -56,6 +56,6 @@ impl Default for State<JOINTS> {
 
 #[derive(Default, Debug, PartialEq)]
 /// READ ONLY
-pub struct History<const N: usize, const DEPTH: usize> {
+pub(crate) struct History<const N: usize, const DEPTH: usize> {
     pub(in crate::state) buf: FixedCircularBuffer<State<N>, DEPTH>,
 }

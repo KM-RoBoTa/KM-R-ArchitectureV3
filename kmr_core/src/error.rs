@@ -22,7 +22,7 @@
 //! In the case of an unrecoverable error,
 
 #[derive(Debug, thiserror::Error)]
-pub enum CoreError {
+pub(crate) enum CoreError {
     #[error(transparent)]
     State(#[from] StateError),
 }

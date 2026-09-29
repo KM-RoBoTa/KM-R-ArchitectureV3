@@ -5,5 +5,5 @@
 #[derive(Default)]
 pub(crate) struct RobotConfig {
     /// The time struct. See [`crate::clock::Time`].
-    pub time: crate::clock::Time,
+    pub(crate) time: crate::clock::Time,
 }

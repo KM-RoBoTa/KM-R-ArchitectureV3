@@ -162,7 +162,9 @@ The control path targets ~1 kHz and must be deterministic:
 - no heap allocation (`Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap` are banned
   by clippy in `kmr_core`);
 - no `unwrap()` in the engine;
-- fixed sizes known at compile time (joint count, history depth).
+- fixed sizes known at compile time (joint count, history depth); whether they are
+  constants or generic parameters is argued in
+  [decision 0001](decisions/0001-joint-count-and-history-depth.md).
 
 ## Not a full ECS — and why that stays open
 

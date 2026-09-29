@@ -13,7 +13,7 @@ pub use joint_state::{Q, Qd, Tau};
 
 // ── history: read-only recorded state + its ring buffer ────────────────────
 mod history;
-pub use history::{History, State};
+pub(crate) use history::{History, State};
 
 // ── desired: write-only staging area for the next setpoint ─────────────────
 mod desired;

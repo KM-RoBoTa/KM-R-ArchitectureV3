@@ -21,7 +21,7 @@ pub use kmr_core::state::{Q, Qd, Tau};
 /// downstream crates can name it as a bound but cannot add a field type.
 pub use kmr_core::state::StateField as Field;
 
-/// Vendor boundary over the core robot state.
+/// API boundary over the core robot state.
 ///
 /// The inner core handle is private. User code lives in a separate crate, so
 /// the `.0` field is unreachable — state is only touched through the getters
@@ -36,12 +36,12 @@ pub use kmr_core::state::StateField as Field;
 ///     let _core = robot.0;
 /// }
 /// ```
-pub struct State<'a>(&'a mut kmr_core::RobotState<N>);
+pub struct State<'a>(&'a mut kmr_core::RobotState);
 
 impl<'a> State<'a> {
     /// Wrap the borrowed core state the runtime lends for one tick. Called only
     /// at the api→core boundary (`ApiInline::call`); never by users.
-    pub(crate) fn new(inner: &'a mut kmr_core::RobotState<N>) -> Self {
+    pub(crate) fn new(inner: &'a mut kmr_core::RobotState) -> Self {
         State(inner)
     }
 

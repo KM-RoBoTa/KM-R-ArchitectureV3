@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::{
     RobotState,
     error::StateError,
-    state::{Desired, History, JOINTS, Q, Qd, State, StateField, Tau, sealed::Slot},
+    state::{Desired, HISTORY_DEPTH, History, JOINTS, Q, Qd, State, StateField, Tau, sealed::Slot},
 };
 use rstest::rstest;
 
@@ -11,7 +11,7 @@ use rstest::rstest;
 // build the test fixtures directly from zeroed fields instead. The plumbing under
 // test (slot routing, history reads, desired writes) is independent of the home
 // state, so a zeroed start is a valid, panic-free baseline.
-fn create_test_robot() -> RobotState<JOINTS> {
+fn create_test_robot() -> RobotState {
     RobotState {
         desired: zeroed_desired(),
         history: History::default(),
@@ -415,4 +415,49 @@ fn slot_mutation_persists_after_borrow_ends() {
     }
 
     assert_eq!(desired.q, [Q(0.0), Q(1.0), Q(2.0), Q(3.0)]);
+}
+
+// The two tests below guard the history depth against the joint count: the
+// depth used to be fed `JOINTS` and only worked because both consts were 4.
+
+#[test]
+fn default_history_keeps_history_depth_ticks() {
+    let mut robot = create_test_robot();
+
+    for tick in 0..HISTORY_DEPTH + 3 {
+        let mut state = zeroed_state();
+        state.q[0] = Q(tick as f32);
+        robot.history.buf.push_back(state);
+    }
+
+    assert_eq!(robot.history.buf.len(), HISTORY_DEPTH);
+    assert_eq!(
+        robot.prev_at::<Q>(HISTORY_DEPTH - 1, 0),
+        Ok(&Q(3.0)),
+        "the oldest retained tick is the 4th one pushed"
+    );
+    assert_eq!(
+        robot.prev::<Q>(HISTORY_DEPTH),
+        Err(StateError::HistoryValueOutOfRange {
+            provided_depth: HISTORY_DEPTH,
+            max_depth: HISTORY_DEPTH - 1,
+        }),
+    );
+}
+
+#[test]
+fn history_depth_is_independent_of_the_joint_count() {
+    const DEPTH: usize = JOINTS + 5;
+    let mut robot = RobotState::<DEPTH> {
+        desired: zeroed_desired(),
+        history: History::default(),
+    };
+
+    for _ in 0..DEPTH + 1 {
+        robot.history.buf.push_back(zeroed_state());
+    }
+
+    assert_eq!(robot.history.buf.len(), DEPTH);
+    assert_eq!(robot.set_at(Q(1.0), JOINTS - 1), Ok(()));
+    assert_eq!(robot.prev::<Q>(DEPTH - 1), Ok(&[Q(0.0); JOINTS]));
 }

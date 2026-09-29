@@ -210,11 +210,9 @@ impl fmt::Display for Signal {
 macro_rules! shutdown {
     ($reason:expr $(,)?) => {{
         #[cfg(debug_assertions)]
-        static META: $crate::SignalMeta =
-            $crate::SignalMeta::new($reason, file!(), line!());
+        static META: $crate::SignalMeta = $crate::SignalMeta::new($reason, file!(), line!());
         #[cfg(not(debug_assertions))]
-        static META: $crate::SignalMeta =
-            $crate::SignalMeta::new($reason, "<release>", 0);
+        static META: $crate::SignalMeta = $crate::SignalMeta::new($reason, "<release>", 0);
         $crate::Signal::_emit_shutdown(&META);
     }};
 }
@@ -227,11 +225,9 @@ macro_rules! shutdown {
 macro_rules! emergency_stop {
     ($reason:expr $(,)?) => {{
         #[cfg(debug_assertions)]
-        static META: $crate::SignalMeta =
-            $crate::SignalMeta::new($reason, file!(), line!());
+        static META: $crate::SignalMeta = $crate::SignalMeta::new($reason, file!(), line!());
         #[cfg(not(debug_assertions))]
-        static META: $crate::SignalMeta =
-            $crate::SignalMeta::new($reason, "<release>", 0);
+        static META: $crate::SignalMeta = $crate::SignalMeta::new($reason, "<release>", 0);
         $crate::Signal::_emit_emergency_stop(&META);
     }};
 }

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{Schedule, Sensors, State, Time, UserError, payload::Payload};
 use kmr_core::{
-    ControlFn, ControlFnWith, Inline, InlineWith, Insert, JOINTS, Scheduled, ThreadFn, Threaded,
+    ControlFn, ControlFnWith, Inline, InlineWith, Insert, Scheduled, ThreadFn, Threaded,
 };
 
 // The named api→core translation wrapper stored in place of the user's closure.
@@ -34,7 +34,7 @@ where
     fn call(
         &self,
         time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState<JOINTS>,
+        state: &mut kmr_core::RobotState,
         sensors: &kmr_core::Sensors,
     ) {
         (self.0)(
@@ -59,7 +59,7 @@ where
     fn call(
         &self,
         time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState<JOINTS>,
+        state: &mut kmr_core::RobotState,
         sensors: &kmr_core::Sensors,
         ctx: &mut T,
     ) {
@@ -88,19 +88,21 @@ where
 }
 
 // The "App" struct. The main user interface, and the whole public re-exposure
-// of the closed-source `kmr_core`.
+// of the `kmr_core` engine.
 //
-// `kmr_api::Robot<L>` is a thin newtype around `kmr_core::Robot<L>`: the core
-// owns the real HList (`HCons`/`HNil`) and grows it itself. This layer adds
-// ONLY the api-facing bounds the core deliberately stays ignorant of — the
-// `FakeSchedule` gate, the concrete `Time`/`State`/`Sensors` controller
+// `kmr_api::Robot<C>` is a thin newtype around `kmr_core::Robot<C>`: the core
+// owns the real HLists (`HCons`/`HNil`, one per schedule) and grows them
+// itself. This layer adds ONLY the api-facing bounds the core deliberately
+// stays ignorant of — the concrete `Time`/`State`/`Sensors` controller
 // signature, and `Send` for threaded controllers.
 //
-// `L` is the *type-state* of the controller set: it starts as `HNil` (empty)
-// and grows one `kmr_core` node per `add_controller*` call. Users cannot
-// construct those nodes (their fields are `pub(crate)` to the core) nor
-// implement `Runnable` (sealed in the core), so the IP stays behind the
-// compiled `kmr_core` rlib while this crate stays public.
+// `C` is the *type-state* of the controller set: it starts as `Scheduled`
+// (every schedule empty) and one schedule grows by one `kmr_core` node per
+// `add_controller*` call. Users cannot construct those nodes (their fields are
+// `pub(crate)` to the core) nor name the `Env` a schedule walk needs, so they
+// can neither forge a node nor drive a schedule themselves: the engine's
+// invariants cannot be bypassed and its internals can change without breaking
+// this crate's API.
 pub struct Robot<C = Scheduled> {
     inner: kmr_core::Robot<C>,
 }
@@ -120,7 +122,7 @@ impl Default for Robot<Scheduled> {
     }
 }
 
-// Settings. These keep the SAME type-state `L`: tuning the config never adds or
+// Settings. These keep the SAME type-state `C`: tuning the config never adds or
 // removes a controller, so `Self` is returned unchanged.
 impl<C> Robot<C> {
     pub fn set_dt(self, dt: Duration) -> Self {
@@ -134,15 +136,15 @@ impl<C> Robot<C> {
     // pub fn history_depth(self, depth: usize) {}
 
     // FakeModel. Api-only: registering a payload does not add a controller, so
-    // the type-state `L` is unchanged.
+    // the type-state `C` is unchanged.
     pub fn register_payload(self, model: Payload) -> Self {
         let _ = model;
         todo!()
     }
 
     // Controllers. Each of these GROWS the type-state: the returned `Robot`
-    // carries a new `HCons<Node, L>`, so the builder must stay one chained
-    // expression. That is the price of the zero-cost, cap-free design.
+    // carries `C::Output`, where the chosen schedule holds one more node, so
+    // the builder must stay one chained expression. That is the price of the zero-cost, cap-free design.
     pub fn add_controller<S: Schedule, F>(self, schedule: S, f: F) -> Robot<C::Output>
     where
         C: Insert<S, Inline<ApiInline<F>>>,

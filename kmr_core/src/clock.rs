@@ -175,13 +175,13 @@ impl Time {
     ///
     /// Overrun is not cumulative; it only reflects the current tick. For the
     /// running total, use `accumulated_overrun` instead.
-    pub fn overrun(&self) -> Option<&Duration> {
+    pub(crate) fn overrun(&self) -> Option<&Duration> {
         self.overrun.as_ref()
     }
 
     /// Returns the running total of overrun across ticks, if any tick has
     /// overrun.
-    pub fn accumulated_overrun(&self) -> Option<&Duration> {
+    pub(crate) fn accumulated_overrun(&self) -> Option<&Duration> {
         self.accumulated_overrun.as_ref()
     }
 }
