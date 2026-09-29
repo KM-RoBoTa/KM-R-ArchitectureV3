@@ -185,13 +185,33 @@ every tick. `Phase` is introspection only, never touched for dispatch.
 names (`Update`, `Startup`, `RunFixedMainLoop`, …). The schedule is the source
 of truth.
 
-### Runtime (`runtime.rs`) — largely TODO
+### Runtime (`runtime.rs`)
 
-`runtime()` runs `pre_init → init → post_init`, then loops
-`first → each_tick → state_transition → last`. Most bodies are stubs.
-`pre_init` already installs the ctrl-c handler that fires `shutdown!`. Open
-work (ROADMAP): wire `config` + the controller HList through the runtime by
-walking the list via a `Tick`-style impl.
+`runtime()` resets the signal bus, installs the ctrl-c handler that fires
+`shutdown!` (after the reset, so a Ctrl-C is never erased), then runs
+`pre_init → init → post_init` and loops `first → each_tick → last` until a
+signal is raised. It returns the `Signal` that ended the run; `Robot::run()`
+returns `Ok(())` for a shutdown and for an emergency stop alike.
+
+- **Shutdown is graceful**: the tick that saw it is completed (`Last` bucket
+  and clock bookkeeping included), then the loop exits without sleeping.
+- **Emergency stop is immediate**: the loop exits at the first bus check after
+  it was raised. The bus is checked between the phases, startup phases
+  included, so the granularity is one phase bucket.
+- **One clock**: `robot.config.time`. Each phase builds its own short-lived
+  `Env`, so the engine can mutate the clock between the controller walks
+  while controllers only ever get `&Time`. Do not hold an `Env` across phases.
+- **`Host` seam**: the loop takes the instant, the sleep and the bus through
+  the private `Host` trait (`RealHost` in production, monomorphized, no
+  `dyn`). Loop tests use a scripted host: they never sleep and never touch the
+  global bus. Tests on the real bus live in `kmr_core/tests/run_signals.rs`
+  (own process) and take a file-local lock.
+
+The hardware layer does not exist yet: the init bodies, the
+`state_transition` step, the final write of a shutdown and the torque cut of
+an emergency stop are TODOs. `Threaded` controllers are stored but never
+spawned (hand-off open in the ROADMAP). `Robot::run()` does not check for an
+empty controller list yet, whatever the section above says.
 
 ### Signal bus (`signal.rs`) — the only channel from controllers back to the loop
 
@@ -203,7 +223,9 @@ expansion mints a per-call-site `static SignalMeta` (`file!`/`line!` folded in
 only under `debug_assertions`), so nothing allocates and the path is
 async-signal-safe. `compare_exchange` is monotonic: estop never downgrades to
 shutdown, first winner keeps its meta. Runtime calls `Signal::reset()` once at
-entry and `Signal::drain()` after each tick (happy path = one atomic load).
+entry and `Signal::drain()` four times per tick (happy path = one atomic load
+each). `drain()` loads and never clears: the bus stays raised until the next
+`reset()`.
 
 ### State (`state/`) — private, sealed, typed
 
@@ -225,8 +247,16 @@ field type means adding both a `Slot` impl and a `StateField` impl there.
 ### Time (`clock.rs`)
 
 `Time` is internal state; all methods `pub(crate)`. The only user knob is
-`Robot::set_dt(Duration)`, which forwards to `Time::set_delta`. The `last` phase is meant
-to compute elapsed/overrun/accumulated-overrun and sleep.
+`Robot::set_dt(Duration)`, which forwards to `Time::set_delta`. A `dt` of zero
+(or never set) falls back to 1 ms with a warning.
+
+The clock never reads the system time: the runtime injects every instant
+(`arm`, `begin_tick`, `end_tick`), which keeps the arithmetic testable without
+sleeping. Deadlines are **absolute**, every one of them is
+`origin + k * delta`, so the schedule does not drift. Overrun is the lateness
+against the deadline. After an overrun the grid is kept: missed slots are
+skipped, the next tick starts at once with what is left of its slot. No
+catch-up burst, no re-anchoring.
 
 ## Style
 
