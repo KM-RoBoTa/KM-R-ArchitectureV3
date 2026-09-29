@@ -170,10 +170,18 @@ AI tools are tolerated, not encouraged. When you use them:
 
 ### Agentic work
 
-When a maintainer explicitly allows an agent to work on its own, that work
-lives on an `agent/<topic>` branch and reaches a human branch only through a
-reviewed pull request that lists every decision the agent made. The rules are
-in [`AGENTS.md` § Agentic work](AGENTS.md#agentic-work).
+Agentic work is an agent writing and committing on its own. It is an
+exception that only a maintainer with write access can authorize, for a
+stated scope and one session, and the maintainer confirms it on the pull
+request from their own account. Outside contributors do not submit agentic
+work.
+
+The authorization lifts one rule, that the human writes the code. Review,
+QA, the design defence and the rule that you can explain every line all
+stay. The work lives on an `agent/<topic>` branch, carries the `agentic`
+label, and reaches a human branch only through a pull request that a human
+reviews and merges. The full rules are in
+[`AGENTS.md` § Agentic work](AGENTS.md#agentic-work).
 
 ## If you are an AI
 
