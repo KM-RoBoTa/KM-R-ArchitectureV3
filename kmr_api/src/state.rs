@@ -21,7 +21,7 @@ pub use kmr_core::state::{Q, Qd, Tau};
 /// downstream crates can name it as a bound but cannot add a field type.
 pub use kmr_core::state::StateField as Field;
 
-/// Vendor boundary over the core robot state.
+/// API boundary over the core robot state.
 ///
 /// The inner core handle is private. User code lives in a separate crate, so
 /// the `.0` field is unreachable — state is only touched through the getters

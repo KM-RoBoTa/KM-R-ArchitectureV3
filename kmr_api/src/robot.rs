@@ -88,7 +88,7 @@ where
 }
 
 // The "App" struct. The main user interface, and the whole public re-exposure
-// of the closed-source `kmr_core`.
+// of the `kmr_core` engine.
 //
 // `kmr_api::Robot<L>` is a thin newtype around `kmr_core::Robot<L>`: the core
 // owns the real HList (`HCons`/`HNil`) and grows it itself. This layer adds
@@ -99,8 +99,8 @@ where
 // `L` is the *type-state* of the controller set: it starts as `HNil` (empty)
 // and grows one `kmr_core` node per `add_controller*` call. Users cannot
 // construct those nodes (their fields are `pub(crate)` to the core) nor
-// implement `Runnable` (sealed in the core), so the IP stays behind the
-// compiled `kmr_core` rlib while this crate stays public.
+// implement `Runnable` (sealed in the core), so the engine's invariants cannot
+// be bypassed and its internals can change without breaking this crate's API.
 pub struct Robot<C = Scheduled> {
     inner: kmr_core::Robot<C>,
 }

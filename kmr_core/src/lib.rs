@@ -1,6 +1,6 @@
 //! The core of the Architecture.
 //!
-//! This crate is a closed source library meant to be used along side `kmr_api`.
+//! This crate is the engine, meant to be used along side `kmr_api`.
 //! The core is the main hardware abstraction machinery.
 //! Its primary goal is to abstract away the control loop to allow the users
 //! to focus on what matters: the math control.
@@ -30,9 +30,11 @@
 //! It is not a general purpose OS. The usage of this library on robots other
 //! than KM-RoBoTa's designs is not supported by default.
 //! Using a different robotics model other than the furnished
-//! ones is prohibited.
+//! ones is possible, but untested and not supported.
 //!
-//! The core itself is NOT the API but the closed source machinery alone.
+//! The core itself is NOT the API but the internal machinery alone. Its
+//! surface may change without notice: the stable, user-facing surface is
+//! `kmr_api`.
 //!
 //! It is not a microcontroller software architecture. While limited no_std can
 //! be used in the future, the overall architectural design is not meant to be
