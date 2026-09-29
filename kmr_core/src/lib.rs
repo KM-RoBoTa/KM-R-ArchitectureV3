@@ -33,8 +33,8 @@
 //! ones is possible, but untested and not supported.
 //!
 //! The core itself is NOT the API but the internal machinery alone. Its
-//! surface may change without notice: the stable, user-facing surface is
-//! `kmr_api`.
+//! surface follows the needs of `kmr_api` and may change without notice: users
+//! are expected to go through `kmr_api`.
 //!
 //! It is not a microcontroller software architecture. While limited no_std can
 //! be used in the future, the overall architectural design is not meant to be

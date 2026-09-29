@@ -1,6 +1,10 @@
 use super::desired::Desired;
 use super::field::{StateField, sealed};
 use super::history::History;
+#[cfg(feature = "test-util")]
+use super::history::State;
+#[cfg(feature = "test-util")]
+use super::joint_state::{Q, Qd, Tau};
 use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
 
@@ -112,4 +116,24 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     }
 
     // ── Public state setters ────────────────────────────────────────────
+}
+
+// Test hooks, behind the `test-util` feature. `kmr_api` builds its group logic
+// on top of this type but lives in another crate, so `#[cfg(test)]` here would
+// not reach its tests and the private fields are out of its sight. A feature
+// keeps both hooks out of every normal build: recording a sample is the
+// runtime's job, and the desired buffer stays write-only for users.
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+impl<const DEPTH: usize> RobotState<DEPTH> {
+    /// Push one sensed sample as the newest history entry.
+    pub fn record_sample(&mut self, q: [Q; JOINTS], qd: [Qd; JOINTS], tau: [Tau; JOINTS]) {
+        self.history.buf.push_back(State { q, qd, tau });
+    }
+
+    /// Copy of the desired buffer selected by `T`.
+    // `&mut self` because the sealed `Slot::slot` only hands out `&mut`.
+    pub fn staged<T: StateField>(&mut self) -> [T; JOINTS] {
+        *<T as sealed::Slot>::slot(&mut self.desired)
+    }
 }

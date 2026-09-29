@@ -15,3 +15,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 derive_more.workspace = true
 frunk.workspace = true
+
+[features]
+# Test hooks for the crates built on top of the core: record a sensed sample
+# and read the desired buffer back. Off by default, and only ever enabled from
+# a `[dev-dependencies]` entry, so no release build carries a way to forge a
+# sample or to read the write-only staging area.
+test-util = []

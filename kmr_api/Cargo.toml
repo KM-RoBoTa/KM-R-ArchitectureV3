@@ -11,6 +11,9 @@ kmr_core.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Same crate as above, plus the test hooks: the group tests need a populated
+# history and a readable desired buffer, which the normal surface never gives.
+kmr_core = { workspace = true, features = ["test-util"] }
 color-eyre.workspace = true
 
 [[example]]
