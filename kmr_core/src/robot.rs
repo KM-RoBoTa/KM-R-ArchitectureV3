@@ -209,11 +209,19 @@ impl<CS> Robot<CS> {
     /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
     /// so users never trip it. `kmr_api` forwards this same one bound from its
     /// own `run`.
+    ///
+    /// Returns only once a signal ended the control loop, and returns `Ok`
+    /// for a shutdown as well as for an emergency stop: the two are told
+    /// apart by the log (`info` against `error`), not by the return value.
     pub fn run(self) -> Result<(), ApiError>
     where
         CS: Drive,
     {
-        runtime::runtime(self);
+        // An `Err` for the emergency stop needs a new `ApiError` variant,
+        // and `kmr_api` matches on that enum exhaustively: a change of the
+        // public surface of both crates. The runtime already hands the signal
+        // back, so that change is one `match` here.
+        let _stop = runtime::runtime(self);
         Ok(())
     }
 }
