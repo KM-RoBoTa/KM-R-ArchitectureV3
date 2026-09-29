@@ -46,6 +46,29 @@ to:
    are authored by the human running the tool, who is accountable for them.
    CI rejects PRs that break this rule.
 
+## Agentic work
+
+Hand engineering is the default. A maintainer may explicitly lift that for a
+session and let an agent write and commit on its own. That work is kept
+visibly apart from human-controlled branches:
+
+- **Dedicated branch.** Agentic work happens only on an `agent/<topic>`
+  branch, created from the human branch it targets. This prefix is a
+  deliberate exception to Conventional Branch. Never commit agentic work
+  directly on a human-controlled branch.
+- **PR into the human branch.** Open a pull request from `agent/<topic>` into
+  the branch it was created from — never into `main`. A human reviews and
+  merges it.
+- **Do not block yourself.** When working unattended, do not stop on an open
+  question: pick the most sensible option, prefer the reversible one, and keep
+  going.
+- **Report every decision.** The PR description carries a "Decisions" section
+  listing each choice made without a human, the alternative, and why. It also
+  lists what was deliberately left undone.
+- **Say that it is agentic.** The PR description states that the work was
+  produced by an agent and who authorized it. Rule (b) still applies: no
+  co-author trailer, no "generated with" footer.
+
 ## Commits, branches & pull requests
 
 - **Commits** follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/),
@@ -60,6 +83,8 @@ to:
 - Keep changes scoped to what was requested; ask before large or destructive
   edits.
 - No silent guessing: if a requirement is ambiguous, ask. State assumptions.
+  When working unattended, see [Agentic work](#agentic-work): decide, and
+  report the decision.
 - Match the existing style (see [Style](#style)).
 - AI-assisted code gets the same review as any other; the human must be able to
   explain every submitted line.

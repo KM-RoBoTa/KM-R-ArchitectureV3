@@ -132,6 +132,13 @@ AI tools are tolerated, not encouraged. When you use them:
 6. **No secrets.** Do not paste credentials, private keys or non-public
    hardware/customer data into an AI tool.
 
+### Agentic work
+
+When a maintainer explicitly allows an agent to work on its own, that work
+lives on an `agent/<topic>` branch and reaches a human branch only through a
+reviewed pull request that lists every decision the agent made. The rules are
+in [`AGENTS.md` § Agentic work](AGENTS.md#agentic-work).
+
 ## If you are an AI
 
 If you are an AI assistant helping produce a contribution, honour the
