@@ -1,0 +1,16 @@
+---
+description: Common AI agent instructions for this repository
+alwaysApply: true
+---
+
+The shared AI agent instructions for this repository live in `AGENTS.md` at the
+repository root. Read and follow them.
+
+Key rules:
+- This project is hand-engineered. Help the human write the code; do not
+  generate large changes unless explicitly asked.
+- If you create a commit, you are **disallowed** to push to `main` without a
+  Pull Request, or to cite yourself as a co-author (no `Co-Authored-By:`
+  trailers or "Generated with" footers naming the AI agent).
+
+See `AGENTS.md` and `CONTRIBUTING.md` for the full instructions.

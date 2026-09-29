@@ -28,3 +28,17 @@ a runtime entity registry — keep the 1kHz hot path static.
     know since the core owns the write (IoC). For now default to the `&mut T`
     passthrough: the threaded controller never writes state nor sends a command
     internally in the core — the user decides who consumes its output.
+
+## Open-source transition (in order)
+
+- [x] Add a temporary MIT license (not GPL) while the final license is decided
+- [ ] Decide the final license
+- [ ] Refactor the API boundary: drop the DTO layer (duplicated `Q`/`Qd`/`Tau`,
+    `FieldConv`). `kmr_core` exposes only what is really needed and may use
+    advanced Rust; `kmr_api` keeps the thin wrappers and the convenience layer,
+    which must stay easy to read for users.
+- [ ] Only after the boundary refactor: go back to a single cargo workspace
+- [ ] Clippy heap disallowance in all modules EXCEPT the API
+- [ ] Later: redesign the API so controllers can be written in other languages
+    (Python, Lua, C/C++, …), with a focus on Python and C++. Rust stays the
+    main language, always.
