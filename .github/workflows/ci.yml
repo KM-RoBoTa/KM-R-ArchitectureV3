@@ -22,5 +22,8 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - run: cargo build --workspace --all-targets
       - run: cargo clippy --workspace
+      # --all-targets also lints tests and examples.
+      - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace --no-fail-fast

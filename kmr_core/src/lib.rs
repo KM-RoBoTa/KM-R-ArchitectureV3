@@ -41,7 +41,9 @@
 //! no_std.
 
 #![forbid(clippy::disallowed_types)]
-#![forbid(clippy::unwrap_used)]
+// Test code may unwrap: a panic there IS the failure report. Everywhere else
+// an unwrap is a crash on the control path, so it stays forbidden.
+#![cfg_attr(not(test), forbid(clippy::unwrap_used))]
 #![allow(dead_code, unused_imports)] // note: only for dev
 #![warn(missing_docs)]
 // #![warn(clippy::missing_docs_in_private_items)]

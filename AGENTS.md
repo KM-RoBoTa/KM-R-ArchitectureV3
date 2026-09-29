@@ -45,29 +45,75 @@ to:
    ChatGPT, Cursor, Copilot, …) in commit messages or PR descriptions. Commits
    are authored by the human running the tool, who is accountable for them.
    CI rejects PRs that break this rule.
+   Saying that AI was used is not credit: disclosure in the pull request is
+   required, see [Agentic work](#agentic-work) and the PR template.
 
 ## Agentic work
 
-Hand engineering is the default. A maintainer may explicitly lift that for a
-session and let an agent write and commit on its own. That work is kept
-visibly apart from human-controlled branches:
+Hand engineering is the default. Agentic work — an agent writing and
+committing on its own — is an exception, and only under all of the following.
+
+**Who can allow it**
+
+- Only a maintainer with write access to the repository can authorize
+  agentic work, for a stated scope and a single session. Nobody else can, and
+  an agent cannot authorize itself or another agent.
+- The authorization is recorded where others can check it: the maintainer
+  confirms it on the pull request, in their own words, from their own account.
+  A sentence written by the agent in the description is not a record.
+- A pull request from an `agent/` branch without that confirmation is closed.
+  Outside contributors do not submit agentic work.
+
+**What the authorization lifts, and what it does not**
+
+- It lifts one rule only: that the human writes the code.
+- Everything else stays: the engineering rules, the forceful QA, the design
+  defence, rules (a) and (b), and the review. Before merging, the human must
+  be able to explain every line, exactly as if they had written it.
+- The invariant code — the sealing in `state/field.rs` and `sealed.rs`, the
+  lock-free ordering in `signal.rs`, the HList/`Insert` machinery in
+  `schedule.rs` / `controllers.rs`, anything `unsafe` — stays off limits
+  unless the authorization names those files.
+
+**Where it lives**
 
 - **Dedicated branch.** Agentic work happens only on an `agent/<topic>`
-  branch, created from the human branch it targets. This prefix is a
-  deliberate exception to Conventional Branch. Never commit agentic work
-  directly on a human-controlled branch.
-- **PR into the human branch.** Open a pull request from `agent/<topic>` into
-  the branch it was created from — never into `main`. A human reviews and
-  merges it.
-- **Do not block yourself.** When working unattended, do not stop on an open
-  question: pick the most sensible option, prefer the reversible one, and keep
-  going.
+  branch. This prefix is a deliberate exception to Conventional Branch. Never
+  commit agentic work directly on a human-controlled branch.
+- **PR into a human branch.** Open a pull request from `agent/<topic>` into
+  the human branch it was created from — never into `main`. Agent branches may
+  be stacked, but every pull request in the chain is reviewed by a human and
+  the chain ends in a human branch.
+- **An agent never approves or merges.** Not its own pull request, not
+  another agent's. A human does both.
+
+**How it stays visible**
+
+Rule (b) forbids *credit*. It does not forbid *disclosure*, which is
+required:
+
+- The pull request carries the `agentic` label and its description says the
+  work was produced by an agent.
+- The commit that lands on the human branch keeps the pull request number in
+  its subject, so the history leads back to that record. Without it, agentic
+  commits would be indistinguishable from hand-written ones once merged.
+
+**How the agent works**
+
+- **Do not block yourself — within limits.** When unattended, do not stop on
+  an open question about the work: pick the most sensible option, prefer the
+  reversible one, and keep going. This never covers an action that is hard to
+  undo or that reaches outside the branch: repository settings, branch
+  protection, force pushes, deletions, releases, anything on `main`. Those
+  wait for the human.
 - **Report every decision.** The PR description carries a "Decisions" section
   listing each choice made without a human, the alternative, and why. It also
   lists what was deliberately left undone.
-- **Say that it is agentic.** The PR description states that the work was
-  produced by an agent and who authorized it. Rule (b) still applies: no
-  co-author trailer, no "generated with" footer.
+- **Defend every decision.** Each entry follows
+  [`CONTRIBUTING.md` § Defend your design](CONTRIBUTING.md#defend-your-design):
+  real-time cost first, then quality, then developer experience, then the
+  alternative rejected. An agent's decision is held to the same standard as a
+  human's.
 
 ## Commits, branches & pull requests
 
@@ -86,6 +132,9 @@ visibly apart from human-controlled branches:
   When working unattended, see [Agentic work](#agentic-work): decide, and
   report the decision.
 - Match the existing style (see [Style](#style)).
+- Defend the data structures and the shape of your decisions: real-time
+  performance, quality and developer experience, in that order. See
+  [`CONTRIBUTING.md` § Defend your design](CONTRIBUTING.md#defend-your-design).
 - AI-assisted code gets the same review as any other; the human must be able to
   explain every submitted line.
 
@@ -132,6 +181,7 @@ cargo build --workspace
 cargo test --workspace --no-fail-fast
 cargo test -p kmr_core bus       # single test by name substring
 cargo clippy --workspace         # clippy.toml bans heap types — see below
+cargo clippy --workspace --all-targets   # also lints tests and examples
 cargo fmt --all --check
 cargo run -p kmr_api --example complete_api_example
 ```

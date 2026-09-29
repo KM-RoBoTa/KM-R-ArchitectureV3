@@ -17,6 +17,9 @@ use crate::error::StateError;
 /// (that one is fixed by [`JOINTS`]). It defaults to [`HISTORY_DEPTH`] so that
 /// signatures write a bare `RobotState`: with nothing to pass, the joint count
 /// cannot be passed as the depth by mistake.
+///
+/// Transitional: `docs/decisions/0001-joint-count-and-history-depth.md`
+/// proposes to drop the parameter and keep both sizes as constants.
 pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
     pub(in crate::state) desired: Desired,
     pub(in crate::state) history: History<JOINTS, DEPTH>,
