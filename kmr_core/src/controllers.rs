@@ -22,8 +22,9 @@ use crate::{Sensors, clock::Time, state::RobotState};
 /// Bundled into one type so a new field never ripples through every controller
 /// signature or [`RunPhase`] impl.
 // `pub` only so the `pub Drive` trait can name it in its method signatures; the
-// fields stay `pub(crate)` and it has no public constructor, so downstream code
-// can neither read nor build one. `#[doc(hidden)]` keeps it out of the docs.
+// fields and the constructor stay `pub(crate)`, and the type is not re-exported
+// at the crate root, so downstream code can neither name, read nor build one.
+// `#[doc(hidden)]` keeps it out of the docs.
 #[doc(hidden)]
 pub struct Env<'a> {
     pub(crate) time: &'a Time,
@@ -32,7 +33,7 @@ pub struct Env<'a> {
 }
 
 impl<'a> Env<'a> {
-    pub fn new(time: &'a Time, state: &'a mut RobotState, sensors: &'a Sensors) -> Self {
+    pub(crate) fn new(time: &'a Time, state: &'a mut RobotState, sensors: &'a Sensors) -> Self {
         Self {
             time,
             state,
@@ -91,7 +92,7 @@ impl<T, F: Fn(&Time, &mut T)> ThreadFn<T> for F {
 ///
 /// It's only purpose is to allow the generilization of the controller
 /// insertion logic. See [`crate::robot::Robot::insert_controller`]
-pub trait Controller {}
+pub(crate) trait Controller {}
 /// A controller that runs inline on the main tick loop.
 pub struct Inline<F>(pub(crate) F);
 /// A main-loop controller that also owns persistent context `T` across ticks.

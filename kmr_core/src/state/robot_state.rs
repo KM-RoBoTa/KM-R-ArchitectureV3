@@ -48,7 +48,7 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     // ── State getters ───────────────────────────────────────────────────
     /// Returns the array [`StateField`] defined as the home position for the
     /// current robot model.
-    pub fn home_state<T: StateField>(&self) -> [T; JOINTS] {
+    pub(crate) fn home_state<T: StateField>(&self) -> [T; JOINTS] {
         todo!("return home state for specified state field")
     }
 

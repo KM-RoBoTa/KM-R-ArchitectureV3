@@ -210,8 +210,8 @@ entry and `Signal::drain()` after each tick (happy path = one atomic load).
 `RobotState<DEPTH>` holds a write-only `Desired` staging area + a read-only
 `History` ring buffer (`circular-buffer`). `DEPTH` defaults to `HISTORY_DEPTH`:
 write a bare `RobotState`, never `RobotState<JOINTS>`. `JOINTS`/`HISTORY_DEPTH`
-are fixed consts, defined once (`state.rs`) and re-exported at the crate root
-— a build-time-from-model value is a TODO. Users never touch raw fields
+are fixed consts, defined once (`state.rs`) and public under one path,
+`kmr_core::state` — a build-time-from-model value is a TODO. Users never touch raw fields
 (`robot.desired.q[0] = ..` is a compile error). Access is setters/getters
 only, all speaking typed newtypes `Q`/`Qd`/`Tau` — never bare `f32`.
 

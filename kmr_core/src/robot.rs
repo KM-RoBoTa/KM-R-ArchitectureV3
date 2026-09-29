@@ -19,14 +19,13 @@
 //!     // Settings
 //!     .set_dt(Duration::from_millis(1))
 //!     // Controllers
-//!     .add_controller(EachTick, foo)
+//!     .add_control_fn(EachTick, foo)
 //!     .run()
 //!     .expect("the robot has a controller");
 //! ```
 
 use std::time::Duration;
 
-pub use frunk::hlist::HList;
 pub use frunk::{HCons, HNil};
 
 use crate::clock::Time;
@@ -67,7 +66,7 @@ impl Robot<Scheduled> {
     /// }
     ///
     /// Robot::new()
-    ///     .add_controller(EachTick, hello_world)
+    ///     .add_control_fn(EachTick, hello_world)
     ///     .run()
     ///     .expect("the robot has a controller");
     /// ```
@@ -109,11 +108,13 @@ impl<CS> Robot<CS> {
 
     /// Adds a new plain user defined controller.
     ///
-    /// Direct-core callers pass a bare closure (inference fills the argument
+    /// In-crate callers pass a bare closure (inference fills the argument
     /// types from the `Fn` bound). `kmr_api` does NOT use this entry — it goes
     /// through [`Robot::add_control_fn`] with its own [`ControlFn`] wrapper so
-    /// it can hide the core argument types behind api newtypes.
-    pub fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<CS::Output>
+    /// it can hide the core argument types behind api newtypes. Hence
+    /// `pub(crate)`: outside the crate, `add_control_fn` is the single entry
+    /// (it also takes a plain `fn`, through the blanket [`ControlFn`] impl).
+    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<CS::Output>
     where
         CS: Insert<S, Inline<F>>,
         F: Fn(&Time, &mut RobotState, &Sensors),
@@ -139,8 +140,8 @@ impl<CS> Robot<CS> {
     }
 
     /// Adds a new plain user defined controller with a persistant context
-    /// managed by the user.
-    pub fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
+    /// managed by the user. `pub(crate)`, see [`Robot::add_controller`].
+    pub(crate) fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
     where
         CS: Insert<S, InlineWith<F, T>>,
         F: Fn(&Time, &mut RobotState, &Sensors, &mut T),
@@ -170,7 +171,13 @@ impl<CS> Robot<CS> {
     ///
     /// A threaded controller is not allowed to write the
     /// [`crate::state::RobotState`] — it gets only its context `T` and the clock.
-    pub fn add_controller_as_thread<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
+    /// `pub(crate)`, see [`Robot::add_controller`].
+    pub(crate) fn add_controller_as_thread<S, T, F>(
+        self,
+        schedule: S,
+        ctx: T,
+        f: F,
+    ) -> Robot<CS::Output>
     where
         CS: Insert<S, Threaded<F, T>>,
         T: Sync + Send,
