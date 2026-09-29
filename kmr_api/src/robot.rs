@@ -247,10 +247,7 @@ mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
 
-    // The signal bus is process-global and the tests of this binary run on
-    // parallel threads: every test that calls `run()` or raises a signal
-    // takes this lock first. `into_inner` on a poisoned lock, so that one
-    // failed test does not fail the others in cascade.
+    // The signal bus is process-global: tests that run or raise take this first.
     static BUS: Mutex<()> = Mutex::new(());
 
     // A controller written ENTIRELY in api types — no `kmr_core` anywhere in
@@ -300,8 +297,6 @@ mod tests {
                 |c: &mut Arc<Mutex<u32>>, _t: &Time, _r: &mut State, _s: &Sensors| {
                     if let Ok(mut n) = c.lock() {
                         *n += 1;
-                        // A loop that ignores the shutdown fails here instead
-                        // of hanging the test.
                         assert!(*n < 500, "the loop ignored the shutdown");
                     }
                     crate::shutdown!("test: one tick is enough");
@@ -312,9 +307,7 @@ mod tests {
             .run()
             .expect("run should drive the schedule and return Ok");
 
-        // `run()` only returns on a signal. The shutdown is graceful: the
-        // tick that raised it is completed and no other one starts, so the
-        // `_with` controller must have fired exactly once.
+        // Graceful shutdown: the raising tick completes, no other starts.
         assert_eq!(*ticks.lock().expect("counter lock"), 1);
     }
 }

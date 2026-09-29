@@ -1,8 +1,7 @@
 //! A process that installed its own Ctrl-C handler before `run()`.
 //!
-//! The handler of a process can be installed once and the tracing subscriber
-//! too: this file is its own test binary, hence its own process, and holds
-//! ONE test. A second one would find both already in place.
+//! Own test binary with one test: the handler and the subscriber install once
+//! per process.
 
 use std::fmt::{self, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -62,8 +61,6 @@ impl Subscriber for Warnings {
 fn a_run_that_cannot_wire_ctrl_c_says_so() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
 
-    // Ends the run by itself: with a handler that raises nothing, nothing
-    // else would. The tick budget keeps a loop that ignores it from hanging.
     fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
         let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
         assert!(n < 500, "the loop ignored the signal");
@@ -82,7 +79,6 @@ fn a_run_that_cannot_wire_ctrl_c_says_so() {
             .run();
 
         assert_eq!(result, Ok(()));
-        // Every run: the handler in place is still not the one of the engine.
         assert_eq!(CTRL_C_WARNINGS.load(Ordering::Relaxed), run);
     }
 }

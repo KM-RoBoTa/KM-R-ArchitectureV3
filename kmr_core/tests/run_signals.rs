@@ -1,18 +1,7 @@
-//! End-to-end runs on the REAL signal bus, real clock and real sleep, through
-//! the public surface only.
+//! End-to-end runs on the real bus, clock and sleep, through the public API.
 //!
-//! The bus is process-global. Two things keep these tests from disturbing the
-//! others, and each other:
-//!
-//! - this file is its own test binary, hence its own process: nothing here
-//!   can meet the unit tests of the crate, `bus_semantics` included;
-//! - inside the binary the tests run on parallel threads, so each of them
-//!   takes [`BUS`] before it raises a signal or calls `run()`.
-//!
-//! None of them asserts an UPPER bound on a measured duration, which would
-//! depend on the load of the machine. None of them can hang: every controller
-//! that stops the loop raises on `>=` and asserts a tick budget, so a loop
-//! that would ignore the signal fails within a fraction of a second.
+//! Own test binary, so the global bus is not shared with the unit tests.
+//! Inside it, every test takes [`BUS`] first.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -22,8 +11,7 @@ use kmr_core::{EachTick, Last, Robot, RobotState, Sensors, Time, emergency_stop,
 
 static BUS: Mutex<()> = Mutex::new(());
 
-/// A failed test poisons the lock. The guarded value is `()`, there is nothing
-/// to find corrupted, so the next test goes on instead of failing in cascade.
+/// Ignores poisoning: one failed test must not fail the others.
 fn bus() -> MutexGuard<'static, ()> {
     BUS.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -61,7 +49,6 @@ fn shutdown_ends_the_run_after_the_last_bucket() {
 
     assert_eq!(result, Ok(()));
     assert_eq!(TICKS.load(Ordering::Relaxed), STOP_AT);
-    // Graceful: the tick that raised the shutdown ran its `Last` bucket.
     assert_eq!(LASTS.load(Ordering::Relaxed), STOP_AT);
 }
 
@@ -88,7 +75,6 @@ fn emergency_stop_ends_the_run_before_the_last_bucket() {
 
     assert_eq!(result, Ok(()));
     assert_eq!(TICKS.load(Ordering::Relaxed), STOP_AT);
-    // Immediate: the tick that raised the stop never reached `Last`.
     assert_eq!(LASTS.load(Ordering::Relaxed), STOP_AT - 1);
 }
 
@@ -107,7 +93,6 @@ fn a_signal_left_on_the_bus_does_not_end_the_next_run() {
     let result = Robot::new().set_dt(DT).add_control_fn(EachTick, stop).run();
 
     assert_eq!(result, Ok(()));
-    // Without the reset at entry the run would have ended with zero ticks.
     assert_eq!(TICKS.load(Ordering::Relaxed), STOP_AT);
 }
 
@@ -115,8 +100,7 @@ fn a_signal_left_on_the_bus_does_not_end_the_next_run() {
 fn two_runs_in_a_row_both_run() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
 
-    // The counter is shared by the two runs: the second one stops on its
-    // first tick, which still proves that it ticked.
+    // Shared counter: the second run stops on its first tick.
     fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
         if tick(&TICKS) >= STOP_AT {
             shutdown!("test: enough ticks");
@@ -153,10 +137,6 @@ fn the_run_lasts_at_least_the_grid_points_it_slept_to() {
 
     assert_eq!(result, Ok(()));
     assert_eq!(TICKS.load(Ordering::Relaxed), STOP_AT);
-    // Every tick but the exit one sleeps to a grid point, and the grid is
-    // anchored after `before`. A lower bound only: a sleep never returns
-    // early, so the load of the machine cannot make this fail. It catches a
-    // loop that stopped sleeping. A loop that drifts needs an upper bound,
-    // which is luck on a real clock: that is left to the scripted tests.
+    // Lower bound only: every tick but the exit one sleeps a slot.
     assert!(lasted >= SLOW_DT * (STOP_AT - 1), "lasted {lasted:?}");
 }

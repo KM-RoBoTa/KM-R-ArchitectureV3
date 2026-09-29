@@ -8,33 +8,12 @@
 //! It is organized by phases, specified by the schedule labels in
 //! [`crate::schedule`].
 //!
-//! # One clock
+//! One clock, `robot.config.time`: the engine mutates it between the phases,
+//! the controllers only get `&Time` through each phase's short-lived [`Env`].
 //!
-//! There is a single [`crate::clock::Time`]: the one in `robot.config`, which
-//! is also the one `Robot::set_dt` writes. The engine mutates it BETWEEN the
-//! controller walks; the controllers only ever get `&Time`. That is enforced
-//! by the borrow checker and not by convention: every phase builds its own
-//! short-lived [`Env`], whose shared borrow of the clock ends with the walk.
-//! Mutating the clock while a controller runs does not compile.
-//!
-//! # Stopping
-//!
-//! The loop only ends on a signal (see [`crate::signal`]):
-//!
-//! - shutdown is graceful: the tick that saw it is completed, `Last` bucket
-//!   and clock bookkeeping included, then the loop exits without sleeping;
-//! - emergency stop is immediate: the loop exits at the first check after it
-//!   was raised. The remaining phases of the tick, the bookkeeping and the
-//!   sleep are skipped.
-//!
-//! The bus is checked between the phases, so the granularity of an emergency
-//! stop is one phase bucket: the controllers registered after the raising one
-//! in the SAME bucket still run. A finer grain needs a check inside the
-//! `RunPhase` walk.
-//!
-//! `Signal::drain` loads the bus and never clears it. Checking several times
-//! per tick is therefore safe, and a shutdown seen in the middle of a tick is
-//! still there at the end of it.
+//! The loop ends only on a signal (see [`crate::signal`]). A shutdown
+//! completes its tick. An emergency stop exits at the next bus check, between
+//! two phase buckets.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -46,21 +25,11 @@ use crate::schedule::Drive;
 use crate::state::RobotState;
 use crate::{Robot, Sensors, Signal, SignalKind, shutdown};
 
-/// Tick duration used when the user never called `Robot::set_dt`, or called
-/// it with zero.
-///
-/// A zero `dt` would turn the loop into a busy spin that reports every tick
-/// as late. 1 ms is the rate the framework targets.
+/// Tick duration used when `Robot::set_dt` was never called, or with zero.
 const FALLBACK_DT: Duration = Duration::from_millis(1);
 
-/// Everything the loop takes from the outside world: the instant, the sleep
-/// and the signal bus.
-///
-/// The bus is process-global and the clock is the wall clock, so a loop wired
-/// straight to them can only be tested by sleeping and by serializing every
-/// test of the process. Behind this seam the loop tests run on scripted
-/// instants and fabricated signals. Generic parameter, monomorphized: no
-/// `dyn`, no cost on the real path.
+/// The instant, the sleep and the signal bus: a seam so the loop tests run on
+/// scripted values instead of the wall clock and the global bus.
 trait Host {
     fn now(&mut self) -> Instant;
     fn sleep_until(&mut self, deadline: Instant);
@@ -76,14 +45,8 @@ impl Host for RealHost {
     }
 
     fn sleep_until(&mut self, deadline: Instant) {
-        // The remaining time is computed here, at the last moment, so that
-        // whatever ran since the deadline was computed is not slept on top.
-        //
-        // TODO: `thread::sleep` wakes up tens of microseconds late under a
-        // non real-time scheduler. It does not add up (absolute deadlines),
-        // but it is jitter. A spin tail or `clock_nanosleep(TIMER_ABSTIME)`
-        // under SCHED_FIFO belongs with the hardware layer: the first costs a
-        // core, the second a libc dependency.
+        // TODO: jitter under a non real-time scheduler. Spin tail or
+        // `clock_nanosleep(TIMER_ABSTIME)`, with the hardware layer.
         std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
     }
 
@@ -95,22 +58,17 @@ impl Host for RealHost {
 /// Set once the Ctrl-C handler of the process is the one of the engine.
 static CTRL_C_WIRED: AtomicBool = AtomicBool::new(false);
 
-/// Tells a harmless failure to install the Ctrl-C handler from one that
-/// leaves the loop without its only external way out.
+/// Treats a failed Ctrl-C install as harmless when the handler in place is
+/// ours, from an earlier run of the process. Otherwise hands the error back.
 ///
-/// The handler can be installed once per process, so every run after the
-/// first one fails to install it. What matters is WHOSE handler is in place:
-/// ours from a previous run (`wired` is set, `Ok`), or one the user installed
-/// for their own needs, which does not raise `shutdown!` (the error is handed
-/// back). `wired` is a parameter so that the tests do not share the flag of
-/// the process.
+/// `wired` is a parameter so the tests do not share the process flag.
 fn ctrl_c_wired(
     installed: Result<(), ctrlc::Error>,
     wired: &AtomicBool,
 ) -> Result<(), ctrlc::Error> {
     match installed {
         Ok(()) => {
-            // Relaxed: the flag guards no other data, it is only read back.
+            // Relaxed: the flag guards no other data.
             wired.store(true, Ordering::Relaxed);
             Ok(())
         }
@@ -119,10 +77,8 @@ fn ctrl_c_wired(
     }
 }
 
-/// Keeps the signal only if it is an emergency stop.
-///
-/// Used by the checks placed in the middle of a tick: a shutdown must let the
-/// tick finish, so it is ignored there and picked up at the end of the tick.
+/// Keeps the signal only if it is an emergency stop: mid-tick checks let a
+/// shutdown finish its tick.
 fn estop(signal: Option<Signal>) -> Option<Signal> {
     signal.filter(|s| s.kind() == SignalKind::EmergencyStop)
 }
@@ -146,9 +102,6 @@ mod init_phase {
     /// It installs the tracing subscriber with the INFO level in release mode,.
     /// DEBUG level in debug mode and TRACE level only and only if the RUST_LOG
     /// environment variable is set.
-    ///
-    /// Called by `runtime()` and not by `pre_init`: what `runtime()` does
-    /// before the startup phases can fail, and must be able to log it.
     ///
     /// # WIP
     /// - [ ] Disable it completely in no_std.
@@ -174,9 +127,7 @@ mod init_phase {
     ///
     /// Used for the initialization of optional/mandatory systems.
     ///
-    /// Returns owned values for [`RobotState`] and [`Sensors`]. The clock is
-    /// not built here: it already lives in `robot.config`, where
-    /// `Robot::set_dt` configured it.
+    /// Returns owned values for [`RobotState`] and [`Sensors`].
     pub(super) fn pre_init() -> (RobotState, Sensors) {
         trace!("Executing pre-init phase ...");
         // TODO: feature gated:
@@ -256,8 +207,6 @@ mod init_phase {
 /// The control phases are called each tick. Its main goal is to call the user
 /// defined controllers by their respective phases (as defined in
 /// [`crate::schedule`]).
-///
-/// The clock is not handled here but in [`control_loop`], between the phases.
 mod ctrl_phase {
     use tracing::trace;
 
@@ -284,9 +233,7 @@ mod ctrl_phase {
         sensors: &Sensors,
     ) {
         trace!("Executing main tick controllers ...");
-        // TODO: every controller runs at the rate of the loop. A tick rate per
-        // controller needs a divider stored in the node, that is a change to
-        // the controller nodes and to their `RunPhase` walk.
+        // TODO: a tick rate per controller (a divider in the node).
         let mut env = Env::new(&robot.config.time, state, sensors);
         robot.controllers.each_tick(&mut env);
     }
@@ -311,8 +258,6 @@ fn control_loop<CS: Drive, H: Host>(
     host: &mut H,
 ) -> Signal {
     loop {
-        // Both kinds. Catches what was raised during the startup phases, and
-        // what another thread (Ctrl-C) raised while the loop was asleep.
         if let Some(signal) = host.poll() {
             break signal;
         }
@@ -328,24 +273,18 @@ fn control_loop<CS: Drive, H: Host>(
             break signal;
         }
 
-        // TODO: state_transition. Writes the desired state to the actuators
-        // and records the sensed sample in the history. Both need the hardware
-        // layer, which does not exist yet.
+        // TODO: state_transition (write desired, record history), needs the
+        // hardware layer.
 
         ctrl_phase::last(robot, state, sensors);
 
-        // Late or not, the clock answers with the grid point the next tick
-        // starts on: a tick never starts in the middle of a slot.
         let wake = robot.config.time.end_tick(host.now());
         if let Some(overrun) = robot.config.time.overrun() {
-            // `debug!` and not `warn!`: formatting a line per late tick makes
-            // the next tick late too once the loop is already struggling. The
-            // total is reported once, when the loop exits.
+            // `debug!`, not `warn!`: a log line per late tick makes the next one late.
             debug!(?overrun, "tick finished after its deadline");
         }
 
-        // Both kinds again, BEFORE the sleep: a stop request must not wait
-        // for a sleep that serves a tick which will never run.
+        // Before the sleep: a stop must not wait for it.
         if let Some(signal) = host.poll() {
             break signal;
         }
@@ -359,8 +298,6 @@ fn control_loop<CS: Drive, H: Host>(
 fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
     let (mut state, sensors) = init_phase::pre_init();
 
-    // Before any controller runs, so that all of them read the `dt` the loop
-    // really uses.
     if robot.config.time.delta().is_zero() {
         warn!(
             fallback = ?FALLBACK_DT,
@@ -370,9 +307,6 @@ fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
     }
 
     let signal = 'run: {
-        // An emergency stop raised during startup skips the startup phases
-        // that are left. A shutdown does not: it lets the startup finish and
-        // is picked up by the first check of the loop, before any tick.
         init_phase::pre_init_controllers(robot, &mut state, &sensors);
         if let Some(signal) = estop(host.poll()) {
             break 'run signal;
@@ -383,19 +317,14 @@ fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
         }
         init_phase::post_init(robot, &mut state, &sensors);
 
-        // TODO: spawn the `Threaded` controllers. Left out because the way
-        // their result is handed to the main loop is an open design question
-        // (docs/ROADMAP.md). Until then they are stored and never run.
+        // TODO: spawn the `Threaded` controllers (hand-off open in docs/ROADMAP.md).
 
-        // Anchored here and not at `Robot::new()`: the time spent in the
-        // startup phases must not count as an overrun of the first tick.
         robot.config.time.arm(host.now());
 
         control_loop(robot, &mut state, &sensors, host)
     };
 
-    // TODO: no hardware layer yet. A shutdown must send one last desired
-    // state before it exits, an emergency stop must cut the torque.
+    // TODO: last write on shutdown, torque cut on emergency stop (hardware layer).
     match signal.kind() {
         SignalKind::Shutdown => info!("control loop stopped, {signal}"),
         SignalKind::EmergencyStop => error!("control loop aborted, {signal}"),
@@ -409,25 +338,18 @@ fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
 
 /// The entry point of the runtime of the core.
 ///
-/// Returns the signal that ended the run, so that the caller decides what a
-/// shutdown and an emergency stop mean for the user.
+/// Returns the signal that ended the run.
 pub(crate) fn runtime<CS: Drive>(mut robot: Robot<CS>) -> Signal {
-    // The bus is process-global: without this, a signal left by a previous
-    // run would end this one before its first tick.
     Signal::reset();
 
-    // First: the Ctrl-C handler below can fail and has to say so.
+    // Before the Ctrl-C install, which may warn.
     init_phase::install_tracing();
 
-    // Installed AFTER the reset, or a Ctrl-C landing between the two would be
-    // erased.
+    // After the reset, or a Ctrl-C landing in between would be erased.
     let installed = ctrlc::set_handler(|| {
         shutdown!("Ctrl-C received");
     });
-    // The loop only ends on a signal, so Ctrl-C is its only external way out.
-    // Not an error of `run()`: a user handler that raises `shutdown!` itself
-    // is a legitimate setup, and the engine cannot tell it from one that
-    // does not.
+    // A warning, not an error: a user handler may raise `shutdown!` itself.
     if let Err(error) = ctrl_c_wired(installed, &CTRL_C_WIRED) {
         warn!(
             %error,
@@ -450,8 +372,7 @@ mod tests {
 
     const DT: Duration = Duration::from_millis(1);
 
-    // Index of each bus check of `run_with`, counted from its first one.
-    // Startup makes two of them, then every tick makes four.
+    // Index of each bus check: two at startup, then four per tick.
     const AFTER_PRE_INIT: usize = 0;
     const TICK_START: usize = 2;
     const AFTER_FIRST: usize = 3;
@@ -459,12 +380,8 @@ mod tests {
     const TICK_END: usize = 5;
     const PER_TICK: usize = 4;
 
-    /// A scripted world. It never sleeps and never touches the global bus, so
-    /// these tests can run in parallel with each other and with
-    /// `signal::test::bus_semantics`.
-    ///
-    /// They cannot hang either: once raised, the signal is returned by every
-    /// later check, like the real bus which is never cleared by a drain.
+    /// Scripted host: never sleeps, never touches the global bus. A raised
+    /// signal stays raised, like on the real bus.
     struct Scripted {
         origin: Instant,
         /// Offset from `origin` returned by each call to `now`, in tenths of
@@ -533,8 +450,6 @@ mod tests {
         fn poll(&mut self) -> Option<Signal> {
             let check = self.poll_calls;
             self.poll_calls += 1;
-            // Guard against a loop that would ignore the signals: the test
-            // fails instead of spinning forever.
             assert!(check < 256, "the loop did not stop on the signal");
 
             let raised = |from: Option<usize>| from.is_some_and(|from| check >= from);
@@ -580,8 +495,7 @@ mod tests {
         move |_t, _s, _se| cell.set(cell.get() + 1)
     }
 
-    // One counting controller per bucket. A macro and not a fn: the type of
-    // the built robot is one `HCons` layer per controller, not worth spelling.
+    // A macro, not a fn: the robot's `HCons` type is not worth spelling.
     macro_rules! counting_robot {
         ($walks:expr) => {
             Robot::new()
@@ -607,7 +521,6 @@ mod tests {
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 1, 1, 1]);
-        // The bookkeeping of the last tick was done, the sleep was not.
         assert_eq!(robot.config.time.last_update(), Some(&host.at(4)));
         assert_eq!(host.sleep_calls, 0);
         assert_eq!(host.poll_calls, TICK_END + 1);
@@ -677,7 +590,6 @@ mod tests {
 
         assert_eq!(signal.kind(), SignalKind::EmergencyStop);
         assert_eq!(walks.counts(), [1, 0, 0, 0, 0, 0]);
-        // The grid was never anchored: the loop was not entered.
         assert_eq!(robot.config.time.deadline(), None);
     }
 
@@ -694,10 +606,8 @@ mod tests {
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 4, 4, 4]);
-        // Tick 0 on time. Tick 1 late by half a DT: the loop sleeps the rest
-        // of the slot, so that tick 2 starts on the grid. Its 0.8 DT of work
-        // would not have fitted in what was left of the slot: it is on time.
-        // Tick 3 is the exit tick (no sleep).
+        // Tick 1 is late by 0.5: it sleeps to 3.0, so tick 2 starts on the
+        // grid. The exit tick does not sleep.
         assert_eq!(host.sleep_calls, 3);
         assert_eq!(host.sleeps[0], Some(host.at(10)));
         assert_eq!(host.sleeps[1], Some(host.at(30)));
@@ -708,10 +618,7 @@ mod tests {
 
     #[test]
     fn real_host_sleeps_until_the_deadline_and_its_clock_moves() {
-        // The only test of the crate that sleeps for real. It asserts a LOWER
-        // bound, which the load of the machine cannot break: a sleep never
-        // returns early. An upper bound (no drift) would depend on luck, it
-        // is covered by the scripted tests. The bus is not touched.
+        // Lower bound only: a sleep never returns early, whatever the load.
         let mut host = RealHost;
         let deadline = host.now() + Duration::from_millis(2);
 
@@ -726,8 +633,7 @@ mod tests {
     fn failing_to_install_ctrl_c_is_harmless_only_after_our_own_install() {
         let failed = || Err(ctrlc::Error::MultipleHandlers);
 
-        // The user installed a handler before the first run: theirs is in
-        // place, on every run of the process.
+        // The user's own handler, installed before the first run.
         let wired = AtomicBool::new(false);
         assert!(ctrl_c_wired(failed(), &wired).is_err());
         assert!(ctrl_c_wired(failed(), &wired).is_err());
