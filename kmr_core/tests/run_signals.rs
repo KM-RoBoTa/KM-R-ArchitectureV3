@@ -9,13 +9,14 @@
 //! - inside the binary the tests run on parallel threads, so each of them
 //!   takes [`BUS`] before it raises a signal or calls `run()`.
 //!
-//! None of them asserts on a measured duration. None of them can hang: every
-//! controller that stops the loop raises on `>=` and asserts a tick budget, so
-//! a loop that would ignore the signal fails within a fraction of a second.
+//! None of them asserts an UPPER bound on a measured duration, which would
+//! depend on the load of the machine. None of them can hang: every controller
+//! that stops the loop raises on `>=` and asserts a tick budget, so a loop
+//! that would ignore the signal fails within a fraction of a second.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kmr_core::{EachTick, Last, Robot, RobotState, Sensors, Time, emergency_stop, shutdown};
 
@@ -129,4 +130,33 @@ fn two_runs_in_a_row_both_run() {
         assert_eq!(result, Ok(()));
         assert_eq!(TICKS.load(Ordering::Relaxed), expected);
     }
+}
+
+#[test]
+fn the_run_lasts_at_least_the_grid_points_it_slept_to() {
+    static TICKS: AtomicU32 = AtomicU32::new(0);
+    const SLOW_DT: Duration = Duration::from_millis(2);
+
+    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+        if tick(&TICKS) >= STOP_AT {
+            shutdown!("test: enough ticks");
+        }
+    }
+
+    let _bus = bus();
+    let before = Instant::now();
+    let result = Robot::new()
+        .set_dt(SLOW_DT)
+        .add_control_fn(EachTick, stop)
+        .run();
+    let lasted = before.elapsed();
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(TICKS.load(Ordering::Relaxed), STOP_AT);
+    // Every tick but the exit one sleeps to a grid point, and the grid is
+    // anchored after `before`. A lower bound only: a sleep never returns
+    // early, so the load of the machine cannot make this fail. It catches a
+    // loop that stopped sleeping. A loop that drifts needs an upper bound,
+    // which is luck on a real clock: that is left to the scripted tests.
+    assert!(lasted >= SLOW_DT * (STOP_AT - 1), "lasted {lasted:?}");
 }

@@ -36,6 +36,7 @@
 //! per tick is therefore safe, and a shutdown seen in the middle of a tick is
 //! still there at the end of it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tracing::{debug, error, info, trace, warn};
@@ -91,6 +92,33 @@ impl Host for RealHost {
     }
 }
 
+/// Set once the Ctrl-C handler of the process is the one of the engine.
+static CTRL_C_WIRED: AtomicBool = AtomicBool::new(false);
+
+/// Tells a harmless failure to install the Ctrl-C handler from one that
+/// leaves the loop without its only external way out.
+///
+/// The handler can be installed once per process, so every run after the
+/// first one fails to install it. What matters is WHOSE handler is in place:
+/// ours from a previous run (`wired` is set, `Ok`), or one the user installed
+/// for their own needs, which does not raise `shutdown!` (the error is handed
+/// back). `wired` is a parameter so that the tests do not share the flag of
+/// the process.
+fn ctrl_c_wired(
+    installed: Result<(), ctrlc::Error>,
+    wired: &AtomicBool,
+) -> Result<(), ctrlc::Error> {
+    match installed {
+        Ok(()) => {
+            // Relaxed: the flag guards no other data, it is only read back.
+            wired.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+        Err(_) if wired.load(Ordering::Relaxed) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Keeps the signal only if it is an emergency stop.
 ///
 /// Used by the checks placed in the middle of a tick: a shutdown must let the
@@ -119,9 +147,12 @@ mod init_phase {
     /// DEBUG level in debug mode and TRACE level only and only if the RUST_LOG
     /// environment variable is set.
     ///
+    /// Called by `runtime()` and not by `pre_init`: what `runtime()` does
+    /// before the startup phases can fail, and must be able to log it.
+    ///
     /// # WIP
     /// - [ ] Disable it completely in no_std.
-    fn install_tracing() {
+    pub(super) fn install_tracing() {
         use tracing::Level;
         use tracing_subscriber::FmtSubscriber;
 
@@ -141,15 +172,12 @@ mod init_phase {
 
     /// Pre-initialization phase.
     ///
-    /// Used for the initialization of processes like subscribers, and other
-    /// optional/mandatory systems.
+    /// Used for the initialization of optional/mandatory systems.
     ///
     /// Returns owned values for [`RobotState`] and [`Sensors`]. The clock is
     /// not built here: it already lives in `robot.config`, where
     /// `Robot::set_dt` configured it.
     pub(super) fn pre_init() -> (RobotState, Sensors) {
-        install_tracing();
-
         trace!("Executing pre-init phase ...");
         // TODO: feature gated:
         // Color_eyre
@@ -306,6 +334,8 @@ fn control_loop<CS: Drive, H: Host>(
 
         ctrl_phase::last(robot, state, sensors);
 
+        // Late or not, the clock answers with the grid point the next tick
+        // starts on: a tick never starts in the middle of a slot.
         let wake = robot.config.time.end_tick(host.now());
         if let Some(overrun) = robot.config.time.overrun() {
             // `debug!` and not `warn!`: formatting a line per late tick makes
@@ -386,13 +416,25 @@ pub(crate) fn runtime<CS: Drive>(mut robot: Robot<CS>) -> Signal {
     // run would end this one before its first tick.
     Signal::reset();
 
+    // First: the Ctrl-C handler below can fail and has to say so.
+    init_phase::install_tracing();
+
     // Installed AFTER the reset, or a Ctrl-C landing between the two would be
-    // erased. The error is ignored: the handler can only be installed once
-    // per process, so a second run in the same process always fails here and
-    // keeps the handler of the first one, which is the same closure.
-    let _ = ctrlc::set_handler(|| {
+    // erased.
+    let installed = ctrlc::set_handler(|| {
         shutdown!("Ctrl-C received");
     });
+    // The loop only ends on a signal, so Ctrl-C is its only external way out.
+    // Not an error of `run()`: a user handler that raises `shutdown!` itself
+    // is a legitimate setup, and the engine cannot tell it from one that
+    // does not.
+    if let Err(error) = ctrl_c_wired(installed, &CTRL_C_WIRED) {
+        warn!(
+            %error,
+            "Ctrl-C will not stop the control loop: its handler could not be \
+             installed. If the process has its own, it must raise `shutdown!`"
+        );
+    }
 
     run_with(&mut robot, &mut RealHost)
 }
@@ -640,25 +682,60 @@ mod tests {
     }
 
     #[test]
-    fn sleeps_until_the_grid_and_not_after_an_overrun_or_on_exit() {
+    fn sleeps_until_the_grid_after_an_overrun_too_and_not_on_exit() {
         let walks = Walks::default();
         let mut robot = counting_robot!(walks);
         let mut host = Scripted::new(Instant::now())
             // arm, then (start, end) of each tick, in tenths of DT.
-            .script(&[0, 0, 3, 10, 25, 25, 28, 30, 32])
+            .script(&[0, 0, 3, 10, 25, 30, 38, 40, 42])
             .shutdown_from(TICK_END + 3 * PER_TICK);
 
         let signal = run_with(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 4, 4, 4]);
-        // Tick 0 on time, tick 1 late by half a DT (no sleep), tick 2 on time
-        // for the slot the grid kept, tick 3 is the exit tick (no sleep).
-        assert_eq!(host.sleep_calls, 2);
+        // Tick 0 on time. Tick 1 late by half a DT: the loop sleeps the rest
+        // of the slot, so that tick 2 starts on the grid. Its 0.8 DT of work
+        // would not have fitted in what was left of the slot: it is on time.
+        // Tick 3 is the exit tick (no sleep).
+        assert_eq!(host.sleep_calls, 3);
         assert_eq!(host.sleeps[0], Some(host.at(10)));
         assert_eq!(host.sleeps[1], Some(host.at(30)));
+        assert_eq!(host.sleeps[2], Some(host.at(40)));
         assert_eq!(robot.config.time.accumulated_overrun(), Some(&(DT / 2)));
         assert_eq!(robot.config.time.overrun(), None);
+    }
+
+    #[test]
+    fn real_host_sleeps_until_the_deadline_and_its_clock_moves() {
+        // The only test of the crate that sleeps for real. It asserts a LOWER
+        // bound, which the load of the machine cannot break: a sleep never
+        // returns early. An upper bound (no drift) would depend on luck, it
+        // is covered by the scripted tests. The bus is not touched.
+        let mut host = RealHost;
+        let deadline = host.now() + Duration::from_millis(2);
+
+        host.sleep_until(deadline);
+        assert!(host.now() >= deadline);
+
+        // A deadline already behind must not block, nor panic.
+        host.sleep_until(deadline);
+    }
+
+    #[test]
+    fn failing_to_install_ctrl_c_is_harmless_only_after_our_own_install() {
+        let failed = || Err(ctrlc::Error::MultipleHandlers);
+
+        // The user installed a handler before the first run: theirs is in
+        // place, on every run of the process.
+        let wired = AtomicBool::new(false);
+        assert!(ctrl_c_wired(failed(), &wired).is_err());
+        assert!(ctrl_c_wired(failed(), &wired).is_err());
+
+        // Second run of a process whose first run installed ours.
+        let wired = AtomicBool::new(false);
+        assert!(ctrl_c_wired(Ok(()), &wired).is_ok());
+        assert!(ctrl_c_wired(failed(), &wired).is_ok());
     }
 
     #[test]

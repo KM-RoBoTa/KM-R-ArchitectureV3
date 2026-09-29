@@ -16,9 +16,10 @@
 //! loop {
 //!     time.begin_tick(Instant::now());
 //!     // ... controllers read `time`, never write it ...
-//!     if let Some(deadline) = time.end_tick(Instant::now()) {
-//!         // on time: sleep until `deadline`
-//!     } // else late: `time.overrun()` is set, start the next tick at once
+//!     if let Some(start) = time.end_tick(Instant::now()) {
+//!         // sleep until `start`: the grid point the next tick starts on
+//!     }
+//!     // late or not is read from `time.overrun()`, not from the return value
 //! }
 //! ```
 //!
@@ -31,10 +32,20 @@
 //! is jitter on one tick and is absorbed by the next sleep.
 //!
 //! After an overrun the grid is kept: the slots that were missed are skipped
-//! and the next deadline is the first grid point still ahead. Neither of the
-//! two alternatives is acceptable for a controller that integrates with `dt`:
-//! a catch-up burst runs ticks with a real period far below `delta`, and
-//! re-anchoring the grid at "now" shifts the schedule for good on each overrun.
+//! and the next tick STARTS on the first grid point still ahead, so it is
+//! given a whole `delta` like any other. Three alternatives were rejected, for
+//! a controller that integrates with `dt`:
+//!
+//! - a catch-up burst runs ticks with a real period far below `delta`;
+//! - re-anchoring the grid at "now" shifts the schedule for good on each
+//!   overrun;
+//! - starting the next tick at once, in what is left of the slot in progress,
+//!   is a short period too, and it leaves that tick less than `delta` to
+//!   finish: a workload that fits in `delta` is then reported late several
+//!   ticks in a row for a single incident.
+//!
+//! The price is the rest of the slot in progress, which is slept away: a tick
+//! late by a tenth of `delta` costs one whole slot.
 
 use std::{
     marker::PhantomData,
@@ -188,8 +199,9 @@ impl Time {
 
     /// Closes the tick that finished at `now` and moves to the next deadline.
     ///
-    /// Returns the instant to sleep until, or `None` if the tick was late and
-    /// the next one must start at once.
+    /// Returns the instant the next tick starts at, always a grid point and
+    /// never before `now`: the caller sleeps until then. `None` only when
+    /// there is no grid to sleep on (clock not armed, or `delta` of zero).
     pub(crate) fn end_tick(&mut self, now: Instant) -> Option<Instant> {
         let Some(due) = self.deadline else {
             // Never armed: there is no grid to be late against yet.
@@ -214,13 +226,18 @@ impl Time {
             self.deadline = Some(now);
             return None;
         }
-        // Whole slots already behind us. The next deadline is computed from
-        // `due`, not from `now`, so it lands exactly on the grid.
-        let missed = late.as_nanos() / self.delta.as_nanos();
-        let slots = u32::try_from(missed).unwrap_or(u32::MAX).saturating_add(1);
-        let step = self.delta.saturating_mul(slots);
-        self.deadline = Some(due.checked_add(step).unwrap_or(now));
-        None
+        // Slots from `due` to the first grid point that is not behind `now`.
+        // Rounded UP: the next tick starts on that point and not at `now`, in
+        // the middle of a slot, where it would only have the rest of the slot
+        // as a budget. Computed from `due`, not from `now`, so that it lands
+        // exactly on the grid.
+        let slots = late.as_nanos().div_ceil(self.delta.as_nanos());
+        let slots = u32::try_from(slots).unwrap_or(u32::MAX);
+        let start = due
+            .checked_add(self.delta.saturating_mul(slots))
+            .unwrap_or(now);
+        self.deadline = Some(start.checked_add(self.delta).unwrap_or(start));
+        Some(start)
     }
 
     // ── Getters ─────────────────────────────────────────────────────────
@@ -309,13 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn late_by_less_than_delta_keeps_the_next_slot() {
+    fn late_by_less_than_delta_starts_the_next_tick_on_the_next_grid_point() {
         let (mut time, origin) = armed();
         let late = DT * 3 / 10;
 
-        assert_eq!(time.end_tick(origin + DT + late), None);
+        // due = 1, now = 1.3: the slot in progress (1 to 2) is given up, the
+        // next tick starts at 2 and has until 3.
+        assert_eq!(time.end_tick(origin + DT + late), Some(origin + DT * 2));
         assert_eq!(time.overrun(), Some(&late));
-        assert_eq!(time.deadline(), Some(&(origin + DT * 2)));
+        assert_eq!(time.deadline(), Some(&(origin + DT * 3)));
     }
 
     #[test]
@@ -323,18 +342,20 @@ mod tests {
         let (mut time, origin) = armed();
         let late = DT * 23 / 10;
 
-        assert_eq!(time.end_tick(origin + DT + late), None);
+        // due = 1, now = 3.3: the next tick starts at 4 and has until 5.
+        assert_eq!(time.end_tick(origin + DT + late), Some(origin + DT * 4));
         assert_eq!(time.overrun(), Some(&late));
-        // due = 1, now = 3.3: slots 2 and 3 are gone, 4 is the next one.
-        assert_eq!(time.deadline(), Some(&(origin + DT * 4)));
+        assert_eq!(time.deadline(), Some(&(origin + DT * 5)));
     }
 
     #[test]
     fn late_by_an_exact_multiple_gives_a_full_budget() {
         let (mut time, origin) = armed();
 
-        // now = 3 is itself a grid point: the next tick gets a whole delta.
-        assert_eq!(time.end_tick(origin + DT * 3), None);
+        // now = 3 is itself a grid point: the next tick starts there, with no
+        // slot given up.
+        assert_eq!(time.end_tick(origin + DT * 3), Some(origin + DT * 3));
+        assert_eq!(time.overrun(), Some(&(DT * 2)));
         assert_eq!(time.deadline(), Some(&(origin + DT * 4)));
     }
 
@@ -342,13 +363,17 @@ mod tests {
     fn accumulated_overrun_sums_and_overrun_resets() {
         let (mut time, origin) = armed();
 
-        assert_eq!(time.end_tick(origin + DT + DT / 2), None);
-        assert_eq!(time.end_tick(origin + DT * 2 + DT / 4), None);
+        // Deadlines: 1, then 3 (late by 0.5), then 5 (late by 0.25).
+        assert_eq!(time.end_tick(origin + DT + DT / 2), Some(origin + DT * 2));
+        assert_eq!(
+            time.end_tick(origin + DT * 3 + DT / 4),
+            Some(origin + DT * 4)
+        );
         assert_eq!(time.overrun(), Some(&(DT / 4)));
         assert_eq!(time.accumulated_overrun(), Some(&(DT / 2 + DT / 4)));
 
         // An on-time tick clears the per-tick value and keeps the total.
-        assert_eq!(time.end_tick(origin + DT * 3), Some(origin + DT * 3));
+        assert_eq!(time.end_tick(origin + DT * 5), Some(origin + DT * 5));
         assert_eq!(time.overrun(), None);
         assert_eq!(time.accumulated_overrun(), Some(&(DT / 2 + DT / 4)));
     }
@@ -369,12 +394,45 @@ mod tests {
             } else {
                 due - DT / 3
             };
-            let wake = time.end_tick(finished);
-            assert_eq!(wake.is_none(), k % 10 == 0, "tick {k}");
+            let start = time.end_tick(finished).expect("armed, delta not zero");
+            let next_due = *time.deadline().expect("armed");
+
+            // The next tick never starts in the past, never in the middle of
+            // a slot, and always has a whole delta ahead of it.
+            assert!(start >= finished, "tick {k}");
+            assert_eq!(next_due, start + DT, "tick {k}");
+            assert_eq!(time.overrun().is_some(), k % 10 == 0, "tick {k}");
         }
-        // 100 overruns skipped one slot each: 1000 ticks used 1100 slots.
-        assert_eq!(time.deadline(), Some(&(origin + DT * 1101)));
+        // 100 overruns of 1.7 slot gave up two slots each: 1000 ticks used
+        // 1200 slots.
+        assert_eq!(time.deadline(), Some(&(origin + DT * 1201)));
         assert_eq!(time.accumulated_overrun(), Some(&(DT * 17 / 10 * 100)));
+    }
+
+    #[test]
+    fn one_stall_is_one_overrun_for_a_workload_that_fits_in_delta() {
+        let (mut time, origin) = armed();
+        let work = DT * 8 / 10;
+        let stall = DT * 3 / 2;
+
+        // The host of the runtime, reduced to its contract: a tick starts at
+        // the instant `end_tick` returned, the sleep being exact.
+        let mut start = origin + DT;
+        assert_eq!(time.end_tick(origin + work), Some(start));
+
+        let mut late_ticks = 0;
+        for k in 0..10u32 {
+            let spent = if k == 0 { stall } else { work };
+            let next = time.end_tick(start + spent).expect("armed, delta not zero");
+            late_ticks += u32::from(time.overrun().is_some());
+
+            // No real period below delta: that is what a controller
+            // integrating with `dt` relies on.
+            assert!(next.duration_since(start) >= DT, "tick {k}");
+            start = next;
+        }
+        assert_eq!(late_ticks, 1);
+        assert_eq!(time.accumulated_overrun(), Some(&(DT / 2)));
     }
 
     #[test]

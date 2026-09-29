@@ -146,8 +146,10 @@ Deadlines are absolute: each one is `origin + k * dt`, with `dt` the value
 given to `set_dt`. Sleeping for `dt` after each tick would make the real
 period `work + dt + wake latency` and the schedule would drift. When a tick
 finishes after its deadline, the loop stays on the same grid: it skips the
-slots it missed and starts the next tick immediately, without sleeping. It
-never runs a burst of ticks to catch up and never moves the grid.
+slots it missed and sleeps to the first grid point still ahead, so the next
+tick starts on the grid and has a whole `dt` to run. It never runs a burst of
+ticks to catch up, never moves the grid and never starts a tick in the middle
+of a slot.
 
 Controllers read the clock, the engine writes it, and only between two
 controller walks.

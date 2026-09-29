@@ -187,8 +187,10 @@ of truth.
 
 ### Runtime (`runtime.rs`)
 
-`runtime()` resets the signal bus, installs the ctrl-c handler that fires
-`shutdown!` (after the reset, so a Ctrl-C is never erased), then runs
+`runtime()` installs tracing, resets the signal bus, installs the ctrl-c
+handler that fires `shutdown!` (after the reset, so a Ctrl-C is never erased;
+if the process already has a handler of its own, a warning says that Ctrl-C
+will not stop the loop), then runs
 `pre_init → init → post_init` and loops `first → each_tick → last` until a
 signal is raised. It returns the `Signal` that ended the run; `Robot::run()`
 returns `Ok(())` for a shutdown and for an emergency stop alike.
@@ -255,8 +257,9 @@ The clock never reads the system time: the runtime injects every instant
 sleeping. Deadlines are **absolute**, every one of them is
 `origin + k * delta`, so the schedule does not drift. Overrun is the lateness
 against the deadline. After an overrun the grid is kept: missed slots are
-skipped, the next tick starts at once with what is left of its slot. No
-catch-up burst, no re-anchoring.
+skipped and the loop sleeps to the first grid point still ahead, so the next
+tick starts on the grid with a whole `delta` as its budget. No catch-up burst,
+no re-anchoring, no tick squeezed in what is left of a slot.
 
 ## Style
 
