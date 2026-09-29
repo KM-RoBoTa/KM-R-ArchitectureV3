@@ -313,7 +313,7 @@ no re-anchoring, no tick squeezed in what is left of a slot.
 
 ## Style
 
-Comment density: the code carries dense *why* comments on the tricky
-invariants (sealing, lock-free ordering, macro rationale). Match that where the
-reasoning is non-obvious; do **not** add headers that restate the code. Keep
-module/doc comments minimal and accurate — trust code over headers.
+Comments follow [`CONTRIBUTING.md` rule 8](CONTRIBUTING.md#engineering-rules):
+short doc comments on every module, type, function and method; inside a body,
+one short line only where the code is really ambiguous. Never restate the code
+in English.

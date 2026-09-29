@@ -73,8 +73,11 @@ where not.
    `StateField` impl in `state/field.rs`, and a design discussion first.
 7. **Schedule names are fixed.** `PreInit, Init, PostInit, First, EachTick,
    Last`. Don't reintroduce Bevy names.
-8. **Comments explain *why*.** Dense rationale on non-obvious invariants; no
-   headers that restate the code.
+8. **Rust is the authority; comment only real ambiguity.** Every module,
+   type, function and method has a short doc comment. Inside a body, comment
+   only what the code cannot say (a hidden invariant, a trap), in one short
+   line. Never restate the code in English: `if self.delta.is_zero()` needs
+   no comment. A reviewer should not read everything twice.
 
 Architecture changes (new phases, new state fields, threading model, anything
 touching the ROADMAP's open questions) start as an **issue**, not a PR.
