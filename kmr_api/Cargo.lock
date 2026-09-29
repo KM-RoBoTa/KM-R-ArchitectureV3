@@ -295,6 +295,7 @@ version = "0.1.0"
 dependencies = [
  "circular-buffer",
  "ctrlc",
+ "derive_more",
  "frunk",
  "rstest",
  "thiserror",

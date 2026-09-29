@@ -2,9 +2,11 @@ use kmr_core::error::{ApiError as CoreApiError, StateError as CoreStateError};
 
 /// Public error returned by [`State`](crate::State) accessors.
 ///
-/// This is kmr_api's OWN error type — a re-statement of `kmr_core`'s internal
-/// `StateError`, so `kmr_core` never appears in a public signature and stays
-/// sealed. `From<StateError>` maps the core cause across the boundary.
+/// This is kmr_api's OWN error type, not a re-export of `kmr_core`'s
+/// `StateError`: the value types (`Q`, `Qd`, `Tau`) are shared with the core,
+/// but the error vocabulary users match on stays a deliberate api choice that
+/// the engine can refine without breaking them. `From<CoreStateError>` maps
+/// the core cause across the boundary.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum StateError {
     /// A joint index exceeded the number of recorded entries / joints.

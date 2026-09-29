@@ -20,9 +20,9 @@ pub(crate) mod sealed {
 
 /// Marks a type that can be stored in [`super::RobotState`]'s desired state.
 ///
-/// Public so `kmr_api` can name it as a bound, but sealed: the `sealed::Slot`
-/// supertrait lives in a crate-private module, so no downstream crate can add a
-/// new field type.
+/// Public because `kmr_api` re-exports it (as `Field`) for users to name as a
+/// bound, but sealed: the `sealed::Slot` supertrait lives in a crate-private
+/// module, so no downstream crate can add a new field type.
 pub trait StateField: sealed::Slot {}
 
 impl sealed::Slot for Q {
