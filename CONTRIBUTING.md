@@ -79,6 +79,39 @@ where not.
 Architecture changes (new phases, new state fields, threading model, anything
 touching the ROADMAP's open questions) start as an **issue**, not a PR.
 
+## Defend your design
+
+Every data structure and every decision that gives the code its shape must be
+defended, in the pull request and, where it is not obvious, in a comment next
+to the code. "It works" is not a defence. This applies to humans and to AI
+agents alike, and to small changes as much as to large ones.
+
+A defence answers three questions, in this order of priority when they
+conflict:
+
+1. **Real-time performance.** What does this cost on the control path at
+   1 kHz? State the memory layout and size, whether anything allocates, locks,
+   blocks or makes a system call, how many copies and branches a tick pays,
+   and what the worst case is, not the average. If you claim it is free,
+   say why: inlined, monomorphized, fixed-size, known at compile time.
+   Measure when you can; a number beats an argument.
+2. **Quality.** Which invariant does this shape make impossible to break, and
+   which misuse becomes a compile error and no longer a runtime surprise? What
+   does it cost to change later?
+3. **Developer experience.** What does the user write, read and see in a
+   compiler error? Would someone who knows only basic Rust understand it?
+
+Then name **the alternative you rejected** and why it lost. A choice with no
+alternative considered has not been defended.
+
+Typical things that need a defence: a new struct, enum or trait; a field
+added to the state; an array versus a ring buffer; a generic versus a
+constant; a newtype versus a bare value; a macro versus a function; owned
+versus borrowed returns; anything that widens a `pub`.
+
+A reviewer may ask for the defence of any line. A contribution whose shape
+cannot be defended is reworked, however correct it is.
+
 ## Commits and branches
 
 1. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
@@ -108,6 +141,8 @@ Before requesting review:
       whole workspace.
 - [ ] New behaviour has tests; changed behaviour has updated tests.
 - [ ] Public API changes are reflected in `kmr_api` docs and the example.
+- [ ] Every data structure and design decision is defended in the PR
+      (see [Defend your design](#defend-your-design)).
 - [ ] You re-read the whole diff and can justify every line.
 
 ## AI assistance

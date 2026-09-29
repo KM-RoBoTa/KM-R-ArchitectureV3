@@ -65,6 +65,11 @@ visibly apart from human-controlled branches:
 - **Report every decision.** The PR description carries a "Decisions" section
   listing each choice made without a human, the alternative, and why. It also
   lists what was deliberately left undone.
+- **Defend every decision.** Each entry follows
+  [`CONTRIBUTING.md` § Defend your design](CONTRIBUTING.md#defend-your-design):
+  real-time cost first, then quality, then developer experience, then the
+  alternative rejected. An agent's decision is held to the same standard as a
+  human's.
 - **Say that it is agentic.** The PR description states that the work was
   produced by an agent and who authorized it. Rule (b) still applies: no
   co-author trailer, no "generated with" footer.
@@ -86,6 +91,9 @@ visibly apart from human-controlled branches:
   When working unattended, see [Agentic work](#agentic-work): decide, and
   report the decision.
 - Match the existing style (see [Style](#style)).
+- Defend the data structures and the shape of your decisions: real-time
+  performance, quality and developer experience, in that order. See
+  [`CONTRIBUTING.md` § Defend your design](CONTRIBUTING.md#defend-your-design).
 - AI-assisted code gets the same review as any other; the human must be able to
   explain every submitted line.
 
