@@ -208,11 +208,12 @@ entry and `Signal::drain()` after each tick (happy path = one atomic load).
 ### State (`state/`) — private, sealed, typed
 
 `RobotState<DEPTH>` holds a write-only `Desired` staging area + a read-only
-`History` ring buffer (`circular-buffer`). `JOINTS`/`HISTORY_DEPTH` are fixed
-consts (`state.rs`) — a build-time-from-model value is a TODO. Users never
-touch raw fields (`robot.desired.q[0] = ..` is a compile error). Access is
-setters/getters only, all speaking typed newtypes `Q`/`Qd`/`Tau` — never bare
-`f32`.
+`History` ring buffer (`circular-buffer`). `DEPTH` defaults to `HISTORY_DEPTH`:
+write a bare `RobotState`, never `RobotState<JOINTS>`. `JOINTS`/`HISTORY_DEPTH`
+are fixed consts, defined once (`state.rs`) and re-exported at the crate root
+— a build-time-from-model value is a TODO. Users never touch raw fields
+(`robot.desired.q[0] = ..` is a compile error). Access is setters/getters
+only, all speaking typed newtypes `Q`/`Qd`/`Tau` — never bare `f32`.
 
 **The field set is sealed** (`state/field.rs`): a private `sealed::Slot` trait
 routes each field type to its storage slot; the public `StateField:

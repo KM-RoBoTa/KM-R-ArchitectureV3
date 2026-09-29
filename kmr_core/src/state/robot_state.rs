@@ -1,14 +1,19 @@
-use super::JOINTS;
 use super::desired::Desired;
 use super::field::{StateField, sealed};
 use super::history::History;
+use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
 
 #[derive(Default)]
 /// The robot state abstraction.
 ///
 /// It holds both the desired values, and the history of states.
-pub struct RobotState<const DEPTH: usize> {
+///
+/// `DEPTH` is the number of ticks kept in the history, NOT the joint count
+/// (that one is fixed by [`JOINTS`]). It defaults to [`HISTORY_DEPTH`] so that
+/// signatures write a bare `RobotState`: with nothing to pass, the joint count
+/// cannot be passed as the depth by mistake.
+pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
     pub(in crate::state) desired: Desired,
     pub(in crate::state) history: History<JOINTS, DEPTH>,
 }
@@ -16,10 +21,10 @@ pub struct RobotState<const DEPTH: usize> {
 /// Direct writes to desired state are not allowed:
 /// ```compile_fail
 /// # use kmr_core::RobotState;
-/// let mut robot = RobotState::default();
+/// let mut robot = <RobotState>::default();
 /// robot.desired.q[0] = 1.0;
 /// ```
-impl RobotState<JOINTS> {
+impl<const DEPTH: usize> RobotState<DEPTH> {
     // ── Desired setters ─────────────────────────────────────────────────
 
     /// Write one desired value to `index` in the slot selected by `T`.

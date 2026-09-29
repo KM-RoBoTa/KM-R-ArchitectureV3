@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{Schedule, Sensors, State, Time, UserError, payload::Payload};
 use kmr_core::{
-    ControlFn, ControlFnWith, Inline, InlineWith, Insert, JOINTS, Scheduled, ThreadFn, Threaded,
+    ControlFn, ControlFnWith, Inline, InlineWith, Insert, Scheduled, ThreadFn, Threaded,
 };
 
 // The named api→core translation wrapper stored in place of the user's closure.
@@ -34,7 +34,7 @@ where
     fn call(
         &self,
         time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState<JOINTS>,
+        state: &mut kmr_core::RobotState,
         sensors: &kmr_core::Sensors,
     ) {
         (self.0)(
@@ -59,7 +59,7 @@ where
     fn call(
         &self,
         time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState<JOINTS>,
+        state: &mut kmr_core::RobotState,
         sensors: &kmr_core::Sensors,
         ctx: &mut T,
     ) {

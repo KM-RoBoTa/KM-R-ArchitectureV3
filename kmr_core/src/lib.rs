@@ -74,7 +74,4 @@ pub use schedule::{
 };
 pub use sensors::Sensors;
 pub use signal::{Signal, SignalKind, SignalMeta};
-pub use state::{RobotState, State};
-
-// todo: build time variable from model, not implemented yet
-pub const JOINTS: usize = 4;
+pub use state::{HISTORY_DEPTH, JOINTS, RobotState, State};

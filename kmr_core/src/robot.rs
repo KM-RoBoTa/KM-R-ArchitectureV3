@@ -9,9 +9,9 @@
 //! // `no_run`: `run()` enters the control loop and only returns on a signal.
 //! use std::time::Duration;
 //!
-//! use kmr_core::{EachTick, JOINTS, Robot, RobotState, Sensors, Time};
+//! use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
 //!
-//! fn foo(_time: &Time, _state: &mut RobotState<JOINTS>, _sensors: &Sensors) {
+//! fn foo(_time: &Time, _state: &mut RobotState, _sensors: &Sensors) {
 //!     println!("hello world");
 //! }
 //!
@@ -39,9 +39,6 @@ use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
 use crate::{Scheduled, Sensors, runtime};
 
-// todo: build time variable from model, not implemented yet
-pub const JOINTS: usize = 4;
-
 /// The primary librairy API.
 ///
 /// CS means Core Scheduled. This is useful to differenciate between
@@ -63,9 +60,9 @@ impl Robot<Scheduled> {
     ///
     /// ```no_run
     /// // `no_run`: `run()` enters the control loop and only returns on a signal.
-    /// use kmr_core::{EachTick, JOINTS, Robot, RobotState, Sensors, Time};
+    /// use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
     ///
-    /// fn hello_world(_time: &Time, _robot: &mut RobotState<JOINTS>, _sensors: &Sensors) {
+    /// fn hello_world(_time: &Time, _robot: &mut RobotState, _sensors: &Sensors) {
     ///     println!("Hello World !");
     /// }
     ///
@@ -119,7 +116,7 @@ impl<CS> Robot<CS> {
     pub fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<CS::Output>
     where
         CS: Insert<S, Inline<F>>,
-        F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors),
+        F: Fn(&Time, &mut RobotState, &Sensors),
         S: Schedule,
     {
         self.insert_controller(schedule, Inline(f))
@@ -146,7 +143,7 @@ impl<CS> Robot<CS> {
     pub fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
     where
         CS: Insert<S, InlineWith<F, T>>,
-        F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors, &mut T),
+        F: Fn(&Time, &mut RobotState, &Sensors, &mut T),
         S: Schedule,
     {
         self.insert_controller(schedule, InlineWith(f, ctx))

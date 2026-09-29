@@ -15,7 +15,7 @@
 //! - [ ] `T` implements an API trait that standardize the usage, allowing
 //!       for some automated updates. E.g: T::incr(mut &selfby: u32);
 use crate::schedule::RunPhase;
-use crate::{JOINTS, Sensors, clock::Time, state::RobotState};
+use crate::{Sensors, clock::Time, state::RobotState};
 
 /// The per-tick environment handed to every controller: read-only [`Time`] and
 /// [`Sensors`], plus exclusive (`&mut`) access to the robot [`RobotState`].
@@ -27,12 +27,12 @@ use crate::{JOINTS, Sensors, clock::Time, state::RobotState};
 #[doc(hidden)]
 pub struct Env<'a> {
     pub(crate) time: &'a Time,
-    pub(crate) state: &'a mut RobotState<JOINTS>,
+    pub(crate) state: &'a mut RobotState,
     pub(crate) sensors: &'a Sensors,
 }
 
 impl<'a> Env<'a> {
-    pub fn new(time: &'a Time, state: &'a mut RobotState<JOINTS>, sensors: &'a Sensors) -> Self {
+    pub fn new(time: &'a Time, state: &'a mut RobotState, sensors: &'a Sensors) -> Self {
         Self {
             time,
             state,
@@ -50,11 +50,11 @@ impl<'a> Env<'a> {
 /// stored node type nameable (a closure type is not) so the builder's
 /// type-state still threads through.
 pub trait ControlFn {
-    fn call(&self, time: &Time, state: &mut RobotState<JOINTS>, sensors: &Sensors);
+    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors);
 }
 
-impl<F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors)> ControlFn for F {
-    fn call(&self, time: &Time, state: &mut RobotState<JOINTS>, sensors: &Sensors) {
+impl<F: Fn(&Time, &mut RobotState, &Sensors)> ControlFn for F {
+    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors) {
         self(time, state, sensors)
     }
 }
@@ -64,11 +64,11 @@ impl<F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors)> ControlFn for F {
 /// `Fn(&Time, &mut RobotState, &Sensors, &mut T)`; `kmr_api` implements it on
 /// its own wrapper so it can present the api argument order/types instead.
 pub trait ControlFnWith<T> {
-    fn call(&self, time: &Time, state: &mut RobotState<JOINTS>, sensors: &Sensors, ctx: &mut T);
+    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors, ctx: &mut T);
 }
 
-impl<T, F: Fn(&Time, &mut RobotState<JOINTS>, &Sensors, &mut T)> ControlFnWith<T> for F {
-    fn call(&self, time: &Time, state: &mut RobotState<JOINTS>, sensors: &Sensors, ctx: &mut T) {
+impl<T, F: Fn(&Time, &mut RobotState, &Sensors, &mut T)> ControlFnWith<T> for F {
+    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors, ctx: &mut T) {
         self(time, state, sensors, ctx)
     }
 }

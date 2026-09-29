@@ -10,7 +10,7 @@ use crate::{N, Q, Qd, State, StateError, Tau};
 // (`&'a mut State<'a>`), so both owners have to live in the caller's frame.
 macro_rules! view {
     ($name:ident, $indices:expr) => {
-        let mut core = kmr_core::RobotState::<N>::default();
+        let mut core = <kmr_core::RobotState>::default();
         let mut state = State::new(&mut core);
         #[allow(unused_mut)]
         let mut $name = GroupView {

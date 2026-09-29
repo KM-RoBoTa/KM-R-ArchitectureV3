@@ -36,12 +36,12 @@ pub use kmr_core::state::StateField as Field;
 ///     let _core = robot.0;
 /// }
 /// ```
-pub struct State<'a>(&'a mut kmr_core::RobotState<N>);
+pub struct State<'a>(&'a mut kmr_core::RobotState);
 
 impl<'a> State<'a> {
     /// Wrap the borrowed core state the runtime lends for one tick. Called only
     /// at the api→core boundary (`ApiInline::call`); never by users.
-    pub(crate) fn new(inner: &'a mut kmr_core::RobotState<N>) -> Self {
+    pub(crate) fn new(inner: &'a mut kmr_core::RobotState) -> Self {
         State(inner)
     }
 
