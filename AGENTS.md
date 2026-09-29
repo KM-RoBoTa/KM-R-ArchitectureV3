@@ -132,6 +132,7 @@ cargo build --workspace
 cargo test --workspace --no-fail-fast
 cargo test -p kmr_core bus       # single test by name substring
 cargo clippy --workspace         # clippy.toml bans heap types — see below
+cargo clippy --workspace --all-targets   # also lints tests and examples
 cargo fmt --all --check
 cargo run -p kmr_api --example complete_api_example
 ```
