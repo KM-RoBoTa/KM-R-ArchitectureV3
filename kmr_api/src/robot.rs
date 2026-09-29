@@ -37,7 +37,11 @@ where
         state: &mut kmr_core::RobotState<JOINTS>,
         sensors: &kmr_core::Sensors,
     ) {
-        (self.0)(&Time::new(time), &mut State::new(state), &Sensors::new(sensors));
+        (self.0)(
+            &Time::new(time),
+            &mut State::new(state),
+            &Sensors::new(sensors),
+        );
     }
 }
 
@@ -59,7 +63,12 @@ where
         sensors: &kmr_core::Sensors,
         ctx: &mut T,
     ) {
-        (self.0)(ctx, &Time::new(time), &mut State::new(state), &Sensors::new(sensors));
+        (self.0)(
+            ctx,
+            &Time::new(time),
+            &mut State::new(state),
+            &Sensors::new(sensors),
+        );
     }
 }
 
