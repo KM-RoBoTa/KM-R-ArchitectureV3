@@ -135,12 +135,28 @@ type paths into the user's compiler error.
 
 ```
 pre_init → init → post_init
-loop { first → each_tick → state_transition → last }
+loop { first → each_tick → last → clock bookkeeping → sleep }
 ```
 
-`last` is where elapsed time, overrun and accumulated overrun are computed and
-the loop sleeps until the next tick. Most of the runtime is still being
-implemented — see the [roadmap](ROADMAP.md).
+The loop runs until a signal is raised. After the `Last` bucket the engine
+computes the overrun and the accumulated overrun, stamps the last update and
+sleeps until the next deadline.
+
+Deadlines are absolute: each one is `origin + k * dt`, with `dt` the value
+given to `set_dt`. Sleeping for `dt` after each tick would make the real
+period `work + dt + wake latency` and the schedule would drift. When a tick
+finishes after its deadline, the loop stays on the same grid: it skips the
+slots it missed and sleeps to the first grid point still ahead, so the next
+tick starts on the grid and has a whole `dt` to run. It never runs a burst of
+ticks to catch up, never moves the grid and never starts a tick in the middle
+of a slot.
+
+Controllers read the clock, the engine writes it, and only between two
+controller walks.
+
+Not implemented yet, because there is no hardware layer: the
+`state_transition` step (write the desired state, record the sensed sample)
+and the startup of threaded controllers — see the [roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
 
@@ -152,8 +168,19 @@ closures, other threads, a raw signal handler (ctrl-c is wired to `shutdown!`).
 They are macros so each call site gets its own `static` metadata: nothing
 allocates and the path is async-signal-safe. Escalation is monotonic — an
 emergency stop is never downgraded to a shutdown, and the first reason raised
-wins. The runtime checks the bus once per tick (one atomic load on the happy
-path).
+wins.
+
+The runtime checks the bus between the phases, four times per tick (one
+atomic load each on the happy path):
+
+- a **shutdown** lets the current tick finish, `Last` included, then `run()`
+  returns;
+- an **emergency stop** ends the loop at the next check: the phases left in
+  the tick are skipped. Controllers registered after the raising one in the
+  same phase still run.
+
+Both are logged with their reason and, in debug builds, their call site.
+`run()` returns `Ok(())` in both cases.
 
 ## Real-time constraints
 

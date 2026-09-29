@@ -244,8 +244,11 @@ impl<C> Robot<C> {
 mod tests {
     use super::*;
     use crate::{EachTick, Q};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
+
+    // The signal bus is process-global: tests that run or raise take this first.
+    static BUS: Mutex<()> = Mutex::new(());
 
     // A controller written ENTIRELY in api types — no `kmr_core` anywhere in
     // sight. Reads current `Q`, adds one, writes it back. If the boundary is
@@ -278,6 +281,8 @@ mod tests {
     // type-check.)
     #[test]
     fn run_drives_every_builder_kind() {
+        let _bus = BUS.lock().unwrap_or_else(PoisonError::into_inner);
+
         let ticks = Arc::new(Mutex::new(0u32));
         let ticks_ctx = Arc::clone(&ticks);
         let pad = Arc::new(Mutex::new(0u32));
@@ -292,7 +297,9 @@ mod tests {
                 |c: &mut Arc<Mutex<u32>>, _t: &Time, _r: &mut State, _s: &Sensors| {
                     if let Ok(mut n) = c.lock() {
                         *n += 1;
+                        assert!(*n < 500, "the loop ignored the shutdown");
                     }
+                    crate::shutdown!("test: one tick is enough");
                 },
             )
             // threaded: only `&mut T` and the clock, no state.
@@ -300,8 +307,7 @@ mod tests {
             .run()
             .expect("run should drive the schedule and return Ok");
 
-        // The control loop runs `each_tick` once (dev build breaks after one
-        // pass), so the `_with` controller must have fired exactly once.
+        // Graceful shutdown: the raising tick completes, no other starts.
         assert_eq!(*ticks.lock().expect("counter lock"), 1);
     }
 }

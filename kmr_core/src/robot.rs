@@ -209,11 +209,15 @@ impl<CS> Robot<CS> {
     /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
     /// so users never trip it. `kmr_api` forwards this same one bound from its
     /// own `run`.
+    ///
+    /// Returns once a signal ends the loop: `Ok` for a shutdown and for an
+    /// emergency stop alike.
     pub fn run(self) -> Result<(), ApiError>
     where
         CS: Drive,
     {
-        runtime::runtime(self);
+        // TODO: an `Err` for the emergency stop needs a new `ApiError` variant.
+        let _stop = runtime::runtime(self);
         Ok(())
     }
 }

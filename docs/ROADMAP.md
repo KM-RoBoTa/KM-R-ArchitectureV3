@@ -21,7 +21,18 @@ a runtime entity registry — keep the 1kHz hot path static.
 - [x] Document what's already present. All documentation for all methods in
     core. 
 - [x] Learn the basics of macros https://lukaswirth.dev/tlborm/decl-macros/macros-methodical.html
-- [ ] implement the runtime ctrl loop (schedule and time management included)
+- [x] implement the runtime ctrl loop (schedule and time management included)
+- [ ] Runtime, what the loop still misses:
+    - hardware layer: init bodies, `state_transition` (write desired, record
+      the sensed sample), final write on shutdown, torque cut on emergency stop
+    - spawn the threaded controllers (blocked by the hand-off question below)
+    - tick rate per controller
+    - real-time sleep (`clock_nanosleep(TIMER_ABSTIME)` or spin tail)
+    - decide: should an emergency stop make `run()` return `Err`? Needs a new
+      variant in `ApiError` and `UserError`
+    - the `NoControllers` check in `Robot::run()`
+    - `complete_api_example` and `controllers/src/main.rs` now run until
+      Ctrl-C
 - [ ] Think carefully: threaded controller result hand-off. If a threaded
     controller's command gets written by an inline controller, a late result can
     cause unpredictable behavior (e.g. jitter in a sin wave) and the user won't
