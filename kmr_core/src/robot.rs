@@ -5,22 +5,24 @@
 //!
 //! # Examples
 //!
-//! ```rust
-//! use kmr_core::robot::Robot;
-//! fn foo() {
+//! ```no_run
+//! // `no_run`: `run()` enters the control loop and only returns on a signal.
+//! use std::time::Duration;
+//!
+//! use kmr_core::{EachTick, JOINTS, Robot, RobotState, Sensors, Time};
+//!
+//! fn foo(_time: &Time, _state: &mut RobotState<JOINTS>, _sensors: &Sensors) {
 //!     println!("hello world");
 //! }
 //!
-//! # fn main() {
-//!
-//!    Robot::new()
-//!        // Settings
-//!        .dt_ms(1)
-//!        // Controllers
-//!        .add_controller(EachTick, foo)
-//!        .run();
-//! # }
-//! ````
+//! Robot::new()
+//!     // Settings
+//!     .set_dt(Duration::from_millis(1))
+//!     // Controllers
+//!     .add_controller(EachTick, foo)
+//!     .run()
+//!     .expect("the robot has a controller");
+//! ```
 
 use std::time::Duration;
 
@@ -59,17 +61,18 @@ impl Robot<Scheduled> {
     ///
     /// Assuming the most minimal control possible,
     ///
-    /// ```ignore
-    /// use kmr_core::robot::Robot;
+    /// ```no_run
+    /// // `no_run`: `run()` enters the control loop and only returns on a signal.
+    /// use kmr_core::{EachTick, JOINTS, Robot, RobotState, Sensors, Time};
     ///
-    /// fn hello_world(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
+    /// fn hello_world(_time: &Time, _robot: &mut RobotState<JOINTS>, _sensors: &Sensors) {
     ///     println!("Hello World !");
     /// }
     ///
     /// Robot::new()
     ///     .add_controller(EachTick, hello_world)
     ///     .run()
-    ///     .unwrap();
+    ///     .expect("the robot has a controller");
     /// ```
     pub fn new() -> Self {
         Robot {
