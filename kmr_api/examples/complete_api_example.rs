@@ -502,6 +502,7 @@ fn main() -> color_eyre::Result<()> {
     // other to `use_gamepad` on the main loop (reader).
     let pad: SharedPad = Arc::new(Mutex::new(GamepadInput::default()));
 
+    // NOTE: `new()` should be `builder()` no ?
     Robot::new()
         // Settings
         .set_dt(Duration::from_millis(1u64)) // NOTE: or .dt_us(10000)

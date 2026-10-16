@@ -39,6 +39,10 @@ a runtime entity registry — keep the 1kHz hot path static.
     know since the core owns the write (IoC). For now default to the `&mut T`
     passthrough: the threaded controller never writes state nor sends a command
     internally in the core — the user decides who consumes its output.
+- [ ] Rename the core `State<const N>` (`state/history.rs`): it shares its
+    name with `kmr_api::State`, the user-facing handle over `RobotState`, and
+    one tick's sample reads as the whole state. Candidate: `Sample`, which is
+    what `record_sample` already calls it.
 
 ## Open-source transition (in order)
 
