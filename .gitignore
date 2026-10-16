@@ -4,3 +4,6 @@ target/
 # Editor / OS cruft
 *.swp
 .DS_Store
+
+# Structurizr Lite working directory; docs/workspace.json keeps the manual layouts
+docs/.structurizr/

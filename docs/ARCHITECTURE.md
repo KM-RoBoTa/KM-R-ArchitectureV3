@@ -16,6 +16,21 @@ of a query system. A robot has one fixed-shape state, not an open world of
 entities; a runtime query system would only re-derive what the compiler
 already knows.
 
+## Deployment
+
+One `kmr` process drives the robots wired to its host, through its own
+hardware layer. Two topologies:
+
+- **One host, several wired robots.** They form a single `Robot`: `N` is the
+  sum of their joints, with one state, one loop and one clock. Each robot is a
+  group, and each can sit on its own bus (e.g. two snakes on two buses).
+- **One instance per robot.** Each robot runs its own `kmr`, and the instances
+  exchange messages over [Zenoh](https://zenoh.io/).
+
+Zenoh carries messages between instances, not a control loop. A robot's
+controllers run in the `kmr` that owns its hardware layer, so an instance
+cannot drive a robot it only reaches over the network.
+
 ## Design principles
 
 ### 1. State is private
