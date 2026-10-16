@@ -98,23 +98,6 @@ required:
   its subject, so the history leads back to that record. Without it, agentic
   commits would be indistinguishable from hand-written ones once merged.
 
-**How the agent works**
-
-- **Do not block yourself — within limits.** When unattended, do not stop on
-  an open question about the work: pick the most sensible option, prefer the
-  reversible one, and keep going. This never covers an action that is hard to
-  undo or that reaches outside the branch: repository settings, branch
-  protection, force pushes, deletions, releases, anything on `main`. Those
-  wait for the human.
-- **Report every decision.** The PR description carries a "Decisions" section
-  listing each choice made without a human, the alternative, and why. It also
-  lists what was deliberately left undone.
-- **Defend every decision.** Each entry follows
-  [`CONTRIBUTING.md` § Defend your design](CONTRIBUTING.md#defend-your-design):
-  real-time cost first, then quality, then developer experience, then the
-  alternative rejected. An agent's decision is held to the same standard as a
-  human's.
-
 ## Commits, branches & pull requests
 
 - **Commits** follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/),
@@ -129,8 +112,6 @@ required:
 - Keep changes scoped to what was requested; ask before large or destructive
   edits.
 - No silent guessing: if a requirement is ambiguous, ask. State assumptions.
-  When working unattended, see [Agentic work](#agentic-work): decide, and
-  report the decision.
 - Match the existing style (see [Style](#style)).
 - Defend the data structures and the shape of your decisions: real-time
   performance, quality and developer experience, in that order. See
