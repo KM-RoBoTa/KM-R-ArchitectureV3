@@ -4,3 +4,6 @@ target/
 # Editor / OS cruft
 *.swp
 .DS_Store
+
+# Spec Kit scaffolding
+.specify/
