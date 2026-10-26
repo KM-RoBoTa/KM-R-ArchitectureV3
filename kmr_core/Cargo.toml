@@ -1,0 +1,24 @@
+[package]
+name = "kmr_core"
+description = "The kmr engine: state, schedules, control loop, timing and signals."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+rstest.workspace = true
+circular-buffer.workspace = true
+ctrlc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+derive_more.workspace = true
+frunk.workspace = true
+
+[features]
+# Test hooks for the crates built on top of the core: record a sensed sample
+# and read the desired buffer back. Off by default, and only ever enabled from
+# a `[dev-dependencies]` entry, so no release build carries a way to forge a
+# sample or to read the write-only staging area.
+test-util = []

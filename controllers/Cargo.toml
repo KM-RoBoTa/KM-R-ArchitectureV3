@@ -1,0 +1,10 @@
+[package]
+name = "controllers"
+description = "Where robot controllers are written. Depends on kmr_api only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+kmr_api.workspace = true

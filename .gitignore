@@ -7,3 +7,6 @@ target/
 
 # Spec Kit scaffolding
 .specify/
+
+# Structurizr Lite working directory; docs/workspace.json keeps the manual layouts
+docs/.structurizr/

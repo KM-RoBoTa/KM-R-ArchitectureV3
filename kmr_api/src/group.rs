@@ -57,6 +57,8 @@ impl State<'_> {
     /// non-contiguous and in any order; reads and writes preserve that order.
     ///
     /// ```ignore
+    /// // Ignored: a `State` only exists inside a running controller, and
+    /// // `group` itself is not implemented yet.
     /// const R_ARM: [usize; 3] = [3, 4, 5];
     /// let mut arm = robot.group(R_ARM);
     /// let desired = arm.q().unwrap().map(|q| q + Q(0.1));
