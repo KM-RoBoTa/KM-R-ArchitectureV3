@@ -39,14 +39,6 @@ to:
    Always work on a dedicated branch and open a PR. `main` is protected and
    must only ever be updated through a reviewed and merged PR.
 
-**b) Credit yourself.**
-   Do not add `Co-Authored-By:` trailers, `Co-authored-by` lines, "Generated
-   with" footers, or any other attribution naming the AI agent (Claude,
-   ChatGPT, Cursor, Copilot, …) in commit messages or PR descriptions. Commits
-   are authored by the human running the tool, who is accountable for them.
-   CI rejects PRs that break this rule.
-   Saying that AI was used is not credit: disclosure in the pull request is
-   required, see [Agentic work](#agentic-work) and the PR template.
 
 ## Agentic work
 
@@ -68,7 +60,7 @@ committing on its own — is an exception, and only under all of the following.
 
 - It lifts one rule only: that the human writes the code.
 - Everything else stays: the engineering rules, the forceful QA, the design
-  defence, rules (a) and (b), and the review. Before merging, the human must
+  defence, rules (a), and the review. Before merging, the human must
   be able to explain every line, exactly as if they had written it.
 - The invariant code — the sealing in `state/field.rs` and `sealed.rs`, the
   lock-free ordering in `signal.rs`, the HList/`Insert` machinery in
@@ -89,8 +81,7 @@ committing on its own — is an exception, and only under all of the following.
 
 **How it stays visible**
 
-Rule (b) forbids *credit*. It does not forbid *disclosure*, which is
-required:
+Disclosure is required:
 
 - The pull request carries the `agentic` label and its description says the
   work was produced by an agent.
