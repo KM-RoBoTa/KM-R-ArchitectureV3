@@ -365,6 +365,10 @@ fn run_phases<CS: Drive, H: Host, A: Hal>(
     if let Some(sample) = state.push_slot() {
         powered.0.read_all(sample)?;
     }
+    // A pending emergency stop never powers the actuators (SRS FR-4.2).
+    if let Some(signal) = estop(host.poll()) {
+        return Ok(signal);
+    }
     powered.0.torque_on()?;
     init_phase::post_init(robot, state, sensors);
     writes.discard(state, "PostInit");
@@ -466,14 +470,15 @@ mod tests {
 
     const DT: Duration = Duration::from_millis(1);
 
-    // Index of each bus check: two at startup, then five per tick.
+    // Index of each bus check: three at startup, then five per tick.
     const AFTER_PRE_INIT: usize = 0;
     const AFTER_INIT: usize = 1;
-    const TICK_START: usize = 2;
-    const AFTER_FIRST: usize = 3;
-    const AFTER_EACH_TICK: usize = 4;
-    const AFTER_LAST: usize = 5;
-    const TICK_END: usize = 6;
+    const BEFORE_TORQUE_ON: usize = 2;
+    const TICK_START: usize = 3;
+    const AFTER_FIRST: usize = 4;
+    const AFTER_EACH_TICK: usize = 5;
+    const AFTER_LAST: usize = 6;
+    const TICK_END: usize = 7;
     const PER_TICK: usize = 5;
 
     /// Scripted host: never sleeps, never touches the global bus. A raised
@@ -1090,6 +1095,19 @@ mod tests {
                 *log.calls(),
                 [Check, PreInit, Open, Zero, Init, TorqueOff, Close]
             );
+        }
+
+        #[test]
+        fn an_estop_in_post_init_never_powers() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).estop_from(BEFORE_TORQUE_ON);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(log.calls()[..9], STARTUP[..9]);
+            assert_eq!(log.calls()[9..], [TorqueOff, Close]);
         }
 
         #[test]
