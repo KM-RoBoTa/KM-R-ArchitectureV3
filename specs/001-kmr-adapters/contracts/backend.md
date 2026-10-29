@@ -14,24 +14,25 @@ fn force_torque_off(&mut self, port: usize, model: Model, id: u8) -> Result<(), 
 `torque(.., false)` stays for symmetry but the adapter no longer calls it. Every other method is
 unchanged.
 
-### `DxlRs` side (step A4, blocked)
+### `DxlRs` side (step A4)
 
-Needs one `dxl_rs` addition, HUMAN (critical path step 1): `force_torque_off(&self)` on the
-`TorqueOff` type-state (or a free function by port, id and protocol), writing `Torque_Enable` = 0
-with `write1ByteTxRx1` / `write1ByteTxRx2` at the model's address (24 on AX, 64 on X). The
-adapter call site then removes the actuator's `Powered` entry if there is one.
+`dxl_rs` has `force_torque_off(&self)` on the `TorqueOff` type-state (branch
+`agent/force-torque-off`, the one the dev bench builds): it writes `Torque_Enable` = 0 with
+`write1ByteTxRx1` / `write1ByteTxRx2` at the model's address (24 on AX, 64 on X) and reads the
+status packet. A `TorqueOff` actuator is built for any id without I/O, so
+`DxlRs::force_torque_off` also reaches an actuator this backend never switched on, then drops the
+`Powered` entry kept for it, if any. No `unpower` fallback is left on this path: `unpower` serves
+`torque(.., false)` only. The strict fake models the same behaviour.
 
-Until then (shipped with A3): `DxlRs::force_torque_off` calls today's `unpower`. It cuts an
-actuator this backend powered and returns `Err(Io)`, with one warning, for any other. The
-`dynamixel` build keeps compiling; the bench check of critical path step 11 would catch the gap.
-The strict fake models `force_torque_off` as the SDK will have it after A4, not this fallback:
-the tests pin the target behaviour.
+The adapter's `torque_off` tries each actuator up to `TORQUE_OFF_ATTEMPTS` (3) times, back to
+back, and warns for one that fails them all.
 
 ## Change: `sync_write_start_goal` (2026-10-29, torque on without a jump)
 
 ```rust
-/// Goals of one group, `(id, raw)`, in `register`, in one transaction, none of them
-/// switched on here: what each holds once `torque` switches it on.
+/// Goals of one group, `(id, raw)`, in `register`, none of them switched on here: what
+/// each holds once `torque` switches it on. One transaction where the SDK allows it.
+/// Refused whole, before any write, when one of them is switched on here.
 fn sync_write_start_goal(&mut self, port: usize, model: Model, register: GoalRegister,
     goals: &[(u8, u32)]) -> Result<(), BackendError>;
 ```
@@ -39,10 +40,12 @@ fn sync_write_start_goal(&mut self, port: usize, model: Model, register: GoalReg
 `torque_on` writes Goal Position = present position (read then), or Goal Velocity / Goal
 Current = 0, before Torque Enable. `torque(.., true)` is refused (`Err(Io)`) unless a start goal
 was written since the actuator was last switched; a start goal naming an actuator switched on here
-is refused whole. The fake models the goal registers and pins this order. `DxlRs` cannot: `dxl_rs`
-writes a goal only through a torque-on handle, and Goal Position only. Until it can (HUMAN,
-`dxl_rs`: a goal write on the `TorqueOff` type-state), `DxlRs` keeps the goal and writes it right
-after Torque Enable, warns once, and refuses Goal Velocity and Goal Current.
+is refused whole. The fake models the goal registers and pins this order. `DxlRs` follows it for
+Goal Position: `dxl_rs`'s `set_goal_position_raw` on the `TorqueOff` type-state writes the goal,
+torque still off, and confirms it (`TxRx`). That is one write per actuator, not a sync write:
+`dxl_rs` sync-writes only from torque-on lists. `torque(.., true)` then enables the torque.
+`DxlRs` refuses Goal Velocity and Goal Current, with one warning: `dxl_rs` writes Goal Position
+only.
 
 ## Strictness: what the fake must refuse (step A1)
 

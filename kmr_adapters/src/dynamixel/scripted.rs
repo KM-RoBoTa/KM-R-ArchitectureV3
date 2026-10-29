@@ -675,7 +675,8 @@ impl Backend for Scripted {
 
     /// Refused whole when it names an actuator switched on here: written
     /// then, it is no start goal. Every register is taken, as `DxlRs` will
-    /// once `dxl_rs` writes them before the torque: the tests pin that.
+    /// once `dxl_rs` writes Goal Velocity and Goal Current too: the tests pin
+    /// that.
     fn sync_write_start_goal(
         &mut self,
         port: usize,

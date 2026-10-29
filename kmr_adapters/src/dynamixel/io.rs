@@ -227,7 +227,7 @@ pub(crate) enum Outcome {
     Bus(BackendError),
 }
 
-/// Up to one goal per member of one table, sent in one transaction.
+/// Up to one goal per member of one table, sent in one backend call.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Goals {
     /// Table the goals go to.
@@ -286,8 +286,8 @@ impl Goals {
         })
     }
 
-    /// Sends the queued goals to `register` in one transaction, before the
-    /// torque goes on; nothing when none is queued.
+    /// Sends the queued goals to `register` in one `sync_write_start_goal`,
+    /// before the torque goes on; nothing when none is queued.
     pub(crate) fn send_start<B: Backend>(
         &self,
         backend: &mut B,
@@ -501,7 +501,7 @@ pub(super) fn write_batch<B: Backend, const NB: usize>(
 
 /// Writes, torque still off, the goal each powered actuator of group
 /// `number` holds once powered: its present position, read now, or a zero
-/// velocity or current. One transaction per goal register.
+/// velocity or current. One `sync_write_start_goal` per goal register.
 pub(super) fn write_start_goals<B: Backend, const NB: usize>(
     adapter: &mut Dynamixel<B, NB>,
     number: usize,

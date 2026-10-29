@@ -139,9 +139,11 @@ pub(crate) trait Backend {
         goals: &[(u8, u32)],
     ) -> Result<(), BackendError>;
 
-    /// Goals of one group, `(id, raw)`, in `register`, in one transaction,
-    /// none of them switched on here: what each holds once `torque`
-    /// switches it on. Refused whole when one of them is switched on here.
+    /// Goals of one group, `(id, raw)`, in `register`, none of them switched
+    /// on here: what each holds once `torque` switches it on. One
+    /// transaction where the SDK allows it; `DxlRs` writes and confirms one
+    /// goal per actuator. Refused whole, before any write, when one of them
+    /// is switched on here.
     fn sync_write_start_goal(
         &mut self,
         port: usize,
