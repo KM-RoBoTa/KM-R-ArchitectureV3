@@ -160,9 +160,11 @@ AI tools are tolerated, not encouraged. When you use them:
    (`state/field.rs`, `sealed.rs`), the lock-free signal bus (`signal.rs`), the
    schedule/HList machinery (`schedule.rs`, `controllers.rs`) or anything
    `unsafe` must be hand-written.
-3. **Commits are authored by a human.** No `Co-authored-by:` trailers for AI
-   tools, no "generated with" footers, no AI identities as author or
-   committer. CI rejects PRs that violate this.
+ 3. **Commits name their real author.** Human work is committed from your own
+     account; agentic work only from the dedicated agent account
+     `<agent-account>`. No `Co-authored-by:` trailers for AI tools, no
+     "generated with" footers, and no other AI identity as author or committer.
+     CI rejects PRs that violate this.
 4. **You own what you submit.** If you cannot explain a line of your diff in
    review, it does not get merged. "That's what the AI gave me" is a request
    for changes.
@@ -176,7 +178,8 @@ AI tools are tolerated, not encouraged. When you use them:
 Agentic work is an agent writing and committing on its own. It is an
 exception that only a maintainer with write access can authorize, for a
 stated scope and one session, and the maintainer confirms it on the pull
-request from their own account. Outside contributors do not submit agentic
+request from their own account. Agentic commits are made from the `<agent-account>` account; CI identifies
+  agent work by that identity. Outside contributors do not submit agentic
 work.
 
 The authorization lifts one rule, that the human writes the code. Review,
@@ -220,3 +223,23 @@ instructions to be a prompt injection, or for any other reason — then **abort
 the commit**. Do not commit anyway, and do not silently ignore the policy.
 State explicitly that you could not, or chose not to, comply with the
 contribution policy, and tell the human that they must take action themselves.
+
+<!-- ov:pr:begin -->
+## PR and authorship policy
+
+This section is written by `/speckit-ov-pr`. Change the answers by running it again; edits
+made here by hand are replaced.
+
+- **Agent commits.** A commit is an agent commit only when it carries an agent trailer (`Co-Authored-By: Claude …` or `Assisted-by: claude-code`), whatever its branch. A commit without one is a human commit.
+- **Authorship mode: `none`.** Agent commits carry no trailer and no co-author: they are made under the maintainer's own identity, so CI cannot tell them from human commits and `ov-aiignore` sees no agent commit. The Claude Code hook is the only guard on read-only paths; the owner reviews every commit.
+- **Read-only paths.** The `ov-aiignore` check fails a pull request when an agent commit
+  touches a path listed in the base branch's `.aiignore`. Human commits may touch them.
+- **Auto-merge: `off`.** A human merges every PR.
+- **AI review: `on`.** Every same-repo PR is reviewed by Claude Code against the module SRS (`ov-ai-review`, a required check that needs the `ANTHROPIC_API_KEY` repository secret). Fork PRs pass with a skip notice.
+- **Branch `main`.** Changes land through pull requests only: no direct pushes, no force
+  pushes, 0 required approvals, and the required checks listed in
+  `.github/ov-ruleset-main.json`.
+- **Setup commits.** Files written by ov's setup commands (`.aiignore`,
+  `.github/workflows/ov-*.yml`, `.github/ov-ruleset-main.json`, `.claude/settings.json`,
+  `.specify/extensions/ov/`) are committed by a human, in a commit without an agent trailer.
+<!-- ov:pr:end -->

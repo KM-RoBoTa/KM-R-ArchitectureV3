@@ -1,8 +1,8 @@
 name: Human authorship
 
-# Not an anti-AI policy: AI tools are tolerated (see CONTRIBUTING.md). This
-# only forbids crediting an AI as author/co-author of a commit, so every commit
-# carries explicit human accountability (AGENTS.md, rule b).
+# Not an anti-AI policy: AI tools are tolerated (see CONTRIBUTING.md). Agent
+# Co-Authored-By trailers are allowed; an AI as commit author or committer is
+# not, so every commit carries explicit human accountability.
 
 on:
   pull_request:
@@ -81,9 +81,9 @@ jobs:
 
           if [ "$fail" -ne 0 ]; then
             echo ""
-            echo "One or more commits credit an AI as (co-)author."
-            echo "AI tools are tolerated, but each commit must be attributed to"
-            echo "the human who stands behind it (AGENTS.md, rule b)."
+            echo "One or more commits have an AI author, committer or footer."
+            echo "AI tools are tolerated, but each commit must be authored by"
+            echo "the human who stands behind it."
             echo "Reword the commit message(s) and force-push the PR branch."
             exit 1
           fi

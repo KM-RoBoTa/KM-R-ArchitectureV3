@@ -1,0 +1,23 @@
+# .aiignore: paths that are read-only for agents. Gitignore syntax.
+#
+# The ov PreToolUse guard denies Edit, Write, MultiEdit and NotebookEdit on
+# every path listed here. Read is never blocked: listed paths are read-only,
+# not hidden.
+#
+# Edits made through Bash (sed -i, shell redirects, ...) are not intercepted
+# by the guard. The ov-aiignore CI check is the backstop: it fails a PR when
+# an agent commit touches a path listed in the base branch's .aiignore.
+#
+# Only a human edits this file. Commit changes to it as a human commit.
+
+# ov enforcement files
+.aiignore
+.claude/settings.json
+.github/workflows/ov-*.yml
+.github/ov-ruleset-main.json
+.specify/extensions/ov/**
+
+# the human-written SRS (agents never author it)
+docs/srs/SRS.md
+
+# project paths (added by /speckit-ov-nogo)

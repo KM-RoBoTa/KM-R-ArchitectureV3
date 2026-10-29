@@ -27,3 +27,15 @@ jobs:
       # --all-targets also lints tests and examples.
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace --no-fail-fast
+
+  cross:
+    name: cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add aarch64-unknown-linux-gnu armv7-unknown-linux-gnueabihf
+      # No `dynamixel` feature: the robot binary must build with no C SDK and no device.
+      - run: cargo build -p kmr_adapters -p kmr_api --target aarch64-unknown-linux-gnu
+      - run: cargo build -p kmr_adapters -p kmr_api --target armv7-unknown-linux-gnueabihf

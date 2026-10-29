@@ -39,6 +39,12 @@ to:
    Always work on a dedicated branch and open a PR. `main` is protected and
    must only ever be updated through a reviewed and merged PR.
 
+  **b) Commit from any account but `<agent-account>`, or credit yourself.**
+     Every commit you make is authored and committed by the dedicated agent
+     account `<agent-account> <<agent-email>>`, configured through `gh`. That
+     identity is how CI tells AI work from human work. No `Co-Authored-By:`
+     trailers and no "Generated with" footers naming the AI agent. CI rejects
+     PRs that break this rule.
 
 ## Agentic work
 
@@ -60,7 +66,7 @@ committing on its own — is an exception, and only under all of the following.
 
 - It lifts one rule only: that the human writes the code.
 - Everything else stays: the engineering rules, the forceful QA, the design
-  defence, rules (a), and the review. Before merging, the human must
+  defence, rules (a) and (b), and the review. Before merging, the human must
   be able to explain every line, exactly as if they had written it.
 - The invariant code — the sealing in `state/field.rs` and `sealed.rs`, the
   lock-free ordering in `signal.rs`, the HList/`Insert` machinery in
@@ -81,7 +87,7 @@ committing on its own — is an exception, and only under all of the following.
 
 **How it stays visible**
 
-Disclosure is required:
+Rule (b) marks each commit. The pull request must disclose the work too:
 
 - The pull request carries the `agentic` label and its description says the
   work was produced by an agent.

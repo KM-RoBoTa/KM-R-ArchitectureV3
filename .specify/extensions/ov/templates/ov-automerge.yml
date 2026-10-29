@@ -1,0 +1,26 @@
+# ov-automerge: turns on GitHub auto-merge (squash) for same-repo PRs, so they
+# merge once the ruleset's required checks pass. Installed by /speckit-ov-pr
+# when auto_merge is on. PRs from forks are never auto-merged (FR-054).
+# Requires the repository setting "Allow auto-merge".
+name: ov-automerge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  ov-automerge:
+    name: ov-automerge
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh pr merge --auto --squash "$PR_NUMBER"

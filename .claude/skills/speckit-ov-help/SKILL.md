@@ -1,0 +1,1 @@
+../../../.specify/extensions/ov/.specify-dev/agent-commands/claude/speckit-ov-help/SKILL.md

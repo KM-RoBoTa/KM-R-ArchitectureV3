@@ -1,0 +1,43 @@
+# ov-aiignore: fails a PR when an agent commit (a commit carrying an agent
+# trailer) touches a path listed in the base branch's .aiignore.
+# Installed by /speckit-ov-nogo. Runs for every PR, forks included.
+#
+# Safety: pull_request_target runs this definition and the ov scripts from the
+# base branch. The PR head is fetched as refs/pull/<n>/head and never checked
+# out or executed, and no PR-controlled value is interpolated into a script.
+name: ov-aiignore
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  ov-aiignore:
+    name: ov-aiignore
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the PR head (not checked out)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c "http.${SERVER_URL}/.extraheader=AUTHORIZATION: basic ${auth}" \
+            fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+
+      - name: Check agent commits against the base .aiignore
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .specify/extensions/ov/scripts/bash/ov-ci-aiignore.sh "$BASE_SHA" "$HEAD_SHA"

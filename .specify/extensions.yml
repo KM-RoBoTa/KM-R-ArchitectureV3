@@ -1,0 +1,14 @@
+installed:
+- ov
+settings:
+  auto_execute_hooks: true
+hooks:
+  after_implement:
+  - extension: ov
+    command: speckit.ov.c4-code
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Update the C4 model (C3/C4) for the module just implemented?
+    description: Update the C4 model for the module just implemented
+    condition: null

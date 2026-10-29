@@ -1,0 +1,66 @@
+schema_version: "1.0"
+
+extension:
+  id: ov
+  name: "ov"
+  version: "0.1.0"
+  description: "Spec-driven guardrails for Claude Code agents: read-only paths, authorship and PR policy, SRS and C4 workflow"
+  author: "TODO(author)"
+  repository: "TODO(author)"
+  license: "TODO(author)"
+
+requires:
+  speckit_version: ">=1.2.0"
+  tools:
+    - name: git
+      required: true
+    - name: jq
+      required: true
+    - name: gh
+      required: false
+
+provides:
+  commands:
+    - name: speckit.ov.init
+      file: commands/speckit.ov.init.md
+      description: "Initialize ov: write AGENTS.md and the docs/ skeleton, then verify the spec-kit hook and event"
+    - name: speckit.ov.help
+      file: commands/speckit.ov.help.md
+      description: "Show the ov command order and which once-per-project steps are missing (read-only)"
+    - name: speckit.ov.srs
+      file: commands/speckit.ov.srs.md
+      description: "Guide the human through writing docs/srs/SRS.md, then split it into docs/srs/modules/<name>.md"
+    - name: speckit.ov.c4-context
+      file: commands/speckit.ov.c4-context.md
+      description: "Build the C4 context and container levels (C1/C2) in docs/workspace.dsl with the human"
+    - name: speckit.ov.c4-code
+      file: commands/speckit.ov.c4-code.md
+      description: "Write the C4 component and code levels (C3/C4) for one module in docs/c4/<module>.dsl"
+    - name: speckit.ov.nogo
+      file: commands/speckit.ov.nogo.md
+      description: "Create .aiignore (paths read-only for agents) and install the ov-aiignore CI check"
+    - name: speckit.ov.pr
+      file: commands/speckit.ov.pr.md
+      description: "Set the PR and authorship policy: config, CONTRIBUTING.md, ruleset template and optional workflows"
+    - name: speckit.ov.guard
+      file: commands/speckit.ov.guard.md
+      description: "Internal: PreToolUse guard that denies agent edits to paths listed in .aiignore (run by spec-kit, not by users)"
+
+  config:
+    - name: "ov-config.yml"
+      template: "ov-config-template.yml"
+      description: "ov authorship, auto-merge and AI review settings"
+      required: false
+
+hooks:
+  after_implement:
+    command: speckit.ov.c4-code
+    optional: true
+    prompt: "Update the C4 model (C3/C4) for the module just implemented?"
+    description: "Update the C4 model for the module just implemented"
+
+events:
+  pre_tool_use:
+    command: speckit.ov.guard
+    matcher: "Edit|Write|MultiEdit|NotebookEdit"
+    timeout: 10
