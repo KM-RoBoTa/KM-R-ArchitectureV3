@@ -21,7 +21,7 @@ use kmr_core::hal::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides,
 use kmr_core::state::{JOINTS, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
-use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState};
+use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
 use super::scripted::{Call, Scripted};
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
@@ -1248,13 +1248,13 @@ fn a_failed_start_goal_write_powers_nothing() -> Result<(), DynamixelError> {
     configured(&mut adapter)?;
     adapter
         .backend
-        .fail_port(Call::SyncWriteStartGoal, 1, BackendError::Io);
+        .fail_port(Call::SyncWriteStartGoal, 1, BackendError::Io(Wire::TxFail));
 
     assert_eq!(
         adapter.torque_on(),
         Err(DynamixelError::Backend {
             bus: "wrist",
-            source: BackendError::Io
+            source: BackendError::Io(Wire::TxFail)
         })
     );
     assert_eq!(adapter.backend.count(Call::Torque), 0);
@@ -1512,23 +1512,31 @@ fn a_port_that_fails_to_open_is_named_with_its_bus_and_serial() -> io::Result<()
     roots.link(WRIST, &wrist.slave)?;
     let mut adapter = roots.rig(bound(MIX_TABLE, &MIX_PLUGINS));
     assert!(adapter.check(Overrides::default()).is_ok());
-    adapter.backend.fail_open_port(1, BackendError::Io);
+    adapter.backend.fail_open_port(1, BackendError::PortOpen);
 
     assert_eq!(
         adapter.open(),
         Err(DynamixelError::PortOpen {
             bus: "wrist",
             port: Port::ById(WRIST),
-            source: BackendError::Io
+            source: BackendError::PortOpen
         })
     );
 
-    adapter.backend.fail_open(BackendError::Io);
+    adapter.backend.fail_open(BackendError::SdkClaimed);
+    let error = adapter.open();
     assert_eq!(
-        adapter.open(),
+        error,
         Err(DynamixelError::Sdk {
-            source: BackendError::Io
+            source: BackendError::SdkClaimed
         })
+    );
+    let message = error.err().map(|error| error.to_string());
+    assert_eq!(
+        message.as_deref(),
+        Some(
+            "the Dynamixel SDK could not be brought up: the C SDK was already brought up in this process, and takes one bring-up per process"
+        )
     );
     Ok(())
 }

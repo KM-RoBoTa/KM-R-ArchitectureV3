@@ -15,14 +15,16 @@ use ::dxl_rs::actuator::{
     Xw540T260,
 };
 use ::dxl_rs::actuators_list::{ActuatorVariant, ActuatorsList, P1, P2};
-use ::dxl_rs::error::{CommunicationError, Error, StatusPacketError};
+use ::dxl_rs::error::{
+    ActuatorError, CommunicationError, Error, PortError, StatusPacketError, TransportError,
+};
 use ::dxl_rs::port::{PortBuilder, PortHandler, PortNumber};
 use ::dxl_rs::transport::group_sync_read;
 use kmr_core::state::JOINTS;
 use tracing::warn;
 
 use super::backend::{
-    Backend, BackendError, GoalRegister, Health, OpenFailure, PortSpec, RawState, Setting,
+    Backend, BackendError, GoalRegister, Health, OpenFailure, PortSpec, RawState, Setting, Wire,
 };
 use super::config::{Model, Protocol};
 
@@ -153,7 +155,7 @@ impl DxlRs {
             .get(..self.opened)
             .and_then(|numbers| numbers.get(port))
             .copied()
-            .ok_or(BackendError::Io)
+            .ok_or(BackendError::PortNotOpen { port })
     }
 
     /// Whether actuator `id` on `port` was switched on here.
@@ -186,10 +188,14 @@ impl DxlRs {
     ) -> Result<(), BackendError> {
         let known = self.is_on(port, id);
         let free = self.powered.iter().position(Option::is_none);
+        let full = BackendError::HandlesFull { max: JOINTS };
         if !known && free.is_none() {
-            return Err(BackendError::Io);
+            return Err(full);
         }
-        let lists = self.lists.get_mut(port).ok_or(BackendError::Io)?;
+        let lists = self
+            .lists
+            .get_mut(port)
+            .ok_or(BackendError::PortNotOpen { port })?;
         let actuator: ActuatorVariant<TorqueOn> = match model {
             Model::Ax12a | Model::Rx28 => {
                 let on = enable(Ax12A::new(id, number))?;
@@ -232,7 +238,7 @@ impl DxlRs {
         }
         let slot = free
             .and_then(|free| self.powered.get_mut(free))
-            .ok_or(BackendError::Io)?;
+            .ok_or(full)?;
         *slot = Some(Powered { port, actuator });
         self.set_on(port, id, true);
         Ok(())
@@ -246,7 +252,7 @@ impl DxlRs {
                 &UNPOWERED_WARNED,
                 "cannot switch off the torque of an actuator this process did not switch on",
             );
-            return Err(BackendError::Io);
+            return Err(BackendError::NotPowered { id });
         };
         if let Some(powered) = slot.as_ref() {
             disable(&powered.actuator)?;
@@ -282,13 +288,72 @@ impl Default for DxlRs {
     }
 }
 
-/// The backend error of an SDK error.
+/// The backend error of an SDK error, one for each: `Io` for a failed
+/// transaction only.
 fn sdk_error(error: &Error) -> BackendError {
     match error {
-        Error::Communication(CommunicationError::RxTimeout) => BackendError::Timeout,
+        Error::Communication(failure) => match *failure {
+            CommunicationError::RxTimeout => BackendError::Timeout,
+            CommunicationError::PortBusy => BackendError::Io(Wire::PortBusy),
+            CommunicationError::TxFail => BackendError::Io(Wire::TxFail),
+            CommunicationError::RxFail => BackendError::Io(Wire::RxFail),
+            CommunicationError::TxError => BackendError::Io(Wire::TxError),
+            CommunicationError::RxWaiting => BackendError::Io(Wire::RxWaiting),
+            CommunicationError::RxCorrupt => BackendError::Io(Wire::RxCorrupt),
+            CommunicationError::NotAvailable => BackendError::Io(Wire::NotAvailable),
+            CommunicationError::Unknown(code) => BackendError::Io(Wire::Unknown(code)),
+        },
+        Error::Io(error) => BackendError::Io(Wire::Os(error.kind())),
         Error::StatusPacket(StatusPacketError::NullMessage { code }) => BackendError::Status(*code),
-        _ => BackendError::Io,
+        Error::StatusPacket(StatusPacketError::Message(_)) => BackendError::StatusUncoded,
+        Error::Port(PortError::FailedToOpenPort) => BackendError::PortOpen,
+        Error::Port(PortError::FailedToSetBaudrate) => BackendError::BaudRate,
+        Error::Transport(TransportError::DisallowedAction) => BackendError::MixedProtocols,
+        Error::Transport(TransportError::BroadcastPingFailed) => BackendError::BroadcastPing,
+        Error::Transport(
+            TransportError::GroupSyncWriteInitFailed
+            | TransportError::GroupSyncWriteAddParamFailed
+            | TransportError::GroupSyncReadAddParamFailed,
+        ) => BackendError::SyncGroup,
+        Error::Actuator(ActuatorError::ExeededAngleLimit(goal, min, max)) => {
+            BackendError::GoalOutsideLimits {
+                goal: *goal,
+                min: *min,
+                max: *max,
+            }
+        }
+        Error::Actuator(ActuatorError::ActuatorNotFound(id)) => BackendError::NotListed { id: *id },
+        Error::Actuator(ActuatorError::NoRegister(readable)) => BackendError::NoRegister {
+            register: register_name(*readable),
+        },
+        Error::Cstring(_) => BackendError::PathNul,
+        Error::FolderEmpty => BackendError::NoControlTable,
     }
+}
+
+/// Name of the register `readable` reads.
+const fn register_name(readable: Readable) -> &'static str {
+    match readable {
+        Readable::PresentPosition => "Present Position",
+        Readable::PresentVelocity => "Present Velocity",
+        Readable::PresentPwm => "Present PWM",
+        Readable::PresentCurrent => "Present Current",
+        Readable::PresentLoad => "Present Load",
+        Readable::PresentInputVoltage => "Present Input Voltage",
+        Readable::PresentTemperature => "Present Temperature",
+        Readable::Moving => "Moving",
+        Readable::MovingStatus => "Moving Status",
+        Readable::HardwareErrorStatus => "Hardware Error Status",
+        Readable::RealtimeTick => "Realtime Tick",
+        Readable::TemperatureLimit => "Temperature Limit",
+        Readable::MinVoltageLimit => "Min Voltage Limit",
+        Readable::MaxVoltageLimit => "Max Voltage Limit",
+    }
+}
+
+/// `value`, read from `register`, as a `T`.
+fn narrow<T: TryFrom<u32>>(register: &'static str, value: u32) -> Result<T, BackendError> {
+    T::try_from(value).map_err(|_| BackendError::Overflow { register, value })
 }
 
 /// Switches the torque of `actuator` on.
@@ -319,7 +384,7 @@ fn read_register(
     let rows = group_sync_read(number, address, size, &[id]).map_err(|error| sdk_error(&error))?;
     rows.first()
         .and_then(|&(_, value)| value)
-        .ok_or(BackendError::Io)
+        .ok_or(BackendError::NoValue { id })
 }
 
 /// One Protocol 2 register of every actuator of `ids`, in one sync read:
@@ -333,10 +398,13 @@ fn sync_read(
 ) -> Result<(), BackendError> {
     let rows = group_sync_read(number, address, size, ids).map_err(|error| sdk_error(&error))?;
     if rows.len() != ids.len() {
-        return Err(BackendError::Io);
+        return Err(BackendError::RowMismatch {
+            ids: ids.len(),
+            rows: rows.len(),
+        });
     }
-    for (index, &(_, value)) in rows.iter().enumerate() {
-        each(index, value.ok_or(BackendError::Io));
+    for (index, &(id, value)) in rows.iter().enumerate() {
+        each(index, value.ok_or(BackendError::NoValue { id }));
     }
     Ok(())
 }
@@ -377,24 +445,30 @@ impl Backend for DxlRs {
     fn open_ports(&mut self, ports: &[PortSpec<'_>]) -> Result<(), OpenFailure> {
         let whole = |source| OpenFailure { port: None, source };
         if ports.len() > MAX_PORTS {
-            return Err(whole(BackendError::Io));
+            return Err(whole(BackendError::TooManyPorts {
+                ports: ports.len(),
+                max: MAX_PORTS,
+            }));
         }
         if SDK_CLAIMED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            warn!("dxl_rs: the C SDK was already brought up in this process");
-            return Err(whole(BackendError::Io));
+            return Err(whole(BackendError::SdkClaimed));
         }
         let mut handlers: [Option<PortHandler<'_>>; MAX_PORTS] = [const { None }; MAX_PORTS];
         for (port, (handler, spec)) in handlers.iter_mut().zip(ports).enumerate() {
-            let dev = spec.path.to_str().ok_or(on_port(port, BackendError::Io))?;
-            let baud = i32::try_from(spec.baud).map_err(|_| on_port(port, BackendError::Io))?;
+            let dev = spec
+                .path
+                .to_str()
+                .ok_or(on_port(port, BackendError::PathNotUtf8))?;
+            let baud = i32::try_from(spec.baud)
+                .map_err(|_| on_port(port, BackendError::BaudTooHigh { baud: spec.baud }))?;
             let built = PortBuilder::default()
                 .dev(dev)
                 .baud(baud)
                 .build()
-                .map_err(|_| on_port(port, BackendError::Io))?;
+                .map_err(|_| on_port(port, BackendError::PortSettings))?;
             *handler = Some(built);
         }
         for (port, (number, handler)) in self
@@ -450,8 +524,14 @@ impl Backend for DxlRs {
         out: &mut [Result<RawState, BackendError>],
     ) -> Result<(), BackendError> {
         let number = self.number(port)?;
-        if model.protocol() != Protocol::Two || out.len() != ids.len() {
-            return Err(BackendError::Io);
+        if model.protocol() != Protocol::Two {
+            return Err(BackendError::NoSyncRead);
+        }
+        if out.len() != ids.len() {
+            return Err(BackendError::SlotMismatch {
+                ids: ids.len(),
+                slots: out.len(),
+            });
         }
         out.fill(Ok(RawState::default()));
         sync_read(number, PRESENT_CURRENT, ids, |index, raw| {
@@ -482,21 +562,29 @@ impl Backend for DxlRs {
     ) -> Result<(), BackendError> {
         self.number(port)?;
         let mut narrow = [(0, 0); JOINTS];
-        let narrow = narrow.get_mut(..goals.len()).ok_or(BackendError::Io)?;
+        let narrow = narrow
+            .get_mut(..goals.len())
+            .ok_or(BackendError::TooManyGoals {
+                goals: goals.len(),
+                max: JOINTS,
+            })?;
         for (slot, &(id, raw)) in narrow.iter_mut().zip(goals) {
             if !self.is_on(port, id) {
-                return Err(BackendError::Io);
+                return Err(BackendError::NotPowered { id });
             }
-            let Ok(raw) = u16::try_from(raw) else {
+            let Ok(narrowed) = u16::try_from(raw) else {
                 warn_once(
                     &GOAL_RANGE_WARNED,
                     "goal position above u16::MAX, the sync write of dxl_rs takes u16",
                 );
-                return Err(BackendError::Io);
+                return Err(BackendError::GoalTooWide { id, raw });
             };
-            *slot = (id, raw);
+            *slot = (id, narrowed);
         }
-        let lists = self.lists.get(port).ok_or(BackendError::Io)?;
+        let lists = self
+            .lists
+            .get(port)
+            .ok_or(BackendError::PortNotOpen { port })?;
         match model.protocol() {
             Protocol::One => lists.one.sync_write_goal_positions(narrow),
             Protocol::Two => lists.two.sync_write_goal_positions(narrow),
@@ -522,10 +610,10 @@ impl Backend for DxlRs {
                 &GOAL_REGISTER_WARNED,
                 "cannot write Goal Velocity or Goal Current, only Goal Position",
             );
-            return Err(BackendError::Io);
+            return Err(BackendError::Unwritable { register });
         }
-        if goals.iter().any(|&(id, _)| self.is_on(port, id)) {
-            return Err(BackendError::Io);
+        if let Some(&(id, _)) = goals.iter().find(|&&(id, _)| self.is_on(port, id)) {
+            return Err(BackendError::AlreadyPowered { id });
         }
         for &(id, raw) in goals {
             with_actuator!(model, id, number, actuator => actuator.set_goal_position_raw(raw))
@@ -547,7 +635,7 @@ impl Backend for DxlRs {
             return self.unpower(port, id);
         }
         if !self.start_slot(port, id).is_some_and(|started| *started) {
-            return Err(BackendError::Io);
+            return Err(BackendError::NoStartGoal { id });
         }
         self.power(port, model, id, number)?;
         if let Some(started) = self.start_slot(port, id) {
@@ -578,14 +666,13 @@ impl Backend for DxlRs {
     ) -> Result<u8, BackendError> {
         let number = self.number(port)?;
         if model.protocol() != Protocol::Two {
-            return Err(BackendError::Io);
+            return Err(BackendError::NoSetting { setting });
         }
         let register = match setting {
             Setting::OperatingMode => OPERATING_MODE,
             Setting::TorqueEnable => TORQUE_ENABLE,
         };
-        let raw = read_register(number, register, id)?;
-        u8::try_from(raw).map_err(|_| BackendError::Io)
+        narrow(setting.name(), read_register(number, register, id)?)
     }
 
     /// Protocol 2: three sync reads. Protocol 1 has no sync read and no
@@ -602,22 +689,24 @@ impl Backend for DxlRs {
             let temperature = read(Readable::PresentTemperature)?;
             return Ok(Health {
                 error_status: 0,
-                voltage_dv: u16::try_from(voltage).map_err(|_| BackendError::Io)?,
-                temperature_c: u8::try_from(temperature).map_err(|_| BackendError::Io)?,
+                voltage_dv: narrow(register_name(Readable::PresentInputVoltage), voltage)?,
+                temperature_c: narrow(register_name(Readable::PresentTemperature), temperature)?,
             });
         }
         let register = |readable| {
             with_actuator!(model, id, number, actuator => actuator.register_of(readable))
                 .map(|register| (register.address, register.size))
-                .ok_or(BackendError::Io)
+                .ok_or(BackendError::NoRegister {
+                    register: register_name(readable),
+                })
         };
         let status = read_register(number, register(Readable::HardwareErrorStatus)?, id)?;
         let voltage = read_register(number, register(Readable::PresentInputVoltage)?, id)?;
         let temperature = read_register(number, register(Readable::PresentTemperature)?, id)?;
         Ok(Health {
-            error_status: u8::try_from(status).map_err(|_| BackendError::Io)?,
-            voltage_dv: u16::try_from(voltage).map_err(|_| BackendError::Io)?,
-            temperature_c: u8::try_from(temperature).map_err(|_| BackendError::Io)?,
+            error_status: narrow(register_name(Readable::HardwareErrorStatus), status)?,
+            voltage_dv: narrow(register_name(Readable::PresentInputVoltage), voltage)?,
+            temperature_c: narrow(register_name(Readable::PresentTemperature), temperature)?,
         })
     }
 
@@ -640,7 +729,7 @@ impl Backend for DxlRs {
                 Ok((u32::from(cw), u32::from(ccw)))
             }
             Model::Xm430W210 | Model::Xw430T200 | Model::Xw540T140 | Model::Xw540T260 => {
-                Err(BackendError::Io)
+                Err(BackendError::NoAngleLimits)
             }
         }
     }

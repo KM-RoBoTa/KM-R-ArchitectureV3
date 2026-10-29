@@ -381,8 +381,7 @@ pub(crate) fn read_table<B: Backend>(
                             _ => report(index, Outcome::Invalid),
                         }
                     }
-                    // A port failure is the bus's, not the actuator's.
-                    Err(error @ BackendError::Io) => report(index, Outcome::Bus(error)),
+                    Err(error) if error.is_bus() => report(index, Outcome::Bus(error)),
                     Err(error) => report(index, Outcome::Lost(error)),
                 }
             }
