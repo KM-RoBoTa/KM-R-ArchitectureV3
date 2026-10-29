@@ -1,7 +1,8 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
-use crate::{Bus, Schedule, Sensors, Spec, State, Time, UserError, payload::Payload};
+use crate::{Binding, Bus, Schedule, Sensors, Spec, State, Time, UserError, payload::Payload};
+use kmr_core::hal::NoHardware;
 use kmr_core::{
     ControlFn, ControlFnWith, Inline, InlineWith, Insert, Scheduled, ThreadFn, Threaded,
 };
@@ -253,35 +254,61 @@ impl<H, C> Robot<H, C> {
         self.grown(|inner| inner.add_control_fn_as_thread(schedule, ctx, ApiThreaded(f)))
     }
 
-    // Forwards to the core, which walks the schedule. The `Drive` bound is
-    // `kmr_core`'s schedule-walk trait — `pub` but `#[doc(hidden)]`, satisfied
-    // by every schedule the builder can produce, so users never see or trip it.
-    // Forwarding this ONE name is far cheaper than re-deriving the walk here.
+    /// Finalizes the builder, binds the bus plugins to the robot's driver, then runs on it;
+    /// without a plugin, simulates on no hardware.
+    ///
+    /// The `Drive` bound is `kmr_core`'s schedule-walk trait — `pub` but `#[doc(hidden)]`,
+    /// satisfied by every schedule the builder can produce, so users never see or trip it.
+    ///
+    /// # Errors
+    ///
+    /// Before any I/O: [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], then the
+    /// binding errors of [`Spec::bind`]. After: the driver's bring-up error as
+    /// [`UserError::BringUp`]. A shutdown and an emergency stop both return `Ok(())`.
     pub fn run(self) -> Result<(), UserError>
     where
+        H: Spec,
         C: kmr_core::Drive,
     {
+        let (inner, plugins) = self.finalize()?;
+        if plugins.is_empty() {
+            return inner.run_on(NoHardware).map_err(|never| match never {});
+        }
+        let adapter = H::bind(&plugins)?;
+        inner.run_on(adapter).map_err(|e| UserError::BringUp {
+            cause: e.to_string(),
+        })
+    }
+
+    /// Checks the builder data, no I/O, and hands `dt` to the core.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`].
+    fn finalize(self) -> Result<(kmr_core::Robot<C>, Vec<Binding>), UserError> {
+        if let Some(dt) = self.dt
+            && !(DT_MIN..=DT_MAX).contains(&dt)
+        {
+            return Err(UserError::DtOutOfRange { dt });
+        }
         for (i, bus) in self.plugins.iter().enumerate() {
             if self.plugins[..i].iter().any(|b| b.port() == bus.port()) {
                 return Err(UserError::DuplicateBus { port: bus.port() });
             }
         }
-        // eprintln, not tracing: the core installs the subscriber inside run().
-        if self.plugins.is_empty() {
-            eprintln!("kmr: no bus plugin: simulating, no hardware is driven");
-        } else {
-            eprintln!(
-                "kmr: {} bus plugin(s) declared, but kmr_core does not drive hardware yet: simulating",
-                self.plugins.len()
-            );
-        }
         let inner = match self.dt {
             Some(dt) => self.inner.set_dt(dt),
             None => self.inner,
         };
-        inner.run().map_err(|e| e.into())
+        Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
     }
 }
+
+/// Shortest tick period `run()` accepts (SRS FR-3.1); interim until the core checks it (T040).
+const DT_MIN: Duration = Duration::from_micros(10);
+
+/// Longest tick period `run()` accepts (SRS FR-3.1).
+const DT_MAX: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
 mod tests {
@@ -296,7 +323,13 @@ mod tests {
     /// Stands for the `__Spec` that `robot!` emits.
     struct TestSpec;
 
-    impl Spec for TestSpec {}
+    impl Spec for TestSpec {
+        type Adapter = crate::__NoHardware;
+
+        fn bind(plugins: &[crate::Binding]) -> Result<Self::Adapter, UserError> {
+            crate::__bind_none(plugins)
+        }
+    }
 
     type TestRobot = Robot<TestSpec>;
 
@@ -330,6 +363,54 @@ mod tests {
             .add_controller(EachTick, bump_q)
             .run();
         assert_eq!(res, Err(UserError::DuplicateBus { port: "FT8ISZ6H" }));
+    }
+
+    #[test]
+    fn a_dt_outside_10_us_to_1_s_is_refused_before_the_plugins() {
+        for dt in [
+            Duration::ZERO,
+            Duration::from_micros(5),
+            Duration::from_millis(1001),
+        ] {
+            let res = TestRobot::new()
+                .set_dt(dt)
+                .add_plugins(Bus::by_id("FT8ISZ6H"))
+                .add_plugins(Bus::by_id("FT8ISZ6H"))
+                .add_controller(EachTick, bump_q)
+                .run();
+            assert_eq!(res, Err(UserError::DtOutOfRange { dt }));
+        }
+    }
+
+    #[test]
+    fn a_dt_of_10_us_or_1_s_or_unset_passes_the_check() {
+        for dt in [
+            Some(Duration::from_micros(10)),
+            Some(Duration::from_secs(1)),
+            None,
+        ] {
+            let robot = TestRobot::new().add_controller(EachTick, bump_q);
+            let robot = match dt {
+                Some(dt) => robot.set_dt(dt),
+                None => robot,
+            };
+            assert!(robot.finalize().is_ok());
+        }
+    }
+
+    #[test]
+    fn finalize_hands_every_plugin_on_in_order() {
+        let robot = TestRobot::new()
+            .add_plugins(Bus::by_id("FT8ISZ6H"))
+            .add_plugins(Bus::by_dev("/dev/ttyACM0").bus("arm"));
+        let (_, plugins) = robot.finalize().expect("valid builder");
+        assert_eq!(
+            plugins,
+            [
+                Bus::by_id("FT8ISZ6H").binding,
+                Bus::by_dev("/dev/ttyACM0").bus("arm").binding
+            ]
+        );
     }
 
     #[test]

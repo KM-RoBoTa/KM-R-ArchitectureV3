@@ -39,7 +39,7 @@ mod spec;
 #[doc(hidden)]
 pub use kmr_adapters::{binding::Binding, dynamixel::Table};
 #[doc(hidden)]
-pub use spec::{__DxlAdapter, __bind_dynamixel, Spec};
+pub use spec::{__DxlAdapter, __NoHardware, __bind_dynamixel, __bind_none, Spec};
 
 mod bus;
 pub use bus::Bus;

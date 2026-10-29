@@ -5,15 +5,41 @@
 
 use kmr_adapters::binding::Binding;
 use kmr_adapters::dynamixel::Table;
+use kmr_core::hal::{Hal, NoHardware};
 
 use crate::{N, UserError};
 
 /// The robot this binary drives, as the type parameter of [`Robot`](crate::Robot).
 ///
-/// `robot!` implements it on the `__Spec` it emits; users never implement it. It carries no item
-/// yet: the driver list and its `bind` follow the core's set of drivers.
+/// `robot!` implements it on the `__Spec` it emits; users never implement it.
 #[doc(hidden)]
-pub trait Spec {}
+pub trait Spec {
+    /// The robot's hardware driver. One driver for now; becomes the driver set in T069.
+    type Adapter: Hal;
+
+    /// Binds the bus plugins to the driver, no I/O. One driver for now; becomes the driver set
+    /// in T069. `run()` calls it only when plugins are declared.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::FeatureOff`], [`UserError::NoHardwareDeclared`], or the driver's binding
+    /// error as [`UserError::BringUp`].
+    fn bind(plugins: &[Binding]) -> Result<Self::Adapter, UserError>;
+}
+
+/// The driver of a robot without a hardware table.
+#[doc(hidden)]
+pub type __NoHardware = NoHardware;
+
+/// Refuses the plugins: `robot!` names no hardware table for them.
+///
+/// # Errors
+///
+/// Always [`UserError::NoHardwareDeclared`].
+#[doc(hidden)]
+pub fn __bind_none(_plugins: &[Binding]) -> Result<__NoHardware, UserError> {
+    Err(UserError::NoHardwareDeclared)
+}
 
 /// The Dynamixel driver of a robot with `NB` Dynamixel buses.
 #[doc(hidden)]
@@ -70,6 +96,14 @@ mod tests {
         baud: None,
         bus: None,
     };
+
+    #[test]
+    fn without_a_table_plugins_are_refused() {
+        assert!(matches!(
+            __bind_none(&[PLUGIN]),
+            Err(UserError::NoHardwareDeclared)
+        ));
+    }
 
     #[cfg(not(feature = "dynamixel"))]
     #[test]

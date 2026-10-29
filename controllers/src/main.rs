@@ -14,6 +14,9 @@ fn nudge_first_joint(_time: &Time, robot: &mut State, _sensors: &Sensors) {
 fn main() -> Result<(), UserError> {
     Robot::new()
         .set_dt(Duration::from_millis(1))
+        // Bench: uncomment with the U2D2's serial (`ls /dev/serial/by-id`), then
+        // `cargo run -p controllers --features hardware`. Without it, run() simulates.
+        // .add_plugins(kmr_api::Bus::by_id("<U2D2 serial>"))
         .add_controller(EachTick, nudge_first_joint)
         .run()
 }

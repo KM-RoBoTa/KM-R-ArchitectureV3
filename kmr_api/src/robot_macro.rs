@@ -23,17 +23,38 @@ macro_rules! robot {
     ($preset:ident) => {
         $crate::robot!(@items <$crate::presets::$preset as $crate::presets::Preset>::N);
         /// Bus count of this robot's hardware table.
+        #[doc(hidden)]
         #[allow(dead_code)]
         const __NB: usize = $crate::presets::$preset::HARDWARE.buses.len();
         /// Actuator count of this robot's hardware table.
+        #[doc(hidden)]
         #[allow(dead_code)]
         const __M: usize = $crate::presets::$preset::HARDWARE.actuators.len();
         /// This robot's hardware table.
+        #[doc(hidden)]
         #[allow(dead_code)]
         const __TABLE: $crate::Table<__NB, __M> = $crate::presets::$preset::HARDWARE;
+        impl $crate::Spec for __Spec {
+            type Adapter = $crate::__DxlAdapter<__NB>;
+
+            fn bind(
+                plugins: &[$crate::Binding],
+            ) -> ::core::result::Result<Self::Adapter, $crate::UserError> {
+                $crate::__bind_dynamixel(__TABLE, plugins)
+            }
+        }
     };
     (model = $path:literal) => {
         $crate::robot!(@items $crate::__actuator_count!($path));
+        impl $crate::Spec for __Spec {
+            type Adapter = $crate::__NoHardware;
+
+            fn bind(
+                plugins: &[$crate::Binding],
+            ) -> ::core::result::Result<Self::Adapter, $crate::UserError> {
+                $crate::__bind_none(plugins)
+            }
+        }
     };
     (@items $n:expr) => {
         /// Actuator count of this robot.
@@ -48,7 +69,6 @@ macro_rules! robot {
         /// This robot, as the type parameter of its builder.
         #[doc(hidden)]
         pub struct __Spec;
-        impl $crate::Spec for __Spec {}
         const _: () = assert!(
             N == $crate::N,
             "kmr: this robot's actuator count differs from kmr_core's; N as a const generic is pending in kmr_core"
