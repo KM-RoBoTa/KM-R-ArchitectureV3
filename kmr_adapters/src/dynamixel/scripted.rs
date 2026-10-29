@@ -2,8 +2,8 @@
 //!
 //! Every actuator starts present and healthy, at `RawState::default()`, its
 //! goal registers at 0: what an earlier session left. Faults are scripted
-//! per (port, id) and per call kind, and last until [`Scripted::heal`].
-//! Failed calls are recorded too.
+//! per (port, id) and per call kind, and last until [`Scripted::heal`] or
+//! for a counted number of calls. Failed calls are recorded too.
 //!
 //! It refuses what `DxlRs` refuses, with the same error, and never panics
 //! (contracts/backend.md § Strictness).
@@ -156,6 +156,9 @@ pub(crate) struct Scripted {
     missing: [[bool; IDS]; PORTS],
     /// Per actuator and kind, the error its calls fail with.
     faults: [[[Option<BackendError>; KINDS]; IDS]; PORTS],
+    /// Per actuator and kind, failures left before the fault clears; `None`
+    /// while it lasts until [`Scripted::heal`].
+    left: [[[Option<u8>; KINDS]; IDS]; PORTS],
     /// Per port and kind, the error whole transactions fail with.
     port_faults: [[Option<BackendError>; KINDS]; PORTS],
     /// The failure `open_ports` returns.
@@ -188,6 +191,7 @@ impl Scripted {
             modes: [[POSITION_MODE; IDS]; PORTS],
             missing: [[false; IDS]; PORTS],
             faults: [[[None; KINDS]; IDS]; PORTS],
+            left: [[[None; KINDS]; IDS]; PORTS],
             port_faults: [[None; KINDS]; PORTS],
             open_fault: None,
         }
@@ -213,6 +217,28 @@ impl Scripted {
     ) -> &mut Self {
         if let Some(faults) = at(&mut self.faults, port, id) {
             faults[call.index()] = Some(error);
+        }
+        if let Some(left) = at(&mut self.left, port, id) {
+            left[call.index()] = None;
+        }
+        self
+    }
+
+    /// The next `times` calls of kind `call` naming actuator `id` fail with
+    /// `error`, as [`Scripted::fail`]; later ones answer.
+    pub(crate) fn fail_times(
+        &mut self,
+        call: Call,
+        port: usize,
+        id: u8,
+        error: BackendError,
+        times: u8,
+    ) -> &mut Self {
+        if let Some(faults) = at(&mut self.faults, port, id) {
+            faults[call.index()] = (times > 0).then_some(error);
+        }
+        if let Some(left) = at(&mut self.left, port, id) {
+            left[call.index()] = Some(times);
         }
         self
     }
@@ -263,6 +289,7 @@ impl Scripted {
     pub(crate) fn heal(&mut self) -> &mut Self {
         self.missing = [[false; IDS]; PORTS];
         self.faults = [[[None; KINDS]; IDS]; PORTS];
+        self.left = [[[None; KINDS]; IDS]; PORTS];
         self.port_faults = [[None; KINDS]; PORTS];
         self.open_fault = None;
         self
@@ -451,14 +478,24 @@ impl Scripted {
         }
     }
 
-    /// Whether actuator `id` answers a call of kind `call`.
-    fn answer(&self, call: Call, port: usize, id: u8) -> Result<(), BackendError> {
+    /// Whether actuator `id` answers a call of kind `call`; a failure counts
+    /// against a counted fault.
+    fn answer(&mut self, call: Call, port: usize, id: u8) -> Result<(), BackendError> {
         self.transaction(call, port)?;
-        let id = usize::from(id);
+        let (id, kind) = (usize::from(id), call.index());
         if id >= IDS || self.missing[port][id] {
             return Err(BackendError::Timeout);
         }
-        self.faults[port][id][call.index()].map_or(Ok(()), Err)
+        let Some(error) = self.faults[port][id][kind] else {
+            return Ok(());
+        };
+        if let Some(left) = &mut self.left[port][id][kind] {
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                self.faults[port][id][kind] = None;
+            }
+        }
+        Err(error)
     }
 
     /// Records a call naming one actuator.
@@ -877,6 +914,39 @@ mod tests {
         assert_eq!(backend.sync_write_goal(0, MODEL, &[(4, 0)]), Ok(()));
         assert_eq!(backend.ping(0, MODEL, 4), Ok(()));
         assert_eq!(backend.count(Call::SyncWriteGoal), 2);
+    }
+
+    #[test]
+    fn a_counted_fault_fails_its_calls_then_answers() {
+        let mut backend = Scripted::new();
+        backend
+            .already_on(0, 1)
+            .fail_times(Call::ForceTorqueOff, 0, 1, BackendError::Timeout, 2);
+        backend.open_ports(&[]).unwrap();
+
+        assert_eq!(
+            backend.force_torque_off(0, MODEL, 1),
+            Err(BackendError::Timeout)
+        );
+        assert_eq!(backend.ping(0, MODEL, 1), Ok(()));
+        assert_eq!(
+            backend.force_torque_off(0, MODEL, 1),
+            Err(BackendError::Timeout)
+        );
+        assert!(backend.torqued(0, 1));
+        assert_eq!(backend.force_torque_off(0, MODEL, 1), Ok(()));
+        assert_eq!(backend.force_torque_off(0, MODEL, 1), Ok(()));
+        assert!(!backend.torqued(0, 1));
+        assert_eq!(backend.count(Call::ForceTorqueOff), 4);
+
+        backend
+            .fail_times(Call::Ping, 0, 1, BackendError::Io, 1)
+            .fail(Call::Ping, 0, 1, BackendError::Io);
+        for _ in 0..3 {
+            assert_eq!(backend.ping(0, MODEL, 1), Err(BackendError::Io));
+        }
+        backend.fail_times(Call::Ping, 0, 1, BackendError::Io, 0);
+        assert_eq!(backend.ping(0, MODEL, 1), Ok(()));
     }
 
     #[test]

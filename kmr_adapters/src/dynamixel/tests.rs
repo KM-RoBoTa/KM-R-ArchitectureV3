@@ -7,6 +7,7 @@
 
 use core::num::NonZeroU32;
 use core::time::Duration;
+use core::{fmt, iter};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -14,15 +15,17 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kmr_core::hal::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written};
 use kmr_core::state::{JOINTS, Q, Qd, Tau};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState};
 use super::scripted::{Call, Scripted};
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
-    Protocol, Table, Torque, Zero, io as tick, port, units,
+    Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, io as tick, port, units,
 };
 use crate::binding::{Binding, Port};
 use crate::presets::{Preset, XmBench};
@@ -335,6 +338,73 @@ fn forced(backend: &Scripted) -> impl Iterator<Item = u8> + '_ {
         .iter()
         .filter(|record| record.call == Call::ForceTorqueOff)
         .map(|record| record.id)
+}
+
+/// Ids `torque_off` sends `ForceTorqueOff` when actuator `index` takes
+/// `tries(index)` attempts, in call order.
+fn attempted(tries: impl Fn(usize) -> usize) -> impl Iterator<Item = u8> {
+    (0..JOINTS).flat_map(move |index| iter::repeat_n(id(index), tries(index)))
+}
+
+/// Message of the warning `torque_off` logs per actuator it could not cut.
+const OFF_FAILED: &str = "torque off failed";
+
+/// Warnings whose message holds `needle`, logged on this thread by `run`.
+fn warnings(needle: &'static str, run: impl FnOnce()) -> usize {
+    let counter = Warnings {
+        needle,
+        count: AtomicUsize::new(0),
+    };
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(counter));
+    tracing::dispatcher::with_default(&dispatch, run);
+    dispatch
+        .downcast_ref::<Warnings>()
+        .expect("the counting layer")
+        .count
+        .load(Ordering::Relaxed)
+}
+
+/// Counts the warnings whose message holds `needle`.
+struct Warnings {
+    needle: &'static str,
+    count: AtomicUsize,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for Warnings {
+    fn on_event(&self, event: &tracing::Event<'_>, _context: Context<'_, S>) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        let mut finder = Finder {
+            needle: self.needle,
+            found: false,
+        };
+        event.record(&mut finder);
+        if finder.found {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Looks for the needle in the message of an event.
+struct Finder {
+    needle: &'static str,
+    found: bool,
+}
+
+impl fmt::Write for Finder {
+    fn write_str(&mut self, chunk: &str) -> fmt::Result {
+        self.found |= chunk.contains(self.needle);
+        Ok(())
+    }
+}
+
+impl tracing::field::Visit for Finder {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        if field.name() == "message" {
+            let _ = fmt::Write::write_fmt(self, format_args!("{value:?}"));
+        }
+    }
 }
 
 /// The newest recorded call.
@@ -882,18 +952,38 @@ fn emergency_stop_is_torque_off_then_close() -> Result<(), DynamixelError> {
 }
 
 #[test]
-fn torque_off_reaches_every_actuator_even_when_one_fails() -> Result<(), DynamixelError> {
+fn torque_off_reaches_every_actuator_even_when_some_never_answer() -> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    powered(&mut adapter)?;
+    let deaf = |index| index == 0 || index == 2;
+    for index in (0..JOINTS).filter(|&index| deaf(index)) {
+        adapter
+            .backend
+            .fail(Call::ForceTorqueOff, 0, id(index), BackendError::Timeout);
+    }
+
+    let warned = warnings(OFF_FAILED, || adapter.torque_off());
+
+    let tries = |index| if deaf(index) { TORQUE_OFF_ATTEMPTS } else { 1 };
+    assert!(forced(&adapter.backend).eq(attempted(tries)));
+    assert!((0..JOINTS).all(|index| adapter.backend.torqued(0, id(index)) == deaf(index)));
+    assert_eq!(warned, 2);
+    Ok(())
+}
+
+#[test]
+fn torque_off_retries_an_actuator_until_it_answers() -> Result<(), DynamixelError> {
     let mut adapter = rig(X_TABLE);
     powered(&mut adapter)?;
     adapter
         .backend
-        .fail(Call::ForceTorqueOff, 0, id(0), BackendError::Timeout);
+        .fail_times(Call::ForceTorqueOff, 0, id(1), BackendError::Timeout, 2);
 
-    adapter.torque_off();
+    let warned = warnings(OFF_FAILED, || adapter.torque_off());
 
-    assert!(forced(&adapter.backend).eq((0..JOINTS).map(id)));
-    assert!(adapter.backend.torqued(0, id(0)));
-    assert!((1..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!(forced(&adapter.backend).eq(attempted(|index| if index == 1 { 3 } else { 1 })));
+    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert_eq!(warned, 0);
     Ok(())
 }
 
@@ -910,12 +1000,15 @@ fn a_bring_up_error_after_open_still_ends_with_torque_off_and_close() -> Result<
     adapter.torque_off();
     adapter.close();
 
-    let kinds = adapter.backend.calls().iter().map(|record| record.call);
-    assert!(
-        kinds.eq([Call::ForceTorqueOff; JOINTS]
-            .into_iter()
-            .chain([Call::ClosePorts]))
-    );
+    let tries = |index| {
+        if index == LAST {
+            TORQUE_OFF_ATTEMPTS
+        } else {
+            1
+        }
+    };
+    assert!(forced(&adapter.backend).eq(attempted(tries)));
+    assert_eq!(last_call(&adapter.backend), Some(Call::ClosePorts));
     Ok(())
 }
 

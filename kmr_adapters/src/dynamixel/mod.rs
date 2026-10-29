@@ -36,6 +36,9 @@ pub use config::{
 
 /// Ping attempts per actuator before it counts as missing (FR-007).
 const PING_ATTEMPTS: usize = 3;
+/// Force torque off attempts per actuator, back to back, before a warning
+/// names it.
+const TORQUE_OFF_ATTEMPTS: usize = 3;
 
 /// Why the Dynamixel bind or bring-up failed. Names the bus, and the port
 /// or the actuator when there is one.
@@ -685,21 +688,29 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
 
     /// Torque off on every actuator of every opened bus, read-only ones and
     /// ones an earlier run left on included (SRS FR-4.2, FR-5.6, FR-5.8).
-    /// Nothing before the ports are open; a failure is logged and the next
-    /// actuator follows, without retry.
+    /// Nothing before the ports are open. Each actuator gets up to
+    /// [`TORQUE_OFF_ATTEMPTS`], without sleep; one that fails them all is
+    /// logged and the next actuator follows.
     fn torque_off(&mut self) {
         if !self.open {
             return;
         }
         for (index, actuator) in self.table.actuators.iter().enumerate() {
-            if let Err(error) =
-                self.backend
-                    .force_torque_off(actuator.bus, actuator.model, actuator.id)
-            {
+            let mut answer = Err(BackendError::Timeout);
+            for _ in 0..TORQUE_OFF_ATTEMPTS {
+                answer = self
+                    .backend
+                    .force_torque_off(actuator.bus, actuator.model, actuator.id);
+                if answer.is_ok() {
+                    break;
+                }
+            }
+            if let Err(error) = answer {
                 warn!(
                     actuator = index,
                     bus = self.label(actuator.bus),
                     id = actuator.id,
+                    attempts = TORQUE_OFF_ATTEMPTS,
                     %error,
                     "torque off failed"
                 );
