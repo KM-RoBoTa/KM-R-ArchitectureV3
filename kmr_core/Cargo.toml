@@ -10,7 +10,8 @@ repository.workspace = true
 thiserror.workspace = true
 rstest.workspace = true
 circular-buffer.workspace = true
-ctrlc.workspace = true
+# `termination`: SIGTERM and SIGHUP raise `shutdown!` like Ctrl-C.
+ctrlc = { workspace = true, features = ["termination"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 derive_more.workspace = true

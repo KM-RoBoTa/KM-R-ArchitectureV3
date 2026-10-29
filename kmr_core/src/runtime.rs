@@ -348,14 +348,15 @@ pub(crate) fn runtime<CS: Drive>(mut robot: Robot<CS>) -> Signal {
 
     // After the reset, or a Ctrl-C landing in between would be erased.
     let installed = ctrlc::set_handler(|| {
-        shutdown!("Ctrl-C received");
+        shutdown!("Ctrl-C, SIGTERM or SIGHUP received");
     });
     // A warning, not an error: a user handler may raise `shutdown!` itself.
     if let Err(error) = ctrl_c_wired(installed, &CTRL_C_WIRED) {
         warn!(
             %error,
-            "Ctrl-C will not stop the control loop: its handler could not be \
-             installed. If the process has its own, it must raise `shutdown!`"
+            "Ctrl-C, SIGTERM and SIGHUP will not stop the control loop: their \
+             handler could not be installed. If the process has its own, it \
+             must raise `shutdown!`"
         );
     }
 
