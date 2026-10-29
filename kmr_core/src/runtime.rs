@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::controllers::Env;
-use crate::hal::{Hal, Overrides};
+use crate::hal::{Batch, Faults, Hal, Layout, Overrides};
 use crate::schedule::Drive;
 use crate::state::RobotState;
 use crate::{Robot, Sensors, Signal, SignalKind, shutdown};
@@ -269,18 +269,27 @@ mod ctrl_phase {
     }
 }
 
-/// The tick loop. Returns the signal that ended it.
-fn control_loop<CS: Drive, H: Host>(
+/// The tick loop: read, the three buckets, write. Returns the signal that
+/// ended it.
+fn control_loop<CS: Drive, H: Host, A: Hal>(
     robot: &mut Robot<CS>,
     state: &mut RobotState,
     sensors: &Sensors,
     host: &mut H,
+    hal: &mut A,
+    layout: &Layout,
 ) -> Signal {
     loop {
         if let Some(signal) = host.poll() {
             break signal;
         }
         robot.config.time.begin_tick(host.now());
+
+        // Dropped until the per-slot fault flags land (SRS FR-13.4).
+        let mut faults = Faults::default();
+        if let Some(sample) = state.push_slot() {
+            hal.read(sample, &mut faults);
+        }
 
         ctrl_phase::first(robot, state, sensors);
         if let Some(signal) = estop(host.poll()) {
@@ -292,10 +301,16 @@ fn control_loop<CS: Drive, H: Host>(
             break signal;
         }
 
-        // TODO: state_transition (write desired, record history), needs the
-        // hardware layer.
-
         ctrl_phase::last(robot, state, sensors);
+        // An emergency stop raised in `Last` skips the write.
+        if let Some(signal) = estop(host.poll()) {
+            break signal;
+        }
+
+        let batch = Batch::new(layout, state.written());
+        if !batch.is_empty() {
+            hal.write(state.command(), &batch, &mut faults);
+        }
 
         let wake = robot.config.time.end_tick(host.now());
         if let Some(overrun) = robot.config.time.overrun() {
@@ -303,10 +318,12 @@ fn control_loop<CS: Drive, H: Host>(
             debug!(?overrun, "tick finished after its deadline");
         }
 
-        // Before the sleep: a stop must not wait for it.
+        // Before the sleep: a stop must not wait for it. Before the clear: the
+        // hold of a shutdown keeps this tick's writes.
         if let Some(signal) = host.poll() {
             break signal;
         }
+        state.clear_desired();
         if let Some(deadline) = wake {
             host.sleep_until(deadline);
         }
@@ -321,6 +338,7 @@ fn run_phases<CS: Drive, H: Host, A: Hal>(
     sensors: &Sensors,
     host: &mut H,
     hal: &mut A,
+    layout: &Layout,
 ) -> Result<Signal, A::Error> {
     let mut writes = StartupWrites::default();
 
@@ -357,7 +375,7 @@ fn run_phases<CS: Drive, H: Host, A: Hal>(
     // After the bring-up, so tick 0 is not charged with it (SRS FR-5.10).
     robot.config.time.arm(host.now());
 
-    let signal = control_loop(robot, state, sensors, host);
+    let signal = control_loop(robot, state, sensors, host, powered.0, layout);
     // An emergency stop raised since the loop ended skips the hold.
     let signal = estop(host.poll()).unwrap_or(signal);
     if signal.kind() == SignalKind::Shutdown
@@ -376,7 +394,7 @@ fn run_with<CS: Drive, H: Host, A: Hal>(
     host: &mut H,
     hal: &mut A,
 ) -> Result<Signal, A::Error> {
-    let _layout = hal.check(Overrides::default())?;
+    let layout = hal.check(Overrides::default())?;
     let (mut state, sensors) = init_phase::pre_init();
 
     if robot.config.time.delta().is_zero() {
@@ -388,7 +406,7 @@ fn run_with<CS: Drive, H: Host, A: Hal>(
     }
 
     // The guard has dropped by now: torque is off before the log lines.
-    let signal = run_phases(robot, &mut state, &sensors, host, hal)?;
+    let signal = run_phases(robot, &mut state, &sensors, host, hal, &layout)?;
 
     match signal.kind() {
         SignalKind::Shutdown => info!("control loop stopped, {signal}"),
@@ -443,19 +461,20 @@ mod tests {
         Batch, Command, Faults, Group, Layout, Mask, NoHardware, Sample, Written, seal,
     };
     use crate::signal::SignalMeta;
-    use crate::state::{JOINTS, Q};
+    use crate::state::{JOINTS, Q, Qd};
     use crate::{EachTick, First, Init, Last, PostInit, PreInit};
 
     const DT: Duration = Duration::from_millis(1);
 
-    // Index of each bus check: two at startup, then four per tick.
+    // Index of each bus check: two at startup, then five per tick.
     const AFTER_PRE_INIT: usize = 0;
     const AFTER_INIT: usize = 1;
     const TICK_START: usize = 2;
     const AFTER_FIRST: usize = 3;
     const AFTER_EACH_TICK: usize = 4;
-    const TICK_END: usize = 5;
-    const PER_TICK: usize = 4;
+    const AFTER_LAST: usize = 5;
+    const TICK_END: usize = 6;
+    const PER_TICK: usize = 5;
 
     /// Scripted host: never sleeps, never touches the global bus. A raised
     /// signal stays raised, like on the real bus.
@@ -1130,7 +1149,169 @@ mod tests {
 
             assert!(unwound.is_err());
             assert_eq!(log.calls()[..11], STARTUP);
-            assert_eq!(log.calls()[11..], [First, EachTick, TorqueOff, Close]);
+            assert_eq!(log.calls()[11..], [Read, First, EachTick, TorqueOff, Close]);
+        }
+
+        /// The mask of `indices`.
+        fn mask(indices: &[usize]) -> Mask {
+            let mut mask = Mask::NONE;
+            for &index in indices {
+                mask.set(index);
+            }
+            mask
+        }
+
+        #[test]
+        fn shutdown_reads_before_first_writes_after_last_then_holds_and_cuts_torque() {
+            let log = Log::new();
+            let mut robot =
+                recording_robot!(log).add_controller(crate::EachTick, |_t, state, _se| {
+                    state.set_at(Q(5.0), 1).expect("in range");
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[..11], STARTUP);
+            assert_eq!(
+                log.calls()[11..],
+                [Read, First, EachTick, Last, Write, Hold, TorqueOff, Close]
+            );
+            let write = log.write.get().expect("a write");
+            assert_eq!(write.q[1], Q(5.0));
+            assert_eq!(write.batch, mask(&[1]));
+            // The latest sample, overlaid with the tick's write.
+            let hold = log.hold.get().expect("a hold");
+            assert_eq!(hold.q, [Q(11.0), Q(5.0), SEED, SEED]);
+            assert_eq!(hold.written.q, mask(&[1]));
+        }
+
+        #[test]
+        fn every_tick_runs_read_first_each_last_write_and_desired_clears() {
+            let log = Log::new();
+            let mut robot =
+                recording_robot!(log).add_controller(crate::EachTick, |time, state, _se| {
+                    if time.tick() == 0 {
+                        state.set_at(Q(5.0), 1).expect("in range");
+                    }
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST + 2 * PER_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[..11], STARTUP);
+            assert_eq!(
+                log.calls()[11..],
+                [
+                    Read, First, EachTick, Last, Write, // tick 0 wrote
+                    Read, First, EachTick, Last, // nothing written: no write
+                    Read, First, EachTick, Last, //
+                    Hold, TorqueOff, Close,
+                ]
+            );
+            let hold = log.hold.get().expect("a hold");
+            assert_eq!(hold.q, [Q(13.0), SEED, SEED, SEED]);
+            assert_eq!(hold.written, Written::default());
+        }
+
+        #[test]
+        fn an_estop_after_each_tick_skips_last_the_write_and_the_hold() {
+            let log = Log::new();
+            let mut robot =
+                recording_robot!(log).add_controller(crate::EachTick, |_t, state, _se| {
+                    state.set_at(Q(5.0), 1).expect("in range");
+                });
+            let mut host = Scripted::new(Instant::now()).estop_from(AFTER_EACH_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(log.calls()[11..], [Read, First, EachTick, TorqueOff, Close]);
+        }
+
+        #[test]
+        fn an_estop_raised_in_last_skips_the_write() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log).add_controller(crate::Last, |_t, state, _se| {
+                state.set_at(Q(5.0), 1).expect("in range");
+            });
+            let mut host = Scripted::new(Instant::now()).estop_from(AFTER_LAST);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(
+                log.calls()[11..],
+                [Read, First, EachTick, Last, TorqueOff, Close]
+            );
+        }
+
+        #[test]
+        fn an_estop_raised_after_the_shutdown_tick_skips_the_hold() {
+            let log = Log::new();
+            let mut robot =
+                recording_robot!(log).add_controller(crate::EachTick, |_t, state, _se| {
+                    state.set_at(Q(5.0), 1).expect("in range");
+                });
+            let mut host = Scripted::new(Instant::now())
+                .shutdown_from(TICK_END)
+                .estop_from(TICK_END + 1);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(
+                log.calls()[11..],
+                [Read, First, EachTick, Last, Write, TorqueOff, Close]
+            );
+            assert_eq!(log.hold.get(), None);
+        }
+
+        #[test]
+        fn an_unwritten_actuator_gets_no_command_and_only_its_field_is_sent() {
+            let log = Log::new();
+            let mut robot =
+                recording_robot!(log).add_controller(crate::EachTick, |_t, state, _se| {
+                    state.set_at(Q(1.0), 0).expect("in range");
+                    state.set_at(Qd(0.5), 2).expect("in range");
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            let write = log.write.get().expect("a write");
+            assert_eq!(write.batch, mask(&[0, 2]));
+            assert_eq!(write.written.q, mask(&[0]));
+            assert_eq!(write.written.qd, mask(&[2]));
+            assert_eq!(write.written.tau, Mask::NONE);
+        }
+
+        #[test]
+        fn history_gets_one_slot_per_tick_seeded_by_read_all() {
+            let log = Log::new();
+            // (prev(0), prev(1)) of actuator 0, seen in `First` of each tick.
+            let seen = Cell::new([(Q(0.0), Q(0.0)); 2]);
+            let mut robot =
+                recording_robot!(log).add_controller(crate::First, |time, state, _se| {
+                    let mut all = seen.get();
+                    if let Some(slot) = all.get_mut(time.tick() as usize) {
+                        *slot = (
+                            *state.prev_at::<Q>(0, 0).expect("a sample"),
+                            *state.prev_at::<Q>(1, 0).expect("the slot before"),
+                        );
+                    }
+                    seen.set(all);
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST + PER_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            // Tick 0 reads 11 over the seed 10; tick 1 reads 12.
+            assert_eq!(seen.get(), [(Q(11.0), SEED), (Q(12.0), Q(11.0))]);
         }
 
         #[test]
