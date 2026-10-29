@@ -13,7 +13,8 @@
 //!
 //! The loop ends only on a signal (see [`crate::signal`]). A shutdown
 //! completes its tick. An emergency stop exits at the next bus check, between
-//! two phase buckets.
+//! two phase buckets. Any signal raised during the bring-up, a shutdown
+//! included, stops it before `torque_on`.
 //!
 //! From `open` on, the [`Powered`] guard ends every exit, unwind included,
 //! with `torque_off` then `close`.
@@ -365,8 +366,9 @@ fn run_phases<CS: Drive, H: Host, A: Hal>(
     if let Some(sample) = state.push_slot() {
         powered.0.read_all(sample)?;
     }
-    // A pending emergency stop never powers the actuators (SRS FR-4.2).
-    if let Some(signal) = estop(host.poll()) {
+    // A pending signal, a shutdown included, never powers the actuators
+    // (SRS FR-4.2).
+    if let Some(signal) = host.poll() {
         return Ok(signal);
     }
     powered.0.torque_on()?;
@@ -678,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_during_startup_finishes_startup_and_runs_no_tick() {
+    fn shutdown_during_startup_stops_before_post_init_and_runs_no_tick() {
         let walks = Walks::default();
         let mut robot = counting_robot!(walks);
         let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
@@ -686,8 +688,9 @@ mod tests {
         let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
-        assert_eq!(walks.counts(), [1, 1, 1, 0, 0, 0]);
-        assert_eq!(host.poll_calls, TICK_START + 2);
+        assert_eq!(walks.counts(), [1, 1, 0, 0, 0, 0]);
+        assert_eq!(host.poll_calls, BEFORE_TORQUE_ON + 1);
+        assert_eq!(robot.config.time.deadline(), None);
     }
 
     #[test]
@@ -1111,10 +1114,24 @@ mod tests {
         }
 
         #[test]
+        fn a_shutdown_in_post_init_never_powers() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(BEFORE_TORQUE_ON);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[..9], STARTUP[..9]);
+            assert_eq!(log.calls()[9..], [TorqueOff, Close]);
+            assert_eq!(log.hold.get(), None);
+        }
+
+        #[test]
         fn a_shutdown_before_the_first_tick_holds_the_seed() {
             let log = Log::new();
             let mut robot = recording_robot!(log);
-            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
 
             let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
 
@@ -1137,7 +1154,7 @@ mod tests {
                 .add_controller(crate::PostInit, |_t, state, _se| {
                     state.set_at(Q(98.0), 1).expect("in range");
                 });
-            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
             let counter = Counter::new("discarded", &WARNINGS);
 
             let result = tracing::subscriber::with_default(counter, || {
