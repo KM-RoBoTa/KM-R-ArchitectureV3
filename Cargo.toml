@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kmr_core", "kmr_api", "controllers"]
+members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "controllers"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,7 +10,9 @@ repository = "https://github.com/KM-RoBoTa/KM-R-ArchitectureV3"
 
 [workspace.dependencies]
 kmr_core = { path = "kmr_core" }
+kmr_adapters = { path = "kmr_adapters" }
 kmr_api = { path = "kmr_api" }
+kmr_model = { path = "kmr_model" }
 
 thiserror = "2.0.18"
 rstest = "0.26.1"
@@ -20,4 +22,8 @@ derive_more = { version = "2.1.1", features = ["add", "mul"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 frunk = "0.5.0"
+roxmltree = "0.20"
 color-eyre = { version = "0.6", default-features = false }
+rustix = { version = "1", features = ["termios", "fs"] }
+# Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
+dxl_rs = { path = "../dxl_rs" }

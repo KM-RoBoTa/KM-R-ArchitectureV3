@@ -55,6 +55,7 @@ pub(crate) mod contracts;
 pub(crate) mod controllers;
 #[doc(hidden)]
 pub mod error;
+pub mod hal;
 pub(crate) mod runtime;
 pub(crate) mod schedule;
 pub(crate) mod sealed;

@@ -1,0 +1,4 @@
+# kmr_model runs inside the compiler at build time, never on the robot: heap
+# types are allowed here. This file overrides the workspace-wide ban in
+# ../clippy.toml.
+disallowed-types = []

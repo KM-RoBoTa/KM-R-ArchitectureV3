@@ -8,7 +8,12 @@ repository.workspace = true
 
 [dependencies]
 kmr_core.workspace = true
+kmr_adapters.workspace = true
+kmr_model.workspace = true
 thiserror.workspace = true
+
+[features]
+dynamixel = ["kmr_adapters/dynamixel"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated

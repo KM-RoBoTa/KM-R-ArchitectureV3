@@ -1,0 +1,771 @@
+//! The Dynamixel hardware table: buses, actuators, models and modes,
+//! checked at compile time.
+//!
+//! Model tables follow the ROBOTIS e-Manual. A bad table fails
+//! [`Table::check`] in const evaluation, so it does not build (SRS FR-6.4).
+
+use core::num::NonZeroU32;
+
+use super::units;
+
+/// Highest firmware id: Protocol 2 reserves 253, 254 is the broadcast id.
+const MAX_ID: u8 = 252;
+
+/// Capacity of a [`Message`], in bytes.
+const MESSAGE_LEN: usize = 256;
+
+/// Ticks between two reads of a bus whose `read_every` is `None`: a
+/// placeholder until the NFR-1 bench, SC-003 (D9, assumed, pending human).
+pub const DEFAULT_READ_EVERY: NonZeroU32 = match NonZeroU32::new(4) {
+    Some(ticks) => ticks,
+    None => NonZeroU32::MIN,
+};
+
+/// Dynamixel communication protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    /// Protocol 1.0: sync write, no grouped read (research R12).
+    One,
+    /// Protocol 2.0.
+    Two,
+}
+
+/// Control table family: actuators of one series on one bus share a
+/// transaction group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Series {
+    /// AX table, the RX-28's too.
+    Ax,
+    /// X table.
+    X,
+}
+
+/// The actuator models the adapter drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Model {
+    /// AX-12A.
+    Ax12a,
+    /// RX-28.
+    Rx28,
+    /// XM430-W210.
+    Xm430W210,
+    /// XW430-T200.
+    Xw430T200,
+    /// XW540-T140.
+    Xw540T140,
+    /// XW540-T260.
+    Xw540T260,
+}
+
+impl Model {
+    /// The model's name, as ROBOTIS writes it.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Ax12a => "AX-12A",
+            Self::Rx28 => "RX-28",
+            Self::Xm430W210 => "XM430-W210",
+            Self::Xw430T200 => "XW430-T200",
+            Self::Xw540T140 => "XW540-T140",
+            Self::Xw540T260 => "XW540-T260",
+        }
+    }
+
+    /// Protocol the model speaks.
+    pub const fn protocol(self) -> Protocol {
+        match self {
+            Self::Ax12a | Self::Rx28 => Protocol::One,
+            Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => Protocol::Two,
+        }
+    }
+
+    /// Control table family. `dxl_rs` has no RX-28 table: the RX-28 shares
+    /// the AX one, as in v2 (research R7).
+    pub const fn series(self) -> Series {
+        match self {
+            Self::Ax12a | Self::Rx28 => Series::Ax,
+            Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => Series::X,
+        }
+    }
+
+    /// Whether `baud`, in bit/s, is in the model's Baud Rate table. Rates are
+    /// the e-Manual's goal rates: the AX `115_200` runs at 117 647 bit/s on
+    /// the actuator side, 2.1 % off.
+    pub const fn accepts_baud(self, baud: u32) -> bool {
+        match self.series() {
+            Series::Ax => matches!(
+                baud,
+                9_600
+                    | 19_200
+                    | 57_600
+                    | 115_200
+                    | 200_000
+                    | 250_000
+                    | 400_000
+                    | 500_000
+                    | 1_000_000
+            ),
+            Series::X => matches!(
+                baud,
+                9_600
+                    | 57_600
+                    | 115_200
+                    | 1_000_000
+                    | 2_000_000
+                    | 3_000_000
+                    | 4_000_000
+                    | 4_500_000
+            ),
+        }
+    }
+
+    /// Whether the firmware has `mode`. On AX and RX, `Velocity` is wheel
+    /// mode and there is no current control.
+    pub const fn supports(self, mode: Mode) -> bool {
+        !matches!((self.series(), mode), (Series::Ax, Mode::Current))
+    }
+
+    /// Input voltage range of the specification, `(min, max)` in 0.1 V.
+    pub const fn voltage_limits_dv(self) -> (u16, u16) {
+        match self {
+            Self::Ax12a => (90, 120),
+            Self::Rx28 => (120, 185),
+            Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => (100, 148),
+        }
+    }
+
+    /// Default Temperature Limit, also the top of the operating range, in °C.
+    pub const fn max_temperature_c(self) -> u8 {
+        match self {
+            Self::Ax12a => 70,
+            Self::Rx28 => 80,
+            Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => 80,
+        }
+    }
+}
+
+/// Operating mode, named by the desired field it consumes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Goal position, from `Q`.
+    Position,
+    /// Goal velocity, from `Qd`.
+    Velocity,
+    /// Goal current, from `Tau`.
+    Current,
+}
+
+/// Whether the adapter powers an actuator (SRS FR-5.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Torque {
+    /// Torque on at PostInit; goals are sent.
+    #[default]
+    On,
+    /// Read, never torqued, never written.
+    ReadOnly,
+}
+
+/// Where 0 rad sits on an actuator (FR-005).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zero {
+    /// The model's centre: 2048 on X, 512 on AX and RX.
+    Center,
+    /// This position register value, inside the model's range.
+    Raw(i32),
+}
+
+impl Zero {
+    /// Zero of every actuator unless `main.rs` overrides it (D8, assumed,
+    /// pending human).
+    pub const DEFAULT: Self = Self::Center;
+}
+
+/// One serial bus.
+#[derive(Clone, Copy, Debug)]
+pub struct Bus {
+    /// Names the bus in errors; a bus plugin binds it by this label (D6).
+    pub label: &'static str,
+    /// Line rate in bit/s, accepted by every model on the bus.
+    pub baud: u32,
+    /// Ticks between two reads (FR-009); `None` is [`DEFAULT_READ_EVERY`].
+    pub read_every: Option<NonZeroU32>,
+}
+
+/// One actuator; its position in [`Table::actuators`] is its engine index.
+#[derive(Clone, Copy, Debug)]
+pub struct Actuator {
+    /// Index into the buses.
+    pub bus: usize,
+    /// Firmware id, `0..=252`, unique on its bus.
+    pub id: u8,
+    /// Protocol and series derive from it.
+    pub model: Model,
+    /// Supported by the model.
+    pub mode: Mode,
+    /// Whether the adapter powers it.
+    pub torque: Torque,
+    /// Where 0 rad sits.
+    pub zero: Zero,
+}
+
+/// The Dynamixel hardware of a robot: `NB` buses and `N` actuators, in the
+/// model's actuator order (FR-023 (SRS FR-6.1)).
+///
+/// A preset's hardware half is one; so is a `main.rs` declaration. Build it
+/// in a `const` through [`Table::check`].
+#[derive(Clone, Copy, Debug)]
+pub struct Table<const NB: usize, const N: usize> {
+    /// The buses; an actuator names one by index.
+    pub buses: [Bus; NB],
+    /// The actuators, by engine index.
+    pub actuators: [Actuator; N],
+}
+
+impl<const NB: usize, const N: usize> Table<NB, N> {
+    /// The table, checked where a failure is a compile error naming the
+    /// actuator index or the bus label (SRS FR-6.4).
+    ///
+    /// Rejects no bus, an empty label, a label two buses share, a bus index
+    /// out of range, an id above 252, an id taken twice on one bus, a mode or
+    /// a baud the model lacks, every mode but `Position` (`dxl_rs` cannot
+    /// write the operating mode register, SRS section 8), and a
+    /// [`Zero::Raw`] outside the model's position range.
+    ///
+    /// # Panics
+    ///
+    /// On a rejected table; in const evaluation, that is the compile error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+    ///
+    /// const fn xm430(id: u8) -> Actuator {
+    ///     Actuator {
+    ///         bus: 0,
+    ///         id,
+    ///         model: Model::Xm430W210,
+    ///         mode: Mode::Position,
+    ///         torque: Torque::On,
+    ///         zero: Zero::DEFAULT,
+    ///     }
+    /// }
+    ///
+    /// const ARM: Table<1, 2> = Table {
+    ///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+    ///     actuators: [xm430(1), xm430(2)],
+    /// }
+    /// .check();
+    /// ```
+    ///
+    /// Two actuators on one id do not build:
+    ///
+    /// ```compile_fail,E0080
+    /// # use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+    /// # const fn xm430(id: u8) -> Actuator {
+    /// #     Actuator {
+    /// #         bus: 0,
+    /// #         id,
+    /// #         model: Model::Xm430W210,
+    /// #         mode: Mode::Position,
+    /// #         torque: Torque::On,
+    /// #         zero: Zero::DEFAULT,
+    /// #     }
+    /// # }
+    /// const _: Table<1, 2> = Table {
+    ///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+    ///     actuators: [xm430(1), xm430(1)],
+    /// }
+    /// .check();
+    /// ```
+    ///
+    /// Neither does a `Velocity` actuator:
+    ///
+    /// ```compile_fail,E0080
+    /// # use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+    /// # const fn xm430(id: u8) -> Actuator {
+    /// #     Actuator {
+    /// #         bus: 0,
+    /// #         id,
+    /// #         model: Model::Xm430W210,
+    /// #         mode: Mode::Position,
+    /// #         torque: Torque::On,
+    /// #         zero: Zero::DEFAULT,
+    /// #     }
+    /// # }
+    /// const _: Table<1, 1> = Table {
+    ///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+    ///     actuators: [Actuator { mode: Mode::Velocity, ..xm430(1) }],
+    /// }
+    /// .check();
+    /// ```
+    pub const fn check(self) -> Self {
+        if NB == 0 {
+            fail(Message::new().text("no bus declared"));
+        }
+        check_labels(&self.buses);
+        let mut index = 0;
+        let mut rest: &[Actuator] = &self.actuators;
+        while let [actuator, later @ ..] = rest {
+            check_actuator(&self.buses, index, actuator, later);
+            index += 1;
+            rest = later;
+        }
+        self
+    }
+}
+
+/// Rejects an empty label, and a label a later bus takes again.
+const fn check_labels(buses: &[Bus]) {
+    let mut index = 0;
+    let mut rest = buses;
+    while let [bus, later @ ..] = rest {
+        if bus.label.is_empty() {
+            fail(Message::bus(index).text("empty label"));
+        }
+        if let Some(offset) = find_label(later, bus.label) {
+            fail(
+                Message::bus(index + 1 + offset)
+                    .text("label ")
+                    .text(bus.label)
+                    .text(" already used by bus ")
+                    .number(index),
+            );
+        }
+        index += 1;
+        rest = later;
+    }
+}
+
+/// Position in `buses` of the first one labelled `label`.
+const fn find_label(buses: &[Bus], label: &str) -> Option<usize> {
+    let mut position = 0;
+    let mut rest = buses;
+    while let [bus, tail @ ..] = rest {
+        if same(bus.label.as_bytes(), label.as_bytes()) {
+            return Some(position);
+        }
+        position += 1;
+        rest = tail;
+    }
+    None
+}
+
+/// Whether `a` and `b` hold the same bytes.
+const fn same(a: &[u8], b: &[u8]) -> bool {
+    let (mut a, mut b) = (a, b);
+    loop {
+        match (a, b) {
+            ([], []) => return true,
+            ([x, a_tail @ ..], [y, b_tail @ ..]) if *x == *y => {
+                a = a_tail;
+                b = b_tail;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// Checks actuator `index`; `later` are the actuators after it, where a
+/// repeated id is reported.
+const fn check_actuator(buses: &[Bus], index: usize, actuator: &Actuator, later: &[Actuator]) {
+    let Some(bus) = bus_at(buses, actuator.bus) else {
+        fail(
+            Message::actuator(index)
+                .text("bus ")
+                .number(actuator.bus)
+                .text(" out of range, ")
+                .number(buses.len())
+                .text(" declared"),
+        );
+    };
+    if actuator.id > MAX_ID {
+        fail(
+            Message::actuator(index)
+                .text("id ")
+                .number(actuator.id as usize)
+                .text(" above 252"),
+        );
+    }
+    if let Some(offset) = find(later, actuator.bus, actuator.id) {
+        fail(
+            Message::actuator(index + 1 + offset)
+                .text("id ")
+                .number(actuator.id as usize)
+                .text(" already used on bus ")
+                .text(bus.label)
+                .text(" by actuator ")
+                .number(index),
+        );
+    }
+    if !actuator.model.supports(actuator.mode) {
+        fail(Message::actuator(index).text("mode not supported by the model"));
+    }
+    if !actuator.model.accepts_baud(bus.baud) {
+        fail(
+            Message::actuator(index)
+                .text(actuator.model.name())
+                .text(" does not accept ")
+                .number(bus.baud as usize)
+                .text(" baud on bus ")
+                .text(bus.label),
+        );
+    }
+    if !matches!(actuator.mode, Mode::Position) {
+        fail(Message::actuator(index).text(
+            "SRS section 8: Dynamixel mode register cannot be written, dxl_rs has no write for it",
+        ));
+    }
+    let max = units::max_position(actuator.model);
+    if let Zero::Raw(raw) = actuator.zero
+        && (raw < 0 || raw as u32 > max)
+    {
+        fail(
+            Message::actuator(index)
+                .text("zero outside 0..=")
+                .number(max as usize)
+                .text(", the position range of ")
+                .text(actuator.model.name()),
+        );
+    }
+}
+
+/// The bus at `index`, if declared.
+const fn bus_at(buses: &[Bus], index: usize) -> Option<&Bus> {
+    match buses.split_at_checked(index) {
+        Some((_, [bus, ..])) => Some(bus),
+        _ => None,
+    }
+}
+
+/// Position in `actuators` of the first one on `bus` with `id`.
+const fn find(actuators: &[Actuator], bus: usize, id: u8) -> Option<usize> {
+    let mut position = 0;
+    let mut rest = actuators;
+    while let [actuator, tail @ ..] = rest {
+        if actuator.bus == bus && actuator.id == id {
+            return Some(position);
+        }
+        position += 1;
+        rest = tail;
+    }
+    None
+}
+
+/// Stops evaluation with `message`.
+const fn fail(message: Message) -> ! {
+    panic!("{}", message.as_str())
+}
+
+/// A panic message built in const evaluation, where `format!` is not
+/// available. Text past the capacity is dropped.
+struct Message {
+    bytes: [u8; MESSAGE_LEN],
+    len: usize,
+}
+
+impl Message {
+    /// An empty message.
+    const fn new() -> Self {
+        Self {
+            bytes: [0; MESSAGE_LEN],
+            len: 0,
+        }
+    }
+
+    /// A message about the actuator at `index`.
+    const fn actuator(index: usize) -> Self {
+        Self::new().text("actuator ").number(index).text(": ")
+    }
+
+    /// A message about the bus at `index`.
+    const fn bus(index: usize) -> Self {
+        Self::new().text("bus ").number(index).text(": ")
+    }
+
+    /// Appends `text`.
+    const fn text(mut self, text: &str) -> Self {
+        let mut rest = text.as_bytes();
+        while let [byte, tail @ ..] = rest {
+            self = self.byte(*byte);
+            rest = tail;
+        }
+        self
+    }
+
+    /// Appends `number` in decimal.
+    const fn number(mut self, number: usize) -> Self {
+        let mut scale = 1;
+        while number / scale >= 10 {
+            scale *= 10;
+        }
+        while scale > 0 {
+            self = self.byte(b'0' + (number / scale % 10) as u8);
+            scale /= 10;
+        }
+        self
+    }
+
+    /// Appends one byte.
+    const fn byte(mut self, byte: u8) -> Self {
+        if let Some((_, [slot, ..])) = self.bytes.split_at_mut_checked(self.len) {
+            *slot = byte;
+            self.len += 1;
+        }
+        self
+    }
+
+    /// The text so far.
+    const fn as_str(&self) -> &str {
+        let text = match self.bytes.split_at_checked(self.len) {
+            Some((text, _)) => text,
+            None => &[],
+        };
+        match core::str::from_utf8(text) {
+            Ok(text) => text,
+            Err(_) => "invalid Dynamixel hardware table",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODELS: [Model; 6] = [
+        Model::Ax12a,
+        Model::Rx28,
+        Model::Xm430W210,
+        Model::Xw430T200,
+        Model::Xw540T140,
+        Model::Xw540T260,
+    ];
+
+    const BUS: Bus = Bus {
+        label: "bus0",
+        baud: 1_000_000,
+        read_every: NonZeroU32::new(1),
+    };
+
+    /// Four actuators of `model` on bus 0, ids `1..=4`, in position mode.
+    fn chain(model: Model) -> [Actuator; 4] {
+        core::array::from_fn(|index| Actuator {
+            bus: 0,
+            id: u8::try_from(index + 1).unwrap_or(u8::MAX),
+            model,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::DEFAULT,
+        })
+    }
+
+    /// A one-bus table of `actuators`.
+    fn table(actuators: [Actuator; 4]) -> Table<1, 4> {
+        Table {
+            buses: [BUS],
+            actuators,
+        }
+    }
+
+    #[test]
+    fn protocol_one_is_exactly_the_ax_series() {
+        for model in MODELS {
+            assert_eq!(
+                model.protocol() == Protocol::One,
+                model.series() == Series::Ax,
+                "{model:?}"
+            );
+        }
+        assert_eq!(Model::Rx28.series(), Series::Ax);
+    }
+
+    #[test]
+    fn baud_tables_follow_the_series() {
+        for model in MODELS {
+            assert!(model.accepts_baud(57_600), "{model:?}");
+            assert!(model.accepts_baud(1_000_000), "{model:?}");
+            assert!(!model.accepts_baud(117_647), "{model:?}");
+        }
+        assert!(Model::Ax12a.accepts_baud(500_000));
+        assert!(Model::Rx28.accepts_baud(19_200));
+        assert!(!Model::Rx28.accepts_baud(2_000_000));
+        assert!(Model::Xw540T260.accepts_baud(4_500_000));
+        assert!(!Model::Xm430W210.accepts_baud(500_000));
+    }
+
+    #[test]
+    fn only_the_x_series_has_current_control() {
+        for model in MODELS {
+            assert!(model.supports(Mode::Position), "{model:?}");
+            assert!(model.supports(Mode::Velocity), "{model:?}");
+            assert_eq!(
+                model.supports(Mode::Current),
+                model.series() == Series::X,
+                "{model:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_limits_follow_the_specifications() {
+        for model in MODELS {
+            let (min, max) = model.voltage_limits_dv();
+            assert!(min < max, "{model:?}");
+        }
+        assert_eq!(Model::Ax12a.voltage_limits_dv(), (90, 120));
+        assert_eq!(Model::Rx28.voltage_limits_dv(), (120, 185));
+        assert_eq!(Model::Xw540T140.voltage_limits_dv(), (100, 148));
+        assert_eq!(Model::Ax12a.max_temperature_c(), 70);
+        assert_eq!(Model::Rx28.max_temperature_c(), 80);
+        assert_eq!(Model::Xm430W210.max_temperature_c(), 80);
+    }
+
+    #[test]
+    fn a_position_chain_passes() {
+        table(chain(Model::Xm430W210)).check();
+        table(chain(Model::Ax12a)).check();
+    }
+
+    #[test]
+    fn the_same_id_on_two_buses_passes() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[1].bus = 1;
+        actuators[1].id = actuators[0].id;
+        let buses = [
+            BUS,
+            Bus {
+                label: "bus1",
+                ..BUS
+            },
+        ];
+        Table { buses, actuators }.check();
+    }
+
+    #[test]
+    #[should_panic(expected = "no bus declared")]
+    fn no_bus_is_rejected() {
+        Table {
+            buses: [],
+            actuators: chain(Model::Xm430W210),
+        }
+        .check();
+    }
+
+    #[test]
+    #[should_panic(expected = "bus 0: empty label")]
+    fn an_empty_label_is_rejected() {
+        Table {
+            buses: [Bus { label: "", ..BUS }],
+            actuators: chain(Model::Xm430W210),
+        }
+        .check();
+    }
+
+    #[test]
+    #[should_panic(expected = "bus 2: label bus0 already used by bus 0")]
+    fn a_repeated_label_names_both_buses() {
+        let buses = [
+            BUS,
+            Bus {
+                label: "bus1",
+                ..BUS
+            },
+            BUS,
+        ];
+        Table {
+            buses,
+            actuators: chain(Model::Xm430W210),
+        }
+        .check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 1: bus 3 out of range, 1 declared")]
+    fn a_bus_out_of_range_is_rejected() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[1].bus = 3;
+        table(actuators).check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 0: id 253 above 252")]
+    fn a_reserved_id_is_rejected() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[0].id = 253;
+        table(actuators).check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 1: id 1 already used on bus bus0 by actuator 0")]
+    fn a_repeated_id_names_both_actuators() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[1].id = actuators[0].id;
+        table(actuators).check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 1: mode not supported by the model")]
+    fn current_on_an_ax_is_rejected() {
+        let mut actuators = chain(Model::Ax12a);
+        actuators[1].mode = Mode::Current;
+        table(actuators).check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 0: RX-28 does not accept 2000000 baud on bus bus0")]
+    fn a_baud_the_model_lacks_names_the_actuator_and_the_model() {
+        Table {
+            buses: [Bus {
+                baud: 2_000_000,
+                ..BUS
+            }],
+            actuators: chain(Model::Rx28),
+        }
+        .check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 1: SRS section 8: Dynamixel mode register")]
+    fn velocity_is_rejected_until_dxl_rs_writes_the_mode() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[1].mode = Mode::Velocity;
+        table(actuators).check();
+    }
+
+    #[test]
+    fn a_raw_zero_inside_the_position_range_passes() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[0].zero = Zero::Raw(0);
+        actuators[1].zero = Zero::Raw(4095);
+        table(actuators).check();
+        let mut actuators = chain(Model::Ax12a);
+        actuators[2].zero = Zero::Raw(1023);
+        table(actuators).check();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "actuator 1: zero outside 0..=4095, the position range of XM430-W210"
+    )]
+    fn a_raw_zero_past_the_position_range_is_rejected() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[1].zero = Zero::Raw(4096);
+        table(actuators).check();
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 3: zero outside 0..=1023, the position range of AX-12A")]
+    fn a_negative_raw_zero_is_rejected() {
+        let mut actuators = chain(Model::Ax12a);
+        actuators[3].zero = Zero::Raw(-1);
+        table(actuators).check();
+    }
+
+    #[test]
+    fn a_long_message_is_cut_at_the_capacity() {
+        let mut message = Message::new();
+        for _ in 0..=MESSAGE_LEN {
+            message = message.text("x");
+        }
+        assert_eq!(message.as_str().len(), MESSAGE_LEN);
+    }
+}

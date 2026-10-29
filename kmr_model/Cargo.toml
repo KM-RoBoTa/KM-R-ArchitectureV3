@@ -1,0 +1,13 @@
+[package]
+name = "kmr_model"
+description = "Reads the robot descriptor at compile time for kmr_api::robot!."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+roxmltree.workspace = true

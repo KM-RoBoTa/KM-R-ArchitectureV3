@@ -1,0 +1,26 @@
+[package]
+name = "kmr_adapters"
+description = "Hardware adapters for the kmr engine: one per vendor."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kmr_core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rustix.workspace = true
+dxl_rs = { workspace = true, optional = true }
+
+[features]
+dynamixel = ["dep:dxl_rs"]
+
+[dev-dependencies]
+rustix = { workspace = true, features = ["pty"] }
+ctrlc.workspace = true
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "xm_bench_smoke"
+required-features = ["dynamixel"]

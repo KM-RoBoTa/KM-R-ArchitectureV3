@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!-- Test descriptor: 4 actuators. The fixed joint and the transmission's joint reference are not counted. -->
+<robot name="four">
+  <link name="base"/><link name="l1"/><link name="l2"/><link name="l3"/><link name="l4"/><link name="tool"/>
+  <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/></joint>
+  <joint name="j2" type="continuous"><parent link="l1"/><child link="l2"/></joint>
+  <joint name="j3" type="prismatic"><parent link="l2"/><child link="l3"/></joint>
+  <joint name="j4" type="revolute"><parent link="l3"/><child link="l4"/></joint>
+  <joint name="mount" type="fixed"><parent link="l4"/><child link="tool"/></joint>
+  <transmission name="t1"><joint name="j1"/></transmission>
+</robot>

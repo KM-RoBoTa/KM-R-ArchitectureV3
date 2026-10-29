@@ -1,10 +1,13 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-use kmr_api::{EachTick, Init, N, Q, Robot, Sensors, State, StateErrorKind as StateError, Time};
+use kmr_api::{Bus, EachTick, Init, Q, Sensors, StateErrorKind as StateError, Time};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+// The robot: model, N, brand, baud, ids. Gives this crate `Robot`, `State` and `N`.
+kmr_api::robot!(XmBench);
 
 // fn stop(robot: RobotState) {
 //     a.map(|x| Q(0_f32))
@@ -454,10 +457,10 @@ fn main() -> color_eyre::Result<()> {
     // you need, unlock FAST (don't hold the lock while doing heavy work — that
     // would stall the gamepad thread).
     fn use_gamepad(pad: &mut SharedPad, _time: &Time, robot: &mut State, _sensors: &Sensors) {
-        let (x, _y) = {
-            let input = pad.lock().unwrap();
-            (input.x, input.y)
-        }; // lock released here
+        // `try_lock` never waits: if the gamepad thread holds the pad, skip this tick.
+        let Ok(input) = pad.try_lock() else { return };
+        let (x, _y) = (input.x, input.y);
+        drop(input);
 
         // Turn the stick into a robot command.
         let current = robot.q();
@@ -504,6 +507,9 @@ fn main() -> color_eyre::Result<()> {
 
     // NOTE: `new()` should be `builder()` no ?
     Robot::new()
+        // Hardware, Bevy-style. The preset gives brand and baud; the id is this machine's USB adapter.
+        // Leave it out and run() simulates, with one warning.
+        .add_plugins(Bus::by_id("FT8ISZ6H"))
         // Settings
         .set_dt(Duration::from_millis(1u64)) // NOTE: or .dt_us(10000)
         // .history_depth(1_usize) // with a maximum recommended of 5.

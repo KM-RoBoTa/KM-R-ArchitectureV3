@@ -8,3 +8,7 @@ publish = false
 
 [dependencies]
 kmr_api.workspace = true
+
+[features]
+# The Dynamixel SDK, for the bench. Off: the crate builds anywhere and simulates.
+hardware = ["kmr_api/dynamixel"]
