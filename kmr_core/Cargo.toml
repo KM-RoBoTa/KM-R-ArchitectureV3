@@ -23,3 +23,5 @@ frunk.workspace = true
 # a `[dev-dependencies]` entry, so no release build carries a way to forge a
 # sample or to read the write-only staging area.
 test-util = []
+# Dev bench stopgap until N is a const generic (core M2): JOINTS = 10, not 4.
+joints-10 = []

@@ -8,6 +8,8 @@ use crate::{
 };
 use rstest::rstest;
 
+// The tests off under `joints-10` spell four actuators in their literals.
+
 // `RobotState::default()` routes through `home_state()` which is `todo!()`, so we
 // build the test fixtures directly from zeroed fields instead. The plumbing under
 // test (slot routing, history reads, desired writes) is independent of the home
@@ -67,6 +69,7 @@ fn out_of_range_write_single_desired(#[case] value: impl StateField) {
     );
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_current_q() {
     let mut robot = create_test_robot();
@@ -79,6 +82,7 @@ fn read_single_current_q() {
     assert_eq!(*read_value, Q(11.0));
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_current_qd() {
     let mut robot = create_test_robot();
@@ -91,6 +95,7 @@ fn read_single_current_qd() {
     assert_eq!(*read_value, Qd(11.0));
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_current_tau() {
     let mut robot = create_test_robot();
@@ -103,6 +108,7 @@ fn read_single_current_tau() {
     assert_eq!(*read_value, Tau(11.0));
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_previous_q() {
     let mut robot = create_test_robot();
@@ -121,6 +127,7 @@ fn read_single_previous_q() {
     assert_eq!(*read_value, Q(11.0));
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_previous_qd() {
     let mut robot = create_test_robot();
@@ -137,6 +144,7 @@ fn read_single_previous_qd() {
     assert_eq!(*read_value, Qd(11.0));
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_previous_tau() {
     let mut robot = create_test_robot();
@@ -201,6 +209,7 @@ fn out_of_range_read_single_current_tau() {
     );
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[rstest]
 #[case([Q(1_f32), Q(2_f32), Q(3_f32), Q(4_f32)])]
 #[case([Qd(1_f32), Qd(2_f32), Qd(3_f32), Qd(4_f32)])]
@@ -213,6 +222,7 @@ fn write_all_desired<T: StateField + PartialEq + Debug>(#[case] desired: [T; JOI
     assert_eq!(*<T as Slot>::slot(&mut robot.desired), desired);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_all_desired_at_the_same_time() {
     let mut robot = create_test_robot();
@@ -232,6 +242,7 @@ fn write_all_desired_at_the_same_time() {
 
 // Copy the current value at `index` into a desired array, write it, and confirm
 // the desired slot matches what was written at that index.
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_some_desired_q() {
     let mut robot = create_test_robot();
@@ -249,6 +260,7 @@ fn write_some_desired_q() {
     assert_eq!(robot.desired.q[index], current);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_some_desired_qd() {
     let mut robot = create_test_robot();
@@ -266,6 +278,7 @@ fn write_some_desired_qd() {
     assert_eq!(robot.desired.qd[index], current);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_some_desired_tau() {
     let mut robot = create_test_robot();
@@ -283,6 +296,7 @@ fn write_some_desired_tau() {
     assert_eq!(robot.desired.tau[index], current);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_all_current_q() {
     let mut robot = create_test_robot();
@@ -296,6 +310,7 @@ fn read_all_current_q() {
     assert_eq!(*read_value, q);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_all_current_qd() {
     let mut robot = create_test_robot();
@@ -309,6 +324,7 @@ fn read_all_current_qd() {
     assert_eq!(*read_value, qd);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_all_current_tau() {
     let mut robot = create_test_robot();
@@ -322,6 +338,7 @@ fn read_all_current_tau() {
     assert_eq!(*read_value, tau);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[rstest]
 #[case([Q(1_f32), Q(2_f32), Q(3_f32), Q(4_f32)])]
 #[case([Qd(1_f32), Qd(2_f32), Qd(3_f32), Qd(4_f32)])]
@@ -408,6 +425,7 @@ fn slot_returns_full_length_array() {
     assert_eq!(Tau::slot(&mut desired).len(), JOINTS);
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn slot_mutation_persists_after_borrow_ends() {
     let mut desired = zeroed_desired();
@@ -543,6 +561,7 @@ fn each_pushed_slot_starts_as_a_copy_of_the_last() {
     assert_eq!(robot.prev_at::<Q>(1, 1), Ok(&Q(2.0)));
 }
 
+#[cfg(not(feature = "joints-10"))]
 #[test]
 fn the_hold_target_is_the_sample_overlaid_with_this_ticks_writes() {
     let mut robot = create_test_robot();

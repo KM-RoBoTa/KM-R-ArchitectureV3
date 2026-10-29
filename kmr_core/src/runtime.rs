@@ -1196,6 +1196,7 @@ mod tests {
             mask
         }
 
+        #[cfg(not(feature = "joints-10"))]
         #[test]
         fn shutdown_reads_before_first_writes_after_last_then_holds_and_cuts_torque() {
             let log = Log::new();
@@ -1222,6 +1223,7 @@ mod tests {
             assert_eq!(hold.written.q, mask(&[1]));
         }
 
+        #[cfg(not(feature = "joints-10"))]
         #[test]
         fn every_tick_runs_read_first_each_last_write_and_desired_clears() {
             let log = Log::new();

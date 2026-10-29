@@ -3,7 +3,12 @@ use crate::error::StateError;
 // todo: build time variable from model, not implemented yet — keep here, not in a submodule
 
 /// The compile-time generated joint const. Generated from kmr_model. WIP
+#[cfg(not(feature = "joints-10"))]
 pub const JOINTS: usize = 4;
+/// Ten actuators, for the `joints-10` feature: a dev bench stopgap until N
+/// is a const generic (core M2).
+#[cfg(feature = "joints-10")]
+pub const JOINTS: usize = 10;
 /// Amount of ticks the history of the state is kept for. WIP
 pub const HISTORY_DEPTH: usize = 4;
 
