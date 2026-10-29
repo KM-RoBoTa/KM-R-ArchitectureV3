@@ -99,6 +99,13 @@ pub(crate) fn position_to_raw(model: Model, q: Q) -> Option<u32> {
         .then_some(raw as u32)
 }
 
+/// Position register value of `model` nearest to `q`, unchecked, for an
+/// error that names it: NaN is 0, an infinity saturates.
+pub(crate) fn nearest_position(model: Model, q: Q) -> i64 {
+    let scale = scale(model);
+    (q.0 / scale.rad_per_position + scale.center as f32).round() as i64
+}
+
 /// Present velocity register value `raw` of `model`, in rad/s.
 pub(crate) fn velocity_to_si(model: Model, raw: i32) -> Qd {
     let scale = scale(model);

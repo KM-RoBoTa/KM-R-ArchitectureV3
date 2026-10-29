@@ -232,29 +232,88 @@ pub enum DynamixelError {
         /// Hardware Error Status bits.
         status: u8,
     },
-    /// The actuator answered outside its limits.
-    #[error("actuator {actuator}: id {id} on bus {bus}: {reason}")]
-    Health {
+    /// The present position is outside the register range: a homing offset
+    /// or another operating mode moved it.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: present position {raw} outside the register range 0–{max}"
+    )]
+    PositionRange {
         /// Engine index.
         actuator: usize,
         /// Bus label.
         bus: &'static str,
         /// Firmware id.
         id: u8,
-        /// What is out of limits.
-        reason: &'static str,
+        /// Present position, raw.
+        raw: i64,
+        /// Highest position of the model, raw.
+        max: u32,
     },
-    /// The actuator is not set up as the table says.
-    #[error("actuator {actuator}: id {id} on bus {bus}: {reason}")]
-    Setup {
+    /// The present position is outside the CW/CCW Angle Limit: powered, the
+    /// actuator would not hold there (Protocol 1).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: present position {raw} outside the CW/CCW Angle Limit {cw}–{ccw}"
+    )]
+    OutsideAngleLimits {
         /// Engine index.
         actuator: usize,
         /// Bus label.
         bus: &'static str,
         /// Firmware id.
         id: u8,
-        /// What differs.
-        reason: &'static str,
+        /// Present position, raw.
+        raw: u32,
+        /// CW Angle Limit, raw.
+        cw: u32,
+        /// CCW Angle Limit, raw.
+        ccw: u32,
+    },
+    /// CW and CCW Angle Limit both 0: wheel mode, not joint mode
+    /// (Protocol 1).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: CW and CCW Angle Limit both 0: wheel mode, not joint mode"
+    )]
+    WheelMode {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+    },
+    /// CW Angle Limit above CCW Angle Limit (Protocol 1).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: CW Angle Limit {cw} above CCW Angle Limit {ccw}"
+    )]
+    AngleLimitsReversed {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// CW Angle Limit, raw.
+        cw: u32,
+        /// CCW Angle Limit, raw.
+        ccw: u32,
+    },
+    /// The Operating Mode is not the one the table asks for (Protocol 2).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: Operating Mode {}, expected {}",
+        ModeName(*.found),
+        ModeName(*.expected)
+    )]
+    OperatingMode {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Operating Mode read.
+        found: u8,
+        /// Operating Mode the table asks for.
+        expected: u8,
     },
     /// A transaction with one actuator failed.
     #[error("actuator {actuator}: id {id} on bus {bus}: {source}")]
@@ -296,6 +355,24 @@ struct Volts(u16);
 impl fmt::Display for Volts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.0 / 10, self.0 % 10)
+    }
+}
+
+/// An X series Operating Mode value, printed with its name: `3 (position)`.
+struct ModeName(u8);
+
+impl fmt::Display for ModeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self.0 {
+            0 => "current",
+            1 => "velocity",
+            3 => "position",
+            4 => "extended position",
+            5 => "current-based position",
+            16 => "PWM",
+            _ => "unknown",
+        };
+        write!(f, "{} ({name})", self.0)
     }
 }
 
@@ -467,39 +544,36 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
         }
     }
 
-    /// The bring-up error of actuator `index` set up otherwise than the
-    /// table says.
-    fn setup_error(&self, index: usize, reason: &'static str) -> DynamixelError {
+    /// The bring-up error of actuator `index`, whose present position `raw`
+    /// is outside the register range.
+    fn position_range(&self, index: usize, raw: i64) -> DynamixelError {
         let (bus, id) = self.named(index);
-        DynamixelError::Setup {
+        let max = self
+            .table
+            .actuators
+            .get(index)
+            .map_or(0, |actuator| units::max_position(actuator.model));
+        DynamixelError::PositionRange {
             actuator: index,
             bus,
             id,
-            reason,
+            raw,
+            max,
         }
     }
 
-    /// The bring-up error of actuator `index`, whose present position is
-    /// outside the register range.
-    fn invalid_position(&self, index: usize) -> DynamixelError {
+    /// The bring-up error of actuator `index`, whose present position `raw`
+    /// is outside its angle limits: powered, it would not hold there.
+    fn outside_limits(&self, index: usize, raw: u32) -> DynamixelError {
         let (bus, id) = self.named(index);
-        DynamixelError::Health {
+        let (cw, ccw) = self.limits.get(index).copied().unwrap_or_default();
+        DynamixelError::OutsideAngleLimits {
             actuator: index,
             bus,
             id,
-            reason: "present position outside the register range",
-        }
-    }
-
-    /// The bring-up error of actuator `index`, whose present position is
-    /// outside its angle limits: powered, it would not hold there.
-    fn outside_limits(&self, index: usize) -> DynamixelError {
-        let (bus, id) = self.named(index);
-        DynamixelError::Health {
-            actuator: index,
-            bus,
-            id,
-            reason: "present position outside the CW/CCW Angle Limit",
+            raw,
+            cw,
+            ccw,
         }
     }
 
@@ -527,7 +601,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
                 bus: self.named(index).0,
                 source,
             }),
-            Some((index, Outcome::Invalid)) => Err(self.invalid_position(index)),
+            Some((index, Outcome::Invalid(raw))) => Err(self.position_range(index, raw)),
         }
     }
 }
@@ -744,14 +818,22 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                     .backend
                     .read_angle_limits(bus, model, id)
                     .map_err(|error| self.actuator_error(index, error))?;
+                let bus = self.label(bus);
                 if cw == 0 && ccw == 0 {
-                    return Err(self.setup_error(
-                        index,
-                        "CW and CCW Angle Limit both 0: wheel mode, not joint mode",
-                    ));
+                    return Err(DynamixelError::WheelMode {
+                        actuator: index,
+                        bus,
+                        id,
+                    });
                 }
                 if cw > ccw {
-                    return Err(self.setup_error(index, "CW Angle Limit above CCW Angle Limit"));
+                    return Err(DynamixelError::AngleLimitsReversed {
+                        actuator: index,
+                        bus,
+                        id,
+                        cw,
+                        ccw,
+                    });
                 }
                 if let Some(limits) = self.limits.get_mut(index) {
                     *limits = (cw, ccw);
@@ -764,7 +846,13 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                 .read_setting(bus, model, id, Setting::OperatingMode)
                 .map_err(|error| self.actuator_error(index, error))?;
             if mode != POSITION_MODE {
-                return Err(self.setup_error(index, "operating mode is not position (3)"));
+                return Err(DynamixelError::OperatingMode {
+                    actuator: index,
+                    bus: self.label(bus),
+                    id,
+                    found: mode,
+                    expected: POSITION_MODE,
+                });
             }
             let powered = self
                 .backend

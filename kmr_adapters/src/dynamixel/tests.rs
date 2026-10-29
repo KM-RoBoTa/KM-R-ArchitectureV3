@@ -1830,15 +1830,29 @@ fn a_position_outside_the_register_range_is_stale_never_a_reading() -> Result<()
         );
         assert_eq!(slot.q[2], Q(9.0));
 
+        // Protocol 1 reads the register unsigned: -1 comes back as u32::MAX.
+        let raw = match model.protocol() {
+            Protocol::Two => -1,
+            Protocol::One => i64::from(u32::MAX),
+        };
+        let max = units::max_position(model);
+        let error = adapter.read_all(Slot::filled(9.0).sample());
         assert_eq!(
-            adapter.read_all(Slot::filled(9.0).sample()),
-            Err(DynamixelError::Health {
+            error,
+            Err(DynamixelError::PositionRange {
                 actuator: 1,
                 bus: table.buses[0].label,
                 id: id(1),
-                reason: "present position outside the register range"
+                raw,
+                max
             })
         );
+        let message = error.err().map(|error| error.to_string());
+        let expected = format!(
+            "actuator 1: id 2 on bus {}: present position {raw} outside the register range 0–{max}",
+            table.buses[0].label
+        );
+        assert_eq!(message, Some(expected));
     }
     Ok(())
 }
@@ -1852,14 +1866,24 @@ fn an_actuator_outside_position_mode_fails_configure_before_any_torque()
     // Extended position: goals in 0..=4095 would be multi-turn coordinates.
     adapter.backend.mode(0, id(2), 4);
 
+    let error = adapter.configure();
+
     assert_eq!(
-        adapter.configure(),
-        Err(DynamixelError::Setup {
+        error,
+        Err(DynamixelError::OperatingMode {
             actuator: 2,
             bus: "x",
             id: id(2),
-            reason: "operating mode is not position (3)"
+            found: 4,
+            expected: 3
         })
+    );
+    let message = error.err().map(|error| error.to_string());
+    assert_eq!(
+        message.as_deref(),
+        Some(
+            "actuator 2: id 3 on bus x: Operating Mode 4 (extended position), expected 3 (position)"
+        )
     );
     assert_eq!(adapter.backend.count(Call::Torque), 0);
     Ok(())
@@ -1893,24 +1917,37 @@ fn protocol_1_outside_joint_mode_fails_configure_before_any_torque() -> Result<(
         (
             0,
             0,
-            "CW and CCW Angle Limit both 0: wheel mode, not joint mode",
+            DynamixelError::WheelMode {
+                actuator: 2,
+                bus: "rx",
+                id: id(2),
+            },
+            "actuator 2: id 3 on bus rx: CW and CCW Angle Limit both 0: wheel mode, not joint mode",
         ),
-        (700, 300, "CW Angle Limit above CCW Angle Limit"),
+        (
+            700,
+            300,
+            DynamixelError::AngleLimitsReversed {
+                actuator: 2,
+                bus: "rx",
+                id: id(2),
+                cw: 700,
+                ccw: 300,
+            },
+            "actuator 2: id 3 on bus rx: CW Angle Limit 700 above CCW Angle Limit 300",
+        ),
     ];
-    for (cw, ccw, reason) in cases {
+    for (cw, ccw, expected, message) in cases {
         let mut adapter = rig(RX_TABLE);
         adapter.check(Overrides::default())?;
         mark_open(&mut adapter);
         adapter.backend.angle_limits(0, id(2), cw, ccw);
 
+        let error = adapter.configure();
+        assert_eq!(error, Err(expected));
         assert_eq!(
-            adapter.configure(),
-            Err(DynamixelError::Setup {
-                actuator: 2,
-                bus: "rx",
-                id: id(2),
-                reason
-            })
+            error.err().map(|error| error.to_string()).as_deref(),
+            Some(message)
         );
         assert_eq!(adapter.backend.count(Call::Torque), 0);
     }
@@ -1990,14 +2027,25 @@ fn a_present_position_outside_the_angle_limits_powers_nothing() -> Result<(), Dy
     mark_open(&mut adapter);
     adapter.configure()?;
 
+    let error = adapter.torque_on();
+
     assert_eq!(
-        adapter.torque_on(),
-        Err(DynamixelError::Health {
+        error,
+        Err(DynamixelError::OutsideAngleLimits {
             actuator: 1,
             bus: "rx",
             id: id(1),
-            reason: "present position outside the CW/CCW Angle Limit"
+            raw: 200,
+            cw: 300,
+            ccw: 700
         })
+    );
+    let message = error.err().map(|error| error.to_string());
+    assert_eq!(
+        message.as_deref(),
+        Some(
+            "actuator 1: id 2 on bus rx: present position 200 outside the CW/CCW Angle Limit 300–700"
+        )
     );
     assert_eq!(adapter.backend.count(Call::SyncWriteStartGoal), 0);
     assert_eq!(adapter.backend.count(Call::Torque), 0);

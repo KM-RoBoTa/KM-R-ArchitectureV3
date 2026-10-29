@@ -220,9 +220,9 @@ pub(crate) enum Outcome {
     Read,
     /// It did not answer.
     Lost(BackendError),
-    /// It answered a position outside the register range; nothing was
-    /// stored.
-    Invalid,
+    /// It answered this raw position, outside the register range; nothing
+    /// was stored.
+    Invalid(i64),
     /// The transaction failed on its bus.
     Bus(BackendError),
 }
@@ -360,7 +360,7 @@ pub(crate) fn read_table<B: Backend>(
                     Ok(raw) if store_state(sample, model_of(index), index, raw) => {
                         report(index, Outcome::Read);
                     }
-                    Ok(_) => report(index, Outcome::Invalid),
+                    Ok(raw) => report(index, Outcome::Invalid(i64::from(raw.position))),
                     Err(error) => report(index, Outcome::Lost(*error)),
                 }
             }
@@ -378,7 +378,7 @@ pub(crate) fn read_table<B: Backend>(
                                 *q = read;
                                 report(index, Outcome::Read);
                             }
-                            _ => report(index, Outcome::Invalid),
+                            _ => report(index, Outcome::Invalid(i64::from(raw))),
                         }
                     }
                     Err(error) if error.is_bus() => report(index, Outcome::Bus(error)),
@@ -453,7 +453,7 @@ pub(super) fn read_due<B: Backend, const NB: usize>(
                     faults.stale.set(index);
                     faults.bus_error.set(index);
                 }
-                Outcome::Invalid => faults.stale.set(index),
+                Outcome::Invalid(_) => faults.stale.set(index),
             },
         );
     }
@@ -528,10 +528,11 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize>(
             continue;
         }
         let q = present.get(index).copied().unwrap_or_default();
-        let (register, raw) =
-            start_goal(actuator, q).ok_or_else(|| adapter.invalid_position(index))?;
+        let (register, raw) = start_goal(actuator, q).ok_or_else(|| {
+            adapter.position_range(index, units::nearest_position(actuator.model, q))
+        })?;
         if register == GoalRegister::Position && !adapter.within_limits(index, raw) {
-            return Err(adapter.outside_limits(index));
+            return Err(adapter.outside_limits(index, raw));
         }
         if let Some(goals) = goals.get_mut(register as usize) {
             goals.push(index, actuator.id, raw);
