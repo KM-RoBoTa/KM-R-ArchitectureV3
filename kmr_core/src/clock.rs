@@ -1,12 +1,13 @@
 //! Module that holds the Time data structure.
 //!
 //! Allows the tracking of a fixed time duration as well as the real one.
-//! Meant to be read-only for the user, and entirely managed within the core.
+//! Read-only for the user through the getters of SRS FR-3.3, and entirely
+//! managed within the core.
 //!
 //! Configurable at init time (see [`RobotConfig`]).
 //!
 //! ```ignore
-//! // Runtime side only: every method is `pub(crate)`.
+//! // Runtime side only: every method but the read-only getters is `pub(crate)`.
 //! let mut time = Time::default();
 //! time.set_delta(Duration::from_millis(1)); // ~1kHz
 //! time.arm(Instant::now()); // once, after the startup phases
@@ -71,11 +72,8 @@ struct Simulation;
 /// let time = Time::default();
 /// ```
 pub struct Time<T = ()> {
-    // todo: initialization time for debug ?
-    // todo: couple a Peeker::initialization_time(); be useful
-    // for the user to debug without calling Robot::new() ?
-    /// Instant the robot started, set once at construction.
-    startup: Instant,
+    /// Origin of the tick grid, set by `arm`. `None` until the clock is armed.
+    origin: Option<Instant>,
     /// Instant the previous tick completed, `None` before the first tick.
     last_update: Option<Instant>,
     /// Instant the tick in progress must finish by, on the grid. `None` until
@@ -83,12 +81,16 @@ pub struct Time<T = ()> {
     deadline: Option<Instant>,
     /// Fixed tick duration, configured via `Robot::dt`.
     delta: Duration,
-    /// Wall-clock duration since `startup`.
+    /// Wall-clock duration since `origin`, stamped at the start of each tick.
     elapsed: Duration,
+    /// Ticks closed so far: the index of the tick in progress.
+    tick: u64,
+    /// Ticks that finished after their deadline.
+    overrun_count: u64,
     /// How late the last tick finished against its deadline, if it was late.
     overrun: Option<Duration>,
-    /// Running total of overrun across ticks, if any tick has overrun.
-    accumulated_overrun: Option<Duration>,
+    /// Running total of overrun across ticks, zero while no tick has overrun.
+    accumulated_overrun: Duration,
     /// Marks whether this `Time` is real or [`Simulation`]-driven; occupies no space.
     _sim: PhantomData<T>,
 }
@@ -96,21 +98,23 @@ pub struct Time<T = ()> {
 impl Default for Time {
     fn default() -> Self {
         Self {
-            startup: Instant::now(),
+            origin: None,
             last_update: None,
             deadline: None,
             delta: Duration::ZERO,
             elapsed: Duration::ZERO,
+            tick: 0,
+            overrun_count: 0,
             overrun: None,
-            accumulated_overrun: None,
+            accumulated_overrun: Duration::ZERO,
             _sim: Default::default(),
         }
     }
 }
-// All methods are `pub(crate)`: `Time` is internal state. The only knob the
-// user gets is `Robot::dt_ms`/`dt_us` (robot.rs), which forwards into
-// `set_delta_ms`/`set_delta_us` below. Everything else here is written and
-// read by the runtime, never by user code.
+// The methods of this block are `pub(crate)`: `Time` is internal state. The
+// only knob the user gets is `Robot::set_dt` (robot.rs), which forwards into
+// `set_delta` below. Users read the clock through the `pub` getters further
+// down, by copy.
 impl Time {
     // ── Setters ─────────────────────────────────────────────────────────
 
@@ -147,8 +151,7 @@ impl Time {
     /// To set an overrun for the current tick, use `self.set_overrun` instead.
     pub(crate) fn increment_accumulated_overrun(&mut self) {
         if let Some(overrun) = self.overrun {
-            let total = self.accumulated_overrun.unwrap_or(Duration::ZERO);
-            self.accumulated_overrun = Some(total.saturating_add(overrun));
+            self.accumulated_overrun = self.accumulated_overrun.saturating_add(overrun);
         }
     }
 
@@ -158,13 +161,16 @@ impl Time {
     ///
     /// Called once, after the startup phases, so they never count as an overrun.
     pub(crate) fn arm(&mut self, now: Instant) {
+        self.origin = Some(now);
         self.deadline = Some(now.checked_add(self.delta).unwrap_or(now));
     }
 
-    /// Stamps the elapsed time since `startup`, before the controllers run, so
-    /// that they all read the same value during a tick.
+    /// Stamps the elapsed time since `arm`, before the controllers run, so
+    /// that they all read the same value during a tick. Zero while unarmed.
     pub(crate) fn begin_tick(&mut self, now: Instant) {
-        self.elapsed = now.saturating_duration_since(self.startup);
+        self.elapsed = self.origin.map_or(Duration::ZERO, |origin| {
+            now.saturating_duration_since(origin)
+        });
     }
 
     /// Closes the tick that finished at `now`.
@@ -177,6 +183,7 @@ impl Time {
             return None;
         };
         self.last_update = Some(now);
+        self.tick = self.tick.saturating_add(1);
 
         let late = now.saturating_duration_since(due);
         if late.is_zero() {
@@ -186,6 +193,7 @@ impl Time {
         }
 
         self.overrun = Some(late);
+        self.overrun_count = self.overrun_count.saturating_add(1);
         self.increment_accumulated_overrun();
 
         if self.delta.is_zero() {
@@ -203,11 +211,6 @@ impl Time {
     }
 
     // ── Getters ─────────────────────────────────────────────────────────
-    /// Returns the instant the robot started, set once at construction.
-    pub(crate) fn startup(&self) -> &Instant {
-        &self.startup
-    }
-
     /// Returns the instant the previous tick completed, or `None` before the
     /// first tick.
     pub(crate) fn last_update(&self) -> Option<&Instant> {
@@ -217,11 +220,6 @@ impl Time {
     /// Returns the fixed tick duration, configured via `Robot::dt`.
     pub(crate) fn delta(&self) -> &Duration {
         &self.delta
-    }
-
-    /// Returns the wall-clock duration since `startup`.
-    pub(crate) fn elapsed(&self) -> &Duration {
-        &self.elapsed
     }
 
     /// Returns the instant the tick in progress must be finished by, or
@@ -238,11 +236,38 @@ impl Time {
     pub(crate) fn overrun(&self) -> Option<&Duration> {
         self.overrun.as_ref()
     }
+}
 
-    /// Returns the running total of overrun across ticks, if any tick has
-    /// overrun.
-    pub(crate) fn accumulated_overrun(&self) -> Option<&Duration> {
-        self.accumulated_overrun.as_ref()
+/// What a controller reads, by copy (SRS FR-3.3).
+impl Time {
+    /// Time since the tick grid was armed, stamped at the start of the tick.
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// The fixed tick duration.
+    pub fn dt(&self) -> Duration {
+        self.delta
+    }
+
+    /// Index of the tick in progress, 0 for the first one.
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    /// How many ticks finished after their deadline.
+    pub fn overrun_count(&self) -> u64 {
+        self.overrun_count
+    }
+
+    /// How late the previous tick finished, `None` if it was on time.
+    pub fn last_overrun(&self) -> Option<Duration> {
+        self.overrun
+    }
+
+    /// Sum of every overrun so far, zero when there was none.
+    pub fn accumulated_overrun(&self) -> Duration {
+        self.accumulated_overrun
     }
 }
 
@@ -273,7 +298,7 @@ mod tests {
         assert_eq!(time.deadline(), Some(&(origin + DT * 2)));
         assert_eq!(time.last_update(), Some(&now));
         assert_eq!(time.overrun(), None);
-        assert_eq!(time.accumulated_overrun(), None);
+        assert_eq!(time.accumulated_overrun(), Duration::ZERO);
     }
 
     #[test]
@@ -323,11 +348,11 @@ mod tests {
             Some(origin + DT * 4)
         );
         assert_eq!(time.overrun(), Some(&(DT / 4)));
-        assert_eq!(time.accumulated_overrun(), Some(&(DT / 2 + DT / 4)));
+        assert_eq!(time.accumulated_overrun(), DT / 2 + DT / 4);
 
         assert_eq!(time.end_tick(origin + DT * 5), Some(origin + DT * 5));
         assert_eq!(time.overrun(), None);
-        assert_eq!(time.accumulated_overrun(), Some(&(DT / 2 + DT / 4)));
+        assert_eq!(time.accumulated_overrun(), DT / 2 + DT / 4);
     }
 
     #[test]
@@ -353,7 +378,7 @@ mod tests {
         }
         // 100 overruns skip 2 slots each: 1000 ticks use 1200 slots.
         assert_eq!(time.deadline(), Some(&(origin + DT * 1201)));
-        assert_eq!(time.accumulated_overrun(), Some(&(DT * 17 / 10 * 100)));
+        assert_eq!(time.accumulated_overrun(), DT * 17 / 10 * 100);
     }
 
     #[test]
@@ -375,7 +400,7 @@ mod tests {
             start = next;
         }
         assert_eq!(late_ticks, 1);
-        assert_eq!(time.accumulated_overrun(), Some(&(DT / 2)));
+        assert_eq!(time.accumulated_overrun(), DT / 2);
     }
 
     #[test]
@@ -401,11 +426,34 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_is_measured_from_startup() {
+    fn elapsed_is_measured_from_arm() {
         let mut time = Time::default();
-        let startup = *time.startup();
+        let origin = Instant::now();
 
-        time.begin_tick(startup + DT * 5);
-        assert_eq!(time.elapsed(), &(DT * 5));
+        time.begin_tick(origin + DT * 5);
+        assert_eq!(time.elapsed(), Duration::ZERO);
+
+        time.arm(origin);
+        time.begin_tick(origin + DT * 5);
+        assert_eq!(time.elapsed(), DT * 5);
+    }
+
+    #[test]
+    fn tick_and_overrun_count_follow_end_tick() {
+        let (mut time, origin) = armed();
+        assert_eq!((time.tick(), time.overrun_count()), (0, 0));
+
+        time.end_tick(origin + DT / 2);
+        assert_eq!((time.tick(), time.overrun_count()), (1, 0));
+        assert_eq!(time.last_overrun(), None);
+
+        time.end_tick(origin + DT * 2 + DT / 4);
+        assert_eq!((time.tick(), time.overrun_count()), (2, 1));
+        assert_eq!(time.last_overrun(), Some(DT / 4));
+
+        time.end_tick(origin + DT * 3);
+        assert_eq!((time.tick(), time.overrun_count()), (3, 1));
+        assert_eq!(time.last_overrun(), None);
+        assert_eq!(time.accumulated_overrun(), DT / 4);
     }
 }

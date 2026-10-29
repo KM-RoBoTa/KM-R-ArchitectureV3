@@ -329,7 +329,8 @@ fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
         SignalKind::Shutdown => info!("control loop stopped, {signal}"),
         SignalKind::EmergencyStop => error!("control loop aborted, {signal}"),
     }
-    if let Some(total) = robot.config.time.accumulated_overrun() {
+    let total = robot.config.time.accumulated_overrun();
+    if !total.is_zero() {
         info!(?total, "ticks finished after their deadline during the run");
     }
 
@@ -612,7 +613,7 @@ mod tests {
         assert_eq!(host.sleeps[0], Some(host.at(10)));
         assert_eq!(host.sleeps[1], Some(host.at(30)));
         assert_eq!(host.sleeps[2], Some(host.at(40)));
-        assert_eq!(robot.config.time.accumulated_overrun(), Some(&(DT / 2)));
+        assert_eq!(robot.config.time.accumulated_overrun(), DT / 2);
         assert_eq!(robot.config.time.overrun(), None);
     }
 
@@ -653,11 +654,11 @@ mod tests {
         let mut robot = Robot::new()
             .set_dt(dt)
             .add_controller(EachTick, |time: &Time, _s, _se| {
-                seen_dt.set(*time.delta());
-                seen_elapsed.set(*time.elapsed());
+                seen_dt.set(time.dt());
+                seen_elapsed.set(time.elapsed());
             });
-        // Same origin as the clock, so the elapsed time is the scripted one.
-        let mut host = Scripted::new(*robot.config.time.startup())
+        // The clock is armed at the first scripted instant, 0.
+        let mut host = Scripted::new(Instant::now())
             .script(&[0, 0, 3, 10, 12])
             .shutdown_from(TICK_END + PER_TICK);
 
