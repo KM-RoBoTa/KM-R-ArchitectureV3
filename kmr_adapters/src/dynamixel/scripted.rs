@@ -36,11 +36,16 @@ const REGISTERS: usize = GoalRegister::ALL.len();
 /// Device path bytes kept per port; longer paths are cut.
 const PATH: usize = 256;
 
-/// Answer of a present actuator until scripted otherwise.
-const HEALTHY: Health = Health {
+/// Answer of a present actuator until scripted otherwise: 12.0 V and 30 °C,
+/// inside every model's datasheet range, and the RX-28 factory limits,
+/// 6.0–19.0 V and 80 °C.
+pub(crate) const HEALTHY: Health = Health {
     error_status: 0,
     voltage_dv: 120,
     temperature_c: 30,
+    min_voltage_dv: 60,
+    max_voltage_dv: 190,
+    temperature_limit_c: 80,
 };
 
 /// CW and CCW Angle Limit of a Protocol 1 actuator until scripted

@@ -124,8 +124,10 @@ impl Model {
         !matches!((self.series(), mode), (Series::Ax, Mode::Current))
     }
 
-    /// Input voltage range of the specification, `(min, max)` in 0.1 V.
-    pub const fn voltage_limits_dv(self) -> (u16, u16) {
+    /// Input voltage range of the datasheet, `(min, max)` in 0.1 V. Never
+    /// the health check, which reads the actuator's own limits: outside this
+    /// range, inside those, bring-up warns.
+    pub const fn datasheet_voltage_dv(self) -> (u16, u16) {
         match self {
             Self::Ax12a => (90, 120),
             Self::Rx28 => (120, 185),
@@ -133,8 +135,10 @@ impl Model {
         }
     }
 
-    /// Default Temperature Limit, also the top of the operating range, in °C.
-    pub const fn max_temperature_c(self) -> u8 {
+    /// Top of the datasheet operating range, also the default Temperature
+    /// Limit, in °C. Never the health check, which reads the actuator's own
+    /// Temperature Limit: above this, below that, bring-up warns.
+    pub const fn datasheet_max_temperature_c(self) -> u8 {
         match self {
             Self::Ax12a => 70,
             Self::Rx28 => 80,
@@ -606,17 +610,17 @@ mod tests {
     }
 
     #[test]
-    fn health_limits_follow_the_specifications() {
+    fn datasheet_ranges_follow_the_specifications() {
         for model in MODELS {
-            let (min, max) = model.voltage_limits_dv();
+            let (min, max) = model.datasheet_voltage_dv();
             assert!(min < max, "{model:?}");
         }
-        assert_eq!(Model::Ax12a.voltage_limits_dv(), (90, 120));
-        assert_eq!(Model::Rx28.voltage_limits_dv(), (120, 185));
-        assert_eq!(Model::Xw540T140.voltage_limits_dv(), (100, 148));
-        assert_eq!(Model::Ax12a.max_temperature_c(), 70);
-        assert_eq!(Model::Rx28.max_temperature_c(), 80);
-        assert_eq!(Model::Xm430W210.max_temperature_c(), 80);
+        assert_eq!(Model::Ax12a.datasheet_voltage_dv(), (90, 120));
+        assert_eq!(Model::Rx28.datasheet_voltage_dv(), (120, 185));
+        assert_eq!(Model::Xw540T140.datasheet_voltage_dv(), (100, 148));
+        assert_eq!(Model::Ax12a.datasheet_max_temperature_c(), 70);
+        assert_eq!(Model::Rx28.datasheet_max_temperature_c(), 80);
+        assert_eq!(Model::Xm430W210.datasheet_max_temperature_c(), 80);
     }
 
     #[test]

@@ -253,7 +253,8 @@ pub(crate) struct RawState {
     pub(crate) current: i16,
 }
 
-/// What the PostInit health check reads from one actuator.
+/// What the PostInit health check reads from one actuator: present values,
+/// and the limits it holds in its own control table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Health {
     /// Hardware Error Status bits; 0 where the protocol has no such register.
@@ -262,6 +263,12 @@ pub(crate) struct Health {
     pub(crate) voltage_dv: u16,
     /// Present temperature, in °C.
     pub(crate) temperature_c: u8,
+    /// Min Voltage Limit, in 0.1 V.
+    pub(crate) min_voltage_dv: u16,
+    /// Max Voltage Limit, in 0.1 V.
+    pub(crate) max_voltage_dv: u16,
+    /// Temperature Limit, in °C.
+    pub(crate) temperature_limit_c: u8,
 }
 
 /// A one-byte Protocol 2 register checked at bring-up.
@@ -409,7 +416,8 @@ pub(crate) trait Backend {
         setting: Setting,
     ) -> Result<u8, BackendError>;
 
-    /// Error status, voltage and temperature of one actuator.
+    /// Error status, voltage and temperature of one actuator, and its
+    /// voltage and temperature limits.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError>;
 
     /// CW and CCW Angle Limit of one Protocol 1 actuator, raw: both 0 is

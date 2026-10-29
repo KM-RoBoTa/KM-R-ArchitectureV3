@@ -22,7 +22,7 @@ use kmr_core::state::{JOINTS, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
-use super::scripted::{Call, Scripted};
+use super::scripted::{Call, HEALTHY, Scripted};
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
     Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, io as tick, port, units,
@@ -358,31 +358,52 @@ impl<S: tracing::Subscriber> Layer<S> for Warnings {
         if *event.metadata().level() != tracing::Level::WARN {
             return;
         }
-        let mut finder = Finder {
-            needle: self.needle,
-            found: false,
+        let mut message = Message {
+            bytes: [0; MESSAGE],
+            len: 0,
         };
-        event.record(&mut finder);
-        if finder.found {
+        event.record(&mut message);
+        let needle = self.needle.as_bytes();
+        if message
+            .text()
+            .windows(needle.len())
+            .any(|window| window == needle)
+        {
             self.count.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
-/// Looks for the needle in the message of an event.
-struct Finder {
-    needle: &'static str,
-    found: bool,
+/// Bytes of an event message kept; the rest is cut.
+const MESSAGE: usize = 512;
+
+/// The message of an event, whole: it is written in several chunks when it
+/// has arguments.
+struct Message {
+    bytes: [u8; MESSAGE],
+    len: usize,
 }
 
-impl fmt::Write for Finder {
+impl Message {
+    /// The bytes written so far.
+    fn text(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl fmt::Write for Message {
     fn write_str(&mut self, chunk: &str) -> fmt::Result {
-        self.found |= chunk.contains(self.needle);
+        for &byte in chunk.as_bytes() {
+            if let Some(slot) = self.bytes.get_mut(self.len) {
+                *slot = byte;
+                self.len += 1;
+            }
+        }
         Ok(())
     }
 }
 
-impl tracing::field::Visit for Finder {
+impl tracing::field::Visit for Message {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
         if field.name() == "message" {
             let _ = fmt::Write::write_fmt(self, format_args!("{value:?}"));
@@ -1332,27 +1353,65 @@ fn a_missing_actuator_is_named_with_its_bus_and_id() -> Result<(), DynamixelErro
 }
 
 #[test]
-fn an_unhealthy_actuator_is_named_with_the_reason() -> Result<(), DynamixelError> {
+fn a_hot_actuator_is_named_with_its_temperature_and_its_own_limit() -> Result<(), DynamixelError> {
     let mut adapter = rig(X_TABLE);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
     let hot = Health {
-        error_status: 0,
-        voltage_dv: 120,
         temperature_c: 90,
+        temperature_limit_c: 85,
+        ..HEALTHY
     };
     adapter.backend.health(0, id(1), hot);
 
+    let error = adapter.health();
+
     assert_eq!(
-        adapter.health(),
-        Err(DynamixelError::Health {
+        error,
+        Err(DynamixelError::Temperature {
             actuator: 1,
             bus: "x",
             id: id(1),
-            reason: "temperature too high"
+            measured_c: 90,
+            limit_c: 85
         })
     );
+    let message = error.err().map(|error| error.to_string());
+    assert_eq!(
+        message.as_deref(),
+        Some("actuator 1: id 2 on bus x: temperature 90 °C above the actuator's limit 85 °C")
+    );
     assert_eq!(adapter.backend.count(Call::Torque), 0);
+    Ok(())
+}
+
+#[test]
+fn a_hardware_error_is_named_with_its_bits() -> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    let alarmed = Health {
+        error_status: 0b0010_0100,
+        ..HEALTHY
+    };
+    adapter.backend.health(0, id(2), alarmed);
+
+    let error = adapter.health();
+
+    assert_eq!(
+        error,
+        Err(DynamixelError::HardwareError {
+            actuator: 2,
+            bus: "x",
+            id: id(2),
+            status: 0b0010_0100
+        })
+    );
+    let message = error.err().map(|error| error.to_string());
+    assert_eq!(
+        message.as_deref(),
+        Some("actuator 2: id 3 on bus x: Hardware Error Status 0b00100100 (overheating, overload)")
+    );
     Ok(())
 }
 
@@ -1569,17 +1628,18 @@ fn a_failed_health_read_names_the_actuator() -> Result<(), DynamixelError> {
     Ok(())
 }
 
-/// What a healthy actuator answers, at `voltage_dv` and `temperature_c`.
+/// What a healthy actuator answers at `voltage_dv` and `temperature_c`,
+/// with the limits of [`HEALTHY`]: 6.0–19.0 V, 80 °C.
 const fn vitals(voltage_dv: u16, temperature_c: u8) -> Health {
     Health {
-        error_status: 0,
         voltage_dv,
         temperature_c,
+        ..HEALTHY
     }
 }
 
 #[test]
-fn protocol_1_health_checks_voltage_and_temperature() -> Result<(), DynamixelError> {
+fn protocol_1_health_checks_the_actuators_own_limits() -> Result<(), DynamixelError> {
     let mut adapter = rig(MIX_TABLE);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
@@ -1594,42 +1654,105 @@ fn protocol_1_health_checks_voltage_and_temperature() -> Result<(), DynamixelErr
     assert_eq!(wrist, JOINTS / 2);
 
     let cases = [
-        (vitals(89, 30), "input voltage out of range"),
-        (vitals(121, 30), "input voltage out of range"),
-        (vitals(100, 71), "temperature too high"),
+        (
+            vitals(59, 30),
+            "actuator 1: id 2 on bus wrist: input voltage 5.9 V outside the actuator's limits 6.0–19.0 V",
+        ),
+        (
+            vitals(191, 30),
+            "actuator 1: id 2 on bus wrist: input voltage 19.1 V outside the actuator's limits 6.0–19.0 V",
+        ),
+        (
+            vitals(120, 81),
+            "actuator 1: id 2 on bus wrist: temperature 81 °C above the actuator's limit 80 °C",
+        ),
     ];
-    for (health, reason) in cases {
+    for (health, message) in cases {
         adapter.backend.health(1, id(1), health);
+        let error = adapter.health().err();
         assert_eq!(
-            adapter.health(),
-            Err(DynamixelError::Health {
-                actuator: 1,
-                bus: "wrist",
-                id: id(1),
-                reason
-            })
+            error.map(|error| error.to_string()).as_deref(),
+            Some(message)
         );
     }
+    adapter.backend.health(1, id(1), vitals(59, 30));
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Voltage {
+            actuator: 1,
+            bus: "wrist",
+            id: id(1),
+            measured_dv: 59,
+            min_dv: 60,
+            max_dv: 190
+        })
+    );
     Ok(())
 }
 
 #[test]
-fn rx28_health_follows_its_own_voltage_range() -> Result<(), DynamixelError> {
+fn outside_the_datasheet_inside_its_own_limits_warns_and_passes() -> Result<(), DynamixelError> {
     let mut adapter = rig(RX_TABLE);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
-    adapter.backend.health(0, id(3), vitals(148, 45));
-    adapter.health()?;
+    // The RX-28 bench: 11.1 V, below the 12.0 V of the datasheet, inside
+    // the factory limits 6.0–19.0 V.
+    adapter.backend.health(0, id(3), vitals(111, 45));
 
-    adapter.backend.health(0, id(3), vitals(119, 45));
+    let mut health = Ok(());
+    let warned = warnings(
+        "input voltage 11.1 V outside the RX-28 datasheet range 12.0–18.5 V, inside the actuator's limits 6.0–19.0 V",
+        || health = adapter.health(),
+    );
+    assert_eq!((health, warned), (Ok(()), 1));
+
+    let mut health = Ok(());
+    let hot = Health {
+        temperature_c: 85,
+        temperature_limit_c: 90,
+        ..HEALTHY
+    };
+    adapter.backend.health(0, id(3), hot);
+    let warned = warnings(
+        "temperature 85 °C above the RX-28 datasheet maximum 80 °C, within the actuator's limit 90 °C",
+        || health = adapter.health(),
+    );
+    assert_eq!((health, warned), (Ok(()), 1));
+    Ok(())
+}
+
+#[test]
+fn rx28_voltage_outside_its_own_limits_fails_naming_value_and_limits() -> Result<(), DynamixelError>
+{
+    let mut adapter = rig(RX_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    let narrow = Health {
+        voltage_dv: 111,
+        min_voltage_dv: 120,
+        ..HEALTHY
+    };
+    adapter.backend.health(0, id(3), narrow);
+
+    let error = adapter.health();
+
     assert_eq!(
-        adapter.health(),
-        Err(DynamixelError::Health {
+        error,
+        Err(DynamixelError::Voltage {
             actuator: 3,
             bus: "rx",
             id: id(3),
-            reason: "input voltage out of range"
+            measured_dv: 111,
+            min_dv: 120,
+            max_dv: 190
         })
+    );
+    let message = error.err().map(|error| error.to_string());
+    assert_eq!(
+        message.as_deref(),
+        Some(
+            "actuator 3: id 4 on bus rx: input voltage 11.1 V outside the actuator's limits 12.0–19.0 V"
+        )
     );
     Ok(())
 }

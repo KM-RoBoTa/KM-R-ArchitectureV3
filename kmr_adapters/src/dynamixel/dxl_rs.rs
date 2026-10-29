@@ -356,6 +356,14 @@ fn narrow<T: TryFrom<u32>>(register: &'static str, value: u32) -> Result<T, Back
     T::try_from(value).map_err(|_| BackendError::Overflow { register, value })
 }
 
+/// `readable`, read with `read`, as a `T`.
+fn read_as<T: TryFrom<u32>>(
+    read: &impl Fn(Readable) -> Result<u32, BackendError>,
+    readable: Readable,
+) -> Result<T, BackendError> {
+    narrow(register_name(readable), read(readable)?)
+}
+
 /// Switches the torque of `actuator` on.
 fn enable<A: ActuatorOff>(actuator: A) -> Result<A::On, BackendError> {
     actuator.enable_torque().map_err(|error| sdk_error(&error))
@@ -675,38 +683,37 @@ impl Backend for DxlRs {
         narrow(setting.name(), read_register(number, register, id)?)
     }
 
-    /// Protocol 2: three sync reads. Protocol 1 has no sync read and no
-    /// Hardware Error Status: one read of Present Voltage, one of Present
-    /// Temperature, error status 0.
+    /// Present voltage and temperature, and the actuator's Min and Max
+    /// Voltage Limit and Temperature Limit. Protocol 2: one sync read per
+    /// register, Hardware Error Status too. Protocol 1 has no sync read and
+    /// no Hardware Error Status: one read per register, error status 0.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError> {
         let number = self.number(port)?;
-        if model.protocol() == Protocol::One {
-            let read = |readable| {
+        let read = |readable| match model.protocol() {
+            Protocol::One => {
                 with_actuator!(model, id, number, actuator => actuator.read_register(readable))
                     .map_err(|error| sdk_error(&error))
-            };
-            let voltage = read(Readable::PresentInputVoltage)?;
-            let temperature = read(Readable::PresentTemperature)?;
-            return Ok(Health {
-                error_status: 0,
-                voltage_dv: narrow(register_name(Readable::PresentInputVoltage), voltage)?,
-                temperature_c: narrow(register_name(Readable::PresentTemperature), temperature)?,
-            });
-        }
-        let register = |readable| {
-            with_actuator!(model, id, number, actuator => actuator.register_of(readable))
-                .map(|register| (register.address, register.size))
-                .ok_or(BackendError::NoRegister {
-                    register: register_name(readable),
-                })
+            }
+            Protocol::Two => {
+                let register =
+                    with_actuator!(model, id, number, actuator => actuator.register_of(readable))
+                        .ok_or(BackendError::NoRegister {
+                        register: register_name(readable),
+                    })?;
+                read_register(number, (register.address, register.size), id)
+            }
         };
-        let status = read_register(number, register(Readable::HardwareErrorStatus)?, id)?;
-        let voltage = read_register(number, register(Readable::PresentInputVoltage)?, id)?;
-        let temperature = read_register(number, register(Readable::PresentTemperature)?, id)?;
+        let error_status = match model.protocol() {
+            Protocol::One => 0,
+            Protocol::Two => read_as(&read, Readable::HardwareErrorStatus)?,
+        };
         Ok(Health {
-            error_status: narrow(register_name(Readable::HardwareErrorStatus), status)?,
-            voltage_dv: narrow(register_name(Readable::PresentInputVoltage), voltage)?,
-            temperature_c: narrow(register_name(Readable::PresentTemperature), temperature)?,
+            error_status,
+            voltage_dv: read_as(&read, Readable::PresentInputVoltage)?,
+            temperature_c: read_as(&read, Readable::PresentTemperature)?,
+            min_voltage_dv: read_as(&read, Readable::MinVoltageLimit)?,
+            max_voltage_dv: read_as(&read, Readable::MaxVoltageLimit)?,
+            temperature_limit_c: read_as(&read, Readable::TemperatureLimit)?,
         })
     }
 

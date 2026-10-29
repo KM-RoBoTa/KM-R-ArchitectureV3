@@ -17,6 +17,7 @@ mod scripted;
 #[cfg(test)]
 mod tests;
 
+use core::fmt;
 use std::path::Path;
 
 use kmr_core::hal::{Batch, Command, Faults, Hal, Layout, Mask, Overrides, Sample, seal};
@@ -179,6 +180,58 @@ pub enum DynamixelError {
         /// Firmware id.
         id: u8,
     },
+    /// The input voltage is outside the limits the actuator holds.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: input voltage {} V outside the actuator's limits {}–{} V",
+        Volts(*.measured_dv),
+        Volts(*.min_dv),
+        Volts(*.max_dv)
+    )]
+    Voltage {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Present input voltage, in 0.1 V.
+        measured_dv: u16,
+        /// The actuator's Min Voltage Limit, in 0.1 V.
+        min_dv: u16,
+        /// The actuator's Max Voltage Limit, in 0.1 V.
+        max_dv: u16,
+    },
+    /// The temperature is above the limit the actuator holds.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: temperature {measured_c} °C above the actuator's limit {limit_c} °C"
+    )]
+    Temperature {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Present temperature, in °C.
+        measured_c: u8,
+        /// The actuator's Temperature Limit, in °C.
+        limit_c: u8,
+    },
+    /// The actuator reports a hardware error (Protocol 2).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: Hardware Error Status {}",
+        Alarms(*.status)
+    )]
+    HardwareError {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Hardware Error Status bits.
+        status: u8,
+    },
     /// The actuator answered outside its limits.
     #[error("actuator {actuator}: id {id} on bus {bus}: {reason}")]
     Health {
@@ -236,6 +289,49 @@ pub enum DynamixelError {
 /// Stands in for the port of a bus no plugin bound, in an error that cannot
 /// name one.
 const UNBOUND: Port = Port::ByDev("");
+
+/// A voltage in 0.1 V, printed in volts: 111 is `11.1`.
+struct Volts(u16);
+
+impl fmt::Display for Volts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.0 / 10, self.0 % 10)
+    }
+}
+
+/// What each bit of the X series Hardware Error Status reports, bit 0 first.
+const ALARMS: [&str; 8] = [
+    "input voltage",
+    "bit 1",
+    "overheating",
+    "motor encoder",
+    "electrical shock",
+    "overload",
+    "bit 6",
+    "bit 7",
+];
+
+/// Hardware Error Status bits, printed with what each set bit reports:
+/// `0b00100100 (overheating, overload)`.
+struct Alarms(u8);
+
+impl fmt::Display for Alarms {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#010b}", self.0)?;
+        let mut separator = " (";
+        for (bit, alarm) in ALARMS.iter().enumerate() {
+            if self.0 & (1 << bit) != 0 {
+                write!(f, "{separator}{alarm}")?;
+                separator = ", ";
+            }
+        }
+        if self.0 == 0 {
+            Ok(())
+        } else {
+            f.write_str(")")
+        }
+    }
+}
 
 /// The Dynamixel adapter over `NB` buses, talking through backend `B`.
 ///
@@ -564,30 +660,73 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         Ok(())
     }
 
-    /// Reads every actuator's voltage and temperature against its model's
-    /// range, and on Protocol 2 its Hardware Error Status.
+    /// Reads every actuator's voltage and temperature and checks them
+    /// against the limits it holds in its own control table, and on
+    /// Protocol 2 its Hardware Error Status. Inside those limits but outside
+    /// the model's datasheet range is one warning per value, no error.
     fn health(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.table.actuators.iter().enumerate() {
+            let (model, id) = (actuator.model, actuator.id);
             let health = self
                 .backend
-                .read_health(actuator.bus, actuator.model, actuator.id)
+                .read_health(actuator.bus, model, id)
                 .map_err(|error| self.actuator_error(index, error))?;
-            let (min_dv, max_dv) = actuator.model.voltage_limits_dv();
-            let reason = if actuator.model.protocol() == Protocol::Two && health.error_status != 0 {
-                "hardware error status"
-            } else if !(min_dv..=max_dv).contains(&health.voltage_dv) {
-                "input voltage out of range"
-            } else if health.temperature_c > actuator.model.max_temperature_c() {
-                "temperature too high"
-            } else {
-                continue;
-            };
-            return Err(DynamixelError::Health {
-                actuator: index,
-                bus: self.label(actuator.bus),
-                id: actuator.id,
-                reason,
-            });
+            let bus = self.label(actuator.bus);
+            if model.protocol() == Protocol::Two && health.error_status != 0 {
+                return Err(DynamixelError::HardwareError {
+                    actuator: index,
+                    bus,
+                    id,
+                    status: health.error_status,
+                });
+            }
+            let (min_dv, max_dv) = (health.min_voltage_dv, health.max_voltage_dv);
+            if !(min_dv..=max_dv).contains(&health.voltage_dv) {
+                return Err(DynamixelError::Voltage {
+                    actuator: index,
+                    bus,
+                    id,
+                    measured_dv: health.voltage_dv,
+                    min_dv,
+                    max_dv,
+                });
+            }
+            if health.temperature_c > health.temperature_limit_c {
+                return Err(DynamixelError::Temperature {
+                    actuator: index,
+                    bus,
+                    id,
+                    measured_c: health.temperature_c,
+                    limit_c: health.temperature_limit_c,
+                });
+            }
+            let (low_dv, high_dv) = model.datasheet_voltage_dv();
+            if !(low_dv..=high_dv).contains(&health.voltage_dv) {
+                warn!(
+                    actuator = index,
+                    bus,
+                    id,
+                    "input voltage {} V outside the {} datasheet range {}–{} V, inside the actuator's limits {}–{} V",
+                    Volts(health.voltage_dv),
+                    model.name(),
+                    Volts(low_dv),
+                    Volts(high_dv),
+                    Volts(min_dv),
+                    Volts(max_dv),
+                );
+            }
+            let hottest = model.datasheet_max_temperature_c();
+            if health.temperature_c > hottest {
+                warn!(
+                    actuator = index,
+                    bus,
+                    id,
+                    "temperature {} °C above the {} datasheet maximum {hottest} °C, within the actuator's limit {} °C",
+                    health.temperature_c,
+                    model.name(),
+                    health.temperature_limit_c,
+                );
+            }
         }
         Ok(())
     }
