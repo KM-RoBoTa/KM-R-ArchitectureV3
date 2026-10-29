@@ -505,3 +505,20 @@ fn set_all_marks_every_actuator_of_its_field<T: StateField>(#[case] values: [T; 
 
     assert_eq!(robot.desired.written, expected);
 }
+
+#[test]
+fn the_command_borrows_desired_and_clear_resets_values_and_masks() {
+    let mut robot = create_test_robot();
+    robot.set_at(Q(1.5), 1).unwrap();
+    robot.set_at(Tau(0.5), 3).unwrap();
+
+    let command = robot.command();
+    assert_eq!((command.q[1], command.tau[3]), (Q(1.5), Tau(0.5)));
+    assert_eq!(command.written, robot.written());
+    assert_eq!(command.written.any().iter().count(), 2);
+
+    robot.clear_desired();
+
+    assert_eq!(robot.desired, Desired::default());
+    assert!(robot.written().any().is_empty());
+}

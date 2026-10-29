@@ -7,7 +7,7 @@ use super::history::State;
 use super::joint_state::{Q, Qd, Tau};
 use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
-use crate::hal::Mask;
+use crate::hal::{Command, Mask, Written};
 
 #[derive(Default)]
 /// The robot state abstraction.
@@ -124,6 +124,29 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     }
 
     // ── Public state setters ────────────────────────────────────────────
+}
+
+/// The engine's side: what it hands the adapter and resets once applied.
+impl<const DEPTH: usize> RobotState<DEPTH> {
+    /// Fields written since the last apply.
+    pub(crate) fn written(&self) -> &Written {
+        &self.desired.written
+    }
+
+    /// Borrows Desired as the command `write` sends.
+    pub(crate) fn command(&self) -> Command<'_> {
+        Command::new(
+            &self.desired.q,
+            &self.desired.qd,
+            &self.desired.tau,
+            &self.desired.written,
+        )
+    }
+
+    /// Resets the values and the masks once applied (SRS FR-2.5).
+    pub(crate) fn clear_desired(&mut self) {
+        self.desired = Desired::default();
+    }
 }
 
 // Test hooks, behind the `test-util` feature. `kmr_api` builds its group logic
