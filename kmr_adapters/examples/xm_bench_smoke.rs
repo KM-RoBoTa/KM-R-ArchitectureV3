@@ -7,7 +7,9 @@
 //!
 //! Runs `bind`, `check`, `open`, `ping`, `health`, `configure` and
 //! `read_all`, then `torque_off` and `close`. `--torque` adds `torque_on` and
-//! 2 s of reads before them. No goal is ever written.
+//! 2 s of reads before them. The only goal written is `torque_on`'s: each
+//! servo's present position, so none jumps to an old goal. `dxl_rs` writes
+//! it one write after Torque Enable, not before: a twitch is still possible.
 
 use core::fmt::Display;
 use core::ops::{Deref, DerefMut};
@@ -145,7 +147,7 @@ fn run(port: Port, torque: bool) -> Result<(), Early> {
         return Ok(());
     }
     println!(
-        "torque_on: each servo holds its Goal Position register, which this program never writes"
+        "torque_on: Goal Position = present position, then torque on; dxl_rs writes the goal one write after the torque"
     );
     step("torque_on", hal.torque_on())?;
     for read in 1..=READS {

@@ -27,6 +27,23 @@ actuator this backend powered and returns `Err(Io)`, with one warning, for any o
 The strict fake models `force_torque_off` as the SDK will have it after A4, not this fallback:
 the tests pin the target behaviour.
 
+## Change: `sync_write_start_goal` (2026-10-29, torque on without a jump)
+
+```rust
+/// Goals of one group, `(id, raw)`, in `register`, in one transaction, none of them
+/// switched on here: what each holds once `torque` switches it on.
+fn sync_write_start_goal(&mut self, port: usize, model: Model, register: GoalRegister,
+    goals: &[(u8, u32)]) -> Result<(), BackendError>;
+```
+
+`torque_on` writes Goal Position = present position (read then), or Goal Velocity / Goal
+Current = 0, before Torque Enable. `torque(.., true)` is refused (`Err(Io)`) unless a start goal
+was written since the actuator was last switched; a start goal naming an actuator switched on here
+is refused whole. The fake models the goal registers and pins this order. `DxlRs` cannot: `dxl_rs`
+writes a goal only through a torque-on handle, and Goal Position only. Until it can (HUMAN,
+`dxl_rs`: a goal write on the `TorqueOff` type-state), `DxlRs` keeps the goal and writes it right
+after Torque Enable, warns once, and refuses Goal Velocity and Goal Current.
+
 ## Strictness: what the fake must refuse (step A1)
 
 The fake answers as `DxlRs` does today, error for error. A lenient fake hid real failures

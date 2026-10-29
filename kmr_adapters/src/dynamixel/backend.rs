@@ -71,6 +71,22 @@ pub(crate) enum Setting {
 /// Operating Mode value of position mode, `0..=4095` (X series).
 pub(crate) const POSITION_MODE: u8 = 3;
 
+/// The goal register an operating mode consumes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GoalRegister {
+    /// Goal Position.
+    Position,
+    /// Goal Velocity; Moving Speed on Protocol 1.
+    Velocity,
+    /// Goal Current.
+    Current,
+}
+
+impl GoalRegister {
+    /// Every register, in declaration order.
+    pub(crate) const ALL: [Self; 3] = [Self::Position, Self::Velocity, Self::Current];
+}
+
 /// One port to open.
 #[cfg_attr(
     not(any(test, feature = "dynamixel")),
@@ -123,8 +139,20 @@ pub(crate) trait Backend {
         goals: &[(u8, u32)],
     ) -> Result<(), BackendError>;
 
-    /// Switches the torque of one actuator; off only for one this backend
-    /// switched on.
+    /// Goals of one group, `(id, raw)`, in `register`, in one transaction,
+    /// none of them switched on here: what each holds once `torque`
+    /// switches it on. Refused whole when one of them is switched on here.
+    fn sync_write_start_goal(
+        &mut self,
+        port: usize,
+        model: Model,
+        register: GoalRegister,
+        goals: &[(u8, u32)],
+    ) -> Result<(), BackendError>;
+
+    /// Switches the torque of one actuator: on only once
+    /// `sync_write_start_goal` wrote its goal since it was last switched on
+    /// or off; off only for one this backend switched on.
     fn torque(&mut self, port: usize, model: Model, id: u8, on: bool) -> Result<(), BackendError>;
 
     /// Writes Torque Enable = 0 to actuator `id`, whether or not this

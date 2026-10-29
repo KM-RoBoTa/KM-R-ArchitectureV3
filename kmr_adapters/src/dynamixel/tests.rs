@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use kmr_core::hal::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written};
 use kmr_core::state::{JOINTS, Q, Qd, Tau};
 
-use super::backend::{Backend, BackendError, Health, PortSpec, RawState};
+use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState};
 use super::scripted::{Call, Scripted};
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
@@ -1027,6 +1027,184 @@ fn post_init_writes_torque_off_on_a_read_only_actuator() -> Result<(), Dynamixel
 
     assert!(!adapter.backend.torqued(0, id(LAST)));
     assert!((0..LAST).all(|index| adapter.backend.torqued(0, id(index))));
+    Ok(())
+}
+
+// ── US2: torque on from where each actuator is, never a jump ────────────────
+
+/// Position in the log of the first `call` naming `id` on `port`; for
+/// `Torque`, the first asking for torque on.
+fn first(backend: &Scripted, call: Call, port: usize, id: u8) -> Option<usize> {
+    backend.calls().iter().position(|record| {
+        record.call == call
+            && record.port == port
+            && (call != Call::Torque || record.on)
+            && backend.ids(record).any(|named| named == id)
+    })
+}
+
+/// Ids named by the recorded `SyncWriteStartGoal` calls, in call order.
+fn started(backend: &Scripted) -> impl Iterator<Item = u8> + '_ {
+    backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::SyncWriteStartGoal)
+        .flat_map(|record| backend.ids(record))
+}
+
+/// `check`, `configure` and `read_all` on an adapter marked open; the
+/// backend log is cleared afterwards, for `torque_on` alone.
+fn configured<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB>,
+) -> Result<(), DynamixelError> {
+    adapter.check(Overrides::default())?;
+    mark_open(adapter);
+    adapter.configure()?;
+    adapter.read_all(Slot::filled(0.0).sample())?;
+    adapter.backend.clear_log();
+    Ok(())
+}
+
+#[test]
+fn torque_on_starts_each_position_actuator_at_its_present_position_read_then()
+-> Result<(), DynamixelError> {
+    let mut adapter = rig(MIX_TABLE);
+    configured(&mut adapter)?;
+    // Moved since `read_all`: the goal must not come from that sample.
+    let present = |index: usize| 300 + 100 * index as i32;
+    for (index, actuator) in MIX_TABLE.actuators.iter().enumerate() {
+        adapter
+            .backend
+            .position(actuator.bus, id(index), present(index));
+    }
+
+    adapter.torque_on()?;
+
+    for (index, actuator) in MIX_TABLE.actuators.iter().enumerate() {
+        let goal = adapter
+            .backend
+            .goal(actuator.bus, id(index), GoalRegister::Position);
+        assert_eq!(i32::try_from(goal), Ok(present(index)), "actuator {index}");
+        assert!(adapter.backend.torqued(actuator.bus, id(index)));
+    }
+    let wrist = (0..JOINTS).filter(|index| index % 2 == 1).count();
+    assert_eq!(
+        adapter.backend.count(Call::SyncReadState),
+        Scripted::STATE_READS.len()
+    );
+    assert_eq!(adapter.backend.count(Call::ReadPosition), wrist);
+    assert_eq!(adapter.backend.count(Call::SyncWriteStartGoal), 2);
+    Ok(())
+}
+
+#[test]
+fn torque_on_reads_then_writes_the_goal_then_enables_the_torque() -> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    configured(&mut adapter)?;
+
+    adapter.torque_on()?;
+
+    let backend = &adapter.backend;
+    for index in 0..JOINTS {
+        let read = first(backend, Call::SyncReadState, 0, id(index));
+        let goal = first(backend, Call::SyncWriteStartGoal, 0, id(index));
+        let torque = first(backend, Call::Torque, 0, id(index));
+        assert!(
+            read.is_some() && read < goal && goal < torque,
+            "actuator {index}: read {read:?}, goal {goal:?}, torque {torque:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn torque_on_zeroes_goal_velocity_and_goal_current() -> Result<(), DynamixelError> {
+    // Not through `Table::check`, which refuses both modes for now (FR-018).
+    let mut table = X_TABLE;
+    table.actuators[1].mode = Mode::Velocity;
+    table.actuators[2].mode = Mode::Current;
+    let mut adapter = rig(table);
+    adapter
+        .backend
+        .left_goal(0, id(1), GoalRegister::Velocity, 120)
+        .left_goal(0, id(1), GoalRegister::Position, 4000)
+        .left_goal(0, id(2), GoalRegister::Current, 300);
+    configured(&mut adapter)?;
+
+    adapter.torque_on()?;
+
+    let backend = &adapter.backend;
+    assert_eq!(backend.goal(0, id(1), GoalRegister::Velocity), 0);
+    assert_eq!(backend.goal(0, id(2), GoalRegister::Current), 0);
+    assert_eq!(backend.goal(0, id(1), GoalRegister::Position), 4000);
+    assert!((0..JOINTS).all(|index| backend.torqued(0, id(index))));
+    assert_eq!(backend.count(Call::SyncWriteStartGoal), 3);
+    Ok(())
+}
+
+#[test]
+fn a_failed_present_read_keeps_the_torque_off_and_names_the_actuator() -> Result<(), DynamixelError>
+{
+    let mut adapter = rig(X_TABLE);
+    configured(&mut adapter)?;
+    adapter
+        .backend
+        .fail(Call::SyncReadState, 0, id(2), BackendError::Timeout);
+
+    assert_eq!(
+        adapter.torque_on(),
+        Err(DynamixelError::Missing {
+            actuator: 2,
+            bus: "x",
+            id: id(2)
+        })
+    );
+    assert_eq!(adapter.backend.count(Call::SyncWriteStartGoal), 0);
+    assert_eq!(adapter.backend.count(Call::Torque), 0);
+    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    Ok(())
+}
+
+#[test]
+fn a_failed_start_goal_write_powers_nothing() -> Result<(), DynamixelError> {
+    let mut adapter = rig(MIX_TABLE);
+    configured(&mut adapter)?;
+    adapter
+        .backend
+        .fail_port(Call::SyncWriteStartGoal, 1, BackendError::Io);
+
+    assert_eq!(
+        adapter.torque_on(),
+        Err(DynamixelError::Backend {
+            bus: "wrist",
+            source: BackendError::Io
+        })
+    );
+    assert_eq!(adapter.backend.count(Call::Torque), 0);
+    for (index, actuator) in MIX_TABLE.actuators.iter().enumerate() {
+        assert!(!adapter.backend.torqued(actuator.bus, id(index)));
+    }
+    Ok(())
+}
+
+#[test]
+fn torque_on_writes_no_goal_to_a_read_only_actuator() -> Result<(), DynamixelError> {
+    let mut adapter = rig(RO_TABLE);
+    adapter
+        .backend
+        .left_goal(0, id(LAST), GoalRegister::Position, 1234)
+        .position(0, id(LAST), 3000);
+    configured(&mut adapter)?;
+
+    adapter.torque_on()?;
+
+    assert!(started(&adapter.backend).eq((0..LAST).map(id)));
+    assert_eq!(
+        adapter.backend.goal(0, id(LAST), GoalRegister::Position),
+        1234
+    );
+    assert!(!torque_asked(&adapter.backend, 0, id(LAST), true));
+    assert!(!adapter.backend.torqued(0, id(LAST)));
     Ok(())
 }
 

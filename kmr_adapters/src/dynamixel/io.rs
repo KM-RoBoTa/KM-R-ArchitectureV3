@@ -1,4 +1,5 @@
-//! The per-tick path: group tables, read cadence, grouped reads and writes.
+//! The per-tick path: group tables, read cadence, grouped reads and writes;
+//! and the goals `torque_on` writes before the torque goes on.
 //!
 //! The tables are built once, in `check`; `read` and `write` only walk them,
 //! with stack arrays: no allocation, no retry, no sleep (FR-013).
@@ -7,12 +8,12 @@ use core::num::NonZeroU32;
 use core::time::Duration;
 
 use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample};
-use kmr_core::state::{JOINTS, Q};
+use kmr_core::state::{JOINTS, Q, Qd, Tau};
 
-use super::Dynamixel;
-use super::backend::{Backend, BackendError, RawState};
+use super::backend::{Backend, BackendError, GoalRegister, RawState};
 use super::config::{Actuator, Bus, Mode, Model, Protocol, Torque};
 use super::units;
+use super::{Dynamixel, DynamixelError};
 
 /// Protocol 2 sync read instruction without its ids: header, id, length,
 /// instruction, address, data length, CRC.
@@ -266,6 +267,13 @@ impl Goals {
         self.indices.get(..self.len).unwrap_or_default()
     }
 
+    /// The table and the queued goals; `None` when none is queued.
+    fn queued<'a>(&'a self, groups: &'a Groups) -> Option<(&'a Table, &'a [(u8, u32)])> {
+        let goals = self.goals.get(..self.len).unwrap_or_default();
+        let table = groups.tables().get(self.table)?;
+        (!goals.is_empty()).then_some((table, goals))
+    }
+
     /// Sends the queued goals in one transaction; nothing when none is
     /// queued.
     pub(crate) fn send<B: Backend>(
@@ -273,13 +281,22 @@ impl Goals {
         backend: &mut B,
         groups: &Groups,
     ) -> Result<(), BackendError> {
-        let goals = self.goals.get(..self.len).unwrap_or_default();
-        match groups.tables().get(self.table) {
-            Some(table) if !goals.is_empty() => {
-                backend.sync_write_goal(table.bus, table.model, goals)
-            }
-            _ => Ok(()),
-        }
+        self.queued(groups).map_or(Ok(()), |(table, goals)| {
+            backend.sync_write_goal(table.bus, table.model, goals)
+        })
+    }
+
+    /// Sends the queued goals to `register` in one transaction, before the
+    /// torque goes on; nothing when none is queued.
+    pub(crate) fn send_start<B: Backend>(
+        &self,
+        backend: &mut B,
+        groups: &Groups,
+        register: GoalRegister,
+    ) -> Result<(), BackendError> {
+        self.queued(groups).map_or(Ok(()), |(table, goals)| {
+            backend.sync_write_start_goal(table.bus, table.model, register, goals)
+        })
     }
 }
 
@@ -289,6 +306,29 @@ pub(crate) fn position_goal(actuator: &Actuator, q: Q) -> Option<u32> {
     match (actuator.mode, actuator.torque) {
         (Mode::Position, Torque::On) => units::position_to_raw(actuator.model, q),
         _ => None,
+    }
+}
+
+/// Whether `actuator` starts from its present position when its torque
+/// goes on, which `torque_on` then reads.
+fn starts_at_present(actuator: &Actuator) -> bool {
+    matches!(
+        (actuator.mode, actuator.torque),
+        (Mode::Position, Torque::On)
+    )
+}
+
+/// The goal `actuator` holds when its torque goes on, and its register:
+/// Goal Position = `present`, Goal Velocity or Goal Current = 0. `None` for
+/// a read-only actuator, and for a `present` outside the register range.
+fn start_goal(actuator: &Actuator, present: Q) -> Option<(GoalRegister, u32)> {
+    match (actuator.mode, actuator.torque) {
+        (_, Torque::ReadOnly) => None,
+        (Mode::Position, Torque::On) => {
+            position_goal(actuator, present).map(|raw| (GoalRegister::Position, raw))
+        }
+        (Mode::Velocity, Torque::On) => Some((GoalRegister::Velocity, 0)),
+        (Mode::Current, Torque::On) => Some((GoalRegister::Current, 0)),
     }
 }
 
@@ -457,6 +497,79 @@ pub(super) fn write_batch<B: Backend, const NB: usize>(
         }
         flush_goals(adapter, goals, faults);
     }
+}
+
+/// Writes, torque still off, the goal each powered actuator of group
+/// `number` holds once powered: its present position, read now, or a zero
+/// velocity or current. One transaction per goal register.
+pub(super) fn write_start_goals<B: Backend, const NB: usize>(
+    adapter: &mut Dynamixel<B, NB>,
+    number: usize,
+) -> Result<(), DynamixelError> {
+    let Some(&table) = adapter.groups.tables().get(number) else {
+        return Ok(());
+    };
+    let mut present = [Q::default(); JOINTS];
+    let reads = table.members().iter().any(|&index| {
+        adapter
+            .table
+            .actuators
+            .get(index)
+            .is_some_and(starts_at_present)
+    });
+    if reads {
+        read_present(adapter, &table, &mut present)?;
+    }
+    let mut goals = GoalRegister::ALL.map(|_| Goals::new(number));
+    for &index in table.members() {
+        let Some(actuator) = adapter.table.actuators.get(index) else {
+            continue;
+        };
+        if actuator.torque == Torque::ReadOnly {
+            continue;
+        }
+        let q = present.get(index).copied().unwrap_or_default();
+        let (register, raw) =
+            start_goal(actuator, q).ok_or_else(|| adapter.invalid_position(index))?;
+        if let Some(goals) = goals.get_mut(register as usize) {
+            goals.push(index, actuator.id, raw);
+        }
+    }
+    for (register, goals) in GoalRegister::ALL.into_iter().zip(&goals) {
+        goals
+            .send_start(&mut adapter.backend, &adapter.groups, register)
+            .map_err(|source| DynamixelError::Backend {
+                bus: adapter.label(table.bus),
+                source,
+            })?;
+    }
+    Ok(())
+}
+
+/// Reads the present position of every member of `table` into `present`;
+/// fails on the first one a start goal needs.
+fn read_present<B: Backend, const NB: usize>(
+    adapter: &mut Dynamixel<B, NB>,
+    table: &Table,
+    present: &mut [Q; JOINTS],
+) -> Result<(), DynamixelError> {
+    let (mut qd, mut tau) = ([Qd::default(); JOINTS], [Tau::default(); JOINTS]);
+    let mut sample = Sample::new(present, &mut qd, &mut tau);
+    let actuators = &adapter.table.actuators;
+    let mut failed = None;
+    read_table(
+        &mut adapter.backend,
+        table,
+        actuators,
+        &mut sample,
+        |index, outcome| {
+            let needed = actuators.get(index).is_some_and(starts_at_present);
+            if needed && !matches!(outcome, Outcome::Read) {
+                failed.get_or_insert((index, outcome));
+            }
+        },
+    );
+    adapter.read_failure(failed)
 }
 
 /// Sends `goals`, `bus_error` on what they carried if it fails.

@@ -375,6 +375,32 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
             reason,
         }
     }
+
+    /// The bring-up error of actuator `index`, whose present position is
+    /// outside the register range.
+    fn invalid_position(&self, index: usize) -> DynamixelError {
+        let (bus, id) = self.named(index);
+        DynamixelError::Health {
+            actuator: index,
+            bus,
+            id,
+            reason: "present position outside the register range",
+        }
+    }
+
+    /// The bring-up error of the actuator a read `failed` on, if any. A
+    /// failed group transaction names the bus, not one of its actuators.
+    fn read_failure(&self, failed: Option<(usize, Outcome)>) -> Result<(), DynamixelError> {
+        match failed {
+            None | Some((_, Outcome::Read)) => Ok(()),
+            Some((index, Outcome::Lost(error))) => Err(self.actuator_error(index, error)),
+            Some((index, Outcome::Bus(source))) => Err(DynamixelError::Backend {
+                bus: self.named(index).0,
+                source,
+            }),
+            Some((index, Outcome::Invalid)) => Err(self.invalid_position(index)),
+        }
+    }
 }
 
 impl<B, const NB: usize> seal::Adapter for Dynamixel<B, NB> {}
@@ -592,29 +618,19 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                 break;
             }
         }
-        match failed {
-            None | Some((_, Outcome::Read)) => Ok(()),
-            Some((index, Outcome::Lost(error))) => Err(self.actuator_error(index, error)),
-            Some((index, Outcome::Bus(source))) => Err(DynamixelError::Backend {
-                bus: self.named(index).0,
-                source,
-            }),
-            Some((index, Outcome::Invalid)) => {
-                let (bus, id) = self.named(index);
-                Err(DynamixelError::Health {
-                    actuator: index,
-                    bus,
-                    id,
-                    reason: "present position outside the register range",
-                })
-            }
-        }
+        self.read_failure(failed)
     }
 
-    /// Torque on for [`Torque::On`] actuators; torque written off for
+    /// Torque on for [`Torque::On`] actuators, each where it is, so none
+    /// jumps: every group first gets, torque still off, Goal Position = its
+    /// present position read now, or Goal Velocity or Goal Current = 0. A
+    /// failed read or goal write powers nothing. Torque written off for
     /// [`Torque::ReadOnly`] ones, whatever an earlier run left (SRS FR-5.2,
     /// FR-5.8).
     fn torque_on(&mut self) -> Result<(), DynamixelError> {
+        for number in 0..self.groups.tables().len() {
+            io::write_start_goals(self, number)?;
+        }
         for (index, actuator) in self.table.actuators.iter().enumerate() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             match actuator.torque {

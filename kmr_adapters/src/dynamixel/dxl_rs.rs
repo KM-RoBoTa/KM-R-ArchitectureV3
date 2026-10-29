@@ -4,7 +4,8 @@
 //! `dxl_rs` hands out a torque-on actuator only from the call that switches
 //! its torque on, and only that value can switch it off or take a goal. The
 //! backend keeps those values, so it can neither power down nor command an
-//! actuator it did not power itself.
+//! actuator it did not power itself. Nor can it write a start goal before
+//! the torque: it writes it right after (`sync_write_start_goal`).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,11 +17,13 @@ use ::dxl_rs::actuator::{
 use ::dxl_rs::actuators_list::{ActuatorVariant, ActuatorsList, P1, P2};
 use ::dxl_rs::error::{CommunicationError, Error, StatusPacketError};
 use ::dxl_rs::port::{PortBuilder, PortHandler, PortNumber};
-use ::dxl_rs::transport::group_sync_read;
+use ::dxl_rs::transport::{group_sync_read, read_result};
 use kmr_core::state::JOINTS;
 use tracing::warn;
 
-use super::backend::{Backend, BackendError, Health, OpenFailure, PortSpec, RawState, Setting};
+use super::backend::{
+    Backend, BackendError, GoalRegister, Health, OpenFailure, PortSpec, RawState, Setting,
+};
 use super::config::{Model, Protocol};
 
 /// Ports one process can drive.
@@ -51,6 +54,10 @@ static P1_HEALTH_WARNED: AtomicBool = AtomicBool::new(false);
 static UNPOWERED_WARNED: AtomicBool = AtomicBool::new(false);
 /// Whether the 16-bit goal limit was reported.
 static GOAL_RANGE_WARNED: AtomicBool = AtomicBool::new(false);
+/// Whether the start goal written after the torque was reported.
+static LATE_START_WARNED: AtomicBool = AtomicBool::new(false);
+/// Whether the missing velocity and current goals were reported.
+static GOAL_REGISTER_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Logs `message` the first time `flag` is raised.
 fn warn_once(flag: &AtomicBool, message: &str) {
@@ -119,6 +126,9 @@ pub struct DxlRs {
     powered: [Option<Powered>; JOINTS],
     /// Whether `(port, id)` is switched on.
     on: [[bool; IDS]; MAX_PORTS],
+    /// Goal Position of `(port, id)` from `sync_write_start_goal`, written
+    /// when it is next switched on.
+    start: [[Option<u16>; IDS]; MAX_PORTS],
 }
 
 impl DxlRs {
@@ -130,7 +140,15 @@ impl DxlRs {
             lists: Default::default(),
             powered: [const { None }; JOINTS],
             on: [[false; IDS]; MAX_PORTS],
+            start: [[None; IDS]; MAX_PORTS],
         }
+    }
+
+    /// Slot of the start goal of actuator `id` on `port`.
+    fn start_slot(&mut self, port: usize, id: u8) -> Option<&mut Option<u16>> {
+        self.start
+            .get_mut(port)
+            .and_then(|ids| ids.get_mut(usize::from(id)))
     }
 
     /// SDK number of port `port`.
@@ -162,13 +180,15 @@ impl DxlRs {
         }
     }
 
-    /// Switches actuator `id` on and keeps the value that switches it off.
+    /// Switches actuator `id` on at Goal Position `goal`, and keeps the
+    /// value that switches it off.
     fn power(
         &mut self,
         port: usize,
         model: Model,
         id: u8,
         number: PortNumber,
+        goal: u16,
     ) -> Result<(), BackendError> {
         let known = self.is_on(port, id);
         let free = self.powered.iter().position(Option::is_none);
@@ -178,35 +198,35 @@ impl DxlRs {
         let lists = self.lists.get_mut(port).ok_or(BackendError::Io)?;
         let actuator: ActuatorVariant<TorqueOn> = match model {
             Model::Ax12a | Model::Rx28 => {
-                let on = enable(Ax12A::new(id, number))?;
+                let on = enable_at(Ax12A::new(id, number), goal)?;
                 if !known {
                     lists.one.push(on);
                 }
                 on.into()
             }
             Model::Xm430W210 => {
-                let on = enable(Xm430W210::new(id, number))?;
+                let on = enable_at(Xm430W210::new(id, number), goal)?;
                 if !known {
                     lists.two.push(on);
                 }
                 on.into()
             }
             Model::Xw430T200 => {
-                let on = enable(Xw430T200::new(id, number))?;
+                let on = enable_at(Xw430T200::new(id, number), goal)?;
                 if !known {
                     lists.two.push(on);
                 }
                 on.into()
             }
             Model::Xw540T140 => {
-                let on = enable(Xw540T140::new(id, number))?;
+                let on = enable_at(Xw540T140::new(id, number), goal)?;
                 if !known {
                     lists.two.push(on);
                 }
                 on.into()
             }
             Model::Xw540T260 => {
-                let on = enable(Xw540T260::new(id, number))?;
+                let on = enable_at(Xw540T260::new(id, number), goal)?;
                 if !known {
                     lists.two.push(on);
                 }
@@ -243,6 +263,9 @@ impl DxlRs {
         }
         *slot = None;
         self.set_on(port, id, false);
+        if let Some(start) = self.start_slot(port, id) {
+            *start = None;
+        }
         Ok(())
     }
 }
@@ -265,6 +288,24 @@ fn sdk_error(error: &Error) -> BackendError {
 /// Switches the torque of `actuator` on.
 fn enable<A: ActuatorOff>(actuator: A) -> Result<A::On, BackendError> {
     actuator.enable_torque().map_err(|error| sdk_error(&error))
+}
+
+/// Switches the torque of `actuator` on, then writes Goal Position `goal`
+/// at once: `dxl_rs` takes a goal only from a torque-on actuator. Switched
+/// off again when the goal write fails.
+fn enable_at<A: ActuatorOff>(actuator: A, goal: u16) -> Result<A::On, BackendError> {
+    let on = enable(actuator)?;
+    on.write_goal_position(u32::from(goal));
+    if let Err(error) = read_result(on.port_num(), on.protocol()) {
+        if on.disable_torque().is_err() {
+            warn!(
+                id = on.id(),
+                "dxl_rs: torque off after a failed start goal failed"
+            );
+        }
+        return Err(sdk_error(&error));
+    }
+    Ok(on)
 }
 
 /// Switches the torque of `actuator` off.
@@ -475,13 +516,61 @@ impl Backend for DxlRs {
         .map_err(|error| sdk_error(&error))
     }
 
+    /// Keeps Goal Position goals to write right after Torque Enable, with
+    /// one warning: `dxl_rs` writes no goal while the torque is off, so the
+    /// actuator drives to its old goal for one write. Refuses every other
+    /// register: `dxl_rs` writes Goal Position only.
+    fn sync_write_start_goal(
+        &mut self,
+        port: usize,
+        _model: Model,
+        register: GoalRegister,
+        goals: &[(u8, u32)],
+    ) -> Result<(), BackendError> {
+        self.number(port)?;
+        if register != GoalRegister::Position {
+            warn_once(
+                &GOAL_REGISTER_WARNED,
+                "cannot write Goal Velocity or Goal Current, only Goal Position",
+            );
+            return Err(BackendError::Io);
+        }
+        let mut narrow = [(0, 0); JOINTS];
+        let narrow = narrow.get_mut(..goals.len()).ok_or(BackendError::Io)?;
+        for (slot, &(id, raw)) in narrow.iter_mut().zip(goals) {
+            if self.is_on(port, id) {
+                return Err(BackendError::Io);
+            }
+            *slot = (id, u16::try_from(raw).map_err(|_| BackendError::Io)?);
+        }
+        warn_once(
+            &LATE_START_WARNED,
+            "cannot write a goal while the torque is off: Goal Position follows Torque Enable by one write",
+        );
+        for &(id, raw) in narrow.iter() {
+            if let Some(start) = self.start_slot(port, id) {
+                *start = Some(raw);
+            }
+        }
+        Ok(())
+    }
+
+    /// On only with a start goal kept for the actuator, which is then used
+    /// up.
     fn torque(&mut self, port: usize, model: Model, id: u8, on: bool) -> Result<(), BackendError> {
         let number = self.number(port)?;
-        if on {
-            self.power(port, model, id, number)
-        } else {
-            self.unpower(port, id)
+        if !on {
+            return self.unpower(port, id);
         }
+        let goal = self
+            .start_slot(port, id)
+            .and_then(|start| *start)
+            .ok_or(BackendError::Io)?;
+        self.power(port, model, id, number, goal)?;
+        if let Some(start) = self.start_slot(port, id) {
+            *start = None;
+        }
+        Ok(())
     }
 
     /// Falls back to [`DxlRs::unpower`] until `dxl_rs` writes Torque Enable

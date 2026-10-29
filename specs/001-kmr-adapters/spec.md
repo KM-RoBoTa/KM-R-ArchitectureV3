@@ -220,6 +220,10 @@ the example with its plugin line removed.
 - A target converts outside the model's register range, or is not finite → not sent, `rejected`;
   joint limits proper stay with the engine (SRS FR-4.5, open).
 - A write to a read-only actuator → not sent, `rejected` (SRS FR-5.8, FR-13.4).
+- Torque on over a goal an earlier session left (2026-10-29) → `torque_on` first writes, torque
+  still off, Goal Position = present position read then (Goal Velocity, Goal Current = 0) and
+  powers nothing if that read or write fails: no jump (FR-006 (SRS FR-5.2, FR-5.8)). `dxl_rs`
+  takes no goal before Torque Enable, so `DxlRs` writes it one write after.
 - A prismatic actuator on a Dynamixel model → compile error "SRS FR-2.2: prismatic Dynamixel
   actuator has no mm conversion" (FR-021).
 - Velocity or current mode asked for → compile error naming SRS section 8 (FR-018).

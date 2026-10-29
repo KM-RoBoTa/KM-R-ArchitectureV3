@@ -1,8 +1,9 @@
 //! A backend for tests: records every call and answers from a script.
 //!
-//! Every actuator starts present and healthy, at `RawState::default()`.
-//! Faults are scripted per (port, id) and per call kind, and last until
-//! [`Scripted::heal`]. Failed calls are recorded too.
+//! Every actuator starts present and healthy, at `RawState::default()`, its
+//! goal registers at 0: what an earlier session left. Faults are scripted
+//! per (port, id) and per call kind, and last until [`Scripted::heal`].
+//! Failed calls are recorded too.
 //!
 //! It refuses what `DxlRs` refuses, with the same error, and never panics
 //! (contracts/backend.md § Strictness).
@@ -13,7 +14,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use super::backend::{
-    Backend, BackendError, Health, OpenFailure, POSITION_MODE, PortSpec, RawState, Setting,
+    Backend, BackendError, GoalRegister, Health, OpenFailure, POSITION_MODE, PortSpec, RawState,
+    Setting,
 };
 use super::config::{Model, Protocol};
 
@@ -26,7 +28,9 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 10;
+const KINDS: usize = 11;
+/// Variants of [`GoalRegister`].
+const REGISTERS: usize = GoalRegister::ALL.len();
 /// Device path bytes kept per port; longer paths are cut.
 const PATH: usize = 256;
 
@@ -50,6 +54,8 @@ pub(crate) enum Call {
     SyncReadState,
     /// [`Backend::sync_write_goal`].
     SyncWriteGoal,
+    /// [`Backend::sync_write_start_goal`].
+    SyncWriteStartGoal,
     /// [`Backend::torque`].
     Torque,
     /// [`Backend::force_torque_off`].
@@ -135,6 +141,11 @@ pub(crate) struct Scripted {
     powered: [[bool; IDS]; PORTS],
     /// Per actuator, the Torque Enable register.
     torque: [[bool; IDS]; PORTS],
+    /// Per actuator, the goal registers, in [`GoalRegister::ALL`] order.
+    goals: [[[u32; REGISTERS]; IDS]; PORTS],
+    /// Per actuator, a start goal written since its torque was last
+    /// switched on or off.
+    started: [[bool; IDS]; PORTS],
     /// Per actuator, what reads return.
     states: [[RawState; IDS]; PORTS],
     /// Per actuator, what health reads return.
@@ -170,6 +181,8 @@ impl Scripted {
             opened: [None; PORTS],
             powered: [[false; IDS]; PORTS],
             torque: [[false; IDS]; PORTS],
+            goals: [[[0; REGISTERS]; IDS]; PORTS],
+            started: [[false; IDS]; PORTS],
             states: [[RawState::default(); IDS]; PORTS],
             vitals: [[HEALTHY; IDS]; PORTS],
             modes: [[POSITION_MODE; IDS]; PORTS],
@@ -297,6 +310,29 @@ impl Scripted {
         self
     }
 
+    /// An earlier session left `raw` in goal register `register` of
+    /// actuator `id`.
+    pub(crate) fn left_goal(
+        &mut self,
+        port: usize,
+        id: u8,
+        register: GoalRegister,
+        raw: u32,
+    ) -> &mut Self {
+        self.set_goal(port, id, register, raw);
+        self
+    }
+
+    /// Goal register `register` of actuator `id`; 0 outside the script.
+    pub(crate) fn goal(&self, port: usize, id: u8, register: GoalRegister) -> u32 {
+        self.goals
+            .get(port)
+            .and_then(|ids| ids.get(usize::from(id)))
+            .and_then(|registers| registers.get(register as usize))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Recorded calls, oldest first, at most [`CAPACITY`].
     pub(crate) fn calls(&self) -> &[Record] {
         &self.log[..self.logged]
@@ -318,11 +354,11 @@ impl Scripted {
         self.entries(record).iter().map(|&(id, _)| id)
     }
 
-    /// `(id, raw)` goals sent by a `SyncWriteGoal` record; empty for any
-    /// other kind.
+    /// `(id, raw)` goals sent by a `SyncWriteGoal` or `SyncWriteStartGoal`
+    /// record; empty for any other kind.
     pub(crate) fn goals(&self, record: &Record) -> &[(u8, u32)] {
         match record.call {
-            Call::SyncWriteGoal => self.entries(record),
+            Call::SyncWriteGoal | Call::SyncWriteStartGoal => self.entries(record),
             _ => &[],
         }
     }
@@ -454,13 +490,37 @@ impl Scripted {
         }
     }
 
-    /// Sets both the handle and the register of actuator `id`.
+    /// `Io` unless a start goal was written to actuator `id` since its
+    /// torque was last switched: torque on would drive it to whatever goal
+    /// an earlier session left.
+    fn start_written(&self, port: usize, id: u8) -> Result<(), BackendError> {
+        if get(&self.started, port, id) {
+            Ok(())
+        } else {
+            Err(BackendError::Io)
+        }
+    }
+
+    /// Sets both the handle and the register of actuator `id`; a start goal
+    /// written before is used up.
     fn set_torque(&mut self, port: usize, id: u8, on: bool) {
         if let Some(powered) = at(&mut self.powered, port, id) {
             *powered = on;
         }
         if let Some(torque) = at(&mut self.torque, port, id) {
             *torque = on;
+        }
+        if let Some(started) = at(&mut self.started, port, id) {
+            *started = false;
+        }
+    }
+
+    /// Writes `raw` to goal register `register` of actuator `id`.
+    fn set_goal(&mut self, port: usize, id: u8, register: GoalRegister, raw: u32) {
+        if let Some(slot) =
+            at(&mut self.goals, port, id).and_then(|registers| registers.get_mut(register as usize))
+        {
+            *slot = raw;
         }
     }
 }
@@ -569,12 +629,49 @@ impl Backend for Scripted {
             self.held(port, id)?;
         }
         // No status packet answers a sync write: only the port can fail it.
-        self.transaction(Call::SyncWriteGoal, port)
+        self.transaction(Call::SyncWriteGoal, port)?;
+        for &(id, raw) in goals {
+            self.set_goal(port, id, GoalRegister::Position, raw);
+        }
+        Ok(())
+    }
+
+    /// Refused whole when it names an actuator switched on here: written
+    /// then, it is no start goal. Every register is taken, as `DxlRs` will
+    /// once `dxl_rs` writes them before the torque: the tests pin that.
+    fn sync_write_start_goal(
+        &mut self,
+        port: usize,
+        model: Model,
+        register: GoalRegister,
+        goals: &[(u8, u32)],
+    ) -> Result<(), BackendError> {
+        self.record(
+            Call::SyncWriteStartGoal,
+            port,
+            Some(model),
+            goals.len(),
+            false,
+            goals.iter().copied(),
+        );
+        if goals.iter().any(|&(id, _)| get(&self.powered, port, id)) {
+            return Err(BackendError::Io);
+        }
+        self.transaction(Call::SyncWriteStartGoal, port)?;
+        for &(id, raw) in goals {
+            self.set_goal(port, id, register, raw);
+            if let Some(started) = at(&mut self.started, port, id) {
+                *started = true;
+            }
+        }
+        Ok(())
     }
 
     fn torque(&mut self, port: usize, model: Model, id: u8, on: bool) -> Result<(), BackendError> {
         self.note(Call::Torque, port, model, id, on);
-        if !on {
+        if on {
+            self.start_written(port, id)?;
+        } else {
             self.held(port, id)?;
         }
         self.answer(Call::Torque, port, id)?;
@@ -628,6 +725,11 @@ mod tests {
 
     const MODEL: Model = Model::Xm430W210;
 
+    /// Start goal 2048 for actuator `id` on port 0.
+    fn start(backend: &mut Scripted, id: u8) -> Result<(), BackendError> {
+        backend.sync_write_start_goal(0, MODEL, GoalRegister::Position, &[(id, 2048)])
+    }
+
     #[test]
     fn records_calls_in_order_with_their_ids_and_goals() {
         let mut backend = Scripted::new();
@@ -638,6 +740,9 @@ mod tests {
 
         backend.open_ports(&ports).unwrap();
         backend.ping(0, MODEL, 1).unwrap();
+        backend
+            .sync_write_start_goal(0, MODEL, GoalRegister::Position, &[(1, 100), (3, 300)])
+            .unwrap();
         backend.torque(0, MODEL, 1, true).unwrap();
         backend.torque(0, MODEL, 3, true).unwrap();
         backend
@@ -650,6 +755,7 @@ mod tests {
         assert!(kinds.eq([
             Call::OpenPorts,
             Call::Ping,
+            Call::SyncWriteStartGoal,
             Call::Torque,
             Call::Torque,
             Call::SyncWriteGoal,
@@ -663,6 +769,9 @@ mod tests {
         );
         assert!(backend.ids(write).eq([1, 3]));
         assert_eq!(backend.last_goals(), &[(1, 2048), (3, 1024)]);
+        let start = backend.last(Call::SyncWriteStartGoal).unwrap();
+        assert_eq!(backend.goals(start), &[(1, 100), (3, 300)]);
+        assert_eq!(backend.goal(0, 3, GoalRegister::Position), 1024);
         assert!(backend.goals(backend.last(Call::Ping).unwrap()).is_empty());
         assert!(!backend.last(Call::Torque).unwrap().on);
         assert!(backend.torqued(0, 3) && !backend.torqued(0, 1));
@@ -691,6 +800,7 @@ mod tests {
             backend.read_position(0, MODEL, 2),
             Err(BackendError::Timeout)
         );
+        assert_eq!(start(&mut backend, 2), Ok(()));
         assert_eq!(
             backend.torque(0, MODEL, 2, true),
             Err(BackendError::Timeout)
@@ -742,6 +852,7 @@ mod tests {
             .fail(Call::ReadHealth, 0, 4, BackendError::Status(0x20))
             .health(0, 5, hot);
         assert_eq!(backend.open_ports(&[]), Ok(()));
+        assert_eq!(start(&mut backend, 4), Ok(()));
         assert_eq!(backend.torque(0, MODEL, 4, true), Ok(()));
         assert_eq!(
             backend.sync_write_goal(0, MODEL, &[(4, 0)]),
@@ -800,6 +911,7 @@ mod tests {
         assert!(!backend.torqued(0, 1) && !backend.torqued(0, 2));
         assert_eq!(backend.count(Call::ForceTorqueOff), 2);
 
+        assert_eq!(start(&mut backend, 1), Ok(()));
         assert_eq!(backend.torque(0, MODEL, 1, true), Ok(()));
         assert_eq!(backend.force_torque_off(0, MODEL, 1), Ok(()));
         assert_eq!(backend.torque(0, MODEL, 1, false), Err(BackendError::Io));
@@ -810,6 +922,7 @@ mod tests {
         let mut backend = Scripted::new();
         backend.already_on(0, 1);
         backend.open_ports(&[]).unwrap();
+        start(&mut backend, 2).unwrap();
         backend.torque(0, MODEL, 2, true).unwrap();
 
         assert_eq!(
@@ -818,6 +931,44 @@ mod tests {
         );
         assert_eq!(backend.sync_write_goal(0, MODEL, &[(2, 2048)]), Ok(()));
         assert_eq!(backend.count(Call::SyncWriteGoal), 2);
+    }
+
+    #[test]
+    fn the_fake_refuses_torque_on_without_a_start_goal_since_the_last_switch() {
+        let mut backend = Scripted::new();
+        backend.left_goal(0, 1, GoalRegister::Position, 4000);
+        backend.open_ports(&[]).unwrap();
+
+        assert_eq!(backend.torque(0, MODEL, 1, true), Err(BackendError::Io));
+        assert!(!backend.torqued(0, 1));
+
+        assert_eq!(start(&mut backend, 1), Ok(()));
+        assert_eq!(backend.goal(0, 1, GoalRegister::Position), 2048);
+        assert_eq!(backend.torque(0, MODEL, 1, true), Ok(()));
+        assert!(backend.torqued(0, 1));
+
+        assert_eq!(backend.force_torque_off(0, MODEL, 1), Ok(()));
+        assert_eq!(backend.torque(0, MODEL, 1, true), Err(BackendError::Io));
+        assert!(!backend.torqued(0, 1));
+    }
+
+    #[test]
+    fn the_fake_refuses_a_start_goal_naming_one_powered_here() {
+        let mut backend = Scripted::new();
+        backend
+            .left_goal(0, 1, GoalRegister::Position, 100)
+            .already_on(0, 1);
+        backend.open_ports(&[]).unwrap();
+        start(&mut backend, 2).unwrap();
+        backend.torque(0, MODEL, 2, true).unwrap();
+
+        assert_eq!(
+            backend.sync_write_start_goal(0, MODEL, GoalRegister::Position, &[(1, 7), (2, 7)]),
+            Err(BackendError::Io)
+        );
+        assert_eq!(backend.goal(0, 1, GoalRegister::Position), 100);
+        assert_eq!(start(&mut backend, 1), Ok(()));
+        assert_eq!(backend.count(Call::SyncWriteStartGoal), 3);
     }
 
     #[test]
@@ -866,8 +1017,10 @@ mod tests {
             backend.sync_read_state(0, MODEL, &[1], &mut out),
             Err(BackendError::Io)
         );
+        assert_eq!(start(&mut backend, 1), Err(BackendError::Io));
 
         backend.open_ports(&[]).unwrap();
+        start(&mut backend, 1).unwrap();
         backend.torque(0, MODEL, 1, true).unwrap();
         backend.close_ports();
 
