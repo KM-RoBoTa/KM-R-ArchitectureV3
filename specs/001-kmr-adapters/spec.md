@@ -36,6 +36,18 @@ hardware (SRS FR-8.2); runtime operating-mode override (SRS section 8, open).
 
 ## Clarifications
 
+### Session 2026-10-29 (health limits and error data, D18)
+
+- Health limits are the actuator's own (human decision): PostInit reads each actuator's Min and
+  Max Voltage Limit and Temperature Limit from its control table and checks the present values
+  against them. The model's datasheet range is documentation and one warning per value, never the
+  check. On the RX-28 bench the actuators read 11.0–11.8 V, inside their limits 6.0–19.0 V, below
+  the 12.0 V of the datasheet. FR-006 reworded.
+- Every error says what went wrong with its data (SRS NFR-2, FR-007): the value read and the
+  limit or range it broke, the id and the bus; a backend error names its cause, `Io` only a failed
+  serial transaction; `kmr_api` keeps the adapter error typed as the source of its bring-up error.
+- D18 (future, decided 2026-10-29): limits configurable through the API, see Roadmap.
+
 ### Session 2026-10-29 (set of drivers, D17)
 
 - A robot mixes any number of vendors. An adapter is one member of the robot's driver list and
@@ -311,10 +323,11 @@ the example with its plugin line removed.
   needs it, with zero placed per [NEEDS CLARIFICATION: Q3, where 0 rad sits]. It MUST NOT power
   any actuator in Init.
 - **FR-006** (SRS FR-5.2, FR-5.8): In PostInit the adapter MUST ping and health-check every
-  actuator (error status, voltage, temperature against the model's limits), register its mode,
-  read every actuator once whatever the cadence, then set torque per actuator: on by default,
-  written off for a read-only one. Flagging out-of-place actuators is the engine's, on that read
-  (SRS FR-2.7, open).
+  actuator (error status, voltage, temperature against the limits the actuator holds in its own
+  control table; inside those but outside the model's datasheet range, a warning), register its
+  mode, read every actuator once whatever the cadence, then set torque per actuator: on by
+  default, written off for a read-only one. Flagging out-of-place actuators is the engine's, on
+  that read (SRS FR-2.7, open).
 - **FR-007** (SRS FR-5.10, FR-6.4, NFR-2): Retries MUST happen only in bring-up and ping, and
   MUST be bounded. Every bring-up failure MUST be returned as a readable error naming the
   actuator index, bus, firmware id and port where known. Never a panic.
@@ -489,6 +502,13 @@ Recommendation: **C**.
   between hardware and simulation; the plugins do (FR-031).
 - `Tau` ↔ current uses the datasheet torque constant; its accuracy is the datasheet's.
 - The reference chain for the SCs is the `XmBench` preset: four XM430-W210 on one bus.
+
+## Roadmap (future, not this version)
+
+- **2026-10-29, D18: actuator limits configurable through the API** (decided, not implemented).
+  As a plugin capability: every actuator plugin whose hardware supports it, all Dynamixel models
+  and not only the RX, may expose "set health limits" (voltage, temperature), written to the
+  actuator's own limit registers, which the health check of FR-006 then reads. Task T070.
 
 ## SRS gaps (reported, not requirements)
 

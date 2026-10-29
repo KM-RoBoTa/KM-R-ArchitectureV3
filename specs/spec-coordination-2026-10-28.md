@@ -24,6 +24,7 @@ decision. This page lists what needs you.
 | D14 | ROS2 baseline (FR-10.4) | minimal `ros2 pkg create` node, count user-edited files | yes | controllers Q2 |
 | D15 | Shipped `controllers/src/main.rs` bus line | A: none, simulates as shipped | A | controllers Q1 |
 | D16 | `try_lock` in an `EachTick` controller of the validated example: a lock in a tick (NFR-1) | keep / replace with a lock-free slot | replace | api FR-069 |
+| D18 | Actuator limits (voltage, temperature) configurable through the API | a plugin capability on every actuator plugin whose hardware supports it (all Dynamixel models) | **Future, decided 2026-10-29.** Not implemented; adapters spec Roadmap | adapters T070 |
 | D17 | Several vendors in one robot: any number of brands (10 actuators of 10 brands must work), not just two. Decision 0002 had made it one adapter per build; `run_on<A: Hal>` took the whole hardware as one object. | A: a set of drivers in kmr_core, built like the controller list; B: a `Chain<A, B>` type in kmr_adapters, zero core edits, lifted later | **Decided 2026-10-29: a set of drivers of any length (HList), each owning an index set; placement A (core) assumed, pending human.** Design: `specs/002-kmr-core/design-hal-set.md`. Not on the first-motor path (XmBench has one member) | core hal.rs, `run_on` (HUMAN, core T069); adapters `check` (T069); api `Spec`, `robot!` hardware (T069) |
 
 ## 2. SRS problems (text to amend)
