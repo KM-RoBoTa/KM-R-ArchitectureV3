@@ -3,7 +3,7 @@ use circular_buffer::FixedCircularBuffer;
 use super::JOINTS;
 use super::joint_state::{Q, Qd, Tau};
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 /// The current state of the robot.
 ///
 ///

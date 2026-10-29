@@ -7,7 +7,7 @@ use super::history::State;
 use super::joint_state::{Q, Qd, Tau};
 use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
-use crate::hal::{Command, Mask, Written};
+use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 
 #[derive(Default)]
 /// The robot state abstraction.
@@ -147,6 +147,38 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     pub(crate) fn clear_desired(&mut self) {
         self.desired = Desired::default();
     }
+
+    /// Pushes a copy of `prev(0)` (zeros when empty) and lends it to the
+    /// adapter: what it does not read keeps its last value (SRS FR-2.6).
+    pub(crate) fn push_slot(&mut self) -> Option<Sample<'_>> {
+        let next = self.history.buf.back().copied().unwrap_or_default();
+        self.history.buf.push_back(next);
+        let slot = self.history.buf.back_mut()?; // None only with a depth of 0
+        Some(Sample::new(&mut slot.q, &mut slot.qd, &mut slot.tau))
+    }
+
+    /// The latest sample overlaid with this tick's writes, never the cleared
+    /// Desired. `None` before the first sample.
+    pub(crate) fn hold_target(&self) -> Option<HoldTarget> {
+        let sample = self.history.buf.back()?;
+        let written = self.desired.written;
+        Some(HoldTarget {
+            q: overlay(sample.q, &self.desired.q, written.q),
+            qd: overlay(sample.qd, &self.desired.qd, written.qd),
+            tau: overlay(sample.tau, &self.desired.tau, written.tau),
+            written,
+        })
+    }
+}
+
+/// `sample` with the values of `desired` whose bit is set in `mask`.
+fn overlay<T: Copy>(mut sample: [T; JOINTS], desired: &[T; JOINTS], mask: Mask) -> [T; JOINTS] {
+    for (index, (value, wanted)) in sample.iter_mut().zip(desired).enumerate() {
+        if mask.get(index) {
+            *value = *wanted;
+        }
+    }
+    sample
 }
 
 // Test hooks, behind the `test-util` feature. `kmr_api` builds its group logic

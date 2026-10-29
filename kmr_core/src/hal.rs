@@ -187,6 +187,23 @@ impl<'a> Command<'a> {
     }
 }
 
+/// Owned values of the shutdown hold: the latest sample overlaid with the
+/// tick's writes, which `written` marks (SRS FR-4.1).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HoldTarget {
+    pub(crate) q: [Q; JOINTS],
+    pub(crate) qd: [Qd; JOINTS],
+    pub(crate) tau: [Tau; JOINTS],
+    pub(crate) written: Written,
+}
+
+impl HoldTarget {
+    /// Borrows the target as the command `hold` takes.
+    pub(crate) fn command(&self) -> Command<'_> {
+        Command::new(&self.q, &self.qd, &self.tau, &self.written)
+    }
+}
+
 /// The newest history slot, a copy of the previous one; the adapter
 /// overwrites what it reads.
 #[non_exhaustive]
@@ -334,9 +351,10 @@ pub trait Hal: seal::Adapter {
     /// allocation, lock, sleep or retry.
     fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults);
 
-    /// Shutdown: holds each actuator per its mode; `last.written` is ignored.
-    /// Best effort, never fails.
-    fn hold(&mut self, last: Command<'_>);
+    /// Shutdown: holds each actuator per its mode. `written` marks values
+    /// from this tick's command; the rest is the latest sample. Best effort,
+    /// never fails.
+    fn hold(&mut self, target: Command<'_>);
 
     /// Shutdown, emergency stop, bring-up error: torque off everywhere. Best
     /// effort, never fails.
@@ -400,7 +418,7 @@ impl Hal for NoHardware {
 
     fn write(&mut self, _command: Command<'_>, _batch: &Batch<'_>, _faults: &mut Faults) {}
 
-    fn hold(&mut self, _last: Command<'_>) {}
+    fn hold(&mut self, _target: Command<'_>) {}
 
     fn torque_off(&mut self) {}
 

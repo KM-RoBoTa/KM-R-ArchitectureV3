@@ -522,3 +522,43 @@ fn the_command_borrows_desired_and_clear_resets_values_and_masks() {
     assert_eq!(robot.desired, Desired::default());
     assert!(robot.written().any().is_empty());
 }
+
+// --- one slot per push, hold target ---
+
+#[test]
+fn each_pushed_slot_starts_as_a_copy_of_the_last() {
+    let mut robot = create_test_robot();
+
+    let first = robot.push_slot().unwrap();
+    assert_eq!(*first.q, [Q(0.0); JOINTS]);
+    first.q[1] = Q(2.0);
+    first.tau[3] = Tau(0.5);
+
+    let second = robot.push_slot().unwrap();
+    assert_eq!((second.q[1], second.tau[3]), (Q(2.0), Tau(0.5)));
+    second.q[1] = Q(3.0);
+
+    assert_eq!(robot.history.buf.len(), 2);
+    assert_eq!(robot.prev_at::<Q>(0, 1), Ok(&Q(3.0)));
+    assert_eq!(robot.prev_at::<Q>(1, 1), Ok(&Q(2.0)));
+}
+
+#[test]
+fn the_hold_target_is_the_sample_overlaid_with_this_ticks_writes() {
+    let mut robot = create_test_robot();
+    assert!(robot.hold_target().is_none());
+
+    let mut sample = zeroed_state();
+    sample.q = [Q(1.0), Q(2.0), Q(3.0), Q(4.0)];
+    sample.qd = [Qd(0.5); JOINTS];
+    robot.history.buf.push_back(sample);
+    robot.set_at(Q(9.0), 2).unwrap();
+    robot.set_at(Tau(0.25), 0).unwrap();
+
+    let target = robot.hold_target().unwrap();
+
+    assert_eq!(target.q, [Q(1.0), Q(2.0), Q(9.0), Q(4.0)]);
+    assert_eq!(target.qd, sample.qd);
+    assert_eq!(target.tau, [Tau(0.25), Tau(0.0), Tau(0.0), Tau(0.0)]);
+    assert_eq!(&target.written, robot.written());
+}
