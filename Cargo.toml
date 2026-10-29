@@ -27,3 +27,8 @@ color-eyre = { version = "0.6", default-features = false }
 rustix = { version = "1", features = ["termios", "fs"] }
 # Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
 dxl_rs = { path = "../dxl_rs" }
+
+# Stated, not left to the default: the engine's torque-off guard runs while a
+# controller panic unwinds; `abort` would leave the actuators powered (SRS NFR-2).
+[profile.release]
+panic = "unwind"
