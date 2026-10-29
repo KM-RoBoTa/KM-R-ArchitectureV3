@@ -1,3 +1,4 @@
+<!-- GENERATED from SRS.md, do not edit -->
 # kmr v3 SRS
 
 Oct 16, 2026 · @David
@@ -20,8 +21,8 @@ This SRS is the system-level specification. Module-level SRS files hang below it
 
 - One kmr instance per host, driving the robots wired to that host through its own HAL
 - Several wired robots as one `Robot`: N is the sum of their actuators, user group slices split them (FR-6.5)
-- Messaging over Zenoh at the API boundary: other kmr instances, ROS2 or any stack, external compute
-- Medium and heavy payloads (Boston Dynamics tiers, see Definitions): a medium payload brings its own hardware interface to the robot's ports; a heavy payload registers its own services into the robot system. Both are integrated by the user, not by kmr. For every tier, including light, kmr must know the payload's mass and mount point, because it shifts the robot's center of mass and the model must recompute it reliably
+- Messaging over Zenoh at the API boundary: other kmr instances, ROS2 or any stack, external compute. Zenoh is always available but opt-in: a Cargo feature of `kmr_api`, so a build that does not use it does not compile it (FR-7.1)
+- Medium and heavy payloads (Boston Dynamics tiers, see Definitions): a medium payload brings its own hardware interface to the robot's ports; a heavy payload registers its own services into the robot system. Both are integrated by the user, not by kmr. Medium and heavy payloads give kmr their mass and mount point, because they shift the robot's center of mass and the model must recompute it reliably. Light payloads are not registered: their effect shows in the torque readings and is the control engineer's responsibility (decided 2026-10-27)
 - Controllers in Rust, with quality, DX-oriented FFI for Python, C/C++ and Lua (FR-10); FFI types are trivial to expose so the Rust side is never a chore, the Rust API stays simple enough not to overwhelm users, and the whole must be simpler to use and develop in than ROS2
 - A `no_std`, heapless core as an opt-in Cargo feature; the default build is std, targeted at Linux
 
@@ -34,7 +35,7 @@ This SRS is the system-level specification. Module-level SRS files hang below it
 - Driving a robot over the network at the tick level: the loop and the HAL run on the wired host. Network controllers are in scope with one extra step: fetch current state and send desired state over Zenoh (FR-7)
 - Swarm orchestration; Zenoh topology (peer or router) is the user's choice
 - A query-based ECS or runtime entity registry (the scheduler is a pseudo-ECS over static declarations; the roadmap dynamic mode orders controllers, it is still not an entity registry or query system)
-- Light payloads beyond their mass and inertia
+- Light payloads: not registered at all (FR-8.1)
 
 ## 3. Definitions
 
@@ -65,22 +66,22 @@ Lifecycle moments and naming, used consistently from here on:
 
 | Term | Definition |
 | --- | --- |
-| Compile time | `cargo build`: descriptor parsed, N and groups fixed, schedule resolved. Errors here are compile errors. |
+| Compile time | `cargo build`: descriptor parsed, N fixed, schedule resolved. Groups are never fixed by the descriptor (FR-6.2). Errors here are compile errors. |
 | run() finalization | There is no build(): run() finalizes the builder, then runs the loop. Finalization happens inside run() before any hardware I/O: `dt` checked, contexts allocated, controllers assembled. Errors here are returned by run(), never panicked. |
 | Bring-up | The engine's hardware work inside the once-phases, always run before that phase's user controllers. `PreInit`: software only (tracing, Time, History, Sensors built), no hardware touched. `Init`: actuators (including brand-specific zeroing), sensors, payloads, battery initialized and registered, not yet checked or powered. `PostInit`: ping and health-check everything, read positions and flag out-of-place ones, double-check zeros, register modes, apply power on/off from defaults or user values. See FR-5.2. |
 | Engine | `kmr_core` and the sub-crates it depends on (section 4). "Core" and "loop" mean the same thing. |
 | API | `kmr_api`, the only crate user code imports. |
-| Context | A user-defined struct (any `T: Default`; e.g. a tracker holding `[Q; N]`, camera flags, counters), sized at compile time, allocated at run() finalization. Inline-with-context: exclusive `&mut T`, one instance per registration, never shared, never locked. Threaded-with-context: the thread owns its instance and exchanges with the loop only through the hand-off of section 8, never through a lock the loop must take; between threaded controllers `Arc<Mutex<T>>` is acceptable. |
+| Context | A user-defined struct (any `T`; e.g. a tracker holding `[Q; N]`, camera flags, counters), sized at compile time, built by the user and moved in at registration; the engine owns it from then on. Inline-with-context: exclusive `&mut T`, one instance per registration, never shared, never locked. Threaded-with-context: the thread owns its instance and exchanges with the loop only through the hand-off of section 8, never through a lock the loop must take; between threaded controllers `Arc<Mutex<T>>` is acceptable. |
 | History | The read-only ring of `HISTORY_DEPTH` samples; `prev(0)` is the current sample. The earlier prose name StateHistory is retired. Indexed by tick: one slot per tick, a copy with age+1 when no hardware read happened, so prev(k) always means k ticks ago. Reached through the State handle; Zenoh publishes its depth 0. "Current state" in prose means `prev(0)`. |
 | Desired | The write-only, shoot-and-forget command buffer of FR-2.5. One canonical type name; `Desired` is the only name; the old DesiredState is not used. |
 | Index space | **Actuator space.** State arrays and the HAL are indexed by actuator: `N` is the actuator count, every index and group is an actuator index, and all arrays share that length (same-length arrays, no padded aggregate struct; which is what is inferred from the index). Joints are the physical articulations; they exist in the descriptor and the model only, never as an engine index. TO RESOLVE: several actuators driving one joint is not expressible in this structure; see section 8, unimplemented! on that path. Code and docs still say "joint" in places (q\_at(i) "joint i", "A joint index exceeded"): read it as actuator until the rename pass. |
-| State | kmr\_core::State, re-exported by kmr\_api unchanged (the kmr\_api::State DTO that hid types from the LSP in the closed-source era is gone). The one handle a controller receives: it reads History and writes Desired; decoupled inside, one type outside. |
-| Write mask | Per-actuator written-this-tick bitset, stored out-of-band (NFR-10). Set by every write into Desired, read by the engine to pre-sort the bulked write (FR-5.3), cleared after apply. |
+| State | The one handle a controller receives: it reads History and writes Desired; decoupled inside, one type outside. kmr\_api::State is a thin wrapper over kmr\_core::State: the core keeps a few generic methods (`current::<Q>()`), kmr\_api adds the plain ones (`q()`) so users write simple Rust (NFR-4). It is not a DTO: nothing is hidden. The closed-source-era tuple field `.0` is vestigial and becomes a named field. |
+| Write mask | Written-this-tick bitsets, one per state field (`Q`, `Qd`, `Tau`, ...), one bit per actuator, stored out-of-band (NFR-10). Set by every write into Desired, read by the engine to pre-sort the bulked write (FR-5.3), cleared after apply. Per field, not per actuator: with one bit per actuator, writing `Qd` would also send that actuator's cleared `Q` (0). Cost: one machine word per field for up to 64 actuators. |
 | Fault flags | A bitset per History slot (FR-13.4), out-of-band like the write mask. Not state fields: never implemented as a new field type. |
 
 ## 4. Overall description
 
-**Product perspective.** kmr sits between robot hardware and everything that speaks Zenoh (C4 context). Three main crates in the workspace, plus sub-crates such as kmr\_model for the robot model and kmr\_ffi for FR-10 (final list pending, section 8; v2's crate list is not a template): `kmr_core` (engine, control loop, scheduler, state; std by default, opt-in `no_std`), `kmr_api` (gateway: Zenoh, config loading, user-facing builder; `std`), and the user's controller crate (controllers/ in the workspace). kmr\_api re-exports kmr\_core types unchanged; the v2 DTO layer is gone.
+**Product perspective.** kmr sits between robot hardware and everything that speaks Zenoh (C4 context). Workspace crates, all at the root; the v2 km\_\* prefix is deprecated, and the modules of this SRS map one-to-one to them: kmr\_model (robot model), kmr\_adapters (one adapter per vendor inside), kmr\_ffi (FR-10), bench/ (NFR-1, NFR-8); kmr\_vizualisation is roadmap. The three main ones: `kmr_core` (engine, control loop, scheduler, state; std by default, opt-in `no_std`), `kmr_api` (gateway: user-facing builder, the `robot!` macro, Zenoh behind a feature; `std`), and the user's controller crate (controllers/ in the workspace). kmr\_api re-exports the kmr\_core value types (`Q`, `Qd`, `Tau`) unchanged and wraps the handles thinly (Definitions, State); the v2 DTO layer is gone.
 
 **User classes.** Control and robotics engineers who know C/C++ or Python and are not software experts. Controller code must read as math on arrays. Engine contributors are Rust developers.
 
@@ -93,13 +94,13 @@ Lifecycle moments and naming, used consistently from here on:
 **Constraints.**
 
 - Rust 2024 edition (The LTS per-say)
-- `kmr_core`: `no_std` (opt-in) or std (default); in both: no heap, no `dyn`, no locks on the control path; the platform seam is the private Host trait in runtime.rs (now, sleep, poll); std::thread, std::time, tracing and the Ctrl-C handler live behind it under the std feature; under no\_std the target implements Host, tracing is a no-op and the platform's equivalent of Ctrl-C, if any, maps to shutdown. Heap is off by default and stays off in this version; a heap feature for compatible environments is roadmap (FR-1.6) and the current design must keep that gate possible
-- `kmr_api` may use `std` and heap outside the hot path; the hot paths of kmr\_api are the State handle methods and the Zenoh translation that run inside a tick, and those are heap-free like the core
+- `kmr_core`: `no_std` (opt-in) or std (default); in both: no heap, no `dyn`, no locks on the control path; the platform seam is the Host trait in runtime.rs (now, sleep, poll), public and sealed like the HAL (FR-5.1): a target port implements it, controller code cannot; std::thread, std::time, tracing and the Ctrl-C handler live behind it under the std feature; under no\_std the target implements Host, tracing is a no-op and the platform's equivalent of Ctrl-C, if any, maps to shutdown. Heap is off by default and stays off in this version; a heap feature for compatible environments is roadmap (FR-1.6) and the current design must keep that gate possible
+- `kmr_api` may use `std` and heap outside the hot path; the hot paths of kmr\_api are the State handle methods and the Zenoh translation that run inside a tick, and those are heap-free like the core. Zenoh runs on its own threads and may allocate there; it meets the tick only through two lock-free latest-value slots, `Desired` in and History depth 0 out, one atomic swap each. The same slot is the hand-off threaded controllers need (section 8)
 - Hand-engineered core; AI assistance only under AGENTS.md and the AI-Policy repo
 
 **Assumptions.**
 
-- One robot descriptor per compile (URDF default, .ron recommended, JSON discouraged but supported); actuator count N is a compile-time constant; several physical robots on one host follow FR-6.5
+- One robot descriptor per robot (URDF default, .ron recommended, JSON discouraged but supported), named in the user's main.rs with `kmr_api::robot!`; actuator count N is a compile-time constant that reaches the engine as a const generic through the type aliases that macro emits (FR-6.1); several physical robots on one host follow FR-6.5
 - Bus wiring and device addresses are known at init
 - Clock source is monotonic and available on every target
 
@@ -121,7 +122,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 **FR-2 State**
 
 - FR-2.1 History is read-only; its depth 0 is refreshed whenever the adapter reads the hardware (FR-5.3). On a tick without a read, prev(0) keeps the last sample and its age in ticks is exposed. Reading History costs nothing and is the user's business; Desired is write-only and applied once per tick, after Last (FR-3.4).
-- FR-2.2 The scalar is f32 throughout; f64 only with a written justification. Values are typed `Q`, `Qd`, `Tau`, Kp, Kd (MIT mode, e.g. CubeMars AK60) and further fields as hardware needs them: the set is non-exhaustive, extended by the engine, sealed against user extension (NFR-3); never stored or passed bare inside the Rust API, but From/Into are implemented both ways for seamless conversion (FFI, FR-10.2, is the one place bare scalars cross) with `f32`.
+- FR-2.2 The scalar is f32 throughout; f64 only with a written justification. Values are typed `Q`, `Qd`, `Tau`, Kp, Kd (MIT mode, e.g. CubeMars AK60) and further fields as hardware needs them: the set is non-exhaustive, extended by the engine, sealed against user extension (NFR-3); never stored or passed bare inside the Rust API, but From/Into are implemented both ways for seamless conversion (FFI, FR-10.2, is the one place bare scalars cross) with `f32`. Units (decided 2026-10-27): revolute actuators in rad, rad/s and N·m; prismatic actuators in mm, mm/s and N. kmr\_api implements `From` for degrees, cm and m.
 - FR-2.3 History of `HISTORY_DEPTH` past samples, readable by depth; `prev(0)` is the current sample. History is indexed by tick, not by hardware read: on a tick without a read the last slot is copied with its age incremented, so prev(k) always means k ticks ago.
 - FR-2.4 Groups are slices: a const array of actuator indices, contiguous or not, duplicates allowed, never registered or generated, with the same accessor set as the whole robot. Bulking for sync-write (FR-5.3) comes from the write mask, not from groups, so groups cost nothing.
 - FR-2.5 Desired state is shoot-and-forget: written during the tick, applied once at the end of the tick, then cleared. It is decoupled from History; what was applied is recorded there, not in Desired. An actuator not written this tick (write mask, Definitions) receives no new command. **Decided 2026-10-16.**
@@ -139,15 +140,15 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 **FR-4 Signals and safety**
 
-- FR-4.1 `shutdown!` finishes the current tick, `Last` included, writes a final hold command and returns; what hold means per mode is defined by each actuator adapter (HAL hold operation), not by the engine.
+- FR-4.1 `shutdown!` finishes the current tick, `Last` included, writes a final hold command and returns; what hold means per mode is defined by each actuator adapter (HAL hold operation), not by the engine. How long the hold lasts before torque off is an `Option<Duration>`: `None` by default (torque off right after the hold command), set by the user when needed.
 - FR-4.2 `emergency_stop!` exits at the next phase boundary and cuts torque.
 - FR-4.3 Escalation is monotonic; the first reason wins; Ctrl-C (or the platform equivalent) maps to shutdown and is never lost, unless a foreign Ctrl-C handler was installed first: then kmr warns at bring-up and the guarantee is the foreign handler's.
-- FR-4.4 Both are callable from any depth and any thread, async-signal-safe: one atomic store.
+- FR-4.4 Both are callable from any depth and any thread, async-signal-safe: one atomic compare-and-swap. A plain store would let a second raise overwrite the first and break FR-4.3; the compare-and-swap writes only if nothing was raised yet.
 - FR-4.5 Joint limits (declared per joint in the descriptor, enforced per actuator through the model's mapping): no general rule exists, so the policy is configurable per actuator, conveniently through a group slice, among clamp, warn and abort (abort = emergency\_stop! with reason JointLimit). The default is undecided: an agent reaching this path writes unimplemented!("SRS FR-4.5: joint-limit default policy") and moves on. **\[decision\]**
 
 **FR-5 Hardware**
 
-- FR-5.1 The core never imports a vendor SDK; adapters implement a sealed contract (adapter pattern: the core is hardware-agnostic, one adapter crate per vendor or bus). Sealed means closed to the controllers crate and open to adapter crates: the trait is public with a #\[doc(hidden)\] supertrait in kmr\_core, since v2 learned a true seal blocks cross-crate adapters.
+- FR-5.1 The core never imports a vendor SDK; adapters implement a sealed contract (adapter pattern: the core is hardware-agnostic, one adapter per vendor or bus, inside kmr\_adapters). Sealed means closed to the controllers crate and open to adapter crates: the trait is public with a #\[doc(hidden)\] supertrait in kmr\_core, since v2 learned a true seal blocks cross-crate adapters.
 - FR-5.2 Bring-up runs inside the once-phases, engine work first, then that phase's user controllers. PreInit: software only, no hardware touched. Init: open buses, initialize and register actuators (brand-specific zeroing where needed), sensors, payloads, battery; nothing checked or powered yet. PostInit: ping and health-check all devices, read positions and flag out-of-place ones, double-check zeros, register modes, apply power on/off from defaults or user values. No tick-0 seed: Desired is shoot-and-forget, so the first tick commands nothing unless a controller writes.
 - FR-5.3 Per tick and per (bus, series): one read transaction and one bulked write transaction where the protocol allows it (Dynamixel Protocol 2 sync read/write); where it does not (Protocol 1: AX-12A, RX-28, one round trip per actuator) the adapter declares its cadence and cost. The engine pre-sorts the written actuators by (bus, series) from the write mask before handing them to the adapter; this extra CPU work is accepted because I/O is the expensive part, and the gain is measured on the NFR-1 bench. The hardware read is opt-in and its cadence is decided per adapter, because on some hardware it is slow: Dynamixel adapters do not read every tick, others may. No general rule in the engine; the adapter declares its read cadence and the engine exposes it
 - FR-5.4 A bus is an electrical concept, declared per actuator, not tied to groups.
@@ -161,22 +162,22 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 **FR-6 Model and configuration**
 
-- FR-6.1 Actuator count N and groups come from one robot descriptor at compile time: URDF by default, .ron recommended, JSON discouraged but supported. Actuator order is descriptor declaration order; fixed joints are not actuators and are excluded from N. Joints live in the descriptor and the model only. URDF cannot carry firmware id, bus, model, protocol or operating mode, so a URDF build needs an actuators side file; .ron is self-contained. The per-machine port binding (FR-6.3) is its own file. The user's controller crate's build.rs reads the descriptor.
+- FR-6.1 Actuator count N comes from one robot descriptor at compile time: URDF by default, .ron recommended, JSON discouraged but supported. The user names it once in main.rs with `kmr_api::robot!`: a KM-RoBoTa preset (`robot!(Snake10)`) or a descriptor path. The macro emits the type aliases (`Robot`, `State`, `N`) that carry N, so controller signatures stay `&mut State`. Actuator order is descriptor declaration order; fixed joints are not actuators and are excluded from N. Joints live in the descriptor and the model only. Groups never come from the descriptor (FR-6.2). Hardware data (brand, protocol, baud, firmware ids, modes) comes from the preset; without a preset the user declares it in main.rs; any preset default can be overridden there. No per-machine config file, no build.rs in the user's crate. (Rewritten 2026-10-27: the previous text had groups from the descriptor, side files, a port-binding file and a user build.rs that cannot set N.)
 - FR-6.2 The descriptor declares no groups and generates no accessor methods (v2's robot.arm\_1() codegen was a mistake); groups are user-side slices (FR-2.4).
-- FR-6.3 Topology is portable and compile-time; physical ports are per machine, bound by serial id, and resolved at bring-up.
+- FR-6.3 Topology is portable and compile-time; physical ports are per machine, bound in the builder (Bevy-style plugins) and resolved at bring-up: `Bus::by_id(serial)` is preferred, `Bus::by_dev(path)` is allowed but less reliable, since `/dev/ttyUSB*` numbers change across reboots. Without any bus plugin, run() simulates and warns once.
 - FR-6.4 A bad descriptor is a compile error; a bad port binding is a bring-up error; a bad dt or registration is a run() error.
 
 * FR-6.5 Two deployment patterns. (1) One host, several wired robots as a single `Robot`: N is the total actuator count, one state, one loop, one clock; each robot is a contiguous index range the user may name as a group slice, and may sit on its own bus (two snakes on two buses). (2) One instance per robot, instances exchange over Zenoh (FR-7). For (1), URDF is a single kinematic tree, so a multi-robot build needs either one URDF with a common root link or a `.ron` descriptor composing several URDFs; which one is open (section 8).
 
 **FR-7 Messaging**
 
-- FR-7.1 Zenoh lives in `kmr_api` only, as a translator: `History` out, `Desired` in.
+- FR-7.1 Zenoh lives in `kmr_api` only, behind an opt-in Cargo feature, as a translator: `History` out, `Desired` in, through the lock-free slots of section 4 (Constraints).
 - FR-7.2 The core has no knowledge of any middleware.
 - FR-7.3 Users may bring any other middleware inside a controller as long as it yields a valid desired state.
 
 **FR-8 Payloads**
 
-- FR-8.1 Medium and heavy payloads register through the API; the model takes their mass and mount point and recomputes the center of mass. Tiers follow Boston Dynamics' Spot payload classification (see Definitions).
+- FR-8.1 Medium and heavy payloads register through the API; the model takes their mass and mount point and recomputes the center of mass. Light payloads are not registered (section 2). Tiers follow Boston Dynamics' Spot payload classification (see Definitions).
 - FR-8.2 Their actuators and sensors are the user's integration unless a kmr HAL exists.
 
 * FR-8.3 Model. No kinematics code exists yet; center-of-mass recomputation is `kmr_model`'s responsibility and stays roadmap until that crate exists (section 8).
@@ -191,7 +192,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 - FR-10.1 A C ABI exposes the state types to user code in Python or C/C++, lua, called from inside a Rust controller. The builder (Robot::new().add\_controller(), run()) is always written in Rust, is kept simple and headache-free, and is never exposed over FFI, for performance. Rust stays the primary language.
 - FR-10.2 Types crossing the FFI are plain `repr(C)` structs and fixed-size arrays of `f32` always, `f64` only with justification (FR-2.2), no lifetimes or generics, so exposing a new type is not a chore on the Rust side.
-- FR-10.3 A Rust controller may delegate its math to C/C++ through the FFI from any form; delegation to Python or Lua is allowed only from a threaded controller, because the CPython GIL is a lock and a Lua VM allocates and NFR-1 forbids locks on the control path. Inline C/C++ sees the same History/Desired through the FFI types; threaded Python/Lua gets only what the hand-off gives it (section 8), never the State handle, while phase registration stays in Rust.
+- FR-10.3 A Rust controller may delegate its math to C/C++, Python or Lua through the FFI from any form, inline included; phase registration stays in Rust. The cost of a slow language on the control path (CPython GIL, Lua VM allocation) is the user's choice and responsibility: kmr does not enforce it, since Rust cannot stop user code from calling an interpreter. (Changed 2026-10-27: the threaded-only rule was unenforceable.) `kmr_ffi` may use the heap like `kmr_api`.
 - FR-10.4 Onboarding target: a first moving controller in less time and fewer files than the equivalent ROS2 node.
 
 **FR-11 Plugins (planned, not built in this version)**
@@ -208,7 +209,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 - FR-13.1 Responsibility split. Robot behavior under faults is the end user's. Securing every communication path is kmr's. Providing the tools the user needs to write fallbacks and behavior control is kmr's.
 - FR-13.2 Communication security (kmr). All Zenoh traffic is authenticated and encrypted (mutual TLS or QUIC with per-machine identities). Access control per key: which identities may publish `Desired`, which may read `History`. Default deny. A `Desired` message from an unknown or unauthorized identity is dropped and counted. Secrets never live in the robot descriptor or in source.
-- FR-13.3 Hijack and replay protection (kmr). Every incoming `Desired` carries a sequence number and a sender timestamp; out-of-order or older than K ticks is dropped. Each remote source has a watchdog: silence beyond its timeout triggers the user's fallback (FR-13.5), default hold.
+- FR-13.3 Hijack and replay protection (kmr). Every incoming `Desired` carries a sequence number and a sender timestamp; out-of-order or older than K ticks is dropped. Each remote source has a watchdog: silence beyond its timeout triggers the user's fallback (FR-13.5), default hold. **Deferred (2026-10-27):** the sender-timestamp check needs synchronised clocks and K is undefined; the default hold on a running loop has no HAL operation (`hold` exists at shutdown only). Both wait until hold is better defined.
 - FR-13.4 Fault signals (kmr). The engine exposes typed, per-tick fault flags to controllers and over Zenoh: stale sample per actuator (FR-2.6), overrun (FR-3.3), bus error, device offline, sensor missing, joint limit hit (FR-4.5), remote source timed out, unauthorized command received. No fault is silent.
 - FR-13.5 Fallback tooling (kmr, behavior by user). A registration may attach a fallback controller or a hold policy, triggered by a fault predicate over FR-13.4 flags. The user may declare per-actuator envelopes (position, velocity, torque) the engine enforces before every write. `shutdown!` and `emergency_stop!` (FR-4) remain the escalation of last resort.
 - FR-13.6 Not provided. Collision detection, perception-failure handling, recovery strategies and any behavior logic: the user writes them with FR-13.4 and FR-13.5. Local buses (serial, CAN, USB) are treated as physically trusted.
@@ -221,7 +222,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 - **Performance.** Not perfect, but above the standard industry expectation, so the engine stays future-proof. Measured, not guessed (NFR-1, NFR-11).
 
 * NFR-1 **Real time.** No heap allocation, no `dyn`, no lock on the control path; static dispatch of controllers (default static scheduler; the roadmap heap-gated scheduler may use dynamic dispatch but never locks); one atomic load per signal check. Target jitter is hardware-dependent and is specified for a reproducible reference bench: Raspberry Pi 4, CPU rev 1.4 or 1.5, Arch Linux ARM, kernel 6.14.x or later in the 6.x line (not 7.x), measured on both a non-RT and a PREEMPT\_RT kernel, with the supply voltage and ambient temperature recorded alongside each run. Exact figures are deferred until measured on that bench; v2 reached 50 to 100 µs on non-RT Linux, but on a faster machine, so that number is not the target.
-* NFR-2 **Safety.** No `unwrap`, `panic` or unchecked indexing in the engine; errors are human-readable; release builds hide internal causes. One explicit exception: the unimplemented! and compile\_error! markers of section 5 are allowed, temporary and counted by CI; a marker left on the control path is a release blocker.
+* NFR-2 **Safety.** No `unwrap`, `panic` or unchecked indexing in the engine; errors are human-readable; release builds hide internal causes. One explicit exception: the unimplemented! and compile\_error! markers of section 5 are allowed, temporary and counted by CI; a marker left on the control path is a release blocker. Never panicking is also what keeps torque safe: every exit after bring-up ends with torque off, but an abort or a crash in foreign code (FR-10) leaves torque as it was, and no software guard can prevent that.
 * NFR-3 **Encapsulation.** `pub(crate)` by default; state fields sealed against user extension, extended by the engine (FR-2.2); raw handles never forwarded.
 * NFR-4 **Developer experience.** Controller code reads as math on arrays; compile errors may show internal type paths (frunk), nothing is obfuscated any more; ergonomics (aliases, wrapper methods, conveniences) live in kmr\_api, never in kmr\_core; the builder guides the user with type-state rather than runtime checks (the runtime LEN == 0 check in the code is a closed-source-era workaround, to be replaced by a trait bound); the public surface is small enough to learn in a day and is measured against ROS2 with the FR-10.4 metric (time and file count to a first moving controller).
 * NFR-5 **Portability.** x86-64, aarch64, armv7 Linux; cross-build without hardware.
@@ -230,7 +231,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 * NFR-8 **Replicability.** A black-box benchmark run on the NFR-1 reference bench, reproducible by anyone with that hardware and setup. Measurement set: (a) tick-rate ceiling: highest rate held without overrun with empty controllers; (b) at 1 kHz: jitter p50/p99/max and overrun count, non-RT vs PREEMPT\_RT; (c) same as (b) under CPU and I/O load (stress-ng); (d) engine overhead per tick, NFR-11; (e) footprint: binary size, peak RSS, stack high-water mark.
 * NFR-9 **Data layout.** State is structure-of-arrays, cache-line aligned; layout choices are documented and benchmarked, not guessed.
 
-- NFR-10 **Memory footprint.** `kmr_core` and its surrounding modules (the kmr\_\* crates kmr\_core depends on, such as kmr\_model; exact list TBD, see section 8) apply the strategies from Andrew Kelley, *A Practical Guide to Applying Data-Oriented Design*: indexes instead of pointers, booleans stored out-of-band, padding eliminated with struct-of-arrays, sparse data in hash maps, encodings instead of OOP/polymorphism. The user API is not shaped by this; only the engine side pays for it.
+- NFR-10 **Memory footprint.** Applies to `kmr_core` and, case by case, to the crates around it: each module section at the end of this document says whether it applies (today: kmr\_core, kmr\_model, kmr\_adapters yes; kmr\_api, kmr\_ffi, controllers no). "Around" is not a dependency claim: kmr\_model is a dependency of kmr\_core, kmr\_adapters depends on kmr\_core. These crates apply the strategies from Andrew Kelley, *A Practical Guide to Applying Data-Oriented Design*: indexes instead of pointers, booleans stored out-of-band, padding eliminated with struct-of-arrays, sparse data in hash maps, encodings instead of OOP/polymorphism. The user API is not shaped by this; only the engine side pays for it.
 - NFR-11 **Throughput and build time.** The hot path must keep up with the fastest bus or sensor I/O it is wired to, so that the remaining budget of each tick goes to controller instructions, not engine overhead. Motto: the less you do, the better, except when extra CPU work buys cheaper I/O (FR-5.3 pre-sorting). Engine overhead per tick is measured on the NFR-1 bench and tracked. Compile time of the core and of a user controller crate is tracked too, since type-level builders tend to inflate it.
 
 * NFR-12 **Security.** No network endpoint is reachable without authentication, including debug and visualization feeds. Identities and keys are per machine, provisioned outside the descriptor. The hot path never does crypto: authentication and decryption happen in `kmr_api` before a `Desired` reaches the engine. Fault flags (FR-13.4) are a bitset per slot of `History`, so every incident is recorded and replayable (NFR-8).
@@ -239,11 +240,11 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 | Interface | Where | Direction | Contract |
 | --- | --- | --- | --- |
-| User API | `kmr_api` | user → engine | Builder: HAL adapters, per-machine port bindings, `dt`, controller registrations; `run()` finalizes (there is no `build()`) and runs the loop, returning `Result` |
+| User API | `kmr_api` | user → engine | `robot!` macro in main.rs (preset or descriptor, FR-6.1); builder: bus plugins (`add_plugins(Bus::by_id(..))`, FR-6.3), `dt`, controller registrations; `run()` finalizes (there is no `build()`) and runs the loop, returning `Result` |
 | Controller | user's controller crate, through `kmr_api` (types defined in `kmr_core`, re-exported and wrapped with QoL alias and wrapper methods, so kmr\_core stays clean while kmr\_api does the heavy lifting of ergonomics; the user never touches `kmr_core`) | engine → user | `fn(&Time, &mut State, &Sensors)`; context variant fn(&mut T, &Time, &mut State, &Sensors); threaded fn(&mut T, &Time), TBD (FR-1.2); called per phase |
 | HAL | `kmr_core` | engine → adapter | Trait set (sealed per FR-5.1): bus init, ping, health-check, mode config, read sample with declared cadence, bulked write from the write mask, hold, torque on/off per actuator, close |
-| Zenoh | `kmr_api` | both | `History` latest sample published per tick, full ring on request; `Desired` subscribed and applied on the tick it arrives, then dropped (no hold); key layout per instance and group |
-| Config | `kmr_api` | file → compile time (descriptor) / bring-up (port binding) | Robot descriptor validated at compile time; per-machine port binding by serial id resolved at bring-up |
+| Zenoh | `kmr_api`, opt-in feature | both | `History` latest sample published per tick, full ring on request; `Desired` subscribed and applied on the tick it arrives, then dropped (no hold); key layout per instance and group |
+| Config | `kmr_api` (`robot!`), `kmr_model` | main.rs → compile time (descriptor, hardware) / bring-up (port) | Descriptor or preset named by `robot!` and validated at compile time; ports bound by builder plugins and resolved at bring-up; no config file |
 | FFI | `kmr_ffi` | controller → foreign code | C ABI for state types, called from inside Rust controllers; Python and C++ on top; the builder is never exposed |
 
 ## 8. Decisions pending and open questions
@@ -263,22 +264,23 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 - [x] Tick order read → First → EachTick → Last → bulked write → sleep (FR-3.4)
 - [x] History indexed by tick; a copy with age+1 on ticks without a hardware read
 - [x] Groups are user-side slices; no descriptor groups, no accessor codegen (v2 mistake)
-- [x] `kmr_api::State` DTO removed; `kmr_core::{State, History, Desired}` re-exported unchanged
+- [x] `kmr_api::State` DTO removed; kmr\_api wraps `kmr_core::State` thinly (Definitions, State), value types re-exported unchanged
 - [x] Type-state over runtime checks; internal type paths in compile errors accepted
 - [x] `Time` exposes `Duration`, never f32 seconds (FR-3.3)
 - [x] Torque enable per actuator, user's choice; direct HAL access allowed (FR-5.8, FR-5.9)
 - [x] `Kp`, `Kd` join the state fields (MIT mode); the field set is non-exhaustive (FR-2.2)
 - [x] Write pre-sorted by (bus, series) from the write mask for sync-write; CPU spent to buy I/O, measured (FR-5.3)
 - [x] Decision 0001 (HISTORY\_DEPTH as capacity const plus runtime check) is accepted by this SRS; mark the decision file accepted
+- [x] 2026-10-27: N from the descriptor through `kmr_api::robot!` type aliases, no config file (FR-6.1); ports through builder plugins, `by_id` preferred, `by_dev` allowed (FR-6.3); units rad / mm (FR-2.2); write mask per field; FR-4.4 compare-and-swap; Host public and sealed; Zenoh behind a feature with lock-free slots; light payloads not registered; FR-10.3 threaded-only rule dropped; FR-13.3 timestamp check and running-loop hold deferred
 
-* [ ] List of `kmr_core`'s `kmr_*` dependencies (the "surrounding modules" bound by NFR-10 and NFR-11)
+* [x] Module list = crate list, paths at workspace root (2026-10-26): `kmr_core/**` (runtime, state, HAL contract; AGENTS.md no-go files inside), `kmr_api/**`, `kmr_model/**` (descriptor, FR-6, FR-8.3), `kmr_adapters/**` (FR-5.3, FR-5.10), `kmr_ffi/**` (FR-10), `controllers/**` (user crate, reference example), `bench/**` (NFR-1, NFR-8); `kmr_vizualisation/**` roadmap. The "surrounding modules" of NFR-10/11 are kmr\_model (a dependency of kmr\_core) and kmr\_adapters (depends on kmr\_core), case by case (NFR-10).
 
 - [ ] FR-1.7 controller label: zero-sized marker type per registration, or a const id; and whether the static builder keeps the HList type-state from v3
 
 **Delivery order for this version** (an agent works top to bottom; nothing below a line starts before the line above moves a motor)
 
 1. HAL contract and one adapter (FR-5, Must)
-2. Descriptor parsing: N, actuator order, limits, side files; no accessor codegen (FR-6, Must)
+2. Descriptor parsing through `robot!`: N, actuator order, limits, presets; no accessor codegen (FR-6, Must)
 3. State transition: read cadence, write mask, bulked write, tick order (FR-2, FR-3, Must)
 4. Signals, Time surface, fault flags (FR-4, FR-3.3, FR-13.4, Must)
 5. Zenoh translation (FR-7, Should)
@@ -299,7 +301,7 @@ Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are n
 
 * [ ] TO RESOLVE. Several actuators driving one joint (one lifts, one lowers the same link) cannot be expressed with the chosen data structure, two same-size actuator arrays (SoA or decoupled). No solution yet; do not redesign the arrays around it. An agent that hits it writes unimplemented!("SRS index space: multi-actuator joint") on that path and continues
 * [ ] Zenoh `Desired` apply-once (FR-7.1): likely bug nest in velocity and torque modes; solution unclear, study when it bites
-* [ ] What "hold" means per actuator mode (FR-4.1): depends on each actuator's HAL/SDK, decided per adapter, not here
+* [ ] What "hold" means per actuator mode (FR-4.1): depends on each actuator's HAL/SDK, decided per adapter, not here. Its duration is decided: `Option<Duration>`, `None` by default (2026-10-27)
 * [ ] Multi-robot descriptor (FR-6.5): one URDF with a common root link, or a `.ron` composing several URDFs; verify what URDF allows
 * [ ] Threaded context: the loop side must stay lock-free; what the threaded side gets (merged into the item above; `Arc<Mutex<T>>` between threads is fine)
 
@@ -309,7 +311,7 @@ Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are n
 - [ ] Payload registration (FR-8.4): builder `register_payload` is `todo!()`; example to fix
 - [ ] Runtime operating-mode override (v2 `config()`), and verifying Dynamixel modes against firmware (dxl\_rs exposes no register access)
 - [ ] Run-time cost of the FR-5.3 pre-sort: confirm on the NFR-1 bench that it pays for itself
-- [ ] Module list and `Paths:` globs for the ov split, naming `state/field.rs`, `sealed.rs`, `signal.rs`, `schedule.rs`, `controllers.rs` as the no-go files of AGENTS.md
+- [x] Module list settled above; `Paths:` globs for the ov split, naming `state/field.rs`, `sealed.rs`, `signal.rs`, `schedule.rs`, `controllers.rs` as the no-go files of AGENTS.md
 
 **Roadmap (not in this revision)**
 
@@ -322,3 +324,12 @@ Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are n
 - `kmr` CLI helper (FR-12)
 
 * Non-1-DOF joints (spherical, planar, etc.)
+
+NFR-5 (portability) and NFR-6 (maintainability) bind every module below.
+
+## Module: kmr\_api
+
+Paths: `kmr_api/**`
+
+Covers: FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7.
+

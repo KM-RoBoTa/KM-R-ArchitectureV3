@@ -4,13 +4,16 @@ workspace "kmr" "Real-time robot control framework by KM-RoBoTa." {
 
     model {
         controlEngineer = person "Control engineer" "Writes the control math against the API, without modifying the framework."
-        contributor = person "Contributor" "KM-RoBoTa engineer or open-source contributor. Fixes bugs, adds hardware adapters for actuators and sensors."
+        contributor = person "Contributor" "KM-RoBoTa engineer or open-source contributor. Extends the engine and the hardware layer: fixes bugs, adds adapters for actuators and sensors."
         integrator = person "System integrator" "Integrates kmr into an existing robotics environment."
 
         kmr = softwareSystem "kmr" "One instance per host. Runs the real-time control loop of the robots wired to that host, through its own hardware layer." {
-            control = container "Control process" "The control engineer's controllers linked with kmr_api and kmr_core into one binary. Runs the 1 kHz loop; owns state, clock, schedules, signal bus and the hardware layer." "Rust binary"
-            viz = container "Visualizer" "Live or simulated wireframe of the robot. Optional, started on its own, never in the loop's process." "Dioxus app (desktop or web)"
-            model = container "Robot model" "URDF or alternative descriptor. Fixes the joint count of the control process at build time; gives the visualizer its geometry." "File" "File"
+            control = container "Control process" "The control engineer's controllers linked with kmr_api and kmr_core into one binary. Runs the loop at the user's dt (1 ms default); owns state, clock, schedules, signal bus and the hardware layer." "Rust binary"
+            viz = container "Visualizer" "Live or replayed wireframe of the robot, without hardware if needed. Optional, started on its own, never in the loop's process. Roadmap." "Dioxus app (desktop or web)" "Roadmap"
+            model = container "Robot model" "URDF with an actuators side file, or a self-contained .ron. Fixes the actuator count of the control process at build time; gives the visualizer its geometry." "File" "File"
+            ports = container "Port binding" "Per machine: binds buses to serial ports, resolved at bring-up." "File" "File"
+            keys = container "Identities and keys" "Per machine: Zenoh identities and access rules, kept outside the descriptor." "Key store" "File"
+            bench = container "Bench" "Measures the engine on the reference bench: jitter, overruns, overhead, footprint." "Rust binary"
         }
 
         hardware = softwareSystem "Robot hardware" "Actuators and sensors on the robot's buses." "External"
@@ -25,10 +28,10 @@ workspace "kmr" "Real-time robot control framework by KM-RoBoTa." {
         integrator -> kmr "Connects to an existing robotics environment"
 
         kmr -> hardware "Reads current state, writes desired state" "Hardware buses"
-        kmr -> payloads "Reads state from, drives and exchanges services with"
-        kmr -> otherKmr "Exchanges messages with" "Zenoh"
-        kmr -> robotics "Exchanges state and commands with" "Zenoh"
-        kmr -> compute "Sends current state to, receives desired state from" "Zenoh, or any middleware in a controller"
+        kmr -> payloads "Takes mass and mount point of"
+        kmr -> otherKmr "Publishes History to, receives Desired from" "Zenoh, encrypted"
+        kmr -> robotics "Publishes History to, receives Desired from" "Zenoh, encrypted"
+        kmr -> compute "Publishes History to, receives Desired from" "Zenoh encrypted, or any middleware in a controller"
 
         # Level 2
         controlEngineer -> kmr.control "Writes controllers, builds and runs the binary"
@@ -36,13 +39,28 @@ workspace "kmr" "Real-time robot control framework by KM-RoBoTa." {
 
         kmr.control -> kmr.model "Is built against" "File, at build time"
         kmr.viz -> kmr.model "Loads the geometry from" "File"
-        kmr.control -> kmr.viz "Publishes current state to" "Zenoh"
+        kmr.control -> kmr.viz "Publishes History to" "Zenoh, encrypted"
+        kmr.control -> kmr.ports "Binds ports at bring-up from" "File"
+        kmr.control -> kmr.keys "Authenticates Zenoh peers with" "mTLS or QUIC"
+        kmr.bench -> kmr.control "Measures"
+        contributor -> kmr.bench "Runs on the reference bench"
 
         kmr.control -> hardware "Reads current state, writes desired state" "Hardware buses"
-        kmr.control -> payloads "Reads state from, drives and exchanges services with"
-        kmr.control -> otherKmr "Exchanges messages with" "Zenoh"
-        kmr.control -> robotics "Exchanges state and commands with" "Zenoh"
-        kmr.control -> compute "Sends current state to, receives desired state from" "Zenoh, or any middleware in a controller"
+        kmr.control -> payloads "Takes mass and mount point of"
+        kmr.control -> otherKmr "Publishes History to, receives Desired from" "Zenoh, encrypted"
+        kmr.control -> robotics "Publishes History to, receives Desired from" "Zenoh, encrypted"
+        kmr.control -> compute "Publishes History to, receives Desired from" "Zenoh encrypted, or any middleware in a controller"
+
+        // C3/C4 per module (docs/c4/<module>.dsl)
+        // ov:includes:begin
+        !include c4/bench.dsl
+        !include c4/controllers.dsl
+        !include c4/kmr_adapters.dsl
+        !include c4/kmr_api.dsl
+        !include c4/kmr_core.dsl
+        !include c4/kmr_ffi.dsl
+        !include c4/kmr_model.dsl
+        // ov:includes:end
     }
 
     views {
@@ -70,6 +88,11 @@ workspace "kmr" "Real-time robot control framework by KM-RoBoTa." {
             }
             element "File" {
                 shape Folder
+            }
+            element "Roadmap" {
+                background #dddddd
+                color #888888
+                border dashed
             }
             element "External" {
                 background #999999

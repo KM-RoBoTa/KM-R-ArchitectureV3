@@ -1,10 +1,12 @@
 # Architecture
 
-`kmr` is one Cargo workspace. Two crates make the framework, a third holds
+`kmr` is one Cargo workspace. Three crates make the framework, a fourth holds
 user code:
 
 - **`kmr_core`** (`kmr_core/`) — the engine. Owns state, schedules,
-  the control loop, timing, the signal bus and (eventually) hardware I/O.
+  the control loop, timing, the signal bus and the hardware contract.
+- **`kmr_adapters`** (`kmr_adapters/`) — the hardware adapters, one per
+  vendor, behind the core's contract. Dynamixel first.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
   that re-exposes what users need and nothing else.
 - **`controllers`** (`controllers/`) — where controllers are written. It
@@ -169,9 +171,10 @@ of a slot.
 Controllers read the clock, the engine writes it, and only between two
 controller walks.
 
-Not implemented yet, because there is no hardware layer: the
-`state_transition` step (write the desired state, record the sensed sample)
-and the startup of threaded controllers — see the [roadmap](ROADMAP.md).
+Not implemented yet: the `state_transition` step (write the desired state,
+record the sensed sample), because the runtime does not call the
+[hardware layer](#hardware-layer) yet, and the startup of threaded
+controllers — see the [roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
 
@@ -196,6 +199,49 @@ atomic load each on the happy path):
 
 Both are logged with their reason and, in debug builds, their call site.
 `run()` returns `Ok(())` in both cases.
+
+## Hardware layer
+
+The engine drives hardware through one contract, the `Hal` trait in
+`kmr_core/src/hal.rs`. It knows actuator indices, bit masks, opaque
+transaction groups and a read cadence in ticks. Buses, series, protocols,
+modes and raw units stay in the adapter; values cross as `Q`, `Qd`, `Tau` in
+SI units. `Hal` is public with a `#[doc(hidden)]` seal: adapter crates
+implement it, `controllers` cannot, since it does not depend on `kmr_core`.
+Dispatch is static: `run_on(hal)` runs the robot on an adapter, and `run()` is
+`run_on(NoHardware)`.
+
+| Moment | Engine calls |
+|---|---|
+| `run()` finalization, no I/O | `check` → `Layout`: groups, read cadence, cost |
+| Init, before user controllers | `open`, `zero` |
+| PostInit, before user controllers | `ping`, `health`, `configure`, `read_all`, `torque_on` |
+| Each tick, before `First` | `read` into a copy of the previous sample |
+| Each tick, after `Last` | `write` of the written actuators in group order, then Desired is cleared |
+| Shutdown | `hold`, `torque_off`, `close` |
+| Emergency stop | `torque_off`, `close` |
+
+Bring-up calls return the adapter's error and `run()` returns it. Once `open`
+was called, every exit ends with `torque_off` then `close`. `read` and `write`
+never fail: they set per-actuator fault bits (`stale`, `bus_error`, `offline`,
+`rejected`) and never allocate, lock, sleep or retry. The write mask is kept
+per field (`Written { q, qd, tau }`), so an adapter sends only the field its
+actuator's mode takes.
+
+Adapters live in `kmr_adapters`. An adapter's configuration (buses,
+actuators, the serial id of each port) is Rust consts checked at compile time. The control
+engineer never sees it: `kmr_api` exposes no adapter, bus or port type, and
+its one hardware knob is the read cadence, `set_read_every(ticks)`.
+`kmr_api::Robot::run()` hands `kmr_adapters::Hardware` to the core: the
+Dynamixel adapter with the `dynamixel` feature, else `NoHardware`, which reads
+and writes nothing and warns once at `open`. The vendor SDK sits behind a
+private `Backend` trait, so the adapter is tested on a scripted backend and
+`dxl_rs_v2` can replace `dxl_rs` later.
+
+Not wired yet: the runtime makes none of these calls, `run_on` and
+`set_read_every` are not in the core, and the `dynamixel` arm of `Hardware`
+waits for the `dxl_rs` dependency. The design and its departures from the SRS
+are argued in [decision 0002](decisions/0002-hal-contract.md).
 
 ## Real-time constraints
 
