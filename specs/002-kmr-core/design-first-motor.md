@@ -1,6 +1,7 @@
 # Design note: kmr_core on the critical path to the first motor
 
-Status: proposal for the maintainer. Nothing in `kmr_core/` is edited. Written 2026-10-28.
+Status: proposal for the maintainer. Written 2026-10-28. Aligned with plan.md (T002) and
+implemented on `dev` as agent patches, 2026-10-29 (tasks T004 to T013).
 
 Scope: core plan items #2, #3, #8, #9, #10, #11, #14 (critical path steps 3 to 8 of
 `specs/spec-coordination-2026-10-28.md` §3). Bench: XmBench, position mode, `JOINTS = 4`.
@@ -60,8 +61,8 @@ pub(crate) fn clear_desired(&mut self) {
 arrays (SRS NFR-10). The `Batch` pre-sort already reads `Written` (SRS FR-5.3).
 
 Startup writes (FR-020, SRS FR-5.2 "no tick-0 seed"): after each startup walk, if
-`written().any()` is not empty, warn once naming the phase and clear. One helper,
-`discard_startup_writes(state, "Init")`, in `runtime.rs`.
+`written().any()` is not empty, clear and note the phase. One warning per run, after PostInit,
+lists every phase that wrote (OC7, SC-011). One helper in `runtime.rs`.
 
 ### #3 One History slot per tick, `read_all` seed (SRS FR-2.3, FR-2.6)
 
@@ -81,7 +82,9 @@ pub(crate) fn push_slot(&mut self) -> Option<Sample<'_>> {
 ```
 
 The copy gives SRS FR-2.6 for free: the adapter overwrites only what it read, so a failed read
-keeps the last value, never zeros. The same method seeds History: PostInit calls `push_slot()`
+keeps the last value, never zeros. An empty History still copies zeros; spec FR-042 (SRS FR-6.3)
+wants "no sample" on a no-hardware run. The push stays as it is: the read side gets an
+`ever_read` gate and an `Option<u32>` age in K3.5 (research R6). The same method seeds History: PostInit calls `push_slot()`
 then `read_all(sample)`. The seed is the slot before tick 0, so at tick 0 `prev(1)` is the seed.
 
 The `Mask` that `read` returns (refreshed actuators) is ignored until #4 (sample age).
@@ -106,6 +109,9 @@ pub fn run(self) -> Result<(), ApiError> where CS: Drive {
 No dependency on the open "run() after an emergency stop" question: both signals are `Ok`,
 the signal is logged (FR-038). `ApiError` is unchanged; #7 replaces it later.
 
+`NoHardware::open` prints "no bus plugin: simulating", once per run, the only such warning
+(K1.6, FR-042 (SRS FR-6.3)).
+
 Optional, in `hal.rs` before `:349`: `impl<A: Hal> Hal for &mut A` (13 forwarding lines) and
 its seal impl. Then `run_on(&mut adapter)` hands the adapter back after the run. The adapter
 end-to-end tests need it, and it is option A of FR-050 (SRS FR-5.9: the user reaches the HAL
@@ -126,8 +132,9 @@ The guard (#10) must live as long as every phase, so the engine bring-up moves i
 | Tick, after `Last` | estop check, then `Batch::new`, `write` if not empty | replaces the TODO at `:276-277`, after `:279` |
 | Tick, after the end poll | `clear_desired()` | before the sleep, `:291` |
 
-`Overrides::default()` until #5 adds the cadence knob. `Faults` is a local per tick, dropped
-until #13 (see SRS problems).
+`Overrides` stays empty (K3.8, research R9): the cadence comes from the hardware table, not a
+run-time knob. `Faults` is a local per tick, dropped until #13 (see SRS problems); it then
+becomes per-slot `Faults<N>`, with the envelope bit per actuator (K4.1).
 
 The tick now has five bus checks, not four: tick start, after `First`, after `EachTick`,
 after `Last` (new: an estop raised in `Last` skips the write, spec Edge Cases), tick end. Each
@@ -199,7 +206,7 @@ the caller. `run_on` does not catch it.
 
 ```rust
 impl Time {
-    pub fn elapsed(&self) -> Duration;              // since `startup`, stamped at tick start
+    pub fn elapsed(&self) -> Duration;              // since `arm`, stamped at tick start
     pub fn dt(&self) -> Duration;
     pub fn tick(&self) -> u64;                      // index of the tick in progress, 0 first
     pub fn overrun_count(&self) -> u64;
@@ -208,7 +215,8 @@ impl Time {
 }
 ```
 
-`tick` counts closed ticks, so during tick k it reads k. `kmr_api::Time` forwards them
+`tick` counts closed ticks, so during tick k it reads k. `elapsed()` counts from `arm`, tick 0's
+grid origin, not from `startup` (OC6): bring-up time is not charged to the run. `kmr_api::Time` forwards them
 (critical path step 9). Call sites to update: `runtime.rs:332` (`!total.is_zero()`), runtime
 tests `:615`, `:656-657`.
 
@@ -329,7 +337,8 @@ The SIGTERM test sends `kill -TERM` then `kill -HUP` to its own process from a c
 Steps 1 to 5 add dead code the runtime does not call yet; `lib.rs` allows it. Step 7 lands the
 guard in the same commit as `open`, so no commit opens hardware without it. After step 8, the
 agent adds the 4 adapter end-to-end tests in `kmr_adapters` (not human-only), and wires
-`kmr_api::Robot::run()` to `run_on(kmr_adapters::Hardware::default())` (critical path step 9).
+`kmr_api::Robot::run()` to `run_on` the adapter that the `__Spec` emitted by `robot!` builds
+through `Dynamixel::bind` (kmr_api A4, A5).
 
 Adapter side, not core: critical path step 2 asks torque off on read-only actuators too
 (SRS FR-5.8). The Dynamixel `torque_off` still skips them. The bench check of step 11

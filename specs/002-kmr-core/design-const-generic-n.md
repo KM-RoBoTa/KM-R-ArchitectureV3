@@ -61,12 +61,13 @@ ambiguous, E0284).
 
 ### 2.2 How user signatures stay `fn(&mut State)`
 
-`robot!` emits the aliases in the user crate (SRS FR-6.1). The user never writes N in a type.
+kmr_api's `robot!` front door, not the proc macro, emits the aliases in the user crate (SRS
+FR-6.1). The user never writes N in a type.
 
 ```rust
 pub const N: usize = $n;
 pub type State<'a> = $crate::State<'a, N>;
-pub type Robot = $crate::Robot<N>;
+pub type Robot = $crate::Robot<N, __Spec>; // later with `E`
 const _: () = assert!(N >= 1 && N <= 64, "SRS write mask: more than 64 actuators");
 ```
 
@@ -190,7 +191,8 @@ compiling until the last step removes it.
    N = X, the same bug class 0001 recorded.
 4. `RobotState<const N: usize = JOINTS>`; methods on N, `OutOfRange { len: N }`.
 5. `hal.rs`: every type `<const N: usize = JOINTS>`, `trait Hal<const N: usize = JOINTS>`,
-   `Mask<N>([u64; MASK_WORDS])`. Adapters compile unchanged.
+   `Mask<N>([u64; MASK_WORDS])`. Adapters compile unchanged. Kind bit sets (kmr_adapters,
+   kmr_api) are `[u64; MASK_WORDS]` too.
 6. `controllers.rs`, `schedule.rs`, `schedule/macros.rs` (invariant), `robot.rs`, `runtime.rs` in
    one commit: `Env<'a, N>`, `ControlFn<N>`, `ControlFnWith<T, N>`, `RunPhase<N>`, `Drive<N>`,
    `Robot<const N: usize = JOINTS, CS = Scheduled>`. Keep `impl Robot<JOINTS, Scheduled> { new }`
@@ -199,8 +201,9 @@ compiling until the last step removes it.
 7. Core: `impl<const N: usize> Robot<N> { new }` with the backstop check. Core tests, doctests
    and `tests/*.rs` name N (`Robot::<4>::new()`, a test-local const).
 8. `kmr_api`: `State<'a, N>`, `GroupView<'a, N, K>`, `Robot<N, C>`; `robot!` emits
-   `$crate::State<'a, N>`, `$crate::Robot<N>` and the FR-012 assert; `kmr_api::N` removed;
-   `controllers/` calls `robot!(XmBench)`; the `three.urdf` test now passes (SC-009).
+   `$crate::State<'a, N>`, `$crate::Robot<N, __Spec>` and the FR-012 assert; `kmr_api::N`
+   removed; the `three.urdf` test now passes (SC-009). `controllers/` already calls
+   `robot!(XmBench)` (controllers plan C0).
 9. `kmr_adapters`: `Dynamixel<B, NB, N>`, `impl Hal<N>`, tables sized by the preset.
 10. Remove every `= JOINTS` default and `JOINTS` itself (FR-011). Add the SC-009 builds
     (N = 1, 4, 10, 64) and a compile-fail for 65.
