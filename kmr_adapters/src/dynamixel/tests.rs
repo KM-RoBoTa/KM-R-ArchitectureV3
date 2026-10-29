@@ -1146,8 +1146,9 @@ fn torque_on_starts_each_position_actuator_at_its_present_position_read_then()
 -> Result<(), DynamixelError> {
     let mut adapter = rig(MIX_TABLE);
     configured(&mut adapter)?;
-    // Moved since `read_all`: the goal must not come from that sample.
-    let present = |index: usize| 300 + 100 * index as i32;
+    // Moved since `read_all`: the goal must not come from that sample. Inside
+    // the AX range for ten actuators too.
+    let present = |index: usize| 300 + 50 * index as i32;
     for (index, actuator) in MIX_TABLE.actuators.iter().enumerate() {
         adapter
             .backend
@@ -2050,7 +2051,15 @@ fn table_bus_without_a_cadence_reads_every_default_read_every_ticks() -> Result<
 
 #[test]
 fn table_of_xm_bench_writes_once_per_bus_and_series() -> Result<(), DynamixelError> {
-    let mut adapter = rig(XmBench::HARDWARE);
+    // XmBench has four actuators: a core built for another count cannot rig it.
+    let Ok(actuators) = <[Actuator; JOINTS]>::try_from(XmBench::HARDWARE.actuators.as_slice())
+    else {
+        return Ok(());
+    };
+    let mut adapter = rig(Table {
+        buses: XmBench::HARDWARE.buses,
+        actuators,
+    });
     let layout = powered(&mut adapter)?;
     assert_eq!(layout.group, [Group(0); JOINTS]);
 
