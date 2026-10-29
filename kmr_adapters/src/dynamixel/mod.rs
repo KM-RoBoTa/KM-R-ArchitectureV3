@@ -20,7 +20,7 @@ mod tests;
 use std::path::Path;
 
 use kmr_core::hal::{Batch, Command, Faults, Hal, Layout, Mask, Overrides, Sample, seal};
-use kmr_core::state::JOINTS;
+use kmr_core::state::{JOINTS, Q};
 use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
@@ -255,6 +255,9 @@ pub struct Dynamixel<B, const NB: usize> {
     groups: Groups,
     /// Device of each bus, once resolved.
     devices: [Option<DevicePath>; NB],
+    /// Raw goal range of each actuator: CW to CCW Angle Limit once
+    /// `configure` read them on Protocol 1, else any.
+    limits: [(u32, u32); JOINTS],
     /// Whether the backend opened the ports.
     open: bool,
     /// `read` calls so far, for the cadence.
@@ -273,6 +276,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
             sysfs: None,
             groups: Groups::EMPTY,
             devices: [None; NB],
+            limits: [(0, u32::MAX); JOINTS],
             open: false,
             reads: 0,
         }
@@ -389,6 +393,32 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
             id,
             reason: "present position outside the register range",
         }
+    }
+
+    /// The bring-up error of actuator `index`, whose present position is
+    /// outside its angle limits: powered, it would not hold there.
+    fn outside_limits(&self, index: usize) -> DynamixelError {
+        let (bus, id) = self.named(index);
+        DynamixelError::Health {
+            actuator: index,
+            bus,
+            id,
+            reason: "present position outside the CW/CCW Angle Limit",
+        }
+    }
+
+    /// Whether raw goal `raw` is inside the angle limits of actuator `index`.
+    fn within_limits(&self, index: usize, raw: u32) -> bool {
+        self.limits
+            .get(index)
+            .is_some_and(|&(low, high)| (low..=high).contains(&raw))
+    }
+
+    /// Raw goal position of actuator `index` for `q`: [`io::position_goal`],
+    /// and `None` too outside its angle limits, never clamped.
+    fn goal(&self, index: usize, q: Q) -> Option<u32> {
+        let actuator = self.table.actuators.get(index)?;
+        io::position_goal(actuator, q).filter(|&raw| self.within_limits(index, raw))
     }
 
     /// The bring-up error of the actuator a read `failed` on, if any. A
@@ -534,6 +564,8 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         Ok(())
     }
 
+    /// Reads every actuator's voltage and temperature against its model's
+    /// range, and on Protocol 2 its Hardware Error Status.
     fn health(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.table.actuators.iter().enumerate() {
             let health = self
@@ -562,16 +594,30 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
 
     /// Checks that every Protocol 2 actuator is in position mode, and warns
     /// about one found powered: `torque_on` switches a [`Torque::ReadOnly`]
-    /// one off (research R1). Protocol 1 is taken from the table:
-    /// `dxl_rs` reads no Protocol 1 register (research R7).
+    /// one off (research R1). Protocol 1 has no Operating Mode: its joint
+    /// mode is CW and CCW Angle Limit not both 0, read here and kept as the
+    /// range its goals must stay in. Its torque state is not read.
     fn configure(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.table.actuators.iter().enumerate() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             if model.protocol() != Protocol::Two {
-                debug!(
-                    actuator = index,
-                    "Protocol 1 operating mode and torque not checked"
-                );
+                let (cw, ccw) = self
+                    .backend
+                    .read_angle_limits(bus, model, id)
+                    .map_err(|error| self.actuator_error(index, error))?;
+                if cw == 0 && ccw == 0 {
+                    return Err(self.setup_error(
+                        index,
+                        "CW and CCW Angle Limit both 0: wheel mode, not joint mode",
+                    ));
+                }
+                if cw > ccw {
+                    return Err(self.setup_error(index, "CW Angle Limit above CCW Angle Limit"));
+                }
+                if let Some(limits) = self.limits.get_mut(index) {
+                    *limits = (cw, ccw);
+                }
+                debug!(actuator = index, "Protocol 1 torque state not read");
                 continue;
             }
             let mode = self
@@ -665,16 +711,13 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                 let Some(actuator) = self.table.actuators.get(index) else {
                     continue;
                 };
-                let raw = last
-                    .q
-                    .get(index)
-                    .and_then(|&q| io::position_goal(actuator, q));
+                let raw = last.q.get(index).and_then(|&q| self.goal(index, q));
                 match raw {
                     Some(raw) => goals.push(index, actuator.id, raw),
                     None if actuator.torque == Torque::On => {
                         warn!(
                             actuator = index,
-                            "hold target outside the register range, not sent"
+                            "hold target outside the register range or the angle limits, not sent"
                         );
                     }
                     None => {}

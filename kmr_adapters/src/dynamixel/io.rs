@@ -487,7 +487,7 @@ pub(super) fn write_batch<B: Backend, const NB: usize>(
                 .q
                 .get(index)
                 .filter(|_| command.written.q.get(index))
-                .and_then(|&q| position_goal(&actuator, q));
+                .and_then(|&q| adapter.goal(index, q));
             match raw {
                 Some(raw) => goals
                     .get_or_insert(Goals::new(table))
@@ -531,6 +531,9 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize>(
         let q = present.get(index).copied().unwrap_or_default();
         let (register, raw) =
             start_goal(actuator, q).ok_or_else(|| adapter.invalid_position(index))?;
+        if register == GoalRegister::Position && !adapter.within_limits(index, raw) {
+            return Err(adapter.outside_limits(index));
+        }
         if let Some(goals) = goals.get_mut(register as usize) {
             goals.push(index, actuator.id, raw);
         }

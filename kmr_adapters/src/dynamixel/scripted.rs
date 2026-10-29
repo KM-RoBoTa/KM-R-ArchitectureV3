@@ -28,7 +28,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 11;
+const KINDS: usize = 12;
 /// Variants of [`GoalRegister`].
 const REGISTERS: usize = GoalRegister::ALL.len();
 /// Device path bytes kept per port; longer paths are cut.
@@ -40,6 +40,10 @@ const HEALTHY: Health = Health {
     voltage_dv: 120,
     temperature_c: 30,
 };
+
+/// CW and CCW Angle Limit of a Protocol 1 actuator until scripted
+/// otherwise: the AX and RX factory values, joint mode over the whole range.
+const JOINT_MODE: (u32, u32) = (0, 1023);
 
 /// A [`Backend`] method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +68,8 @@ pub(crate) enum Call {
     ReadHealth,
     /// [`Backend::read_setting`].
     ReadSetting,
+    /// [`Backend::read_angle_limits`].
+    ReadAngleLimits,
     /// [`Backend::close_ports`].
     ClosePorts,
 }
@@ -152,6 +158,8 @@ pub(crate) struct Scripted {
     vitals: [[Health; IDS]; PORTS],
     /// Per actuator, what Operating Mode reads return.
     modes: [[u8; IDS]; PORTS],
+    /// Per actuator, what angle limit reads return.
+    limits: [[(u32, u32); IDS]; PORTS],
     /// Per actuator, whether it never answers.
     missing: [[bool; IDS]; PORTS],
     /// Per actuator and kind, the error its calls fail with.
@@ -189,6 +197,7 @@ impl Scripted {
             states: [[RawState::default(); IDS]; PORTS],
             vitals: [[HEALTHY; IDS]; PORTS],
             modes: [[POSITION_MODE; IDS]; PORTS],
+            limits: [[JOINT_MODE; IDS]; PORTS],
             missing: [[false; IDS]; PORTS],
             faults: [[[None; KINDS]; IDS]; PORTS],
             left: [[[None; KINDS]; IDS]; PORTS],
@@ -324,6 +333,14 @@ impl Scripted {
     pub(crate) fn mode(&mut self, port: usize, id: u8, mode: u8) -> &mut Self {
         if let Some(slot) = at(&mut self.modes, port, id) {
             *slot = mode;
+        }
+        self
+    }
+
+    /// Angle limit reads of actuator `id` return `(cw, ccw)`.
+    pub(crate) fn angle_limits(&mut self, port: usize, id: u8, cw: u32, ccw: u32) -> &mut Self {
+        if let Some(slot) = at(&mut self.limits, port, id) {
+            *slot = (cw, ccw);
         }
         self
     }
@@ -723,12 +740,9 @@ impl Backend for Scripted {
         Ok(())
     }
 
+    /// Protocol 1 answers too, error status included: scripted, not read.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError> {
-        self.note(Call::ReadHealth, port, model, id, false);
-        if model.protocol() != Protocol::Two {
-            return Err(BackendError::Io);
-        }
-        self.answer(Call::ReadHealth, port, id)?;
+        self.one(Call::ReadHealth, port, model, id, false)?;
         Ok(self.vitals[port][usize::from(id)])
     }
 
@@ -749,6 +763,20 @@ impl Backend for Scripted {
             Setting::OperatingMode => self.modes[port][id],
             Setting::TorqueEnable => u8::from(self.torque[port][id]),
         })
+    }
+
+    fn read_angle_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<(u32, u32), BackendError> {
+        self.note(Call::ReadAngleLimits, port, model, id, false);
+        if model.protocol() != Protocol::One {
+            return Err(BackendError::Io);
+        }
+        self.answer(Call::ReadAngleLimits, port, id)?;
+        Ok(self.limits[port][usize::from(id)])
     }
 
     fn close_ports(&mut self) {
@@ -1043,17 +1071,21 @@ mod tests {
     }
 
     #[test]
-    fn the_fake_refuses_protocol_one_health() {
+    fn the_fake_answers_protocol_one_health_and_angle_limits() {
         let mut backend = Scripted::new();
+        backend.angle_limits(0, 2, 0, 0);
         backend.open_ports(&[]).unwrap();
 
-        assert_eq!(
-            backend.read_health(0, Model::Ax12a, 1),
-            Err(BackendError::Io)
-        );
-        assert_eq!(backend.read_position(0, Model::Ax12a, 1), Ok(0));
+        assert_eq!(backend.read_health(0, Model::Rx28, 1), Ok(HEALTHY));
         assert_eq!(backend.read_health(0, MODEL, 1), Ok(HEALTHY));
         assert_eq!(backend.count(Call::ReadHealth), 2);
+        assert_eq!(backend.read_angle_limits(0, Model::Rx28, 1), Ok(JOINT_MODE));
+        assert_eq!(backend.read_angle_limits(0, Model::Ax12a, 2), Ok((0, 0)));
+        assert_eq!(
+            backend.read_angle_limits(0, MODEL, 1),
+            Err(BackendError::Io)
+        );
+        assert_eq!(backend.count(Call::ReadAngleLimits), 3);
     }
 
     #[test]

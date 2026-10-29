@@ -48,8 +48,6 @@ static SDK_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the three-transaction state read was reported.
 static SPLIT_READ_WARNED: AtomicBool = AtomicBool::new(false);
-/// Whether the Protocol 1 health gap was reported.
-static P1_HEALTH_WARNED: AtomicBool = AtomicBool::new(false);
 /// Whether `torque(.., false)` on an actuator not switched on here was
 /// reported.
 static UNPOWERED_WARNED: AtomicBool = AtomicBool::new(false);
@@ -569,8 +567,8 @@ impl Backend for DxlRs {
         Ok(())
     }
 
-    /// Protocol 1 fails: `dxl_rs` reads no Protocol 1 register but the
-    /// present position.
+    /// Protocol 1 fails: it has no Operating Mode, and `dxl_rs` has no
+    /// [`Readable`] for its Torque Enable.
     fn read_setting(
         &mut self,
         port: usize,
@@ -590,16 +588,23 @@ impl Backend for DxlRs {
         u8::try_from(raw).map_err(|_| BackendError::Io)
     }
 
-    /// Protocol 1 fails: `dxl_rs` reads no Protocol 1 register but the
-    /// present position.
+    /// Protocol 2: three sync reads. Protocol 1 has no sync read and no
+    /// Hardware Error Status: one read of Present Voltage, one of Present
+    /// Temperature, error status 0.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError> {
         let number = self.number(port)?;
         if model.protocol() == Protocol::One {
-            warn_once(
-                &P1_HEALTH_WARNED,
-                "cannot read voltage or temperature over Protocol 1",
-            );
-            return Err(BackendError::Io);
+            let read = |readable| {
+                with_actuator!(model, id, number, actuator => actuator.read_register(readable))
+                    .map_err(|error| sdk_error(&error))
+            };
+            let voltage = read(Readable::PresentInputVoltage)?;
+            let temperature = read(Readable::PresentTemperature)?;
+            return Ok(Health {
+                error_status: 0,
+                voltage_dv: u16::try_from(voltage).map_err(|_| BackendError::Io)?,
+                temperature_c: u8::try_from(temperature).map_err(|_| BackendError::Io)?,
+            });
         }
         let register = |readable| {
             with_actuator!(model, id, number, actuator => actuator.register_of(readable))
@@ -614,6 +619,30 @@ impl Backend for DxlRs {
             voltage_dv: u16::try_from(voltage).map_err(|_| BackendError::Io)?,
             temperature_c: u8::try_from(temperature).map_err(|_| BackendError::Io)?,
         })
+    }
+
+    /// Through the goal limits `dxl_rs` reads on a torque-off actuator.
+    /// Protocol 2 fails: its position limits are not read here.
+    fn read_angle_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<(u32, u32), BackendError> {
+        let number = self.number(port)?;
+        match model {
+            Model::Ax12a | Model::Rx28 => {
+                let mut actuator = Ax12A::new(id, number);
+                actuator
+                    .read_goal_limits()
+                    .map_err(|error| sdk_error(&error))?;
+                let (cw, ccw) = actuator.goal_limits();
+                Ok((u32::from(cw), u32::from(ccw)))
+            }
+            Model::Xm430W210 | Model::Xw430T200 | Model::Xw540T140 | Model::Xw540T260 => {
+                Err(BackendError::Io)
+            }
+        }
     }
 
     fn close_ports(&mut self) {

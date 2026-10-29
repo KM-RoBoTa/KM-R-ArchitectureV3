@@ -173,6 +173,15 @@ pub(crate) trait Backend {
     /// Error status, voltage and temperature of one actuator.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError>;
 
+    /// CW and CCW Angle Limit of one Protocol 1 actuator, raw: both 0 is
+    /// wheel mode, anything else joint mode, its goals in `cw..=ccw`.
+    fn read_angle_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<(u32, u32), BackendError>;
+
     /// Closes every port. Best effort.
     fn close_ports(&mut self);
 }

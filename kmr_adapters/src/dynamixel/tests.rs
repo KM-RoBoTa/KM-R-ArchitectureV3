@@ -89,6 +89,13 @@ const AX_TABLE: Table<1, JOINTS> = Table {
 }
 .check();
 
+/// Protocol 1 chain of RX-28, read every tick.
+const RX_TABLE: Table<1, JOINTS> = Table {
+    buses: one_bus("rx", NonZeroU32::new(1)),
+    actuators: chain(Model::Rx28),
+}
+.check();
+
 /// Serials of the `arm` and `wrist` USB adapters.
 const ARM: &str = "ARM00001";
 const WRIST: &str = "WRIST001";
@@ -268,32 +275,8 @@ fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>) {
     adapter.open = true;
 }
 
-/// What `health` returns on the strict fake until T049: the first Protocol 1
-/// actuator fails with `Io`, as `DxlRs` reads no Protocol 1 health register
-/// (research R11).
-fn health_today<const NB: usize>(adapter: &Dynamixel<Scripted, NB>) -> Result<(), DynamixelError> {
-    let first = adapter
-        .table
-        .actuators
-        .iter()
-        .position(|actuator| actuator.model.protocol() == Protocol::One);
-    match first {
-        None => Ok(()),
-        Some(index) => {
-            let (bus, id) = adapter.named(index);
-            Err(DynamixelError::Actuator {
-                actuator: index,
-                bus,
-                id,
-                source: BackendError::Io,
-            })
-        }
-    }
-}
-
 /// `check`, then Init and PostInit in the engine's order on an adapter
-/// marked open; the backend log is cleared afterwards. `health` must give
-/// [`health_today`]; the bring-up goes on past it.
+/// marked open; the backend log is cleared afterwards.
 fn powered<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB>,
 ) -> Result<Layout, DynamixelError> {
@@ -301,7 +284,7 @@ fn powered<const NB: usize>(
     mark_open(adapter);
     adapter.zero()?;
     adapter.ping()?;
-    assert_eq!(adapter.health(), health_today(adapter));
+    adapter.health()?;
     adapter.configure()?;
     adapter.read_all(Slot::filled(0.0).sample())?;
     adapter.torque_on()?;
@@ -1577,22 +1560,68 @@ fn a_failed_health_read_names_the_actuator() -> Result<(), DynamixelError> {
     Ok(())
 }
 
+/// What a healthy actuator answers, at `voltage_dv` and `temperature_c`.
+const fn vitals(voltage_dv: u16, temperature_c: u8) -> Health {
+    Health {
+        error_status: 0,
+        voltage_dv,
+        temperature_c,
+    }
+}
+
 #[test]
-fn protocol_1_health_fails_bring_up_until_t049() -> Result<(), DynamixelError> {
+fn protocol_1_health_checks_voltage_and_temperature() -> Result<(), DynamixelError> {
     let mut adapter = rig(MIX_TABLE);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
 
+    adapter.health()?;
+    let wrist = adapter
+        .backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::ReadHealth && record.port == 1)
+        .count();
+    assert_eq!(wrist, JOINTS / 2);
+
+    let cases = [
+        (vitals(89, 30), "input voltage out of range"),
+        (vitals(121, 30), "input voltage out of range"),
+        (vitals(100, 71), "temperature too high"),
+    ];
+    for (health, reason) in cases {
+        adapter.backend.health(1, id(1), health);
+        assert_eq!(
+            adapter.health(),
+            Err(DynamixelError::Health {
+                actuator: 1,
+                bus: "wrist",
+                id: id(1),
+                reason
+            })
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rx28_health_follows_its_own_voltage_range() -> Result<(), DynamixelError> {
+    let mut adapter = rig(RX_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    adapter.backend.health(0, id(3), vitals(148, 45));
+    adapter.health()?;
+
+    adapter.backend.health(0, id(3), vitals(119, 45));
     assert_eq!(
         adapter.health(),
-        Err(DynamixelError::Actuator {
-            actuator: 1,
-            bus: "wrist",
-            id: id(1),
-            source: BackendError::Io
+        Err(DynamixelError::Health {
+            actuator: 3,
+            bus: "rx",
+            id: id(3),
+            reason: "input voltage out of range"
         })
     );
-    assert_eq!(adapter.health(), health_today(&adapter));
     Ok(())
 }
 
@@ -1705,22 +1734,203 @@ fn an_actuator_outside_position_mode_fails_configure_before_any_torque()
 }
 
 #[test]
-fn protocol_1_settings_are_never_read() -> Result<(), DynamixelError> {
+fn protocol_1_reads_its_angle_limits_never_a_setting() -> Result<(), DynamixelError> {
     let mut adapter = rig(MIX_TABLE);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
 
     adapter.configure()?;
 
-    let wrist = adapter
-        .backend
-        .calls()
-        .iter()
-        .filter(|record| record.call == Call::ReadSetting)
-        .all(|record| record.port == 0);
-    assert!(wrist);
+    let calls = adapter.backend.calls();
+    let on = |call: Call, port: usize| {
+        calls
+            .iter()
+            .filter(move |record| record.call == call)
+            .all(|record| record.port == port)
+    };
+    assert!(on(Call::ReadSetting, 0) && on(Call::ReadAngleLimits, 1));
     let x = (0..JOINTS).filter(|index| index % 2 == 0).count();
     assert_eq!(adapter.backend.count(Call::ReadSetting), 2 * x);
+    assert_eq!(adapter.backend.count(Call::ReadAngleLimits), JOINTS - x);
+    Ok(())
+}
+
+#[test]
+fn protocol_1_outside_joint_mode_fails_configure_before_any_torque() -> Result<(), DynamixelError> {
+    let cases = [
+        (
+            0,
+            0,
+            "CW and CCW Angle Limit both 0: wheel mode, not joint mode",
+        ),
+        (700, 300, "CW Angle Limit above CCW Angle Limit"),
+    ];
+    for (cw, ccw, reason) in cases {
+        let mut adapter = rig(RX_TABLE);
+        adapter.check(Overrides::default())?;
+        mark_open(&mut adapter);
+        adapter.backend.angle_limits(0, id(2), cw, ccw);
+
+        assert_eq!(
+            adapter.configure(),
+            Err(DynamixelError::Setup {
+                actuator: 2,
+                bus: "rx",
+                id: id(2),
+                reason
+            })
+        );
+        assert_eq!(adapter.backend.count(Call::Torque), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failed_angle_limit_read_names_the_actuator() -> Result<(), DynamixelError> {
+    let mut adapter = rig(RX_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    adapter.backend.missing(0, id(1));
+
+    assert_eq!(
+        adapter.configure(),
+        Err(DynamixelError::Missing {
+            actuator: 1,
+            bus: "rx",
+            id: id(1)
+        })
+    );
+    Ok(())
+}
+
+/// The RX-28 chain with actuator 1 limited to raw `300..=700`, at raw 500.
+fn limited() -> Dynamixel<Scripted, 1> {
+    let mut adapter = rig(RX_TABLE);
+    adapter
+        .backend
+        .angle_limits(0, id(1), 300, 700)
+        .position(0, id(1), 500);
+    adapter
+}
+
+#[test]
+fn a_goal_outside_the_angle_limits_is_rejected_never_clamped() -> Result<(), DynamixelError> {
+    let mut adapter = limited();
+    let layout = powered(&mut adapter)?;
+    let desired = Desired::new()
+        .q(0, si(Model::Rx28, 800))
+        .q(1, si(Model::Rx28, 800))
+        .q(2, si(Model::Rx28, 700));
+
+    let faults = write(&mut adapter, &layout, &desired);
+    assert_eq!(faults.rejected, mask(|index| index == 1));
+    assert_eq!(adapter.backend.last_goals(), &[(id(0), 800), (id(2), 700)]);
+
+    let faults = write(
+        &mut adapter,
+        &layout,
+        &Desired::new().q(1, si(Model::Rx28, 700)),
+    );
+    assert_eq!(faults, Faults::default());
+    assert_eq!(adapter.backend.last_goals(), &[(id(1), 700)]);
+    Ok(())
+}
+
+#[test]
+fn hold_skips_a_target_outside_the_angle_limits() -> Result<(), DynamixelError> {
+    let mut adapter = limited();
+    powered(&mut adapter)?;
+    let mut last = Desired::new();
+    last.q = [si(Model::Rx28, 200); JOINTS];
+
+    adapter.hold(last.command());
+
+    let held = adapter.backend.last_goals().iter().map(|&(id, _)| id);
+    assert!(held.eq((0..JOINTS).filter(|&index| index != 1).map(id)));
+    Ok(())
+}
+
+#[test]
+fn a_present_position_outside_the_angle_limits_powers_nothing() -> Result<(), DynamixelError> {
+    let mut adapter = limited();
+    adapter.backend.position(0, id(1), 200);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    adapter.configure()?;
+
+    assert_eq!(
+        adapter.torque_on(),
+        Err(DynamixelError::Health {
+            actuator: 1,
+            bus: "rx",
+            id: id(1),
+            reason: "present position outside the CW/CCW Angle Limit"
+        })
+    );
+    assert_eq!(adapter.backend.count(Call::SyncWriteStartGoal), 0);
+    assert_eq!(adapter.backend.count(Call::Torque), 0);
+    Ok(())
+}
+
+#[test]
+fn rx28_chain_runs_every_step_on_protocol_1() -> Result<(), DynamixelError> {
+    let mut adapter = rig(RX_TABLE);
+    for index in 0..JOINTS {
+        let raw = 400 + 10 * i32::try_from(index).unwrap_or(0);
+        adapter.backend.position(0, id(index), raw);
+    }
+    let layout = adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    adapter.zero()?;
+    adapter.ping()?;
+    adapter.health()?;
+    adapter.configure()?;
+    let mut slot = Slot::filled(9.0);
+    adapter.read_all(slot.sample())?;
+    adapter.torque_on()?;
+    let (refreshed, faults) = read(&mut adapter, &mut slot);
+    let written = write(&mut adapter, &layout, &Desired::all_q());
+    adapter.hold(Desired::all_q().command());
+    adapter.torque_off();
+    adapter.close();
+
+    assert_eq!(
+        (refreshed, faults, written),
+        (Mask::ALL, Faults::default(), Faults::default())
+    );
+    for (index, q) in slot.q.iter().enumerate() {
+        let raw = 400 + 10 * i32::try_from(index).unwrap_or(0);
+        assert_eq!(*q, si(Model::Rx28, raw));
+    }
+    let counts = [
+        (Call::Ping, JOINTS),
+        (Call::ReadHealth, JOINTS),
+        (Call::ReadAngleLimits, JOINTS),
+        (Call::ReadSetting, 0),
+        (Call::ReadPosition, 3 * JOINTS),
+        (Call::SyncReadState, 0),
+        (Call::SyncWriteStartGoal, 1),
+        (Call::Torque, JOINTS),
+        (Call::SyncWriteGoal, 2),
+        (Call::ForceTorqueOff, JOINTS),
+        (Call::ClosePorts, 1),
+    ];
+    for (call, count) in counts {
+        assert_eq!(adapter.backend.count(call), count, "{call:?}");
+    }
+    let start = adapter.backend.last(Call::SyncWriteStartGoal);
+    let start = start.map(|record| adapter.backend.goals(record));
+    let expected: [(u8, u32); JOINTS] =
+        core::array::from_fn(|index| (id(index), 400 + 10 * index as u32));
+    assert_eq!(start, Some(&expected[..]));
+    assert!(
+        adapter
+            .backend
+            .last_goals()
+            .iter()
+            .all(|&(_, raw)| raw == 512)
+    );
+    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
