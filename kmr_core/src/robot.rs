@@ -34,6 +34,7 @@ use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
 use crate::error::ApiError;
+use crate::hal::{Hal, NoHardware};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
 use crate::{Scheduled, Sensors, runtime};
@@ -203,7 +204,8 @@ impl<CS> Robot<CS> {
         self.insert_controller(schedule, Threaded(controller, ctx))
     }
 
-    /// Runs the robot.
+    /// Runs the robot on `hal`, its hardware. Pass `&mut adapter` to keep the
+    /// adapter after the run.
     ///
     /// The `Drive` bound is the schedule-walk trait: it's `pub` but
     /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
@@ -211,14 +213,25 @@ impl<CS> Robot<CS> {
     /// own `run`.
     ///
     /// Returns once a signal ends the loop: `Ok` for a shutdown and for an
-    /// emergency stop alike.
+    /// emergency stop alike. `Err` is the adapter's, from `check` or a
+    /// bring-up call.
+    pub fn run_on<A: Hal>(self, hal: A) -> Result<(), A::Error>
+    where
+        CS: Drive,
+    {
+        runtime::runtime(self, hal).map(|_signal| ())
+    }
+
+    /// Runs the robot on [`NoHardware`]: nothing is read or written. See
+    /// [`Robot::run_on`].
     pub fn run(self) -> Result<(), ApiError>
     where
         CS: Drive,
     {
-        // TODO: an `Err` for the emergency stop needs a new `ApiError` variant.
-        let _stop = runtime::runtime(self);
-        Ok(())
+        match self.run_on(NoHardware) {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
     }
 }
 

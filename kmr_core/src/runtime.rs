@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::controllers::Env;
+use crate::hal::{Hal, Overrides};
 use crate::schedule::Drive;
 use crate::state::RobotState;
 use crate::{Robot, Sensors, Signal, SignalKind, shutdown};
@@ -294,8 +295,14 @@ fn control_loop<CS: Drive, H: Host>(
     }
 }
 
-/// Startup phases, then the tick loop. Returns the signal that ended the run.
-fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
+/// Finalization, startup phases, then the tick loop. Returns the signal that
+/// ended the run, or the adapter's error.
+fn run_with<CS: Drive, H: Host, A: Hal>(
+    robot: &mut Robot<CS>,
+    host: &mut H,
+    hal: &mut A,
+) -> Result<Signal, A::Error> {
+    let _layout = hal.check(Overrides::default())?;
     let (mut state, sensors) = init_phase::pre_init();
 
     if robot.config.time.delta().is_zero() {
@@ -334,13 +341,16 @@ fn run_with<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
         info!(?total, "ticks finished after their deadline during the run");
     }
 
-    signal
+    Ok(signal)
 }
 
 /// The entry point of the runtime of the core.
 ///
-/// Returns the signal that ended the run.
-pub(crate) fn runtime<CS: Drive>(mut robot: Robot<CS>) -> Signal {
+/// Returns the signal that ended the run, or the adapter's error.
+pub(crate) fn runtime<CS: Drive, A: Hal>(
+    mut robot: Robot<CS>,
+    mut hal: A,
+) -> Result<Signal, A::Error> {
     Signal::reset();
 
     // Before the Ctrl-C install, which may warn.
@@ -360,16 +370,21 @@ pub(crate) fn runtime<CS: Drive>(mut robot: Robot<CS>) -> Signal {
         );
     }
 
-    run_with(&mut robot, &mut RealHost)
+    run_with(&mut robot, &mut RealHost, &mut hal)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, Ref, RefCell};
+    use std::num::NonZeroU32;
 
     use super::*;
     use crate::clock::Time;
+    use crate::hal::{
+        Batch, Command, Faults, Group, Layout, Mask, NoHardware, Sample, Written, seal,
+    };
     use crate::signal::SignalMeta;
+    use crate::state::{JOINTS, Q};
     use crate::{EachTick, First, Init, Last, PostInit, PreInit};
 
     const DT: Duration = Duration::from_millis(1);
@@ -493,6 +508,14 @@ mod tests {
         }
     }
 
+    /// A run on [`NoHardware`], which cannot fail.
+    fn simulated<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
+        match run_with(robot, host, &mut NoHardware) {
+            Ok(signal) => signal,
+            Err(never) => match never {},
+        }
+    }
+
     fn bump(cell: &Cell<u32>) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
         move |_t, _s, _se| cell.set(cell.get() + 1)
     }
@@ -519,7 +542,7 @@ mod tests {
             .script(&[0, 0, 4])
             .shutdown_from(AFTER_FIRST);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 1, 1, 1]);
@@ -534,7 +557,7 @@ mod tests {
         let mut robot = counting_robot!(walks);
         let mut host = Scripted::new(Instant::now()).estop_from(AFTER_FIRST);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::EmergencyStop);
         assert_eq!(walks.counts(), [1, 1, 1, 1, 0, 0]);
@@ -548,7 +571,7 @@ mod tests {
         let mut robot = counting_robot!(walks);
         let mut host = Scripted::new(Instant::now()).estop_from(AFTER_EACH_TICK);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::EmergencyStop);
         assert_eq!(walks.counts(), [1, 1, 1, 1, 1, 0]);
@@ -563,7 +586,7 @@ mod tests {
             .shutdown_from(AFTER_FIRST)
             .estop_from(AFTER_EACH_TICK);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::EmergencyStop);
         assert_eq!(walks.counts(), [1, 1, 1, 1, 1, 0]);
@@ -575,7 +598,7 @@ mod tests {
         let mut robot = counting_robot!(walks);
         let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 0, 0, 0]);
@@ -588,7 +611,7 @@ mod tests {
         let mut robot = counting_robot!(walks);
         let mut host = Scripted::new(Instant::now()).estop_from(AFTER_PRE_INIT);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::EmergencyStop);
         assert_eq!(walks.counts(), [1, 0, 0, 0, 0, 0]);
@@ -604,7 +627,7 @@ mod tests {
             .script(&[0, 0, 3, 10, 25, 30, 38, 40, 42])
             .shutdown_from(TICK_END + 3 * PER_TICK);
 
-        let signal = run_with(&mut robot, &mut host);
+        let signal = simulated(&mut robot, &mut host);
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 4, 4, 4]);
@@ -663,7 +686,7 @@ mod tests {
             .script(&[0, 0, 3, 10, 12])
             .shutdown_from(TICK_END + PER_TICK);
 
-        run_with(&mut robot, &mut host);
+        simulated(&mut robot, &mut host);
 
         assert_eq!(seen_dt.get(), dt);
         // Stamped at the start of the second tick, not at its end.
@@ -679,8 +702,238 @@ mod tests {
         });
         let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
 
-        run_with(&mut robot, &mut host);
+        simulated(&mut robot, &mut host);
 
         assert_eq!(seen_dt.get(), FALLBACK_DT);
+    }
+
+    mod exit_paths {
+        //! The adapter calls of a run, interleaved with the bucket walks, on
+        //! every way out.
+
+        use super::*;
+
+        /// An adapter call or a bucket walk.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Call {
+            Check,
+            Open,
+            Zero,
+            Ping,
+            Health,
+            Configure,
+            ReadAll,
+            TorqueOn,
+            Read,
+            Write,
+            Hold,
+            TorqueOff,
+            Close,
+            PreInit,
+            Init,
+            PostInit,
+            First,
+            EachTick,
+            Last,
+        }
+
+        // Named, not a glob: they shadow the schedule labels of `super::*`.
+        use Call::{
+            Check, Close, Configure, EachTick, First, Health, Hold, Init, Last, Open, Ping,
+            PostInit, PreInit, Read, ReadAll, TorqueOff, TorqueOn, Write, Zero,
+        };
+
+        /// What `write` or `hold` was handed: the positions, the masks and the
+        /// actuators of the batch (every one for `hold`).
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        struct Sent {
+            q: [Q; JOINTS],
+            written: Written,
+            batch: Mask,
+        }
+
+        const CAPACITY: usize = 96;
+
+        /// The log the recorder and the controllers share. Fixed capacity: no
+        /// heap in the core, tests included.
+        struct Log {
+            calls: RefCell<([Call; CAPACITY], usize)>,
+            write: Cell<Option<Sent>>,
+            hold: Cell<Option<Sent>>,
+        }
+
+        impl Log {
+            fn new() -> Self {
+                Self {
+                    calls: RefCell::new(([Check; CAPACITY], 0)),
+                    write: Cell::new(None),
+                    hold: Cell::new(None),
+                }
+            }
+
+            fn push(&self, call: Call) {
+                let (calls, len) = &mut *self.calls.borrow_mut();
+                *calls.get_mut(*len).expect("log capacity") = call;
+                *len += 1;
+            }
+
+            fn calls(&self) -> Ref<'_, [Call]> {
+                Ref::map(self.calls.borrow(), |(calls, len)| &calls[..*len])
+            }
+        }
+
+        /// Position the recorder's `read_all` reads on every actuator.
+        const SEED: Q = Q(10.0);
+
+        /// A fake adapter: logs every call, can fail one bring-up step. Each
+        /// `read` moves actuator 0 by one.
+        struct Recorder<'a> {
+            log: &'a Log,
+            fail: Option<Call>,
+        }
+
+        impl<'a> Recorder<'a> {
+            fn new(log: &'a Log) -> Self {
+                Self { log, fail: None }
+            }
+
+            fn failing(log: &'a Log, call: Call) -> Self {
+                Self {
+                    log,
+                    fail: Some(call),
+                }
+            }
+
+            fn step(&mut self, call: Call) -> Result<(), Failed> {
+                self.log.push(call);
+                match self.fail {
+                    Some(fail) if fail == call => Err(Failed(call)),
+                    _ => Ok(()),
+                }
+            }
+        }
+
+        #[derive(Debug, PartialEq)]
+        struct Failed(Call);
+
+        impl core::fmt::Display for Failed {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "{:?} failed", self.0)
+            }
+        }
+
+        impl core::error::Error for Failed {}
+
+        impl seal::Adapter for Recorder<'_> {}
+
+        impl Hal for Recorder<'_> {
+            type Error = Failed;
+
+            fn check(&mut self, _overrides: Overrides) -> Result<Layout, Failed> {
+                self.step(Check)?;
+                Ok(Layout::new(
+                    [Group(0); JOINTS],
+                    [NonZeroU32::MIN; JOINTS],
+                    Duration::ZERO,
+                    Duration::ZERO,
+                ))
+            }
+
+            fn open(&mut self) -> Result<(), Failed> {
+                self.step(Open)
+            }
+
+            fn zero(&mut self) -> Result<(), Failed> {
+                self.step(Zero)
+            }
+
+            fn ping(&mut self) -> Result<(), Failed> {
+                self.step(Ping)
+            }
+
+            fn health(&mut self) -> Result<(), Failed> {
+                self.step(Health)
+            }
+
+            fn configure(&mut self) -> Result<(), Failed> {
+                self.step(Configure)
+            }
+
+            fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Failed> {
+                *sample.q = [SEED; JOINTS];
+                self.step(ReadAll)
+            }
+
+            fn torque_on(&mut self) -> Result<(), Failed> {
+                self.step(TorqueOn)
+            }
+
+            fn read(&mut self, sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+                self.log.push(Read);
+                sample.q[0] = sample.q[0] + Q(1.0);
+                Mask::ALL
+            }
+
+            fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+                self.log.push(Write);
+                let mut actuators = Mask::NONE;
+                for &actuator in batch.runs().flat_map(|(_group, run)| run) {
+                    actuators.set(actuator);
+                }
+                self.log.write.set(Some(Sent {
+                    q: *command.q,
+                    written: *command.written,
+                    batch: actuators,
+                }));
+            }
+
+            fn hold(&mut self, target: Command<'_>) {
+                self.log.push(Hold);
+                self.log.hold.set(Some(Sent {
+                    q: *target.q,
+                    written: *target.written,
+                    batch: Mask::ALL,
+                }));
+            }
+
+            fn torque_off(&mut self) {
+                self.log.push(TorqueOff);
+            }
+
+            fn close(&mut self) {
+                self.log.push(Close);
+            }
+        }
+
+        fn walk(log: &Log, call: Call) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
+            move |_t, _s, _se| log.push(call)
+        }
+
+        // A macro, not a fn: the robot's `HCons` type is not worth spelling.
+        macro_rules! recording_robot {
+            ($log:expr) => {
+                Robot::new()
+                    .set_dt(DT)
+                    .add_controller(crate::PreInit, walk(&$log, PreInit))
+                    .add_controller(crate::Init, walk(&$log, Init))
+                    .add_controller(crate::PostInit, walk(&$log, PostInit))
+                    .add_controller(crate::First, walk(&$log, First))
+                    .add_controller(crate::EachTick, walk(&$log, EachTick))
+                    .add_controller(crate::Last, walk(&$log, Last))
+            };
+        }
+
+        #[test]
+        fn a_check_error_is_returned_before_any_io() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now());
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::failing(&log, Check));
+
+            assert_eq!(result.err(), Some(Failed(Check)));
+            assert_eq!(*log.calls(), [Check]);
+            assert_eq!(host.poll_calls, 0);
+        }
     }
 }

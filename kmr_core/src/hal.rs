@@ -364,6 +364,66 @@ pub trait Hal: seal::Adapter {
     fn close(&mut self);
 }
 
+impl<A: Hal> seal::Adapter for &mut A {}
+
+/// Lends the adapter to a run, so the caller keeps it before and after
+/// (SRS FR-5.9).
+impl<A: Hal> Hal for &mut A {
+    type Error = A::Error;
+
+    fn check(&mut self, overrides: Overrides) -> Result<Layout, Self::Error> {
+        (**self).check(overrides)
+    }
+
+    fn open(&mut self) -> Result<(), Self::Error> {
+        (**self).open()
+    }
+
+    fn zero(&mut self) -> Result<(), Self::Error> {
+        (**self).zero()
+    }
+
+    fn ping(&mut self) -> Result<(), Self::Error> {
+        (**self).ping()
+    }
+
+    fn health(&mut self) -> Result<(), Self::Error> {
+        (**self).health()
+    }
+
+    fn configure(&mut self) -> Result<(), Self::Error> {
+        (**self).configure()
+    }
+
+    fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Self::Error> {
+        (**self).read_all(sample)
+    }
+
+    fn torque_on(&mut self) -> Result<(), Self::Error> {
+        (**self).torque_on()
+    }
+
+    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults) -> Mask {
+        (**self).read(sample, faults)
+    }
+
+    fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults) {
+        (**self).write(command, batch, faults);
+    }
+
+    fn hold(&mut self, target: Command<'_>) {
+        (**self).hold(target);
+    }
+
+    fn torque_off(&mut self) {
+        (**self).torque_off();
+    }
+
+    fn close(&mut self) {
+        (**self).close();
+    }
+}
+
 /// The adapter used when none is compiled in: nothing is read or written.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct NoHardware;
@@ -384,7 +444,7 @@ impl Hal for NoHardware {
     }
 
     fn open(&mut self) -> Result<(), Infallible> {
-        warn!("no hardware adapter compiled in: nothing is read or written");
+        warn!("no bus plugin: simulating");
         Ok(())
     }
 
