@@ -93,7 +93,7 @@ before T013 to T015, green after.
 - [x] T014 [US2] In kmr_adapters/src/dynamixel/mod.rs `torque_on`: `Torque::On` gets torque on; `Torque::ReadOnly` gets `force_torque_off` (FR-006 (SRS FR-5.2, FR-5.8))
 - [x] T015 [US2] In kmr_adapters/src/dynamixel/mod.rs `configure`: a read-only actuator found powered gives one `warn!` and `Ok`, no longer an error; PostInit switches it off in `torque_on` (research R1)
 - [x] T016 [US2] Run quickstart.md § 1 and `cargo clippy -p kmr_adapters --all-targets`: T010, T011 green, every expectation of § 1 met, no test aborts
-- [ ] T017 [US2] Blocked on T002 (HUMAN dxl_rs). In kmr_adapters/src/dynamixel/dxl_rs.rs replace the T005 fallback with the new `dxl_rs` primitive: `force_torque_off` writes torque off whatever the state and removes the actuator's `Powered` entry if there is one; drop the fallback warning; `cargo build -p kmr_adapters --features dynamixel` green (plan A4)
+- [x] T017 [US2] Blocked on T002 (HUMAN dxl_rs). In kmr_adapters/src/dynamixel/dxl_rs.rs replace the T005 fallback with the new `dxl_rs` primitive: `force_torque_off` writes torque off whatever the state and removes the actuator's `Powered` entry if there is one; drop the fallback warning; `cargo build -p kmr_adapters --features dynamixel` green (plan A4)
 
 **Checkpoint**: on the scripted backend no exit after `open` leaves torque on. The real SDK side
 waits on T002 and the bench (T045).

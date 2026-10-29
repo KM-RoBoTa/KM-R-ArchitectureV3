@@ -8,8 +8,8 @@
 //! Runs `bind`, `check`, `open`, `ping`, `health`, `configure` and
 //! `read_all`, then `torque_off` and `close`. `--torque` adds `torque_on` and
 //! 2 s of reads before them. The only goal written is `torque_on`'s: each
-//! servo's present position, so none jumps to an old goal. `dxl_rs` writes
-//! it one write after Torque Enable, not before: a twitch is still possible.
+//! servo's present position, written before Torque Enable, so none jumps to
+//! an old goal.
 
 use core::fmt::Display;
 use core::ops::{Deref, DerefMut};
