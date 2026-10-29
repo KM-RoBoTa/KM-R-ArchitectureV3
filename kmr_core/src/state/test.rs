@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use crate::{
     RobotState,
     error::StateError,
+    hal::{Mask, Written},
     state::{Desired, HISTORY_DEPTH, History, JOINTS, Q, Qd, State, StateField, Tau, sealed::Slot},
 };
 use rstest::rstest;
@@ -23,6 +24,7 @@ fn zeroed_desired() -> Desired {
         q: [Q(0.0); JOINTS],
         qd: [Qd(0.0); JOINTS],
         tau: [Tau(0.0); JOINTS],
+        written: Written::default(),
     }
 }
 
@@ -460,4 +462,46 @@ fn history_depth_is_independent_of_the_joint_count() {
     assert_eq!(robot.history.buf.len(), DEPTH);
     assert_eq!(robot.set_at(Q(1.0), JOINTS - 1), Ok(()));
     assert_eq!(robot.prev::<Q>(DEPTH - 1), Ok(&[Q(0.0); JOINTS]));
+}
+
+// --- write mask ---
+
+#[rstest]
+#[case(Q(1.0))]
+#[case(Qd(1.0))]
+#[case(Tau(1.0))]
+fn a_write_sets_the_bit_of_its_field_only<T: StateField>(#[case] value: T) {
+    let mut robot = create_test_robot();
+    let mut expected = Written::default();
+    <T as Slot>::mask(&mut expected).set(2);
+
+    assert_eq!(robot.set_at(value, 2), Ok(()));
+
+    assert_eq!(robot.desired.written, expected);
+}
+
+#[rstest]
+#[case(Q(1.0))]
+#[case(Qd(1.0))]
+#[case(Tau(1.0))]
+fn an_out_of_range_write_sets_no_bit<T: StateField>(#[case] value: T) {
+    let mut robot = create_test_robot();
+
+    assert!(robot.set_at(value, JOINTS).is_err());
+
+    assert_eq!(robot.desired.written, Written::default());
+}
+
+#[rstest]
+#[case([Q(1.0); JOINTS])]
+#[case([Qd(1.0); JOINTS])]
+#[case([Tau(1.0); JOINTS])]
+fn set_all_marks_every_actuator_of_its_field<T: StateField>(#[case] values: [T; JOINTS]) {
+    let mut robot = create_test_robot();
+    let mut expected = Written::default();
+    *<T as Slot>::mask(&mut expected) = Mask::ALL;
+
+    robot.set_all(values);
+
+    assert_eq!(robot.desired.written, expected);
 }

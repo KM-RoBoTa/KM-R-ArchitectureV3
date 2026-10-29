@@ -7,6 +7,7 @@ use super::history::State;
 use super::joint_state::{Q, Qd, Tau};
 use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
+use crate::hal::Mask;
 
 #[derive(Default)]
 /// The robot state abstraction.
@@ -34,22 +35,26 @@ pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
 impl<const DEPTH: usize> RobotState<DEPTH> {
     // ── Desired setters ─────────────────────────────────────────────────
 
-    /// Write one desired value to `index` in the slot selected by `T`.
-    /// `T` is inferred from `value` — no turbofish at the call site.
+    /// Write one desired value to `index` in the slot selected by `T`, and
+    /// mark it written. `T` is inferred from `value` — no turbofish at the
+    /// call site.
     pub fn set_at<T: StateField>(&mut self, desired: T, index: usize) -> Result<(), StateError> {
         let slot = <T as sealed::Slot>::slot(&mut self.desired);
         match slot.get_mut(index) {
             Some(desired_slot) => {
                 *desired_slot = desired;
+                <T as sealed::Slot>::mask(&mut self.desired.written).set(index);
                 Ok(())
             }
             None => Err(StateError::OutOfRange { index, len: JOINTS }),
         }
     }
 
-    /// Overwrite the entire slot selected by `T` (inferred from `values`).
+    /// Overwrite the entire slot selected by `T` (inferred from `values`),
+    /// and mark every actuator of it written.
     pub fn set_all<T: StateField>(&mut self, values: [T; JOINTS]) {
         *<T as sealed::Slot>::slot(&mut self.desired) = values;
+        *<T as sealed::Slot>::mask(&mut self.desired.written) = Mask::ALL;
     }
 
     // ── State getters ───────────────────────────────────────────────────

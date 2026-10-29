@@ -2,6 +2,7 @@ use super::JOINTS;
 use super::desired::Desired;
 use super::history::State;
 use super::joint_state::{Q, Qd, Tau};
+use crate::hal::{Mask, Written};
 
 /// Routes a field element type to its storage slot in [`Desired`].
 ///
@@ -11,10 +12,13 @@ use super::joint_state::{Q, Qd, Tau};
 /// `StateField` itself bounds public methods.
 pub(crate) mod sealed {
     use super::{Desired, JOINTS, State};
+    use crate::hal::{Mask, Written};
 
     pub(crate) trait Slot: Sized + Copy + From<f32> {
         fn slot(desired: &mut Desired) -> &mut [Self; JOINTS];
         fn field(state: &State<JOINTS>) -> &[Self; JOINTS];
+        /// The write mask of this field.
+        fn mask(written: &mut Written) -> &mut Mask;
     }
 }
 
@@ -32,6 +36,9 @@ impl sealed::Slot for Q {
     fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
         &state.q
     }
+    fn mask(written: &mut Written) -> &mut Mask {
+        &mut written.q
+    }
 }
 impl StateField for Q {}
 impl From<f32> for Q {
@@ -46,6 +53,9 @@ impl sealed::Slot for Qd {
     }
     fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
         &state.qd
+    }
+    fn mask(written: &mut Written) -> &mut Mask {
+        &mut written.qd
     }
 }
 impl StateField for Qd {}
@@ -62,6 +72,10 @@ impl sealed::Slot for Tau {
 
     fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
         &state.tau
+    }
+
+    fn mask(written: &mut Written) -> &mut Mask {
+        &mut written.tau
     }
 }
 impl StateField for Tau {}
