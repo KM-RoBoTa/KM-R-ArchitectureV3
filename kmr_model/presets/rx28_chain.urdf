@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<!-- TEST FIXTURE, pending the real URDF of the RX-28 bench: not the robot.
+     Ten revolute joints joint1 to joint10, in the order of Rx28Chain::HARDWARE
+     (ids 1 to 10). No origins, axes or masses: none is known.
+     Limits from the ROBOTIS e-Manual, RX-28 page (read 2026-10-29), not measured:
+     lower/upper +-2.618 rad, the 300 deg range about the centre (raw 512);
+     velocity 8.901 rad/s = 85 rpm no-load at 18.5 V; effort 3.7 N.m stall at
+     18.5 V. Both are lower at the recommended 14.8 V. -->
+<robot name="rx28_chain">
+  <link name="base"/>
+  <link name="link1"/>
+  <link name="link2"/>
+  <link name="link3"/>
+  <link name="link4"/>
+  <link name="link5"/>
+  <link name="link6"/>
+  <link name="link7"/>
+  <link name="link8"/>
+  <link name="link9"/>
+  <link name="link10"/>
+  <joint name="joint1" type="revolute">
+    <parent link="base"/>
+    <child link="link1"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/>
+    <child link="link4"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/>
+    <child link="link5"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <parent link="link5"/>
+    <child link="link6"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint7" type="revolute">
+    <parent link="link6"/>
+    <child link="link7"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint8" type="revolute">
+    <parent link="link7"/>
+    <child link="link8"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint9" type="revolute">
+    <parent link="link8"/>
+    <child link="link9"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+  <joint name="joint10" type="revolute">
+    <parent link="link9"/>
+    <child link="link10"/>
+    <limit lower="-2.618" upper="2.618" velocity="8.901" effort="3.7"/>
+  </joint>
+</robot>

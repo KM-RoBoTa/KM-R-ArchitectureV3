@@ -3,8 +3,10 @@
 //! Each preset here is the hardware half; the model half is `kmr_model`'s,
 //! under the same name.
 
+mod rx28_chain;
 mod xm_bench;
 
+pub use rx28_chain::Rx28Chain;
 pub use xm_bench::XmBench;
 
 /// What a preset gives the engine at compile time.

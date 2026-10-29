@@ -28,7 +28,7 @@ use super::{
     Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, io as tick, port, units,
 };
 use crate::binding::{Binding, Port};
-use crate::presets::{Preset, XmBench};
+use crate::presets::{Preset, Rx28Chain, XmBench};
 
 // The scenarios name actuators 0 to 3.
 const _: () = assert!(JOINTS >= 4, "the adapter tests need four actuators");
@@ -1782,6 +1782,35 @@ fn table_of_xm_bench_passes_check_with_four_actuators() {
         (bus.label, bus.baud, bus.read_every),
         ("bus0", 1_000_000, None)
     );
+}
+
+#[test]
+fn table_of_rx28_chain_passes_check_with_ten_actuators() {
+    let table = Rx28Chain::HARDWARE.check();
+
+    assert_eq!(<Rx28Chain as Preset>::N, 10);
+    assert!(
+        table
+            .actuators
+            .iter()
+            .map(|actuator| actuator.id)
+            .eq(1..=10)
+    );
+    assert!(table.actuators.iter().all(|actuator| {
+        (
+            actuator.bus,
+            actuator.model,
+            actuator.mode,
+            actuator.torque,
+            actuator.zero,
+        ) == (0, Model::Rx28, Mode::Position, Torque::On, Zero::Center)
+    }));
+    let bus = table.buses[0];
+    assert_eq!(
+        (bus.label, bus.baud, bus.read_every),
+        ("bus0", 1_000_000, NonZeroU32::new(1))
+    );
+    assert_eq!(Model::Rx28.protocol(), Protocol::One);
 }
 
 #[test]

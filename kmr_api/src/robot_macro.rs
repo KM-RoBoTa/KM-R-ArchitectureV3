@@ -13,7 +13,8 @@
 /// Use the generated items instead of importing `kmr_api::{N, State, Robot}`.
 ///
 /// Until `kmr_core` takes N as a const generic, N must equal the core's
-/// actuator count: anything else is a compile error.
+/// actuator count: anything else is a compile error. `Rx28Chain`, ten RX-28,
+/// builds with the `joints-10` feature only.
 ///
 /// ```compile_fail
 /// kmr_api::robot!(model = "tests/fixtures/three.urdf");
