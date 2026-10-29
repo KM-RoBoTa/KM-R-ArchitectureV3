@@ -1,4 +1,4 @@
-use core::fmt;
+use std::error::Error;
 use std::time::Duration;
 
 use kmr_core::error::{ApiError as CoreApiError, StateError as CoreStateError};
@@ -73,7 +73,13 @@ impl From<CoreStateError> for StateError {
 }
 
 /// Error returned by [`Robot::run`](crate::Robot::run): what went wrong and how to fix it.
-#[derive(PartialEq, thiserror::Error)]
+///
+/// `Debug` is derived in debug builds, so `{e:?}` shows the variant and its fields, the
+/// adapter's typed error included; release builds print the `Display` text instead, so
+/// `fn main() -> Result<(), UserError>` shows one readable line and no internal cause
+/// (SRS NFR-2).
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(thiserror::Error)]
 pub enum UserError {
     /// The builder holds no controller.
     #[error(
@@ -97,20 +103,34 @@ pub enum UserError {
     )]
     NoHardwareDeclared,
 
-    /// The hardware failed to come up; `cause` is the adapter's message.
-    #[error("hardware bring-up failed: {cause}")]
-    BringUp { cause: String },
+    /// The hardware failed to come up. `source` is the adapter's own error, typed: reach it
+    /// with [`Error::source`] and `downcast_ref`.
+    #[error("hardware bring-up failed: {source}")]
+    BringUp {
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
 
     /// The tick period is zero or outside [10 µs, 1 s] (SRS FR-3.1).
     #[error("dt of {dt:?} is out of range; give `.set_dt(..)` a value from 10 µs to 1 s")]
     DtOutOfRange { dt: Duration },
 }
 
-/// Prints the [`Display`](fmt::Display) text, so `fn main() -> Result<(), UserError>` shows a
-/// readable line.
-impl fmt::Debug for UserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+/// Prints the [`Display`](core::fmt::Display) text, so `fn main() -> Result<(), UserError>`
+/// shows a readable line.
+#[cfg(not(debug_assertions))]
+impl core::fmt::Debug for UserError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self, f)
+    }
+}
+
+impl UserError {
+    /// The bring-up error of an adapter failing with `source`, kept typed.
+    pub(crate) fn bring_up(source: impl Error + Send + Sync + 'static) -> Self {
+        Self::BringUp {
+            source: Box::new(source),
+        }
     }
 }
 
@@ -126,6 +146,11 @@ impl From<CoreApiError> for UserError {
 mod tests {
     use super::*;
 
+    /// Stands for an adapter error.
+    #[derive(Debug, thiserror::Error)]
+    #[error("port FT8ISZ6H not found under /dev/serial/by-id")]
+    struct NotFound;
+
     fn every_variant() -> [UserError; 6] {
         [
             UserError::NoControllers,
@@ -134,20 +159,38 @@ mod tests {
                 feature: "dynamixel",
             },
             UserError::NoHardwareDeclared,
-            UserError::BringUp {
-                cause: "port FT8ISZ6H not found under /dev/serial/by-id".to_string(),
-            },
+            UserError::bring_up(NotFound),
             UserError::DtOutOfRange {
                 dt: Duration::from_micros(5),
             },
         ]
     }
 
+    #[cfg(not(debug_assertions))]
     #[test]
-    fn debug_prints_the_display_text() {
+    fn release_debug_prints_the_display_text() {
         for e in every_variant() {
             assert_eq!(format!("{e:?}"), e.to_string());
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_shows_the_variant_and_its_fields() {
+        let [_, bus, _, _, bring_up, _] = every_variant();
+        assert_eq!(format!("{bus:?}"), r#"DuplicateBus { port: "FT8ISZ6H" }"#);
+        assert_eq!(format!("{bring_up:?}"), "BringUp { source: NotFound }");
+    }
+
+    #[test]
+    fn a_bring_up_error_keeps_the_adapter_error() {
+        let e = UserError::bring_up(NotFound);
+        let source = e.source().and_then(|s| s.downcast_ref::<NotFound>());
+        assert!(source.is_some());
+        assert_eq!(
+            e.to_string(),
+            "hardware bring-up failed: port FT8ISZ6H not found under /dev/serial/by-id"
+        );
     }
 
     #[test]

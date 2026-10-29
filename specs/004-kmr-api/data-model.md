@@ -15,7 +15,7 @@ generic, then the `N` that `robot!` emits.
 | `Payload` | `tier: Medium \| Heavy`, `mass_kg: f32`, `mount: &'static str` | No light tier. Mass finite and > 0. Mount names a model link, checked at finalization | FR-062 to FR-064 |
 | `Envelope` | `q: Option<(Q, Q)>`, `qd: Option<(Qd, Qd)>`, `tau: Option<(Tau, Tau)>` | lower ≤ upper, finite. Stored as per-actuator arrays, handed to the core's pre-write stage | FR-051, FR-052 |
 | `LimitPolicy` | `Clamp \| Warn \| Abort` per actuator, `Option` | No default. Assumed, pending human: D2 B: `run()` refuses a limited actuator without one (core K5.3); `set_limit_policy_all` sets all in one call | FR-019 |
-| `UserError` | `DuplicateBus { port }`, `FeatureOff { feature }`, `NoHardwareDeclared`, `DtOutOfRange { dt }`, `UnknownLink { link }`, `NoPolicy { actuator }` (D2 B), `BringUp { cause: String }`; `NoControllers` until core #15 | `Display` names the cause; `Debug` prints `Display` | FR-015, FR-021, FR-025, FR-027, FR-064 |
+| `UserError` | `DuplicateBus { port }`, `FeatureOff { feature }`, `NoHardwareDeclared`, `DtOutOfRange { dt }`, `UnknownLink { link }`, `NoPolicy { actuator }` (D2 B), `BringUp { source: Box<dyn Error + Send + Sync> }` (the adapter's error, typed, reached through `source()`, 2026-10-29); `NoControllers` until core #15 | `Display` names the cause; `Debug` derived in debug builds (variant and fields), prints `Display` in release (SRS NFR-2) | FR-015, FR-021, FR-025, FR-027, FR-064 |
 | `Bound<H, C>` | the finalized robot and its bound drivers | `adapter()` before the run; `run()` hands the drivers back. Never reachable in a tick | FR-041 |
 
 ### Finalization, in order (first failure stops; no hardware I/O before step 6)

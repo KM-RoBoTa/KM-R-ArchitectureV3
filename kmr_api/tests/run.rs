@@ -44,7 +44,7 @@ fn without_a_plugin_it_simulates_until_the_shutdown() {
         .set_dt(Duration::from_millis(1))
         .add_controller_with(EachTick, Arc::clone(&record), stop_at::<3>)
         .run();
-    assert_eq!(res, Ok(()));
+    assert!(res.is_ok(), "{res:?}");
     let ms = Duration::from_millis(1);
     assert_eq!(ticks(&record), [(0, ms), (1, ms), (2, ms), (3, ms)]);
 }
@@ -57,11 +57,14 @@ fn a_plugin_without_the_feature_is_refused_before_the_run() {
         .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
         .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
         .run();
-    assert_eq!(
-        res,
-        Err(UserError::FeatureOff {
-            feature: "dynamixel"
-        })
+    assert!(
+        matches!(
+            res,
+            Err(UserError::FeatureOff {
+                feature: "dynamixel"
+            })
+        ),
+        "{res:?}"
     );
     assert!(ticks(&record).is_empty());
 }
@@ -74,11 +77,14 @@ fn two_plugins_on_one_port_are_refused_before_the_run() {
         .add_plugins(Bus::by_id("kmr-test-no-such-serial").bus("arm"))
         .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
         .run();
-    assert_eq!(
-        res,
-        Err(UserError::DuplicateBus {
-            port: "kmr-test-no-such-serial"
-        })
+    assert!(
+        matches!(
+            res,
+            Err(UserError::DuplicateBus {
+                port: "kmr-test-no-such-serial"
+            })
+        ),
+        "{res:?}"
     );
     assert!(ticks(&record).is_empty());
 }
@@ -91,7 +97,10 @@ fn a_dt_out_of_range_is_refused_before_the_run() {
             .set_dt(dt)
             .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
             .run();
-        assert_eq!(res, Err(UserError::DtOutOfRange { dt }));
+        assert!(
+            matches!(res, Err(UserError::DtOutOfRange { dt: refused }) if refused == dt),
+            "{res:?}"
+        );
         assert!(ticks(&record).is_empty());
     }
 }
@@ -105,7 +114,7 @@ fn a_dt_of_10_us_or_1_s_runs() {
             .set_dt(dt)
             .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
             .run();
-        assert_eq!(res, Ok(()));
+        assert!(res.is_ok(), "{res:?}");
         assert_eq!(ticks(&record), [(0, dt)]);
     }
 }
@@ -121,26 +130,19 @@ fn a_missing_serial_is_a_bring_up_error_naming_it() {
         .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
         .run();
     assert!(
-        matches!(&res, Err(UserError::BringUp { cause }) if cause.contains("kmr-test-no-such-serial")),
+        matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("kmr-test-no-such-serial")),
         "{res:?}"
     );
     assert!(ticks(&record).is_empty());
-}
-
-#[test]
-fn a_bring_up_error_prints_its_cause_through_debug() {
-    let e = UserError::BringUp {
-        cause: "bus bus0: serial kmr-test-no-such-serial names no single device".to_string(),
-    };
-    assert_eq!(format!("{e:?}"), e.to_string());
-    assert!(format!("{e:?}").contains("kmr-test-no-such-serial"));
 }
 
 /// A two-bus Dynamixel robot: the adapter's binding errors reach `run()` unchanged.
 #[cfg(feature = "dynamixel")]
 mod two_buses {
     use super::*;
-    use kmr_adapters::dynamixel::{Actuator, Bus as TableBus, Mode, Model, Table, Torque, Zero};
+    use kmr_adapters::dynamixel::{
+        Actuator, Bus as TableBus, DynamixelError, Mode, Model, Table, Torque, Zero,
+    };
 
     struct TwoBuses;
 
@@ -184,12 +186,19 @@ mod two_buses {
             .add_plugins(Bus::by_id("kmr-test-no-such-serial").bus("left"))
             .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
             .run();
+        let Err(e) = res else {
+            panic!("bound one bus of two: {res:?}");
+        };
         assert_eq!(
-            res,
-            Err(UserError::BringUp {
-                cause: "bus right: no bus plugin binds it; add one with `.bus(\"right\")`"
-                    .to_string()
-            })
+            e.to_string(),
+            "hardware bring-up failed: bus right: no bus plugin binds it; add one with `.bus(\"right\")`"
+        );
+        let adapter =
+            std::error::Error::source(&e).and_then(|s| s.downcast_ref::<DynamixelError>());
+        assert_eq!(
+            adapter,
+            Some(&DynamixelError::UnboundBus { bus: "right" }),
+            "{e:?}"
         );
         assert!(ticks(&record).is_empty());
     }
@@ -349,7 +358,7 @@ mod recording {
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .add_controller(EachTick, write_then_stop)
             .run();
-        assert_eq!(res, Ok(()));
+        assert!(res.is_ok(), "{res:?}");
         assert_eq!(
             take(),
             [
@@ -382,12 +391,15 @@ mod recording {
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .add_controller(EachTick, write_then_stop)
             .run();
+        let Err(e) = res else {
+            panic!("open failed, yet the run went on: {res:?}");
+        };
         assert_eq!(
-            res,
-            Err(UserError::BringUp {
-                cause: "actuator 2 on serial kmr-test-no-such-serial: no answer".to_string()
-            })
+            e.to_string(),
+            "hardware bring-up failed: actuator 2 on serial kmr-test-no-such-serial: no answer"
         );
+        let source = std::error::Error::source(&e).and_then(|s| s.downcast_ref::<NoAnswer>());
+        assert!(source.is_some(), "{e:?}");
         assert_eq!(take(), ["check", "open", "torque_off", "close"]);
     }
 
@@ -398,7 +410,7 @@ mod recording {
         let res = kmr_api::Robot::<Records>::new()
             .add_controller(EachTick, write_then_stop)
             .run();
-        assert_eq!(res, Ok(()));
+        assert!(res.is_ok(), "{res:?}");
         assert!(take().is_empty());
     }
 }

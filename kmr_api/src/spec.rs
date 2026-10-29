@@ -14,8 +14,9 @@ use crate::{N, UserError};
 /// `robot!` implements it on the `__Spec` it emits; users never implement it.
 #[doc(hidden)]
 pub trait Spec {
-    /// The robot's hardware driver. One driver for now; becomes the driver set in T069.
-    type Adapter: Hal;
+    /// The robot's hardware driver. One driver for now; becomes the driver set in T069. Its
+    /// error crosses threads inside [`UserError::BringUp`].
+    type Adapter: Hal<Error: Send + Sync>;
 
     /// Binds the bus plugins to the driver, no I/O. One driver for now; becomes the driver set
     /// in T069. `run()` calls it only when plugins are declared.
@@ -64,9 +65,7 @@ pub fn __bind_dynamixel<const NB: usize>(
     plugins: &[Binding],
 ) -> Result<__DxlAdapter<NB>, UserError> {
     use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
-    Dynamixel::bind(DxlRs::new(), table, plugins).map_err(|e| UserError::BringUp {
-        cause: e.to_string(),
-    })
+    Dynamixel::bind(DxlRs::new(), table, plugins).map_err(UserError::bring_up)
 }
 
 /// Refuses the plugins: the Dynamixel adapter is not compiled in.
@@ -125,7 +124,11 @@ mod tests {
             ..PLUGIN
         };
         let res = __bind_dynamixel(XmBench::HARDWARE, &[wrong]);
-        assert!(matches!(res, Err(UserError::BringUp { cause }) if cause.contains("nope")));
+        assert!(
+            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("nope")),
+            "{:?}",
+            res.err()
+        );
     }
 
     #[cfg(feature = "dynamixel")]

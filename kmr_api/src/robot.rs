@@ -275,9 +275,7 @@ impl<H, C> Robot<H, C> {
             return inner.run_on(NoHardware).map_err(|never| match never {});
         }
         let adapter = H::bind(&plugins)?;
-        inner.run_on(adapter).map_err(|e| UserError::BringUp {
-            cause: e.to_string(),
-        })
+        inner.run_on(adapter).map_err(UserError::bring_up)
     }
 
     /// Checks the builder data, no I/O, and hands `dt` to the core.
@@ -362,7 +360,10 @@ mod tests {
             .add_plugins(Bus::by_id("FT8ISZ6H").baud(3_000_000))
             .add_controller(EachTick, bump_q)
             .run();
-        assert_eq!(res, Err(UserError::DuplicateBus { port: "FT8ISZ6H" }));
+        assert!(
+            matches!(res, Err(UserError::DuplicateBus { port: "FT8ISZ6H" })),
+            "{res:?}"
+        );
     }
 
     #[test]
@@ -378,7 +379,10 @@ mod tests {
                 .add_plugins(Bus::by_id("FT8ISZ6H"))
                 .add_controller(EachTick, bump_q)
                 .run();
-            assert_eq!(res, Err(UserError::DtOutOfRange { dt }));
+            assert!(
+                matches!(res, Err(UserError::DtOutOfRange { dt: refused }) if refused == dt),
+                "{res:?}"
+            );
         }
     }
 

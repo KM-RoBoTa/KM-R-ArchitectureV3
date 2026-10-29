@@ -118,7 +118,8 @@ Rules:
   `MemberError<H::Error, T::Error> { Head(H::Error), Tail(T::Error) }`; for `HNil`,
   `Infallible`. It implements `core::error::Error`; `Display` prefixes the member's position and
   type name. No heap.
-- kmr_api prints it into `UserError::BringUp { cause: String }` (heap allowed in kmr_api only).
+- kmr_api keeps it typed in `UserError::BringUp { source: Box<dyn Error + Send + Sync> }`
+  (heap allowed in kmr_api only; 2026-10-29, was a `cause: String`).
 - A one-member list displays today's adapter error behind the prefix.
 
 ## 7. kmr_api side

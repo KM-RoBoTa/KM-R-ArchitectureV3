@@ -54,7 +54,7 @@ mod preset {
         };
         let res = __Spec::bind(&[wrong]);
         assert!(
-            matches!(&res, Err(UserError::BringUp { cause }) if cause.contains("arm") && cause.contains("FT8ISZ6H")),
+            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("arm") && source.to_string().contains("FT8ISZ6H")),
             "{:?}",
             res.err()
         );
@@ -65,7 +65,7 @@ mod preset {
     fn with_the_feature_no_plugin_is_a_bring_up_error() {
         let res = __Spec::bind(&[]);
         assert!(
-            matches!(&res, Err(UserError::BringUp { cause }) if cause.contains("bus0")),
+            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("bus0")),
             "{:?}",
             res.err()
         );
