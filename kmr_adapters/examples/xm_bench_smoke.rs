@@ -1,9 +1,13 @@
 //! Bench smoke test of the Dynamixel adapter, before the engine loop is
-//! wired: the XmBench preset on one U2D2.
+//! wired: the XmBench preset, or with `--preset rx28` the Rx28Chain one, on
+//! one USB serial adapter.
 //!
 //! ```sh
 //! cargo run -p kmr_adapters --features dynamixel --example xm_bench_smoke -- <U2D2 serial or device path> [--torque]
+//! cargo run -p kmr_adapters --features dynamixel,kmr_core/joints-10 --example xm_bench_smoke -- --preset rx28 <serial or device path> [--torque]
 //! ```
+//!
+//! Rx28Chain has ten actuators: it needs the core built with `joints-10`.
 //!
 //! Runs `bind`, `check`, `open`, `ping`, `health`, `configure` and
 //! `read_all`, then `torque_off` and `close`. `--torque` adds `torque_on` and
@@ -19,12 +23,12 @@ use std::process::ExitCode;
 use std::thread;
 
 use kmr_adapters::binding::{Binding, Port};
-use kmr_adapters::dynamixel::{DxlRs, Dynamixel, DynamixelError};
-use kmr_adapters::presets::XmBench;
+use kmr_adapters::dynamixel::{DxlRs, Dynamixel, DynamixelError, Table};
+use kmr_adapters::presets::{Rx28Chain, XmBench};
 use kmr_core::hal::{Hal, Overrides, Sample};
 use kmr_core::state::{JOINTS, Q, Qd, Tau};
 
-/// The adapter on the `dxl_rs` SDK for the one bus of [`XmBench`].
+/// The adapter on the `dxl_rs` SDK for the one bus of the preset.
 type Hardware = Dynamixel<DxlRs, 1>;
 
 /// Time between two reads while the torque is on.
@@ -68,7 +72,7 @@ impl Drop for Opened {
         println!("torque_off: done (an actuator that failed is logged as a warning)");
         self.0.close();
         println!("close: done");
-        println!("Check Torque_Enable = 0 on all 4 servos in Dynamixel Wizard.");
+        println!("Check Torque_Enable = 0 on all {JOINTS} servos in Dynamixel Wizard.");
     }
 }
 
@@ -76,8 +80,26 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
-    let Some((port, torque)) = parse() else {
-        eprintln!("usage: xm_bench_smoke <U2D2 serial or device path> [--torque]");
+    let Some((port, torque, rx28)) = parse() else {
+        eprintln!(
+            "usage: xm_bench_smoke [--preset xm_bench|rx28] <U2D2 serial or device path> [--torque]"
+        );
+        return ExitCode::from(2);
+    };
+    let table = if rx28 {
+        sized(Rx28Chain::HARDWARE)
+    } else {
+        sized(XmBench::HARDWARE)
+    };
+    let Some(table) = table else {
+        eprintln!(
+            "this preset needs {} actuators, the core is built for {JOINTS}: rx28 needs --features dynamixel,kmr_core/joints-10, xm_bench neither",
+            if rx28 {
+                Rx28Chain::HARDWARE.actuators.len()
+            } else {
+                XmBench::HARDWARE.actuators.len()
+            }
+        );
         return ExitCode::from(2);
     };
     let handler = ctrlc::set_handler(|| {
@@ -88,21 +110,30 @@ fn main() -> ExitCode {
         eprintln!("Ctrl-C handler not installed, nothing opened: {error}");
         return ExitCode::FAILURE;
     }
-    match run(port, torque) {
+    match run(table, port, torque) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Early::Failed) => ExitCode::FAILURE,
         Err(Early::Interrupted) => ExitCode::from(130),
     }
 }
 
-/// The port and whether `--torque` was given; `None` for a bad command line.
-/// An argument with a `/` is a device path, any other a serial id.
-fn parse() -> Option<(Port, bool)> {
+/// The port, whether `--torque` was given and whether `--preset rx28` was;
+/// `None` for a bad command line. An argument with a `/` is a device path,
+/// any other a serial id.
+fn parse() -> Option<(Port, bool, bool)> {
     let mut port = None;
     let mut torque = false;
-    for arg in std::env::args().skip(1) {
+    let mut rx28 = false;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         if arg == "--torque" {
             torque = true;
+        } else if arg == "--preset" {
+            rx28 = match args.next()?.as_str() {
+                "rx28" => true,
+                "xm_bench" => false,
+                _ => return None,
+            };
         } else if arg.is_empty() || arg.starts_with('-') || port.is_some() {
             return None;
         } else if arg.contains('/') {
@@ -111,20 +142,26 @@ fn parse() -> Option<(Port, bool)> {
             port = Some(Port::ById(arg.leak()));
         }
     }
-    port.map(|port| (port, torque))
+    port.map(|port| (port, torque, rx28))
 }
 
-/// The steps in `Hal` order. Nothing is powered without `torque`.
-fn run(port: Port, torque: bool) -> Result<(), Early> {
+/// `table` as the adapter takes it: `None` unless it has `JOINTS` actuators.
+fn sized<const N: usize>(table: Table<1, N>) -> Option<Table<1, JOINTS>> {
+    let actuators = table.actuators.as_slice().try_into().ok()?;
+    Some(Table {
+        buses: table.buses,
+        actuators,
+    })
+}
+
+/// The steps in `Hal` order on `table`. Nothing is powered without `torque`.
+fn run(table: Table<1, JOINTS>, port: Port, torque: bool) -> Result<(), Early> {
     let plugin = Binding {
         port,
         baud: None,
         bus: None,
     };
-    let mut hardware = step(
-        "bind",
-        Hardware::bind(DxlRs::new(), XmBench::HARDWARE, &[plugin]),
-    )?;
+    let mut hardware = step("bind", Hardware::bind(DxlRs::new(), table, &[plugin]))?;
     let layout = step("check", hardware.check(Overrides::default()))?;
     println!(
         "  wire time: {:?} per full read, {:?} per full write",
@@ -141,7 +178,7 @@ fn run(port: Port, torque: bool) -> Result<(), Early> {
         "read_all",
         hal.read_all(Sample::new(&mut q, &mut qd, &mut tau)),
     )?;
-    print_positions(&q);
+    print_positions(&table, &q);
     if !torque {
         println!("no --torque: the torque stays off");
         return Ok(());
@@ -154,7 +191,7 @@ fn run(port: Port, torque: bool) -> Result<(), Early> {
         thread::sleep(PERIOD);
         let result = hal.read_all(Sample::new(&mut q, &mut qd, &mut tau));
         step(format_args!("read_all {:?}", PERIOD * read), result)?;
-        print_positions(&q);
+        print_positions(&table, &q);
     }
     Ok(())
 }
@@ -176,10 +213,11 @@ fn step<T>(name: impl Display, result: Result<T, DynamixelError>) -> Result<T, E
     Ok(value)
 }
 
-/// Prints the position of every actuator on one line, in rad and degrees.
-fn print_positions(q: &[Q; JOINTS]) {
+/// Prints the position of every actuator of `table` on one line, in rad and
+/// degrees.
+fn print_positions(table: &Table<1, JOINTS>, q: &[Q; JOINTS]) {
     print!(" ");
-    for (actuator, q) in XmBench::HARDWARE.actuators.iter().zip(q) {
+    for (actuator, q) in table.actuators.iter().zip(q) {
         print!(
             " id {}: {:+.4} rad {:+8.2} deg ",
             actuator.id,
