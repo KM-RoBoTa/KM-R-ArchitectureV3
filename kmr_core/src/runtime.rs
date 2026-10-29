@@ -14,6 +14,9 @@
 //! The loop ends only on a signal (see [`crate::signal`]). A shutdown
 //! completes its tick. An emergency stop exits at the next bus check, between
 //! two phase buckets.
+//!
+//! From `open` on, the [`Powered`] guard ends every exit, unwind included,
+//! with `torque_off` then `close`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -84,6 +87,51 @@ fn estop(signal: Option<Signal>) -> Option<Signal> {
     signal.filter(|s| s.kind() == SignalKind::EmergencyStop)
 }
 
+/// Owns the adapter from `open` on: every exit, unwind included, ends with
+/// `torque_off` then `close` (SRS FR-5.6, NFR-2).
+struct Powered<'a, A: Hal>(&'a mut A);
+
+impl<A: Hal> Drop for Powered<'_, A> {
+    fn drop(&mut self) {
+        self.0.torque_off();
+        self.0.close();
+    }
+}
+
+/// The startup phases whose controllers wrote Desired. Those writes are
+/// dropped, never sent: only ticks command the hardware (SRS FR-5.2).
+#[derive(Default)]
+struct StartupWrites {
+    phases: [&'static str; 3],
+    len: usize,
+}
+
+impl StartupWrites {
+    /// Drops what the walk of `phase` wrote, and notes the phase.
+    fn discard(&mut self, state: &mut RobotState, phase: &'static str) {
+        if state.written().any().is_empty() {
+            return;
+        }
+        state.clear_desired();
+        if let Some(slot) = self.phases.get_mut(self.len) {
+            *slot = phase;
+            self.len += 1;
+        }
+    }
+
+    /// One warning for the run, naming every phase that wrote (SC-011).
+    fn report(&self) {
+        if let Some(phases) = self.phases.get(..self.len)
+            && !phases.is_empty()
+        {
+            warn!(
+                ?phases,
+                "desired values written during startup were discarded: only ticks command the hardware"
+            );
+        }
+    }
+}
+
 /// The initialization phase, organized in 3 "sub-phases".
 ///
 /// It's main goals are to create and handoff the the main runtime most of the
@@ -148,55 +196,25 @@ mod init_phase {
         robot.controllers.pre_init(&mut env);
     }
 
-    /// Normal Initialization phase.
-    ///
-    /// Phase in which the hardware components are initialized, registered,
-    /// preprocessed, etc.
+    /// Walks the user's `Init` controllers, once the engine has opened and
+    /// zeroed the hardware.
     pub(super) fn init<CS: Drive>(
         robot: &mut Robot<CS>,
         state: &mut RobotState,
         sensors: &Sensors,
     ) {
-        trace!("Executing init phase ...");
-        // TODO: no hardware layer yet.
-        // - Init actuators (zero position if needed for some brands of actuators)
-        // - Init sensors
-        // - Init payloads
-        // - Init battery (if available)
-
         trace!("Executing user init controllers ...");
         let mut env = Env::new(&robot.config.time, state, sensors);
         robot.controllers.init(&mut env);
     }
 
-    /// Post processing of initialized components.
-    ///
-    /// Phase in which the architecture further prepares initialized components.
-    /// It's most critical tasks are to
-    /// - health check
-    /// - ensure proper defaults
-    /// - read the current position of the actuators and signal the user if
-    ///   one or more are misplaced
-    /// - Double check the zero position of some brands of actuators
-    /// - Enable/Disable the power state of each hardware components in regards
-    ///   to default values or values specified by the user.
+    /// Walks the user's `PostInit` controllers, once the engine has checked
+    /// and configured the hardware, read it in full and turned torque on.
     pub(super) fn post_init<CS: Drive>(
         robot: &mut Robot<CS>,
         state: &mut RobotState,
         sensors: &Sensors,
     ) {
-        trace!("Executing post-init phase ...");
-        // TODO: no hardware layer yet.
-        // - Ping + health check for
-        //      1) actuators
-        //      2) sensors
-        //      3) payloads
-        //      4) battery
-        // - Register the actuators modes
-        // - Register sensors modes
-        // - On/Off power states of hardware components.
-        // - etc
-
         trace!("Executing post-init controllers ...");
         let mut env = Env::new(&robot.config.time, state, sensors);
         robot.controllers.post_init(&mut env);
@@ -295,6 +313,62 @@ fn control_loop<CS: Drive, H: Host>(
     }
 }
 
+/// Startup phases with the bring-up calls, the tick loop, then the hold of a
+/// shutdown. Every exit after `open` leaves through [`Powered`].
+fn run_phases<CS: Drive, H: Host, A: Hal>(
+    robot: &mut Robot<CS>,
+    state: &mut RobotState,
+    sensors: &Sensors,
+    host: &mut H,
+    hal: &mut A,
+) -> Result<Signal, A::Error> {
+    let mut writes = StartupWrites::default();
+
+    init_phase::pre_init_controllers(robot, state, sensors);
+    writes.discard(state, "PreInit");
+    if let Some(signal) = estop(host.poll()) {
+        return Ok(signal);
+    }
+
+    // Built before `open`, so a failed `open` is closed too.
+    let powered = Powered(hal);
+    powered.0.open()?;
+    powered.0.zero()?;
+    init_phase::init(robot, state, sensors);
+    writes.discard(state, "Init");
+    if let Some(signal) = estop(host.poll()) {
+        return Ok(signal);
+    }
+
+    powered.0.ping()?;
+    powered.0.health()?;
+    powered.0.configure()?;
+    // The seed: `prev(1)` of tick 0.
+    if let Some(sample) = state.push_slot() {
+        powered.0.read_all(sample)?;
+    }
+    powered.0.torque_on()?;
+    init_phase::post_init(robot, state, sensors);
+    writes.discard(state, "PostInit");
+    writes.report();
+
+    // TODO: spawn the `Threaded` controllers (hand-off open in docs/ROADMAP.md).
+
+    // After the bring-up, so tick 0 is not charged with it (SRS FR-5.10).
+    robot.config.time.arm(host.now());
+
+    let signal = control_loop(robot, state, sensors, host);
+    // An emergency stop raised since the loop ended skips the hold.
+    let signal = estop(host.poll()).unwrap_or(signal);
+    if signal.kind() == SignalKind::Shutdown
+        && let Some(target) = state.hold_target()
+    {
+        powered.0.hold(target.command());
+    }
+    state.clear_desired();
+    Ok(signal)
+}
+
 /// Finalization, startup phases, then the tick loop. Returns the signal that
 /// ended the run, or the adapter's error.
 fn run_with<CS: Drive, H: Host, A: Hal>(
@@ -313,25 +387,9 @@ fn run_with<CS: Drive, H: Host, A: Hal>(
         robot.config.time.set_delta(FALLBACK_DT);
     }
 
-    let signal = 'run: {
-        init_phase::pre_init_controllers(robot, &mut state, &sensors);
-        if let Some(signal) = estop(host.poll()) {
-            break 'run signal;
-        }
-        init_phase::init(robot, &mut state, &sensors);
-        if let Some(signal) = estop(host.poll()) {
-            break 'run signal;
-        }
-        init_phase::post_init(robot, &mut state, &sensors);
+    // The guard has dropped by now: torque is off before the log lines.
+    let signal = run_phases(robot, &mut state, &sensors, host, hal)?;
 
-        // TODO: spawn the `Threaded` controllers (hand-off open in docs/ROADMAP.md).
-
-        robot.config.time.arm(host.now());
-
-        control_loop(robot, &mut state, &sensors, host)
-    };
-
-    // TODO: last write on shutdown, torque cut on emergency stop (hardware layer).
     match signal.kind() {
         SignalKind::Shutdown => info!("control loop stopped, {signal}"),
         SignalKind::EmergencyStop => error!("control loop aborted, {signal}"),
@@ -377,6 +435,7 @@ pub(crate) fn runtime<CS: Drive, A: Hal>(
 mod tests {
     use std::cell::{Cell, Ref, RefCell};
     use std::num::NonZeroU32;
+    use std::sync::atomic::AtomicU32;
 
     use super::*;
     use crate::clock::Time;
@@ -391,6 +450,7 @@ mod tests {
 
     // Index of each bus check: two at startup, then four per tick.
     const AFTER_PRE_INIT: usize = 0;
+    const AFTER_INIT: usize = 1;
     const TICK_START: usize = 2;
     const AFTER_FIRST: usize = 3;
     const AFTER_EACH_TICK: usize = 4;
@@ -548,7 +608,8 @@ mod tests {
         assert_eq!(walks.counts(), [1, 1, 1, 1, 1, 1]);
         assert_eq!(robot.config.time.last_update(), Some(&host.at(4)));
         assert_eq!(host.sleep_calls, 0);
-        assert_eq!(host.poll_calls, TICK_END + 1);
+        // + 1: the estop check after the loop, before the hold.
+        assert_eq!(host.poll_calls, TICK_END + 2);
     }
 
     #[test]
@@ -602,7 +663,7 @@ mod tests {
 
         assert_eq!(signal.kind(), SignalKind::Shutdown);
         assert_eq!(walks.counts(), [1, 1, 1, 0, 0, 0]);
-        assert_eq!(host.poll_calls, TICK_START + 1);
+        assert_eq!(host.poll_calls, TICK_START + 2);
     }
 
     #[test]
@@ -934,6 +995,219 @@ mod tests {
             assert_eq!(result.err(), Some(Failed(Check)));
             assert_eq!(*log.calls(), [Check]);
             assert_eq!(host.poll_calls, 0);
+        }
+
+        /// Every bring-up call, PostInit's walk included.
+        const STARTUP: [Call; 11] = [
+            Check, PreInit, Open, Zero, Init, Ping, Health, Configure, ReadAll, TorqueOn, PostInit,
+        ];
+
+        #[test]
+        fn a_failed_open_is_still_closed() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now());
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::failing(&log, Open));
+
+            assert_eq!(result.err(), Some(Failed(Open)));
+            assert_eq!(*log.calls(), [Check, PreInit, Open, TorqueOff, Close]);
+        }
+
+        #[test]
+        fn a_ping_error_skips_post_init_cuts_torque_and_is_returned() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now());
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::failing(&log, Ping));
+
+            assert_eq!(result.err(), Some(Failed(Ping)));
+            assert_eq!(
+                *log.calls(),
+                [Check, PreInit, Open, Zero, Init, Ping, TorqueOff, Close]
+            );
+        }
+
+        #[test]
+        fn a_failed_torque_on_still_cuts_torque() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now());
+
+            let result = run_with(
+                &mut robot,
+                &mut host,
+                &mut Recorder::failing(&log, TorqueOn),
+            );
+
+            assert_eq!(result.err(), Some(Failed(TorqueOn)));
+            assert_eq!(log.calls()[..10], STARTUP[..10]);
+            assert_eq!(log.calls()[10..], [TorqueOff, Close]);
+        }
+
+        #[test]
+        fn an_estop_in_pre_init_touches_no_hardware_after_check() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).estop_from(AFTER_PRE_INIT);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(*log.calls(), [Check, PreInit]);
+        }
+
+        #[test]
+        fn an_estop_in_init_after_open_cuts_torque_and_closes() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).estop_from(AFTER_INIT);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(
+                *log.calls(),
+                [Check, PreInit, Open, Zero, Init, TorqueOff, Close]
+            );
+        }
+
+        #[test]
+        fn a_shutdown_before_the_first_tick_holds_the_seed() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+
+            let result = run_with(&mut robot, &mut host, &mut Recorder::new(&log));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[..11], STARTUP);
+            assert_eq!(log.calls()[11..], [Hold, TorqueOff, Close]);
+            let hold = log.hold.get().expect("a hold");
+            assert_eq!(hold.q, [SEED; JOINTS]);
+            assert_eq!(hold.written, Written::default());
+        }
+
+        #[test]
+        fn startup_writes_never_reach_the_adapter() {
+            static WARNINGS: AtomicU32 = AtomicU32::new(0);
+            let log = Log::new();
+            let mut robot = recording_robot!(log)
+                .add_controller(crate::PreInit, |_t, state, _se| {
+                    state.set_all([Q(99.0); JOINTS]);
+                })
+                .add_controller(crate::PostInit, |_t, state, _se| {
+                    state.set_at(Q(98.0), 1).expect("in range");
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+            let counter = Counter::new("discarded", &WARNINGS);
+
+            let result = tracing::subscriber::with_default(counter, || {
+                run_with(&mut robot, &mut host, &mut Recorder::new(&log))
+            });
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert!(!log.calls().contains(&Write));
+            let hold = log.hold.get().expect("a hold");
+            assert_eq!(hold.q, [SEED; JOINTS]);
+            assert_eq!(hold.written, Written::default());
+            // One warning for the two phases that wrote (SC-011).
+            assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
+        }
+
+        #[test]
+        fn a_panicking_controller_still_cuts_torque_and_closes() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log).add_controller(crate::EachTick, |_t, _s, _se| {
+                panic!("a controller bug");
+            });
+            let mut host = Scripted::new(Instant::now());
+
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_with(&mut robot, &mut host, &mut Recorder::new(&log))
+            }));
+
+            assert!(unwound.is_err());
+            assert_eq!(log.calls()[..11], STARTUP);
+            assert_eq!(log.calls()[11..], [First, EachTick, TorqueOff, Close]);
+        }
+
+        #[test]
+        fn a_no_hardware_run_logs_simulating_exactly_once() {
+            static WARNINGS: AtomicU32 = AtomicU32::new(0);
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END);
+            let counter = Counter::new("no bus plugin: simulating", &WARNINGS);
+
+            tracing::subscriber::with_default(counter, || simulated(&mut robot, &mut host));
+
+            assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
+        }
+
+        /// Counts the warnings whose message holds `needle`, drops every
+        /// other event. No text is stored.
+        struct Counter {
+            needle: &'static str,
+            count: &'static AtomicU32,
+        }
+
+        impl Counter {
+            fn new(needle: &'static str, count: &'static AtomicU32) -> Self {
+                Self { needle, count }
+            }
+        }
+
+        /// Looks for the needle in what is written to it.
+        struct Finder {
+            needle: &'static str,
+            found: bool,
+        }
+
+        impl core::fmt::Write for Finder {
+            fn write_str(&mut self, chunk: &str) -> core::fmt::Result {
+                self.found |= chunk.contains(self.needle);
+                Ok(())
+            }
+        }
+
+        impl tracing::field::Visit for Finder {
+            fn record_debug(
+                &mut self,
+                field: &tracing::field::Field,
+                value: &dyn core::fmt::Debug,
+            ) {
+                if field.name() == "message" {
+                    let _ = core::fmt::Write::write_fmt(self, format_args!("{value:?}"));
+                }
+            }
+        }
+
+        impl tracing::Subscriber for Counter {
+            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+                *metadata.level() == tracing::Level::WARN
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut finder = Finder {
+                    needle: self.needle,
+                    found: false,
+                };
+                event.record(&mut finder);
+                if finder.found {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
         }
     }
 }
