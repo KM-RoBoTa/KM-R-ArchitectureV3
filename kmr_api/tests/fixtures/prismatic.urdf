@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Test descriptor: 1 prismatic actuator, limits in m. Values are test data. -->
+<robot name="prismatic">
+  <link name="base"/><link name="carriage"/>
+  <joint name="slide" type="prismatic"><parent link="base"/><child link="carriage"/><limit lower="0.0" upper="0.1" velocity="0.05" effort="20"/></joint>
+</robot>

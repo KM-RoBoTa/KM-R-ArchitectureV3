@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Bad test descriptor: a floating joint. -->
+<robot name="bad">
+  <link name="base"/><link name="l1"/>
+  <joint name="j1" type="floating"><parent link="base"/><child link="l1"/></joint>
+</robot>
