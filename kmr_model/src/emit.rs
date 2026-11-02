@@ -143,6 +143,8 @@ fn float(v: f32) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
+    use proc_macro2::TokenTree;
+
     use super::*;
     use crate::model::{CheckedActuator, Kind};
     use crate::urdf::tests::four;
@@ -216,6 +218,102 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("[0f32 , 0f32 , 0.05f32]"), "{out}");
+    }
+
+    /// The `(keyword, name)` of each item in `ts`, and the body of
+    /// `mod model`.
+    fn items(ts: TokenStream) -> (Vec<(String, String)>, Option<TokenStream>) {
+        let mut out = Vec::new();
+        let mut body = None;
+        let mut tokens = ts.into_iter().peekable();
+        while let Some(t) = tokens.next() {
+            let TokenTree::Ident(word) = t else { continue };
+            let word = word.to_string();
+            let name = match word.as_str() {
+                "const" | "mod" => tokens.next().map(|t| t.to_string()),
+                "macro_rules" => tokens.nth(1).map(|t| t.to_string()),
+                "use" => tokens
+                    .by_ref()
+                    .take_while(|t| t.to_string() != ";")
+                    .last()
+                    .map(|t| t.to_string()),
+                _ => continue,
+            };
+            let name = name.unwrap_or_default();
+            if word == "mod"
+                && let Some(TokenTree::Group(g)) = tokens.peek()
+            {
+                body = Some(g.stream());
+            }
+            if word == "const" {
+                tokens.by_ref().take_while(|t| t.to_string() != ";").count();
+            }
+            if word == "macro_rules" {
+                tokens.next();
+            }
+            out.push((word, name));
+        }
+        (out, body)
+    }
+
+    /// Every identifier in `ts`, groups included.
+    fn idents(ts: TokenStream, out: &mut Vec<String>) {
+        for t in ts {
+            match t {
+                TokenTree::Ident(i) => out.push(i.to_string()),
+                TokenTree::Group(g) => idents(g.stream(), out),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn only_n_model_and_actuator_are_emitted() {
+        let out = emit(&four(), &quote!(k), Some("/x/four.urdf"));
+        let (top, body) = items(out.clone());
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            top,
+            pairs(&[
+                ("const", "N"),
+                ("const", "_"),
+                ("macro_rules", "actuator"),
+                ("use", "actuator"),
+                ("mod", "model"),
+            ])
+        );
+        let allowed = [
+            "NAMES",
+            "LOWER",
+            "UPPER",
+            "SPEED",
+            "EFFORT",
+            "PRISMATIC",
+            "CONTINUOUS",
+            "LINK_NAMES",
+            "LINK_PARENT",
+            "LINK_MASS",
+            "LINK_COM",
+        ];
+        let (inner, _) = items(body.unwrap_or_default());
+        assert!(!inner.is_empty());
+        for (word, name) in &inner {
+            assert_eq!(word, "const", "{name}");
+            assert!(allowed.contains(&name.as_str()), "{name}");
+        }
+        let mut all = Vec::new();
+        idents(out, &mut all);
+        let banned = [
+            "fn", "impl", "struct", "enum", "trait", "static", "dyn", "unsafe", "std", "alloc",
+            "Box", "Vec", "String", "Mutex",
+        ];
+        for word in banned {
+            assert!(!all.iter().any(|i| i == word), "{word}");
+        }
     }
 
     #[test]
