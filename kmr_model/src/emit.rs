@@ -33,7 +33,8 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
         #lookup
 
         /// This robot's model, read from its descriptor at compile time.
-        #[allow(dead_code)]
+        // A limit of 3.14 is the descriptor's value, not an approximate PI.
+        #[allow(dead_code, clippy::approx_constant)]
         pub mod model {
             /// Joint names, in actuator index order.
             pub const NAMES: [&str; super::N] = [#(#names),*];
@@ -177,6 +178,15 @@ mod tests {
         let out = emit(&robot(&["a", "b"]), &quote!(k), None).to_string();
         assert!(out.contains("pub const N : usize = 2 ;"), "{out}");
         assert!(out.contains("[\"a\" , \"b\"]"), "{out}");
+    }
+
+    #[test]
+    fn a_limit_near_pi_is_no_clippy_error_in_the_caller() {
+        let out = emit(&four(), &quote!(k), None).to_string();
+        assert!(
+            out.contains("# [allow (dead_code , clippy :: approx_constant)] pub mod model"),
+            "{out}"
+        );
     }
 
     #[test]
