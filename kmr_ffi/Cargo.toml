@@ -1,0 +1,24 @@
+[package]
+name = "kmr_ffi"
+description = "Plain C types, headers and script bridges that let a kmr controller hand its math to C, C++, Python or Lua."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# No kmr dependency (research R9): kmr_api depends on this crate, never the reverse.
+[dependencies]
+thiserror.workspace = true
+cc = { workspace = true, optional = true }
+pyo3 = { workspace = true, optional = true }
+mlua = { workspace = true, optional = true }
+
+# All off by default: a build without them compiles no foreign-language code.
+[features]
+build = ["dep:cc"]
+python = ["dep:pyo3"]
+lua = ["dep:mlua"]
+
+# cc again, so `cargo test` checks the build helper without the `build` feature.
+[dev-dependencies]
+cc.workspace = true

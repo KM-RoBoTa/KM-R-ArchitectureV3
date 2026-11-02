@@ -33,6 +33,9 @@ serde_json = "1.0"
 trybuild = "1.0"
 color-eyre = { version = "0.6", default-features = false }
 rustix = { version = "1", features = ["termios", "fs"] }
+cc = "1.10.0"
+pyo3 = { version = "0.30.1", features = ["auto-initialize"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
 # Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
 # dev bench: dxl_rs branch agent/force-torque-off
 dxl_rs = { path = "../dxl_rs-agent" }
