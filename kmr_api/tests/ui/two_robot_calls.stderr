@@ -1,0 +1,80 @@
+error[E0428]: the name `N` is defined multiple times
+ --> tests/ui/two_robot_calls.rs:3:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `N` redefined here
+4 | kmr_api::robot!(XmBench);
+  | ------------------------ previous definition of the value `N` here
+  |
+  = note: `N` must be defined only once in the value namespace of this module
+  = note: this error originates in the macro `$crate::__model` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `model` is defined multiple times
+ --> tests/ui/two_robot_calls.rs:3:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `model` redefined here
+4 | kmr_api::robot!(XmBench);
+  | ------------------------ previous definition of the module `model` here
+  |
+  = note: `model` must be defined only once in the type namespace of this module
+  = note: this error originates in the macro `$crate::__model` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `State` is defined multiple times
+ --> tests/ui/two_robot_calls.rs:4:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ----------------------------------------------------------------------- previous definition of the type `State` here
+4 | kmr_api::robot!(XmBench);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `State` redefined here
+  |
+  = note: `State` must be defined only once in the type namespace of this module
+  = note: this error originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `Robot` is defined multiple times
+ --> tests/ui/two_robot_calls.rs:4:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ----------------------------------------------------------------------- previous definition of the type `Robot` here
+4 | kmr_api::robot!(XmBench);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `Robot` redefined here
+  |
+  = note: `Robot` must be defined only once in the type namespace of this module
+  = note: this error originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__Spec` is defined multiple times
+ --> tests/ui/two_robot_calls.rs:4:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ----------------------------------------------------------------------- previous definition of the type `__Spec` here
+4 | kmr_api::robot!(XmBench);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `__Spec` redefined here
+  |
+  = note: `__Spec` must be defined only once in the type namespace of this module
+  = note: this error originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0252]: the name `actuator` is defined multiple times
+ --> tests/ui/two_robot_calls.rs:3:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `actuator` reimported here
+4 | kmr_api::robot!(XmBench);
+  | ------------------------ previous import of the macro `actuator` here
+  |
+  = note: `actuator` must be defined only once in the macro namespace of this module
+  = note: this error originates in the macro `$crate::__model` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: you can use `as` to change the binding name of the import
+ --> src/robot_macro.rs
+  |
+  |         $crate::__model!($crate; model = $path) as other_actuator;
+  |                                                 +++++++++++++++++
+
+error[E0119]: conflicting implementations of trait `kmr_api::Spec` for type `__Spec`
+ --> tests/ui/two_robot_calls.rs:4:1
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  | ----------------------------------------------------------------------- first implementation here
+4 | kmr_api::robot!(XmBench);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `__Spec`
+  |
+  = note: this error originates in the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)

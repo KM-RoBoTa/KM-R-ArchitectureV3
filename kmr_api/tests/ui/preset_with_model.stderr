@@ -1,0 +1,11 @@
+error: no rules expected `,`
+ --> tests/ui/preset_with_model.rs:3:24
+  |
+3 | kmr_api::robot!(XmBench, model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  |                        ^ no rules expected this token in macro call
+  |
+note: while trying to match meta-variable `$preset:ident`
+ --> src/robot_macro.rs
+  |
+  |     ($preset:ident) => {
+  |      ^^^^^^^^^^^^^

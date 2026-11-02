@@ -19,7 +19,16 @@ impl Reader for Ron {
     fn read(text: &str, file: &str) -> Result<Model, ModelError> {
         let robot: Robot = ron::from_str(text).map_err(|e| {
             let at = (line_col(e.span.start.line), line_col(e.span.start.col));
-            ModelError::syntax(file, at, e.code.to_string())
+            let reason = match &e.code {
+                ron::Error::NoSuchStructField {
+                    found,
+                    outer: Some(outer),
+                    ..
+                } => format!("unknown field `{found}` in `{outer}`"),
+                ron::Error::NoSuchStructField { found, .. } => format!("unknown field `{found}`"),
+                code => code.to_string(),
+            };
+            ModelError::syntax(file, at, reason)
         })?;
         robot.model(file)
     }
@@ -272,8 +281,8 @@ mod tests {
         let text = FOUR_RON.replace("    joints:", "    groups: [],\n    joints:");
         let err = ron(&text);
         assert!(
-            err.as_ref()
-                .is_err_and(|e| e.starts_with("kmr: r.ron:11:") && e.contains("groups")),
+            err.as_ref().is_err_and(|e| e.starts_with("kmr: r.ron:11:")
+                && e.ends_with("unknown field `groups` in `Robot`")),
             "{err:?}"
         );
         let text = FOUR_JSON.replace("\"name\": \"four\",", "\"name\": \"four\", \"groups\": [],");
@@ -291,9 +300,8 @@ mod tests {
         let text = FOUR_RON.replace("child: \"tool\"", "child: \"tool\", baud: 1000000");
         let err = ron(&text);
         assert!(
-            err.as_ref().is_err_and(
-                |e| e.starts_with("kmr: r.ron:20:") && e.contains("named `baud` in `Joint`")
-            ),
+            err.as_ref().is_err_and(|e| e.starts_with("kmr: r.ron:20:")
+                && e.ends_with("unknown field `baud` in `Joint`")),
             "{err:?}"
         );
     }
