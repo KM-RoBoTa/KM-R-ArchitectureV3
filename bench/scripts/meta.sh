@@ -7,7 +7,8 @@
 #   meta.sh host-id   the host id alone, for the report path
 #
 # Writes to stdout. Run from the repository root. bench_run (profile.env) sets BENCH_AFFINITY,
-# BENCH_SCHED, BENCH_PROFILE, BENCH_FEATURES and BENCH_LOAD_COMMAND; the operator sets
+# BENCH_SCHED, BENCH_PROFILE, BENCH_FEATURES and BENCH_LOAD_COMMAND, the last three from its
+# caller; compile-time.sh sets BENCH_PROFILE and BENCH_FEATURES itself; the operator sets
 # BENCH_SUPPLY_MV, BENCH_SUPPLY_METER, BENCH_AMBIENT_MC and BENCH_THERMOMETER. A missing
 # operator field prints "meta: missing <var>" on stderr and exits 2 before any output.
 # Optional: BENCH_HOST_ID replaces the derived host id; BENCH_CHAIN (e.g. u2d2-FT8ISZ6H) is
