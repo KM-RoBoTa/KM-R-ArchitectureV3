@@ -11,6 +11,7 @@
 mod emit;
 mod input;
 mod model;
+mod presets;
 mod urdf;
 
 use std::path::{Path, PathBuf};
@@ -51,10 +52,19 @@ fn expand(input: &Input) -> syn::Result<TokenStream2> {
             let robot = check(&descriptor, shown, span)?;
             Ok(emit::emit(&robot, &input.krate, Some(shown)))
         }
-        Source::Preset(name) => Err(syn::Error::new(
-            name.span(),
-            "kmr: presets are not read by model! yet",
-        )),
+        Source::Preset(name) => {
+            let span = name.span();
+            let preset =
+                presets::find(&name.to_string()).map_err(|msg| syn::Error::new(span, msg))?;
+            let descriptor = Descriptor {
+                path: PathBuf::from(preset.shown),
+                format: format(Path::new(preset.shown))
+                    .map_err(|msg| syn::Error::new(span, msg))?,
+                text: preset.text.to_owned(),
+            };
+            let robot = check(&descriptor, preset.shown, span)?;
+            Ok(emit::emit(&robot, &input.krate, None))
+        }
     }
 }
 
