@@ -4,8 +4,10 @@
 //! (research R3); the run script adds `[meta]`. Every line is formatted into
 //! a fixed buffer.
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
+use std::fs::File;
 use std::io;
+use std::path::Path;
 
 use crate::buf::Buf;
 
@@ -221,6 +223,19 @@ impl<W: io::Write> Report<W> {
         self.int("bench_storage_bytes", run.bench_storage_bytes)
     }
 
+    /// Writes the `[run]` block of a run whose plan was bad: `failed`, the reason, no tick done.
+    ///
+    /// # Errors
+    ///
+    /// A schema limit or the sink.
+    pub fn bad_plan(&mut self, reason: &str) -> Result<(), ReportError> {
+        self.block("run")?;
+        self.text("status", Outcome::Failed(reason).status())?;
+        self.text("flags", "")?;
+        self.text("reason", reason)?;
+        self.int("ticks_done", 0)
+    }
+
     /// Opens `[figures]` when the run is complete, with `loop_thread_allocs` and `locks`.
     ///
     /// `None` for a failed or incomplete run: it holds no figure (FR-024 (SRS NFR-2)).
@@ -362,6 +377,30 @@ impl<W: io::Write> Figures<'_, W> {
     }
 }
 
+/// Creates the report file at `path` and writes it with `body`.
+///
+/// # Errors
+///
+/// The file cannot be created, or `body` failed.
+pub fn write_file(
+    path: &Path,
+    body: impl FnOnce(&mut Report<File>) -> Result<(), ReportError>,
+) -> Result<(), ReportError> {
+    let mut report = Report::new(File::create(path)?);
+    body(&mut report)?;
+    report.finish().map(drop)
+}
+
+/// `value` as report text, for a `reason`; a text over 512 bytes is replaced by a note.
+pub fn text_of(value: impl fmt::Display) -> Buf<MAX_TEXT> {
+    let mut text = Buf::new();
+    if write!(text, "{value}").is_err() {
+        text.clear();
+        text.push(b"reason over 512 bytes");
+    }
+    text
+}
+
 /// A key of 1 to 128 bytes of `[a-z0-9_]`.
 fn check_key(key: &str) -> Result<(), ReportError> {
     let ok = (1..=MAX_KEY).contains(&key.len())
@@ -463,6 +502,18 @@ mod tests {
             let reason = outcome.reason().expect("a reason");
             assert!(text.contains(reason), "{text}");
         }
+    }
+
+    #[test]
+    fn a_bad_plan_report_is_failed_with_its_reason() {
+        let mut store = [0u8; 512];
+        let mut report = Report::new(Cursor::new(&mut store[..]));
+        report.bad_plan("bad plan: KMR_BENCH_TICKS").expect("block");
+        let len = usize::try_from(report.finish().expect("finish").position()).unwrap_or(0);
+        assert_eq!(
+            std::str::from_utf8(&store[..len]).expect("utf-8"),
+            "[run]\nstatus = \"failed\"\nflags = \"\"\nreason = \"bad plan: KMR_BENCH_TICKS\"\nticks_done = 0\n"
+        );
     }
 
     #[test]

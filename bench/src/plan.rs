@@ -58,7 +58,7 @@ pub struct RunPlan {
 impl RunPlan {
     /// The report path.
     pub fn out_path(&self) -> &Path {
-        Path::new(OsStr::from_bytes(self.out.as_bytes()))
+        as_path(&self.out)
     }
 
     /// Reads the plan from the process environment.
@@ -106,6 +106,18 @@ impl RunPlan {
         }
         Ok(plan)
     }
+}
+
+/// `KMR_BENCH_OUT` alone, `None` when unset, empty or too long: where a bad plan's report goes.
+pub fn out_from_env() -> Option<Buf<OUT_CAP>> {
+    let value = std::env::var_os(OUT)?;
+    let mut out = Buf::new();
+    (!value.is_empty() && out.push(value.as_bytes())).then_some(out)
+}
+
+/// A report path as a [`Path`].
+pub fn as_path(out: &Buf<OUT_CAP>) -> &Path {
+    Path::new(OsStr::from_bytes(out.as_bytes()))
 }
 
 /// A plan variable that is missing, malformed or breaks a rule.
