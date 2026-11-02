@@ -14,11 +14,14 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use kmr_core::hal::{
-    Batch, Claim, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written,
+    Batch, Claim, Command, Faults, Group, Hal, HardwareError, Layout, Mask, MemberError, Overrides,
+    Sample, Written,
 };
 use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
@@ -83,7 +86,9 @@ const X_TABLE: Table<1, JOINTS> = Table {
     actuators: chain(Model::Xm430W210),
 }
 .check();
-const X_PLUGINS: [Binding; 1] = [plugin("XCHAIN01", None)];
+/// Serial of the USB adapter of [`X_TABLE`].
+const X_SERIAL: &str = "XCHAIN01";
+const X_PLUGINS: [Binding; 1] = [plugin(X_SERIAL, None)];
 
 /// Protocol 1 chain of AX-12A, read every tick.
 const AX_TABLE: Table<1, JOINTS> = Table {
@@ -2996,6 +3001,7 @@ impl Hal for Rest {
 fn a_placed_member_runs_beside_another_one_on_its_own_actuators() -> io::Result<()> {
     use kmr_core::{EachTick, HCons, HNil, RobotState, Sensors, Time};
 
+    let _engine = engine();
     let (Some(arm), Some(wrist)) = (pty(), pty()) else {
         return Ok(());
     };
@@ -3035,5 +3041,172 @@ fn a_placed_member_runs_beside_another_one_on_its_own_actuators() -> io::Result<
     assert_eq!(adapter.backend.count(Call::ClosePorts), 1);
     assert_eq!(rest.wrote, Mask::ALL.difference(subset()));
     assert_eq!(rest.calls, [Some("torque_off"), Some("close")]);
+    Ok(())
+}
+
+// ── US2: through the engine, `run_on` on a pseudo-terminal (T041) ───────────
+
+/// Held by every test that runs the engine: its signal bus is one per
+/// process, so two runs at once would stop each other.
+static ENGINE: Mutex<()> = Mutex::new(());
+
+/// The engine to this test alone; a test that failed holding it does not
+/// fail the next one.
+fn engine() -> MutexGuard<'static, ()> {
+    ENGINE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// [`X_TABLE`] bound to the pseudo-terminal `pty` by its serial, resolved
+/// under `roots`.
+fn x_on(roots: &Roots, pty: &Pty) -> io::Result<Dynamixel<Scripted, 1>> {
+    roots.link(X_SERIAL, &pty.slave)?;
+    Ok(roots.rig(bound(X_TABLE, &X_PLUGINS)))
+}
+
+/// `adapter` as the robot's only member, kept after the run.
+fn alone(
+    adapter: &mut Dynamixel<Scripted, 1>,
+) -> kmr_core::HCons<&mut Dynamixel<Scripted, 1>, kmr_core::HNil> {
+    kmr_core::HCons {
+        head: adapter,
+        tail: kmr_core::HNil,
+    }
+}
+
+/// A robot of 1 ms ticks that holds on a shutdown, running `control` each
+/// tick on `adapter` alone.
+fn run_alone(
+    adapter: &mut Dynamixel<Scripted, 1>,
+    control: impl Fn(&kmr_core::Time, &mut kmr_core::RobotState, &kmr_core::Sensors),
+) -> Result<(), HardwareError<MemberError<DynamixelError, core::convert::Infallible>>> {
+    kmr_core::Robot::new()
+        .set_dt(Duration::from_millis(1))
+        .set_hold(Duration::ZERO)
+        .add_control_fn(kmr_core::EachTick, control)
+        .run_on(alone(adapter))
+}
+
+/// Kinds of the last `count` calls, oldest first.
+fn tail(backend: &Scripted, count: usize) -> impl Iterator<Item = Call> + '_ {
+    let calls = backend.calls();
+    calls[calls.len().saturating_sub(count)..]
+        .iter()
+        .map(|record| record.call)
+}
+
+/// Every exit after `open` ends with one `ForceTorqueOff` per id, then
+/// `ClosePorts`, and leaves no id powered.
+fn ends_cut_and_closed(backend: &Scripted, forced_ids: impl Iterator<Item = u8>) {
+    let off = forced(backend).count();
+    let expected = iter::repeat_n(Call::ForceTorqueOff, off).chain([Call::ClosePorts]);
+    assert!(tail(backend, off + 1).eq(expected));
+    assert!(forced(backend).eq(forced_ids));
+    assert_eq!(backend.count(Call::ClosePorts), 1);
+    assert!((0..JOINTS).all(|index| !backend.torqued(0, id(index))));
+}
+
+#[test]
+fn engine_shutdown_writes_three_ticks_holds_then_cuts_and_closes() -> io::Result<()> {
+    let _engine = engine();
+    let Some(pty) = pty() else {
+        return Ok(());
+    };
+    let roots = Roots::new("engine_shutdown")?;
+    let mut adapter = x_on(&roots, &pty)?;
+
+    let run = run_alone(&mut adapter, |time, state, _| {
+        state.set_all(ramp());
+        if time.tick() == 2 {
+            kmr_core::shutdown!("test: tick 2");
+        }
+    });
+
+    assert!(run.is_ok(), "{run:?}");
+    let backend = &adapter.backend;
+    assert_eq!(backend.count(Call::SyncWriteGoal), 3 + 1);
+    let off = JOINTS + 1;
+    assert_eq!(tail(backend, off + 1).next(), Some(Call::SyncWriteGoal));
+    let held = (0..JOINTS).map(|index| {
+        let raw = tick::position_goal(&X_TABLE.actuators[index], ramp()[index]);
+        (id(index), raw)
+    });
+    let hold = backend.calls()[backend.calls().len() - off - 1];
+    let sent = backend
+        .goals(&hold)
+        .iter()
+        .map(|&(id, raw)| (id, Some(raw)));
+    assert!(sent.eq(held));
+    ends_cut_and_closed(backend, (0..JOINTS).map(id));
+    Ok(())
+}
+
+#[test]
+fn engine_emergency_stop_skips_its_tick_write_and_the_hold() -> io::Result<()> {
+    let _engine = engine();
+    let Some(pty) = pty() else {
+        return Ok(());
+    };
+    let roots = Roots::new("engine_estop")?;
+    let mut adapter = x_on(&roots, &pty)?;
+
+    let run = run_alone(&mut adapter, |time, state, _| {
+        state.set_all(ramp());
+        if time.tick() == 2 {
+            kmr_core::emergency_stop!("test: tick 2");
+        }
+    });
+
+    assert!(run.is_ok(), "{run:?}");
+    assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 2);
+    ends_cut_and_closed(&adapter.backend, (0..JOINTS).map(id));
+    Ok(())
+}
+
+#[test]
+fn engine_missing_actuator_is_returned_after_torque_off_and_close() -> io::Result<()> {
+    let _engine = engine();
+    let Some(pty) = pty() else {
+        return Ok(());
+    };
+    let roots = Roots::new("engine_missing")?;
+    let mut adapter = x_on(&roots, &pty)?;
+    adapter.backend.missing(0, id(2));
+
+    let run = run_alone(&mut adapter, |_, _, _| {});
+
+    let missing = DynamixelError::Missing {
+        actuator: 2,
+        bus: "x",
+        id: id(2),
+    };
+    assert!(
+        matches!(&run, Err(HardwareError::Member(MemberError::Head { error, .. })) if *error == missing),
+        "{run:?}"
+    );
+    assert_eq!(adapter.backend.count(Call::Torque), 0);
+    let tries = |index: usize| if index == 2 { TORQUE_OFF_ATTEMPTS } else { 1 };
+    ends_cut_and_closed(&adapter.backend, attempted(tries));
+    Ok(())
+}
+
+#[test]
+fn engine_controller_panic_cuts_and_closes_then_goes_on() -> io::Result<()> {
+    let _engine = engine();
+    let Some(pty) = pty() else {
+        return Ok(());
+    };
+    let roots = Roots::new("engine_panic")?;
+    let mut adapter = x_on(&roots, &pty)?;
+
+    let unwound = panic::catch_unwind(AssertUnwindSafe(|| {
+        run_alone(&mut adapter, |time, state, _| {
+            state.set_all(ramp());
+            assert!(time.tick() < 1, "test: controller panics at tick 1");
+        })
+    }));
+
+    assert!(unwound.is_err(), "the panic goes on past the engine");
+    assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
+    ends_cut_and_closed(&adapter.backend, (0..JOINTS).map(id));
     Ok(())
 }
