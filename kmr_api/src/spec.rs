@@ -11,6 +11,9 @@ use kmr_core::{HCons, HNil};
 use crate::UserError;
 use crate::brand::{Brand, Refused};
 
+#[cfg(test)]
+pub(crate) mod fake;
+
 /// The robot this binary drives, as the type parameter of [`Robot`](crate::Robot).
 ///
 /// `robot!` implements it on the `__Spec` it emits; users never implement it.
@@ -112,6 +115,9 @@ pub mod __brand {
             hardware.indices()
         }
     }
+
+    #[cfg(test)]
+    pub(crate) use super::fake::{arm as fake_arm, leg as fake_leg};
 }
 
 /// Checks that `parts`, the engine indices each brand's part drives, cover `0..n` exactly

@@ -196,3 +196,6 @@ macro_rules! robot {
         );
     };
 }
+
+#[cfg(test)]
+mod test;
