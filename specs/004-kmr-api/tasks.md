@@ -224,7 +224,7 @@ covers it; labelled US1 ("one import", U16).
 - [x] T062 [P] Add a decision record under docs/decisions/, the next free number in docs/decisions/ at commit time: the `Spec` type parameter that makes the adapter follow the robot (research R2), the `hardware = ..` argument (D7 A, assumed, pending human), the compile-time home marker (D5 A, assumed, pending human), the slot choice (R15). Constitution V Done 2026-11-02: docs/decisions/0005-api-robot-spec-hardware-home-slot.md, status proposed; it also records `bind()`/`Bound` (T039) and the several-brand `hardware = { .. }` form (T069), both pending human.
 - [ ] T063 Hand-off, owner controllers plan C7 (HUMAN; walkthrough in controllers/README.md, plan C3): time to first motion against the ROS2 baseline (assumed, pending human: D14), SC-002 (SRS FR-10.4, NFR-4), FR-071 (SRS FR-10.4, NFR-4). No edit here
 - [ ] T064 Run specs/004-kmr-api/quickstart.md § "Every change" and every phase section whose tasks are done; `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace --no-fail-fast`
-- [ ] T065 Update docs/c4/kmr_api.dsl with `/speckit-ov-c4-code` (constitution, Development Workflow)
+- [x] T065 Update docs/c4/kmr_api.dsl with `/speckit-ov-c4-code` (constitution, Development Workflow). Done 2026-11-02: docs/c4/kmr_api.dsl, 11 C3 components and their C4 code elements under `kmr.control`, linked to kmr_adapters' components; `structurizr validate` passes; views and docs/workspace.json untouched (manual layout kept). Rerun when const N, faults and Zenoh change the surface
 
 ---
 
