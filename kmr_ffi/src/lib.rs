@@ -15,4 +15,8 @@
 mod fields;
 mod view;
 
+// Also under test, so the default test run checks the headers.
+#[cfg(any(feature = "build", test))]
+pub mod build;
+
 pub use view::{AGE_NONE, ActuatorFlags, Mask, ReadView, Slot, TimeView, WriteBuf, Written};

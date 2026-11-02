@@ -18,3 +18,7 @@ mlua = { workspace = true, optional = true }
 build = ["dep:cc"]
 python = ["dep:pyo3"]
 lua = ["dep:mlua"]
+
+# cc again, so `cargo test` checks the build helper without the `build` feature.
+[dev-dependencies]
+cc.workspace = true
