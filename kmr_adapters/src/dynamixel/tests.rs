@@ -3363,8 +3363,9 @@ fn an_ax12_bus_beside_a_protocol_1_mx64_bus_runs_every_step() -> Result<(), Dyna
         assert_eq!(slot.qd[index], Qd(9.0), "Protocol 1 rates are unread");
     }
     let counts = [
+        (Call::ReadModelNumber, JOINTS),
         (Call::ReadAngleLimits, JOINTS),
-        (Call::ReadSetting, 0),
+        (Call::ReadSetting, mx),
         (Call::SyncReadState, 0),
         (Call::ReadPosition, 3 * JOINTS),
         (Call::Torque, JOINTS),
@@ -3544,5 +3545,167 @@ fn an_ax12_at_4095_angle_limits_is_no_multi_turn_mode() -> Result<(), DynamixelE
     adapter.backend.angle_limits(0, id(0), 4095, 4095);
 
     assert_eq!(adapter.configure(), Ok(()));
+    Ok(())
+}
+
+/// Bring-up of [`AX_MX_TABLE`] as far as it goes, the MX-64 in joint mode
+/// over their whole range, after `script`.
+fn bring_up_ax_beside_mx(
+    script: impl FnOnce(&mut Scripted),
+) -> (Dynamixel<Scripted, 2>, Result<Claim, DynamixelError>) {
+    let mut adapter = rig(AX_MX_TABLE);
+    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+        adapter.backend.angle_limits(1, id(index), 0, 4095);
+    }
+    script(&mut adapter.backend);
+    let result = powered(&mut adapter);
+    (adapter, result)
+}
+
+/// Whether bring-up stopped before any torque or goal write.
+fn nothing_powered(backend: &Scripted) -> bool {
+    [Call::SyncWriteStartGoal, Call::Torque, Call::ForceTorqueOff]
+        .into_iter()
+        .all(|call| backend.count(call) == 0)
+}
+
+/// Pings `table` and checks one Model Number read per actuator, naming its
+/// declared model.
+fn pings_with_model_numbers<const NB: usize>(
+    table: Table<NB, JOINTS>,
+) -> Result<(), DynamixelError> {
+    let mut adapter = rig(table);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.ping()?;
+
+    let declared = table
+        .actuators
+        .map(|actuator| (actuator.bus, Some(actuator.model), 1));
+    assert!(sent(&adapter.backend, Call::ReadModelNumber).eq(declared));
+    Ok(())
+}
+
+#[test]
+fn ping_reads_each_model_number_once_and_accepts_the_declared_one() -> Result<(), DynamixelError> {
+    pings_with_model_numbers(AX_MX_TABLE)?;
+    pings_with_model_numbers(AX_MX2_TABLE)?;
+    pings_with_model_numbers(MIX_TABLE)?;
+    pings_with_model_numbers(RX_TABLE)
+}
+
+#[test]
+fn an_ax12_answering_as_a_declared_mx64_fails_ping_before_any_torque() {
+    let (adapter, result) = bring_up_ax_beside_mx(|backend| {
+        backend.model_number(1, id(3), Model::Ax12a.number());
+    });
+    let error = result.err();
+
+    assert_eq!(
+        error,
+        Some(DynamixelError::ModelMismatch {
+            actuator: 3,
+            bus: "mx",
+            id: id(3),
+            declared: Model::Mx64,
+            found: 12,
+        })
+    );
+    assert_eq!(
+        error.map(|error| error.to_string()).as_deref(),
+        Some("actuator 3: id 4 on bus mx: Model Number 12, expected 310 for the declared MX-64")
+    );
+    let backend = &adapter.backend;
+    assert_eq!(backend.count(Call::ReadModelNumber), 4);
+    assert_eq!(backend.count(Call::ReadHealth), 0);
+    assert!(nothing_powered(backend));
+}
+
+#[test]
+fn an_mx64_answering_as_a_declared_ax12_fails_ping_before_any_torque() {
+    let (adapter, result) = bring_up_ax_beside_mx(|backend| {
+        backend.model_number(0, id(0), Model::Mx64.number());
+    });
+    let error = result.err();
+
+    assert_eq!(
+        error,
+        Some(DynamixelError::ModelMismatch {
+            actuator: 0,
+            bus: "ax",
+            id: id(0),
+            declared: Model::Ax12a,
+            found: 310,
+        })
+    );
+    assert_eq!(
+        error.map(|error| error.to_string()).as_deref(),
+        Some("actuator 0: id 1 on bus ax: Model Number 310, expected 12 for the declared AX-12A")
+    );
+    assert_eq!(adapter.backend.count(Call::ReadHealth), 0);
+    assert!(nothing_powered(&adapter.backend));
+}
+
+#[test]
+fn a_failed_model_number_read_names_the_actuator() {
+    let (adapter, result) = bring_up_ax_beside_mx(|backend| {
+        backend.fail(Call::ReadModelNumber, 1, id(1), BackendError::Status(0x04));
+    });
+
+    assert_eq!(
+        result.err(),
+        Some(DynamixelError::Actuator {
+            actuator: 1,
+            bus: "mx",
+            id: id(1),
+            source: BackendError::Status(0x04),
+        })
+    );
+    assert!(nothing_powered(&adapter.backend));
+}
+
+#[test]
+fn an_mx64_in_torque_control_mode_fails_configure_before_any_torque() {
+    let (adapter, result) = bring_up_ax_beside_mx(|backend| {
+        backend.torque_mode(1, id(1), 1);
+    });
+    let error = result.err();
+
+    assert_eq!(
+        error,
+        Some(DynamixelError::TorqueCtrlMode {
+            actuator: 1,
+            bus: "mx",
+            id: id(1),
+            found: 1,
+        })
+    );
+    assert_eq!(
+        error.map(|error| error.to_string()).as_deref(),
+        Some(
+            "actuator 1: id 2 on bus mx: Torque Ctrl Mode Enable 1, expected 0: it ignores Goal Position"
+        )
+    );
+    let backend = &adapter.backend;
+    assert!(sent(backend, Call::ReadSetting).eq([(1, Some(Model::Mx64), 1)]));
+    assert!(nothing_powered(backend));
+}
+
+#[test]
+fn only_the_protocol_1_mx64_reads_torque_ctrl_mode_enable() -> Result<(), DynamixelError> {
+    let mut adapter = rig(AX_MX_TABLE);
+    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+        adapter.backend.angle_limits(1, id(index), 0, 4095);
+    }
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.configure()?;
+
+    let readers = (0..JOINTS)
+        .filter(|&index| on_mx(index))
+        .map(|_| (1, Some(Model::Mx64), 1));
+    assert!(sent(&adapter.backend, Call::ReadSetting).eq(readers));
     Ok(())
 }

@@ -348,6 +348,40 @@ pub enum DynamixelError {
         /// Operating Mode the table asks for.
         expected: u8,
     },
+    /// Torque Ctrl Mode Enable set: the actuator drives Goal Torque and
+    /// ignores Goal Position (Protocol 1 MX-64).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: Torque Ctrl Mode Enable {found}, expected 0: it ignores Goal Position"
+    )]
+    TorqueCtrlMode {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Torque Ctrl Mode Enable read.
+        found: u8,
+    },
+    /// The Model Number read is not the declared model's: another model
+    /// answers at that id, its registers at another scale.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: Model Number {found}, expected {} for the declared {}",
+        .declared.number(),
+        .declared.name()
+    )]
+    ModelMismatch {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Model the table declares.
+        declared: Model,
+        /// Model Number read.
+        found: u16,
+    },
     /// A transaction with one actuator failed.
     #[error("actuator {actuator}: id {id} on bus {bus}: {source}")]
     Actuator {
@@ -766,17 +800,33 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         Ok(())
     }
 
-    /// Pings each actuator up to [`PING_ATTEMPTS`] times, without sleep.
+    /// Pings each actuator up to [`PING_ATTEMPTS`] times, without sleep,
+    /// then reads its Model Number once and refuses another model's: no
+    /// register is read through the declared table before that.
     fn ping(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
+            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             let mut answer = Err(BackendError::Timeout);
             for _ in 0..PING_ATTEMPTS {
-                answer = self.backend.ping(actuator.bus, actuator.model, actuator.id);
+                answer = self.backend.ping(bus, model, id);
                 if answer.is_ok() {
                     break;
                 }
             }
             answer.map_err(|error| self.actuator_error(index, error))?;
+            let found = self
+                .backend
+                .read_model_number(bus, model, id)
+                .map_err(|error| self.actuator_error(index, error))?;
+            if found != model.number() {
+                return Err(DynamixelError::ModelMismatch {
+                    actuator: index,
+                    bus: self.label(bus),
+                    id,
+                    declared: model,
+                    found,
+                });
+            }
         }
         Ok(())
     }
@@ -857,11 +907,26 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// one off (research R1). Protocol 1 has no Operating Mode: its joint
     /// mode is CW and CCW Angle Limit not both 0, nor both the model's
     /// multi-turn value, read here and kept as the range its goals must stay
-    /// in. Its torque state is not read.
+    /// in; on the MX-64, Torque Ctrl Mode Enable 0 too, its counterpart of
+    /// position mode. Its torque state is not read.
     fn configure(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             if model.protocol() != Protocol::Two {
+                if model.has_torque_ctrl_mode() {
+                    let found = self
+                        .backend
+                        .read_setting(bus, model, id, Setting::TorqueCtrlModeEnable)
+                        .map_err(|error| self.actuator_error(index, error))?;
+                    if found != 0 {
+                        return Err(DynamixelError::TorqueCtrlMode {
+                            actuator: index,
+                            bus: self.label(bus),
+                            id,
+                            found,
+                        });
+                    }
+                }
                 let (cw, ccw) = self
                     .backend
                     .read_angle_limits(bus, model, id)

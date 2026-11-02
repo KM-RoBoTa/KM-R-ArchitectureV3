@@ -52,10 +52,12 @@ pub enum Model {
     Ax12a,
     /// RX-28.
     Rx28,
-    /// MX-64 on its Protocol 1 firmware. Not checked yet (T071, waiting on
-    /// `dxl_rs`): its Torque Ctrl Mode Enable (70), which makes it ignore
-    /// Goal Position, and its Model Number, so an AX-12A or RX-28 declared as
-    /// an MX-64, or the reverse, is driven at the wrong position scale.
+    /// MX-64 on its Protocol 1 firmware: the AX table and sync write, at
+    /// four times the AX position scale. `ping` refuses an actuator whose
+    /// Model Number is not 310, so an AX-12A or RX-28 declared as an MX-64,
+    /// or the reverse, is never driven at the wrong scale; `configure`
+    /// refuses Torque Ctrl Mode Enable (70) set, which makes it ignore Goal
+    /// Position (T071).
     Mx64,
     /// MX-64(2.0): the MX-64 on its Protocol 2.0 firmware, another control
     /// table.
@@ -82,6 +84,20 @@ impl Model {
             Self::Xw430T200 => "XW430-T200",
             Self::Xw540T140 => "XW540-T140",
             Self::Xw540T260 => "XW540-T260",
+        }
+    }
+
+    /// Model Number (address 0) the model answers with, as ROBOTIS lists it.
+    pub(crate) const fn number(self) -> u16 {
+        match self {
+            Self::Ax12a => 12,
+            Self::Rx28 => 28,
+            Self::Mx64 => 310,
+            Self::Mx64V2 => 311,
+            Self::Xm430W210 => 1030,
+            Self::Xw430T200 => 1280,
+            Self::Xw540T140 => 1180,
+            Self::Xw540T260 => 1170,
         }
     }
 
@@ -166,6 +182,12 @@ impl Model {
     /// `Velocity` is wheel mode and there is no Goal Current.
     pub const fn supports(self, mode: Mode) -> bool {
         !matches!((self.series(), mode), (Series::Ax, Mode::Current))
+    }
+
+    /// Whether the model has Torque Ctrl Mode Enable (70), which, set, makes
+    /// it drive Goal Torque and ignore Goal Position.
+    pub(crate) const fn has_torque_ctrl_mode(self) -> bool {
+        matches!(self, Self::Mx64)
     }
 
     /// CW and CCW Angle Limit that, both at this value, select multi-turn

@@ -150,7 +150,7 @@ pub(crate) enum BackendError {
     /// A sync read asked of Protocol 1, which has none.
     #[error("Protocol 1 has no sync read")]
     NoSyncRead,
-    /// A setting asked of Protocol 1.
+    /// A Protocol 2 setting asked of Protocol 1.
     #[error("{setting} is not read on Protocol 1")]
     NoSetting {
         /// The setting.
@@ -271,13 +271,16 @@ pub(crate) struct Health {
     pub(crate) temperature_limit_c: u8,
 }
 
-/// A one-byte Protocol 2 register checked at bring-up.
+/// A one-byte register checked at bring-up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Setting {
-    /// Operating Mode; 3 is position mode.
+    /// Operating Mode, Protocol 2; 3 is position mode.
     OperatingMode,
-    /// Torque Enable; 1 is powered.
+    /// Torque Enable, Protocol 2; 1 is powered.
     TorqueEnable,
+    /// Torque Ctrl Mode Enable (70), Protocol 1 MX-64 only; 1 drives Goal
+    /// Torque and ignores Goal Position.
+    TorqueCtrlModeEnable,
 }
 
 impl Setting {
@@ -286,6 +289,7 @@ impl Setting {
         match self {
             Self::OperatingMode => "Operating Mode",
             Self::TorqueEnable => "Torque Enable",
+            Self::TorqueCtrlModeEnable => "Torque Ctrl Mode Enable",
         }
     }
 }
@@ -370,6 +374,10 @@ pub(crate) trait Backend {
     /// Whether actuator `id` answers.
     fn ping(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
+    /// Model Number (address 0) of one actuator, on any protocol.
+    fn read_model_number(&mut self, port: usize, model: Model, id: u8)
+    -> Result<u16, BackendError>;
+
     /// Present position of one actuator.
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError>;
 
@@ -413,7 +421,8 @@ pub(crate) trait Backend {
     /// backend switched it on; clears any handle kept for it.
     fn force_torque_off(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
-    /// One setting of one Protocol 2 actuator.
+    /// One setting of one actuator: Operating Mode and Torque Enable on
+    /// Protocol 2, Torque Ctrl Mode Enable on the Protocol 1 MX-64.
     fn read_setting(
         &mut self,
         port: usize,

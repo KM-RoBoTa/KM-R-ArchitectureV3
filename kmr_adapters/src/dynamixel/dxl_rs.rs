@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ::dxl_rs::actuator::ax_series::Ax12A;
 use ::dxl_rs::actuator::mx_series::Mx64Ar;
 use ::dxl_rs::actuator::{
-    Actuator, ActuatorOff, ActuatorOn, Readable, TorqueOn, Xm430W210, Xw430T200, Xw540T140,
+    Actuator, ActuatorOff, ActuatorOn, Mx64P1, Readable, TorqueOn, Xm430W210, Xw430T200, Xw540T140,
     Xw540T260,
 };
 use ::dxl_rs::actuators_list::{ActuatorVariant, ActuatorsList, P1, P2};
@@ -80,8 +80,9 @@ fn warn_once(flag: &AtomicBool, message: &str) {
 
 /// Runs `$body` with `$actuator` bound to the torque-off `dxl_rs` actuator of
 /// `$model`. The RX-28 goes through the AX-12A table (research R7), and so
-/// does the Protocol 1 MX-64: the `dxl_rs` MX-64 is the MX-64(2.0), and
-/// every register used here has the AX address and size on both.
+/// does the Protocol 1 MX-64, so it joins the AX sync write: every register
+/// used here has the AX address and size on both. Only its Torque Ctrl Mode
+/// Enable, past the AX table, is read through the `dxl_rs` `Mx64P1`.
 macro_rules! with_actuator {
     ($model:expr, $id:expr, $number:expr, $actuator:ident => $body:expr) => {
         match $model {
@@ -374,6 +375,8 @@ const fn register_name(readable: Readable) -> &'static str {
         Readable::TemperatureLimit => "Temperature Limit",
         Readable::MinVoltageLimit => "Min Voltage Limit",
         Readable::MaxVoltageLimit => "Max Voltage Limit",
+        Readable::ModelNumber => "Model Number",
+        Readable::TorqueCtrlModeEnable => "Torque Ctrl Mode Enable",
     }
 }
 
@@ -541,6 +544,19 @@ impl Backend for DxlRs {
             .map_err(|error| sdk_error(&error))
     }
 
+    /// One read instruction, on either protocol.
+    fn read_model_number(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u16, BackendError> {
+        let number = self.number(port)?;
+        let raw = with_actuator!(model, id, number, actuator => actuator.read_register(Readable::ModelNumber))
+            .map_err(|error| sdk_error(&error))?;
+        narrow(register_name(Readable::ModelNumber), raw)
+    }
+
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
         let number = self.number(port)?;
         with_actuator!(model, id, number, actuator => actuator.read_present_position())
@@ -688,8 +704,10 @@ impl Backend for DxlRs {
         Ok(())
     }
 
-    /// Protocol 1 fails: it has no Operating Mode, and `dxl_rs` has no
-    /// [`Readable`] for its Torque Enable.
+    /// Protocol 2 settings fail on Protocol 1: it has no Operating Mode,
+    /// and `dxl_rs` has no [`Readable`] for its Torque Enable. Torque Ctrl
+    /// Mode Enable is one read through `Mx64P1`; any other model fails
+    /// before any I/O.
     fn read_setting(
         &mut self,
         port: usize,
@@ -698,13 +716,24 @@ impl Backend for DxlRs {
         setting: Setting,
     ) -> Result<u8, BackendError> {
         let number = self.number(port)?;
-        if model.protocol() != Protocol::Two {
-            return Err(BackendError::NoSetting { setting });
-        }
         let register = match setting {
             Setting::OperatingMode => OPERATING_MODE,
             Setting::TorqueEnable => TORQUE_ENABLE,
+            Setting::TorqueCtrlModeEnable => {
+                if model != Model::Mx64 {
+                    return Err(BackendError::NoRegister {
+                        register: setting.name(),
+                    });
+                }
+                let raw = Mx64P1::new(id, number)
+                    .read_register(Readable::TorqueCtrlModeEnable)
+                    .map_err(|error| sdk_error(&error))?;
+                return narrow(setting.name(), raw);
+            }
         };
+        if model.protocol() != Protocol::Two {
+            return Err(BackendError::NoSetting { setting });
+        }
         narrow(setting.name(), read_register(number, register, id)?)
     }
 

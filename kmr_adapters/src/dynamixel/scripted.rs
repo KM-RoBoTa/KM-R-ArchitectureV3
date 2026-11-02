@@ -28,7 +28,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 12;
+const KINDS: usize = 13;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Variants of [`GoalRegister`].
@@ -59,6 +59,8 @@ pub(crate) enum Call {
     OpenPorts,
     /// [`Backend::ping`].
     Ping,
+    /// [`Backend::read_model_number`].
+    ReadModelNumber,
     /// [`Backend::read_position`].
     ReadPosition,
     /// [`Backend::sync_read_state`].
@@ -165,6 +167,11 @@ pub(crate) struct Scripted {
     vitals: [[Health; IDS]; PORTS],
     /// Per actuator, what Operating Mode reads return.
     modes: [[u8; IDS]; PORTS],
+    /// Per actuator, what Model Number reads return; `None` answers the
+    /// model named.
+    numbers: [[Option<u16>; IDS]; PORTS],
+    /// Per actuator, what Torque Ctrl Mode Enable reads return.
+    torque_modes: [[u8; IDS]; PORTS],
     /// Per actuator, what angle limit reads return.
     limits: [[(u32, u32); IDS]; PORTS],
     /// Per actuator, whether it never answers.
@@ -210,6 +217,8 @@ impl Scripted {
             states: [[RawState::default(); IDS]; PORTS],
             vitals: [[HEALTHY; IDS]; PORTS],
             modes: [[POSITION_MODE; IDS]; PORTS],
+            numbers: [[None; IDS]; PORTS],
+            torque_modes: [[0; IDS]; PORTS],
             limits: [[JOINT_MODE; IDS]; PORTS],
             missing: [[false; IDS]; PORTS],
             errors: [BackendError::Timeout; ERRORS],
@@ -351,6 +360,23 @@ impl Scripted {
     pub(crate) fn mode(&mut self, port: usize, id: u8, mode: u8) -> &mut Self {
         if let Some(slot) = at(&mut self.modes, port, id) {
             *slot = mode;
+        }
+        self
+    }
+
+    /// Model Number reads of actuator `id` return `number`, whatever model
+    /// they name: another actuator than the table declares.
+    pub(crate) fn model_number(&mut self, port: usize, id: u8, number: u16) -> &mut Self {
+        if let Some(slot) = at(&mut self.numbers, port, id) {
+            *slot = Some(number);
+        }
+        self
+    }
+
+    /// Torque Ctrl Mode Enable reads of actuator `id` return `value`.
+    pub(crate) fn torque_mode(&mut self, port: usize, id: u8, value: u8) -> &mut Self {
+        if let Some(slot) = at(&mut self.torque_modes, port, id) {
+            *slot = value;
         }
         self
     }
@@ -670,6 +696,16 @@ impl Backend for Scripted {
         self.one(Call::Ping, port, model, id, false)
     }
 
+    fn read_model_number(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u16, BackendError> {
+        self.one(Call::ReadModelNumber, port, model, id, false)?;
+        Ok(self.numbers[port][usize::from(id)].unwrap_or(model.number()))
+    }
+
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
         self.one(Call::ReadPosition, port, model, id, false)?;
         Ok(self.states[port][usize::from(id)].position.cast_unsigned())
@@ -801,14 +837,23 @@ impl Backend for Scripted {
         setting: Setting,
     ) -> Result<u8, BackendError> {
         self.note(Call::ReadSetting, port, model, id, false);
-        if model.protocol() != Protocol::Two {
-            return Err(BackendError::NoSetting { setting });
+        match setting {
+            Setting::TorqueCtrlModeEnable if !model.has_torque_ctrl_mode() => {
+                return Err(BackendError::NoRegister {
+                    register: setting.name(),
+                });
+            }
+            Setting::OperatingMode | Setting::TorqueEnable if model.protocol() != Protocol::Two => {
+                return Err(BackendError::NoSetting { setting });
+            }
+            _ => {}
         }
         self.answer(Call::ReadSetting, port, id)?;
         let id = usize::from(id);
         Ok(match setting {
             Setting::OperatingMode => self.modes[port][id],
             Setting::TorqueEnable => u8::from(self.torque[port][id]),
+            Setting::TorqueCtrlModeEnable => self.torque_modes[port][id],
         })
     }
 
@@ -1171,6 +1216,34 @@ mod tests {
             Err(BackendError::SlotMismatch { ids: 1, slots: 2 })
         );
         assert_eq!(backend.sync_read_state(0, MODEL, &[1, 2], &mut out), Ok(()));
+    }
+
+    #[test]
+    fn the_fake_answers_the_named_models_number_until_scripted() {
+        let mut backend = Scripted::new();
+        backend.model_number(0, 2, Model::Ax12a.number());
+        backend.open_ports(&[]).unwrap();
+
+        assert_eq!(backend.read_model_number(0, Model::Mx64, 1), Ok(310));
+        assert_eq!(backend.read_model_number(0, MODEL, 1), Ok(1030));
+        assert_eq!(backend.read_model_number(0, Model::Mx64, 2), Ok(12));
+        assert_eq!(backend.count(Call::ReadModelNumber), 3);
+    }
+
+    #[test]
+    fn the_fake_reads_torque_ctrl_mode_enable_only_on_the_protocol_one_mx64() {
+        let mut backend = Scripted::new();
+        backend.torque_mode(0, 2, 1);
+        backend.open_ports(&[]).unwrap();
+        let setting = Setting::TorqueCtrlModeEnable;
+        let refused = Err(BackendError::NoRegister {
+            register: "Torque Ctrl Mode Enable",
+        });
+
+        assert_eq!(backend.read_setting(0, Model::Mx64, 1, setting), Ok(0));
+        assert_eq!(backend.read_setting(0, Model::Mx64, 2, setting), Ok(1));
+        assert_eq!(backend.read_setting(0, Model::Ax12a, 2, setting), refused);
+        assert_eq!(backend.read_setting(0, Model::Mx64V2, 2, setting), refused);
     }
 
     #[test]
