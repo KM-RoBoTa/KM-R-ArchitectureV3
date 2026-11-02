@@ -1,8 +1,9 @@
 //! The home state, open in SRS FR-2.7: every call is a compile error naming it.
 //!
 //! Assumed, pending human: D5, option A. No marker runs after `open`, with the torque on
-//! (SRS NFR-2): the methods keep their names and argument shapes, and a bound no type meets
-//! stops each call site at compile time.
+//! (SRS NFR-2): the methods keep their names and arity, and a bound no type meets stops each
+//! call site at compile time. The bound needs a type parameter, so the ramp is generic too:
+//! on a concrete type such as the old `u32` ramp it would fail at the definition.
 
 use core::convert::Infallible;
 

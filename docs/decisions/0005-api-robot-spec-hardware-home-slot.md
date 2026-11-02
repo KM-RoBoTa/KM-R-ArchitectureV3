@@ -61,9 +61,12 @@ the branch's behaviour.
    lends each member through the core's `impl Hal for &mut A` and hands the
    list back after it. Never inside a tick (SRS FR-5.9; R14).
 5. **The home state is a compile-time marker (D5 A).** `initial_state()` and
-   `go_home(ramp)` keep their names and shapes, but carry a bound no type
+   `go_home(ramp)` keep their names and arity, but carry a bound no type
    meets, `HomeDecided`, whose `on_unimplemented` message names SRS FR-2.7.
-   The library builds; every call site fails to compile (R10).
+   The bound sits on a type parameter: the field of `initial_state::<T>()`,
+   and the ramp of `go_home(ramp: R)`, which was a placeholder `u32`. A bound
+   on a concrete type fails at the definition, not at the call. The library
+   builds; every call site fails to compile (R10).
 6. **The Zenoh slots are a triple buffer per direction.** `Latest<T: Copy>`:
    one writer, one reader; the writer does one atomic swap per put, the
    reader one load when nothing is new and one swap when something is. An
