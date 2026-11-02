@@ -41,6 +41,10 @@ pub use config::{
 const PING_ATTEMPTS: usize = 3;
 /// Local transaction groups one member may claim: `Group` is a `u8`.
 const MAX_GROUPS: usize = 256;
+/// Series a model can be of; the match stops compiling when one is added.
+const SERIES: usize = match Series::X {
+    Series::Ax | Series::X => 2,
+};
 /// Force torque off attempts per actuator, back to back, before a warning
 /// names it.
 const TORQUE_OFF_ATTEMPTS: usize = 3;
@@ -55,14 +59,6 @@ pub enum DynamixelError {
         /// Buses declared.
         buses: usize,
         /// Ports the backend opens.
-        max: usize,
-    },
-    /// More (bus, series) groups than the engine numbers for one member.
-    #[error("{groups} transaction groups (bus, series) declared, the engine numbers at most {max}")]
-    TooManyGroups {
-        /// Groups declared.
-        groups: usize,
-        /// Groups one member may have.
         max: usize,
     },
     /// A bus plugin names a label no table bus has.
@@ -637,17 +633,18 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                 max: B::MAX_PORTS,
             });
         }
+        // One group per (bus, series) and at most `MAX_PORTS` buses: the local
+        // numbers fit a `Group` for every backend that builds.
+        const {
+            assert!(
+                SERIES * B::MAX_PORTS <= MAX_GROUPS,
+                "too many ports for u8 groups"
+            )
+        };
         let every = self
             .buses
             .map(|bus| bus.read_every.unwrap_or(DEFAULT_READ_EVERY));
         self.groups = Groups::build(&self.actuators, &every);
-        let groups = self.groups.tables().len();
-        if groups > MAX_GROUPS {
-            return Err(DynamixelError::TooManyGroups {
-                groups,
-                max: MAX_GROUPS,
-            });
-        }
         let unread = io::unread_rates(&self.actuators);
         for index in (0..JOINTS).filter(|&index| unread.get(index)) {
             warn!(
