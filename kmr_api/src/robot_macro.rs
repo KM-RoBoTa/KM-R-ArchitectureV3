@@ -120,6 +120,8 @@ macro_rules! robot {
         impl $crate::Spec for __Spec {
             type Drivers = $crate::HCons<$crate::__NoHardware, $crate::HNil>;
 
+            const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
+
             fn bind(
                 plugins: &[$crate::Binding],
             ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
@@ -158,6 +160,8 @@ macro_rules! robot {
         impl $crate::Spec for __Spec {
             type Drivers =
                 <$crate::robot!(@parts $($brand),+) as $crate::Brands>::Drivers;
+
+            const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
 
             fn bind(
                 plugins: &[$crate::Binding],
@@ -211,6 +215,8 @@ macro_rules! __robot_items {
         const _: [$crate::dynamixel::Actuator; N] = __TABLE.actuators;
         impl $crate::Spec for __Spec {
             type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB>, $crate::HNil>;
+
+            const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
 
             fn bind(
                 plugins: &[$crate::Binding],

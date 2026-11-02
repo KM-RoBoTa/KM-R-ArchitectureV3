@@ -23,6 +23,9 @@ pub trait Spec {
     /// `HCons<A, HCons<B, HNil>>`. Its error crosses threads inside [`UserError::BringUp`].
     type Drivers: Lend;
 
+    /// The model's link names, in file order: the mounts a payload may name (SRS FR-8.1).
+    const LINK_NAMES: &'static [&'static str];
+
     /// Binds the bus plugins to the members, no I/O. `run()` calls it only when plugins are
     /// declared.
     ///

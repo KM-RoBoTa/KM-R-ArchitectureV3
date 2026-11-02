@@ -23,6 +23,7 @@ mod units;
 pub use units::*;
 
 mod payload;
+pub use payload::{Payload, Tier};
 
 // Schedule labels + the sealed `Schedule` trait come straight from kmr_core: it
 // owns the phase set the control loop can actually run, and the seal stops users

@@ -308,6 +308,8 @@ type MembersError = <Members as Drivers>::Error;
 impl<const CASE: u8> Spec for TwoBrands<CASE> {
     type Drivers = Members;
 
+    const LINK_NAMES: &'static [&'static str] = &["base"];
+
     fn bind(plugins: &[Binding]) -> Result<Members, UserError> {
         let arm = Part::<Arm>::new(evens());
         let mut leg = Part::<Leg>::new(odds());

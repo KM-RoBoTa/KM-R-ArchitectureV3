@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-use kmr_api::{Bus, EachTick, Init, Q, Sensors, StateErrorKind as StateError, Time};
+use kmr_api::{Bus, EachTick, Init, Payload, Q, Sensors, StateErrorKind as StateError, Time};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -319,17 +319,16 @@ fn main() -> color_eyre::Result<()> {
     //
     // (payload reference: https://dev.bostondynamics.com/docs/payload/readme)
     //
-    // So, this means the architecture doesn't really need to know about them.
-    // You can freely create them, but keep in mind that new sensors or new actuators
-    // can't be moved by the architecture. This is your responsability to create
-    // the integration layer (unless you want us to do it for you).
+    // A medium or heavy payload is registered once, through the builder:
+    // `.register_payload(Payload::medium(kg, "link"))` below, never from a
+    // controller. `run()` refuses a link the model does not have. A light
+    // payload is not registered at all.
     //
-    // Because it's new controller added via [`add_controller()`] creates
-    // automatically a new thread, you are free to use this method however you like.
-    // In that case, we will show a pseudo-implementation of a 3 DOF arm as a
-    // payload.
-    //
-    // WARN: this must be only used as initialization
+    // Its new sensors or actuators are not moved by the architecture: the
+    // integration layer is yours (unless you want us to do it for you). Below,
+    // a pseudo-implementation of a 3 DOF arm with a camera, brought up by an
+    // `Init` controller. Controllers run inline in the loop; only
+    // `add_controller_as_thread` gives one its own thread.
     //
     // A plain `fn` now — no closure, no returned `impl FnMut`, no `move`. The
     // shared tracker arrives as `&mut T` because we register it through
@@ -498,6 +497,8 @@ fn main() -> color_eyre::Result<()> {
     robot
         // Settings
         .set_dt(Duration::from_millis(1u64)) // NOTE: or .dt_us(10000)
+        // The camera arm, mounted on the model's last link.
+        .register_payload(Payload::medium(1.2, "link4"))
         // .history_depth(1_usize) // with a maximum recommended of 5.
         // Controllers
         .add_controller(Init, initialization)

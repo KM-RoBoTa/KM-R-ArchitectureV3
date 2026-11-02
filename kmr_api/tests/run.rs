@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use kmr_api::{Bus, EachTick, Sensors, Time, UserError};
+use kmr_api::{Bus, EachTick, Payload, Sensors, Time, UserError};
 
 kmr_api::robot!(XmBench);
 
@@ -119,6 +119,36 @@ fn a_dt_of_10_us_or_1_s_runs() {
     }
 }
 
+#[test]
+fn a_payload_on_an_unknown_link_is_refused_before_the_plugins() {
+    let record = seen();
+    let res = Robot::new()
+        .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+        .register_payload(Payload::medium(1.2, "link4"))
+        .register_payload(Payload::medium(1.2, "nope"))
+        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+        .run();
+    assert!(
+        matches!(res, Err(UserError::UnknownLink { link: "nope" })),
+        "{res:?}"
+    );
+    assert!(ticks(&record).is_empty());
+}
+
+#[test]
+fn a_payload_on_a_model_link_runs() {
+    let _bus = bus();
+    let record = seen();
+    let res = Robot::new()
+        .set_dt(Duration::from_millis(1))
+        .register_payload(Payload::medium(1.2, "link4"))
+        .register_payload(Payload::heavy(3.0, "base"))
+        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<1>)
+        .run();
+    assert!(res.is_ok(), "{res:?}");
+    assert_eq!(ticks(&record).len(), 2);
+}
+
 /// The real Dynamixel adapter: the serial resolves to no device, so no port is ever opened.
 #[cfg(feature = "dynamixel")]
 #[test]
@@ -173,6 +203,8 @@ mod two_buses {
 
     impl kmr_api::Spec for TwoBuses {
         type Drivers = kmr_api::HCons<kmr_api::__DxlAdapter<2>, kmr_api::HNil>;
+
+        const LINK_NAMES: &'static [&'static str] = &["base"];
 
         fn bind(plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
             let hardware = kmr_api::HCons {
@@ -333,6 +365,8 @@ mod recording {
     impl Spec for Records {
         type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
+        const LINK_NAMES: &'static [&'static str] = &["base"];
+
         fn bind(_plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
             Ok(kmr_api::HCons {
                 head: Recorder { fail_open: false },
@@ -346,6 +380,8 @@ mod recording {
 
     impl Spec for FailsOpen {
         type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
+
+        const LINK_NAMES: &'static [&'static str] = &["base"];
 
         fn bind(_plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
             Ok(kmr_api::HCons {

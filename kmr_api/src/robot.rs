@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::spec::Lend;
-use crate::{Binding, Bus, Schedule, Sensors, Spec, State, Time, UserError, payload::Payload};
+use crate::{Binding, Bus, Payload, Schedule, Sensors, Spec, State, Time, UserError};
 use kmr_core::hal::{Drivers, NoHardware};
 use kmr_core::{
     ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
@@ -113,16 +113,18 @@ where
 pub struct Robot<H, C = Scheduled> {
     inner: kmr_core::Robot<C>,
     plugins: Vec<Bus>,
+    payloads: Vec<Payload>,
     dt: Option<Duration>,
     spec: PhantomData<fn() -> H>,
 }
 
 impl<H: Spec> Robot<H> {
-    /// A robot with no controller, no plugin and no `dt` yet.
+    /// A robot with no controller, no plugin, no payload and no `dt` yet.
     pub fn new() -> Self {
         Self {
             inner: kmr_core::Robot::new(),
             plugins: Vec::new(),
+            payloads: Vec::new(),
             dt: None,
             spec: PhantomData,
         }
@@ -161,6 +163,7 @@ impl<H, C> Robot<H, C> {
         Robot {
             inner: grow(self.inner),
             plugins: self.plugins,
+            payloads: self.payloads,
             dt: self.dt,
             spec: PhantomData,
         }
@@ -183,10 +186,11 @@ impl<H, C> Robot<H, C> {
     // const...
     // pub fn history_depth(self, depth: usize) {}
 
-    /// Registers a payload; not implemented yet (T027). The type-state `C` is unchanged.
-    pub fn register_payload(self, model: Payload) -> Self {
-        let _ = model;
-        todo!()
+    /// Registers a medium or heavy payload, here and never from a controller (SRS FR-8.4).
+    /// Its mount link is checked by [`run`](Self::run), before any I/O.
+    pub fn register_payload(mut self, payload: Payload) -> Self {
+        self.payloads.push(payload);
+        self
     }
 
     // Controllers. Each of these GROWS the type-state: the returned `Robot`
@@ -292,8 +296,8 @@ impl<H, C> Robot<H, C> {
     ///
     /// # Errors
     ///
-    /// [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], then the binding errors of
-    /// [`Spec::bind`].
+    /// [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], [`UserError::UnknownLink`],
+    /// then the binding errors of [`Spec::bind`].
     pub fn bind(self) -> Result<Bound<H, C>, UserError>
     where
         H: Spec,
@@ -310,8 +314,12 @@ impl<H, C> Robot<H, C> {
     ///
     /// # Errors
     ///
-    /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`].
-    fn finalize(self) -> Result<(kmr_core::Robot<C>, Vec<Binding>), UserError> {
+    /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`], then
+    /// [`UserError::UnknownLink`].
+    fn finalize(self) -> Result<(kmr_core::Robot<C>, Vec<Binding>), UserError>
+    where
+        H: Spec,
+    {
         if let Some(dt) = self.dt
             && !(DT_MIN..=DT_MAX).contains(&dt)
         {
@@ -321,6 +329,15 @@ impl<H, C> Robot<H, C> {
             if self.plugins[..i].iter().any(|b| b.port() == bus.port()) {
                 return Err(UserError::DuplicateBus { port: bus.port() });
             }
+        }
+        if let Some(payload) = self
+            .payloads
+            .iter()
+            .find(|payload| !H::LINK_NAMES.contains(&payload.mount()))
+        {
+            return Err(UserError::UnknownLink {
+                link: payload.mount(),
+            });
         }
         let inner = match self.dt {
             Some(dt) => self.inner.set_dt(dt),
@@ -403,6 +420,8 @@ mod tests {
 
     impl Spec for TestSpec {
         type Drivers = HCons<crate::__NoHardware, HNil>;
+
+        const LINK_NAMES: &'static [&'static str] = &["base", "tool"];
 
         fn bind(plugins: &[crate::Binding]) -> Result<Self::Drivers, UserError> {
             crate::__bind_none(plugins)
