@@ -636,7 +636,13 @@ mod tests {
     /// backend log is cleared.
     fn adapter() -> (Dynamixel<Scripted, 1>, Layout) {
         let mut adapter = Dynamixel::new(Scripted::new(), TABLE);
-        let layout = adapter.check(Overrides::default()).unwrap();
+        let claim = adapter.check(Overrides::default()).unwrap();
+        let layout = Layout::new(
+            claim.group,
+            claim.read_every,
+            claim.read_cost,
+            claim.write_cost,
+        );
         adapter.backend.open_ports(&[]).unwrap();
         adapter.open = true;
         adapter.torque_on().unwrap();

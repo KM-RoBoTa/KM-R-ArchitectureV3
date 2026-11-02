@@ -17,7 +17,9 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use kmr_core::hal::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written};
+use kmr_core::hal::{
+    Batch, Claim, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written,
+};
 use kmr_core::state::{JOINTS, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
@@ -247,11 +249,17 @@ impl Desired {
 /// One `write` of `desired` as the engine sends it.
 fn write<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB>,
-    layout: &Layout,
+    claim: &Claim,
     desired: &Desired,
 ) -> Faults {
     let mut faults = Faults::default();
-    let batch = Batch::new(layout, &desired.written);
+    let layout = Layout::new(
+        claim.group,
+        claim.read_every,
+        claim.read_cost,
+        claim.write_cost,
+    );
+    let batch = Batch::new(&layout, &desired.written);
     adapter.write(desired.command(), &batch, &mut faults);
     faults
 }
@@ -279,7 +287,7 @@ fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>) {
 /// marked open; the backend log is cleared afterwards.
 fn powered<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB>,
-) -> Result<Layout, DynamixelError> {
+) -> Result<Claim, DynamixelError> {
     let layout = adapter.check(Overrides::default())?;
     mark_open(adapter);
     adapter.zero()?;

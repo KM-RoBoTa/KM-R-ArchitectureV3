@@ -20,7 +20,7 @@ mod tests;
 use core::fmt;
 use std::path::Path;
 
-use kmr_core::hal::{Batch, Command, Faults, Hal, Layout, Mask, Overrides, Sample, seal};
+use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
 use kmr_core::state::{JOINTS, Q};
 use tracing::{debug, warn};
 
@@ -614,7 +614,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// Groups per (bus, series); each bus is read every `read_every` ticks,
     /// else every [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no
     /// cadence: it is a table field (core K3.8).
-    fn check(&mut self, _overrides: Overrides) -> Result<Layout, DynamixelError> {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim, DynamixelError> {
         if NB > B::MAX_PORTS {
             return Err(DynamixelError::TooManyBuses {
                 buses: NB,
@@ -634,12 +634,15 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
             );
         }
         let (read_cost, write_cost) = self.groups.costs(&self.table.buses, B::STATE_READS);
-        Ok(Layout::new(
-            self.groups.numbers(),
-            self.groups.cadence(),
+        // Every engine index is a Dynamixel actuator until the table names
+        // its own indices (adapters T069).
+        Ok(Claim {
+            owned: Mask::ALL,
+            group: self.groups.numbers(),
+            read_every: self.groups.cadence(),
             read_cost,
             write_cost,
-        ))
+        })
     }
 
     /// Resolves and pre-flights the port of every bus, refuses two buses on

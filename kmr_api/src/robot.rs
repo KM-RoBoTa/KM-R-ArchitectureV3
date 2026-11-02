@@ -4,8 +4,14 @@ use std::time::Duration;
 use crate::{Binding, Bus, Schedule, Sensors, Spec, State, Time, UserError, payload::Payload};
 use kmr_core::hal::NoHardware;
 use kmr_core::{
-    ControlFn, ControlFnWith, Inline, InlineWith, Insert, Scheduled, ThreadFn, Threaded,
+    ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
+    Threaded,
 };
+
+/// The driver list of the one driver `head`. The driver set (kmr_api T069) replaces it.
+fn one<D>(head: D) -> HCons<D, HNil> {
+    HCons { head, tail: HNil }
+}
 
 // The named api→core translation wrapper stored in place of the user's closure.
 //
@@ -272,10 +278,10 @@ impl<H, C> Robot<H, C> {
     {
         let (inner, plugins) = self.finalize()?;
         if plugins.is_empty() {
-            return inner.run_on(NoHardware).map_err(|never| match never {});
+            return inner.run_on(one(NoHardware)).map_err(UserError::bring_up);
         }
         let adapter = H::bind(&plugins)?;
-        inner.run_on(adapter).map_err(UserError::bring_up)
+        inner.run_on(one(adapter)).map_err(UserError::bring_up)
     }
 
     /// Checks the builder data, no I/O, and hands `dt` to the core.

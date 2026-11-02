@@ -6,11 +6,16 @@
 
 use core::convert::Infallible;
 use core::num::NonZeroU32;
+use core::ops::Range;
 use core::time::Duration;
 
 use tracing::warn;
 
 use crate::state::{JOINTS, Q, Qd, Tau};
+
+mod set;
+
+pub use set::{Claim, Coverage, Drivers, HardwareError, Member, MemberError, Plan, Step};
 
 /// Seal of [`Hal`]: open to adapter crates, closed to controllers, which
 /// cannot depend on `kmr_core`.
@@ -77,6 +82,24 @@ impl Mask {
         Self(words)
     }
 
+    /// Bits set in both `self` and `other`.
+    pub fn intersection(self, other: Self) -> Self {
+        let mut words = self.0;
+        for (word, theirs) in words.iter_mut().zip(other.0) {
+            *word &= theirs;
+        }
+        Self(words)
+    }
+
+    /// Bits set in `self` and not in `other`.
+    pub fn difference(self, other: Self) -> Self {
+        let mut words = self.0;
+        for (word, theirs) in words.iter_mut().zip(other.0) {
+            *word &= !theirs;
+        }
+        Self(words)
+    }
+
     /// Indices whose bit is set, ascending.
     pub fn iter(&self) -> impl Iterator<Item = usize> {
         let mask = *self;
@@ -88,10 +111,11 @@ impl Mask {
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Group(pub u8);
 
-/// What the adapter declares once, at run() finalization.
+/// The whole robot's hardware, merged once at run() finalization from the
+/// members' claims.
 #[derive(Debug)]
 pub struct Layout {
-    /// Pre-sort key of each actuator (SRS FR-5.3).
+    /// Pre-sort key of each actuator, robot-wide (SRS FR-5.3).
     pub group: [Group; JOINTS],
     /// Read cadence in force for each actuator, in ticks.
     pub read_every: [NonZeroU32; JOINTS],
@@ -100,15 +124,41 @@ pub struct Layout {
     /// Estimated bus time of one full write.
     pub write_cost: Duration,
     order: [usize; JOINTS],
+    /// Actuators of each member, by position.
+    owned: [Mask; JOINTS],
+    /// Member k has the groups `bound[k]..bound[k + 1]`.
+    bound: [u16; JOINTS + 1],
+    members: usize,
 }
 
 impl Layout {
-    /// Declares the layout and sorts the actuators by group once.
+    /// The layout of one member owning every actuator, sorted by group once.
     pub fn new(
         group: [Group; JOINTS],
         read_every: [NonZeroU32; JOINTS],
         read_cost: Duration,
         write_cost: Duration,
+    ) -> Self {
+        let groups = group.iter().map(|g| u16::from(g.0) + 1).max();
+        let mut bound = [0; JOINTS + 1];
+        if let Some(end) = bound.get_mut(1) {
+            *end = groups.unwrap_or(0);
+        }
+        let mut owned = [Mask::NONE; JOINTS];
+        if let Some(all) = owned.first_mut() {
+            *all = Mask::ALL;
+        }
+        Self::merged(group, read_every, (read_cost, write_cost), owned, bound, 1)
+    }
+
+    /// The layout of `members` members, sorted by group once.
+    pub(crate) fn merged(
+        group: [Group; JOINTS],
+        read_every: [NonZeroU32; JOINTS],
+        (read_cost, write_cost): (Duration, Duration),
+        owned: [Mask; JOINTS],
+        bound: [u16; JOINTS + 1],
+        members: usize,
     ) -> Self {
         let mut order: [usize; JOINTS] = core::array::from_fn(|index| index);
         order.sort_unstable_by_key(|&index| (group.get(index).copied(), index));
@@ -118,7 +168,42 @@ impl Layout {
             read_cost,
             write_cost,
             order,
+            owned,
+            bound,
+            members,
         }
+    }
+
+    /// Each member's actuators and groups, in declaration order.
+    pub(crate) fn slots(&self) -> Slots<'_> {
+        Slots {
+            owned: self.owned.get(..self.members).unwrap_or(&[]),
+            bound: self.bound.get(..=self.members).unwrap_or(&[]),
+        }
+    }
+}
+
+/// A cursor over the members' actuators and groups, as the walk takes them.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct Slots<'a> {
+    owned: &'a [Mask],
+    bound: &'a [u16],
+}
+
+impl<'a> Slots<'a> {
+    /// The first member's actuators and groups, and the rest.
+    pub(crate) fn split(self) -> (Mask, Range<u16>, Self) {
+        let (owned, rest) = match self.owned {
+            [first, rest @ ..] => (*first, rest),
+            [] => (Mask::NONE, self.owned),
+        };
+        let groups = match self.bound {
+            [start, end, ..] => *start..*end,
+            _ => 0..0,
+        };
+        let bound = self.bound.get(1..).unwrap_or(&[]);
+        (owned, groups, Self { owned: rest, bound })
     }
 }
 
@@ -153,6 +238,15 @@ impl Written {
     /// Actuators with at least one field written.
     pub fn any(&self) -> Mask {
         self.q.union(self.qd).union(self.tau)
+    }
+
+    /// The writes of the actuators of `owned` only.
+    pub(crate) fn within(&self, owned: Mask) -> Self {
+        Self {
+            q: self.q.intersection(owned),
+            qd: self.qd.intersection(owned),
+            tau: self.tau.intersection(owned),
+        }
     }
 }
 
@@ -226,14 +320,25 @@ impl<'a> Sample<'a> {
     ) -> Self {
         Self { q, qd, tau }
     }
+
+    /// Lends the same slot again, to the next member.
+    pub(crate) fn reborrow(&mut self) -> Sample<'_> {
+        Sample::new(self.q, self.qd, self.tau)
+    }
 }
 
-/// Written actuators, in group order.
+/// Written actuators, in group order: the whole robot's, or one member's
+/// once the walk selected it.
 #[derive(Debug)]
 pub struct Batch<'a> {
     layout: &'a Layout,
     index: [usize; JOINTS],
     len: usize,
+    /// The selected actuators are `index[from..to]`.
+    from: usize,
+    to: usize,
+    /// First group of the selected member: its runs yield local ids.
+    base: u8,
 }
 
 impl<'a> Batch<'a> {
@@ -250,19 +355,46 @@ impl<'a> Batch<'a> {
                 len += 1;
             }
         }
-        Self { layout, index, len }
+        Self {
+            layout,
+            index,
+            len,
+            from: 0,
+            to: len,
+            base: 0,
+        }
+    }
+
+    /// Selects the actuators of the robot-wide `groups`, one member's.
+    pub(crate) fn select(&mut self, groups: Range<u16>) {
+        let all = self.index.get(..self.len).unwrap_or(&[]);
+        let of = |actuator: &usize| {
+            let group = self
+                .layout
+                .group
+                .get(*actuator)
+                .copied()
+                .unwrap_or_default();
+            u16::from(group.0)
+        };
+        let from = all.partition_point(|actuator| of(actuator) < groups.start);
+        let to = all.partition_point(|actuator| of(actuator) < groups.end);
+        self.from = from;
+        self.to = to;
+        self.base = u8::try_from(groups.start).unwrap_or(u8::MAX);
     }
 
     /// Whether no actuator was written.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.from == self.to
     }
 
     /// One run per group, groups ascending, actuators ascending inside a run.
     pub fn runs(&self) -> Runs<'_> {
         Runs {
             group: &self.layout.group,
-            rest: self.index.get(..self.len).unwrap_or(&[]),
+            rest: self.index.get(self.from..self.to).unwrap_or(&[]),
+            base: self.base,
         }
     }
 }
@@ -272,6 +404,7 @@ impl<'a> Batch<'a> {
 pub struct Runs<'a> {
     group: &'a [Group; JOINTS],
     rest: &'a [usize],
+    base: u8,
 }
 
 impl<'a> Iterator for Runs<'a> {
@@ -288,7 +421,8 @@ impl<'a> Iterator for Runs<'a> {
             .count();
         let (run, rest) = self.rest.split_at_checked(len)?;
         self.rest = rest;
-        Some((first.unwrap_or_default(), run))
+        let local = first.unwrap_or_default().0.saturating_sub(self.base);
+        Some((Group(local), run))
     }
 }
 
@@ -307,18 +441,24 @@ pub struct Faults {
     pub rejected: Mask,
 }
 
-/// The hardware contract (SRS FR-5.1, section 7). Static dispatch only.
+/// The hardware contract of one member of the robot's hardware (SRS FR-5.1,
+/// section 7): the engine calls it for the actuators it claims. Static
+/// dispatch only.
 ///
 /// The engine calls the operations in the order they are declared. Once
 /// `open` was called, every exit ends with `torque_off` then `close`.
+///
+/// The engine restricts `write` to the member's runs, with local group ids,
+/// and the `written` masks of `write` and `hold` to its actuators. `Sample`
+/// and `Faults` stay whole-robot: a member touches only its own slots.
 pub trait Hal: seal::Adapter {
     /// Bring-up and finalization failures. Names the actuator and the port
     /// when there is one.
     type Error: core::error::Error + 'static;
 
     /// run() finalization, no I/O: validates the configuration, applies the
-    /// overrides, declares the layout.
-    fn check(&mut self, overrides: Overrides) -> Result<Layout, Self::Error>;
+    /// overrides, claims the member's actuators.
+    fn check(&mut self, overrides: Overrides) -> Result<Claim, Self::Error>;
 
     /// Init: resolves every port, then flushes, sets the latency timer and
     /// opens each one. Nothing is powered.
@@ -371,7 +511,7 @@ impl<A: Hal> seal::Adapter for &mut A {}
 impl<A: Hal> Hal for &mut A {
     type Error = A::Error;
 
-    fn check(&mut self, overrides: Overrides) -> Result<Layout, Self::Error> {
+    fn check(&mut self, overrides: Overrides) -> Result<Claim, Self::Error> {
         (**self).check(overrides)
     }
 
@@ -424,7 +564,8 @@ impl<A: Hal> Hal for &mut A {
     }
 }
 
-/// The adapter used when none is compiled in: nothing is read or written.
+/// The member used when no adapter is compiled in: owns every actuator,
+/// reads and writes nothing.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct NoHardware;
 
@@ -433,14 +574,15 @@ impl seal::Adapter for NoHardware {}
 impl Hal for NoHardware {
     type Error = Infallible;
 
-    fn check(&mut self, overrides: Overrides) -> Result<Layout, Infallible> {
+    fn check(&mut self, overrides: Overrides) -> Result<Claim, Infallible> {
         let every = overrides.read_every.unwrap_or(NonZeroU32::MIN);
-        Ok(Layout::new(
-            [Group(0); JOINTS],
-            [every; JOINTS],
-            Duration::ZERO,
-            Duration::ZERO,
-        ))
+        Ok(Claim {
+            owned: Mask::ALL,
+            group: [Group(0); JOINTS],
+            read_every: [every; JOINTS],
+            read_cost: Duration::ZERO,
+            write_cost: Duration::ZERO,
+        })
     }
 
     fn open(&mut self) -> Result<(), Infallible> {

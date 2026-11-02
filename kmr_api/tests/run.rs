@@ -209,9 +209,7 @@ mod recording {
     use super::*;
     use core::fmt;
     use kmr_api::{Q, Spec};
-    use kmr_core::hal::{
-        Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, seal,
-    };
+    use kmr_core::hal::{Batch, Claim, Command, Faults, Group, Hal, Mask, Overrides, Sample, seal};
     use kmr_core::state::JOINTS;
     use std::num::NonZeroU32;
 
@@ -249,14 +247,15 @@ mod recording {
     impl Hal for Recorder {
         type Error = NoAnswer;
 
-        fn check(&mut self, _overrides: Overrides) -> Result<Layout, NoAnswer> {
+        fn check(&mut self, _overrides: Overrides) -> Result<Claim, NoAnswer> {
             log("check");
-            Ok(Layout::new(
-                [Group(0); JOINTS],
-                [NonZeroU32::MIN; JOINTS],
-                Duration::ZERO,
-                Duration::ZERO,
-            ))
+            Ok(Claim {
+                owned: Mask::ALL,
+                group: [Group(0); JOINTS],
+                read_every: [NonZeroU32::MIN; JOINTS],
+                read_cost: Duration::ZERO,
+                write_cost: Duration::ZERO,
+            })
         }
 
         fn open(&mut self) -> Result<(), NoAnswer> {
@@ -396,9 +395,13 @@ mod recording {
         };
         assert_eq!(
             e.to_string(),
-            "hardware bring-up failed: actuator 2 on serial kmr-test-no-such-serial: no answer"
+            "hardware bring-up failed: member 0 (run::recording::Recorder): actuator 2 on serial \
+             kmr-test-no-such-serial: no answer"
         );
-        let source = std::error::Error::source(&e).and_then(|s| s.downcast_ref::<NoAnswer>());
+        // UserError -> the hardware error -> the member's own.
+        let source = std::error::Error::source(&e)
+            .and_then(std::error::Error::source)
+            .and_then(|s| s.downcast_ref::<NoAnswer>());
         assert!(source.is_some(), "{e:?}");
         assert_eq!(take(), ["check", "open", "torque_off", "close"]);
     }
