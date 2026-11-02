@@ -27,8 +27,11 @@ impl Reader for Ron {
 
 impl Reader for Json {
     fn read(text: &str, file: &str) -> Result<Model, ModelError> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let robot: Robot = serde_json::from_str(text).map_err(|e| {
-            let at: Pos = (line_col(e.line()), line_col(e.column()));
+            // serde_json says column 0 right after a newline, before the
+            // line's first character.
+            let at: Pos = (line_col(e.line()), line_col(e.column().max(1)));
             let text = e.to_string();
             let suffix = format!(" at line {} column {}", e.line(), e.column());
             let reason = text.strip_suffix(&suffix).unwrap_or(&text);
@@ -304,6 +307,24 @@ mod tests {
         );
         let err = json("{\n  \"name\": \"t\",\n}");
         assert_eq!(err, Err("kmr: r.json:3:1: trailing comma".to_owned()));
+    }
+
+    #[test]
+    fn a_json_error_at_a_line_start_is_column_1() {
+        let err = json("{\n");
+        assert!(
+            err.as_ref()
+                .is_err_and(|e| e.starts_with("kmr: r.json:2:1: ")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_byte_order_mark_is_skipped() {
+        let urdf = Urdf::read(FOUR, "r.urdf")
+            .map(unplaced)
+            .map_err(|e| e.message());
+        assert_eq!(json(&format!("\u{feff}{FOUR_JSON}")), urdf);
     }
 
     #[test]

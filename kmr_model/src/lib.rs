@@ -3,10 +3,9 @@
 //! Runs inside the compiler on the build machine: the heap it uses is gone
 //! when the build ends, and the binary only receives constants.
 
-#![cfg_attr(
-    not(test),
-    forbid(clippy::unwrap_used, clippy::expect_used, clippy::panic)
-)]
+#![forbid(clippy::unwrap_used)]
+// Test helpers may stop on a broken fixture.
+#![cfg_attr(not(test), forbid(clippy::expect_used, clippy::panic))]
 
 mod emit;
 mod input;

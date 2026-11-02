@@ -34,16 +34,16 @@ impl Parse for Input {
             if input.is_empty() {
                 return Err(input.error("kmr: internal: model! input has no `;`"));
             }
-            krate.extend([input.parse::<TokenTree>()?]);
+            krate.extend([input.parse::<TokenTree>().map_err(kmr)?]);
         }
-        input.parse::<Token![;]>()?;
+        input.parse::<Token![;]>().map_err(kmr)?;
         let key: Ident = input
             .parse()
             .map_err(|e| syn::Error::new(e.span(), format!("kmr: {FORMS}")))?;
-        input.parse::<Token![=]>()?;
+        input.parse::<Token![=]>().map_err(kmr)?;
         let source = match key.to_string().as_str() {
-            "preset" => Source::Preset(input.parse()?),
-            "model" => Source::Model(input.parse()?),
+            "preset" => Source::Preset(input.parse().map_err(kmr)?),
+            "model" => Source::Model(input.parse().map_err(kmr)?),
             other => {
                 return Err(syn::Error::new(
                     key.span(),
@@ -58,6 +58,11 @@ impl Parse for Input {
         }
         Ok(Self { krate, source })
     }
+}
+
+/// `e` with the `kmr:` prefix every message carries.
+fn kmr(e: syn::Error) -> syn::Error {
+    syn::Error::new(e.span(), format!("kmr: {e}"))
 }
 
 #[cfg(test)]
@@ -118,7 +123,12 @@ mod tests {
 
     #[test]
     fn a_path_must_be_a_string() {
-        assert!(parse("k; model = arm").is_err());
-        assert!(parse("k; preset = \"XmBench\"").is_err());
+        assert!(parse("k; model = arm").is_err_and(|e| e.starts_with("kmr: ")));
+        assert!(parse("k; preset = \"XmBench\"").is_err_and(|e| e.starts_with("kmr: ")));
+    }
+
+    #[test]
+    fn a_missing_equals_sign_is_a_kmr_error() {
+        assert!(parse("k; preset XmBench").is_err_and(|e| e.starts_with("kmr: ")));
     }
 }

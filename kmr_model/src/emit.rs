@@ -74,13 +74,17 @@ fn lookup(robot: &Robot) -> TokenStream {
         quote! { (#name) => { #index }; }
     });
     quote! {
-        /// The index of the actuator named by a string literal; any other
-        /// name does not build.
+        /// The index of the actuator named by a plain string literal; any
+        /// other literal does not build, a raw or escaped one included.
         #[allow(unused_macros)]
         macro_rules! actuator {
             #(#arms)*
             ($name:literal) => {
-                ::core::compile_error!(::core::concat!("kmr: no actuator named ", $name))
+                ::core::compile_error!(::core::concat!(
+                    "kmr: no actuator named ",
+                    $name,
+                    "; a name matches only as a plain string literal, without raw form or escape"
+                ))
             };
         }
 
@@ -144,7 +148,9 @@ fn float(v: f32) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use proc_macro2::TokenTree;
+    use std::iter::Peekable;
+
+    use proc_macro2::{Delimiter, TokenTree, token_stream};
 
     use super::*;
     use crate::model::{CheckedActuator, Kind};
@@ -205,7 +211,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("concat ! (\"kmr: no actuator named \" , $ name)"),
+            out.contains("concat ! (\"kmr: no actuator named \" , $ name , \"; a name matches only as a plain string literal, without raw form or escape\")"),
             "{out}"
         );
         assert!(out.contains("pub (crate) use actuator ;"), "{out}");
@@ -230,40 +236,121 @@ mod tests {
         assert!(out.contains("[0f32 , 0f32 , 0.05f32]"), "{out}");
     }
 
-    /// The `(keyword, name)` of each item in `ts`, and the body of
-    /// `mod model`.
+    type Tokens = Peekable<token_stream::IntoIter>;
+
+    /// The `(keyword, name)` of each item in `ts`, and the body of its
+    /// `mod`. The walk ends at the first token that does not continue an
+    /// item kind the emission uses, pushed as `("unexpected", rest)`.
     fn items(ts: TokenStream) -> (Vec<(String, String)>, Option<TokenStream>) {
         let mut out = Vec::new();
         let mut body = None;
         let mut tokens = ts.into_iter().peekable();
-        while let Some(t) = tokens.next() {
-            let TokenTree::Ident(word) = t else { continue };
-            let word = word.to_string();
-            let name = match word.as_str() {
-                "const" | "mod" => tokens.next().map(|t| t.to_string()),
-                "macro_rules" => tokens.nth(1).map(|t| t.to_string()),
-                "use" => tokens
-                    .by_ref()
-                    .take_while(|t| t.to_string() != ";")
-                    .last()
-                    .map(|t| t.to_string()),
-                _ => continue,
+        while tokens.peek().is_some() {
+            let Some(pair) = item(&mut tokens, &mut body) else {
+                let rest: Vec<String> = tokens.map(|t| t.to_string()).collect();
+                out.push(("unexpected".to_owned(), rest.join(" ")));
+                break;
             };
-            let name = name.unwrap_or_default();
-            if word == "mod"
-                && let Some(TokenTree::Group(g)) = tokens.peek()
-            {
-                body = Some(g.stream());
-            }
-            if word == "const" {
-                tokens.by_ref().take_while(|t| t.to_string() != ";").count();
-            }
-            if word == "macro_rules" {
-                tokens.next();
-            }
-            out.push((word, name));
+            out.push(pair);
         }
         (out, body)
+    }
+
+    /// One item: attributes, an optional `pub` or `pub(..)`, then a
+    /// `const`, `mod`, `macro_rules!` or `use`; `None` for anything else.
+    fn item(tokens: &mut Tokens, body: &mut Option<TokenStream>) -> Option<(String, String)> {
+        let mut word = tokens.next()?;
+        loop {
+            match &word {
+                TokenTree::Punct(p) if p.as_char() == '#' => {
+                    group(tokens, Delimiter::Bracket)?;
+                }
+                TokenTree::Ident(i) if i == "pub" => {
+                    if matches!(tokens.peek(), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis)
+                    {
+                        tokens.next();
+                    }
+                }
+                _ => break,
+            }
+            word = tokens.next()?;
+        }
+        let TokenTree::Ident(word) = word else {
+            return None;
+        };
+        let keyword = word.to_string();
+        let name = match keyword.as_str() {
+            "const" => {
+                let name = ident(tokens)?;
+                rest_of_statement(tokens)?;
+                name
+            }
+            "mod" => {
+                let name = ident(tokens)?;
+                *body = Some(group(tokens, Delimiter::Brace)?);
+                name
+            }
+            "macro_rules" => {
+                match tokens.next()? {
+                    TokenTree::Punct(p) if p.as_char() == '!' => {}
+                    _ => return None,
+                }
+                let name = ident(tokens)?;
+                group(tokens, Delimiter::Brace)?;
+                name
+            }
+            "use" => rest_of_statement(tokens)?.pop()?,
+            _ => return None,
+        };
+        Some((keyword, name))
+    }
+
+    /// The next token, when it is an identifier.
+    fn ident(tokens: &mut Tokens) -> Option<String> {
+        match tokens.next()? {
+            TokenTree::Ident(i) => Some(i.to_string()),
+            _ => None,
+        }
+    }
+
+    /// The body of the next token, when it is a group in `delimiter`.
+    fn group(tokens: &mut Tokens, delimiter: Delimiter) -> Option<TokenStream> {
+        match tokens.next()? {
+            TokenTree::Group(g) if g.delimiter() == delimiter => Some(g.stream()),
+            _ => None,
+        }
+    }
+
+    /// The tokens up to the next top-level `;`, which is consumed; `None`
+    /// when there is no `;`.
+    fn rest_of_statement(tokens: &mut Tokens) -> Option<Vec<String>> {
+        let mut seen = Vec::new();
+        loop {
+            match tokens.next()? {
+                TokenTree::Punct(p) if p.as_char() == ';' => return Some(seen),
+                t => seen.push(t.to_string()),
+            }
+        }
+    }
+
+    #[test]
+    fn the_item_walk_refuses_other_item_kinds() {
+        let (top, _) = items(quote! { const A: u8 = 0; type T = u8; });
+        assert_eq!(top[0], ("const".to_owned(), "A".to_owned()));
+        assert_eq!(top[1].0, "unexpected");
+        for other in [
+            quote! { pub type T = u8; },
+            quote! { static S: u8 = 0; },
+            quote! { const fn f() {} },
+            quote! { extern crate core; },
+            quote! { macro_rules! m ( () => {} ); },
+            quote! { mod m; },
+            quote! { #[doc = ""] },
+        ] {
+            let (top, _) = items(other.clone());
+            assert_eq!(top.len(), 1, "{other}");
+            assert_eq!(top[0].0, "unexpected", "{other}");
+        }
     }
 
     /// Every identifier in `ts`, groups included.
