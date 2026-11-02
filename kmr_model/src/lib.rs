@@ -12,6 +12,7 @@ mod emit;
 mod input;
 mod model;
 mod presets;
+mod serde_format;
 mod urdf;
 
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 
 use crate::input::{Input, Source};
 use crate::model::{Descriptor, Format, ModelError, Reader, Robot, validate};
+use crate::serde_format::{Json, Ron};
 use crate::urdf::Urdf;
 
 /// `N`, the `model` module and the rebuild tracking of one robot model.
@@ -115,10 +117,8 @@ fn check(descriptor: &Descriptor, shown: &str, span: Span) -> syn::Result<Robot>
 fn read(descriptor: &Descriptor, shown: &str) -> Result<model::Model, ModelError> {
     match descriptor.format {
         Format::Urdf => Urdf::read(&descriptor.text, shown),
-        Format::Ron | Format::Json => Err(ModelError::file(
-            shown,
-            ".ron and JSON descriptors are not supported yet",
-        )),
+        Format::Ron => Ron::read(&descriptor.text, shown),
+        Format::Json => Json::read(&descriptor.text, shown),
     }
 }
 
