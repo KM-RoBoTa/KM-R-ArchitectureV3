@@ -1,0 +1,13 @@
+// Bad: the joint list is not closed.
+Robot(
+    name: "bad",
+    links: [(name: "base", mass: 0.0, com: (0.0, 0.0, 0.0)), (name: "l1", mass: 0.0, com: (0.0, 0.0, 0.0))],
+    joints: [
+        (
+            name: "j1",
+            kind: Revolute,
+            parent: "base",
+            child: "l1",
+            limit: Some((lower: -1.57, upper: 1.57, velocity: 3.0, effort: 1.5)),
+        ),
+)
