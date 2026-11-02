@@ -12,7 +12,8 @@ pub enum Tier {
 
 /// A payload: its tier, its mass and the model link it is mounted on.
 ///
-/// `run()` checks the mount against the model's links before any I/O (SRS FR-6.4).
+/// `run()` checks the mount against the model's links before any I/O (SRS FR-6.4). The mass
+/// is not checked: the rule "finite and above 0" has no error decided yet (kmr_api U1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Payload {
     tier: Tier,
