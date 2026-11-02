@@ -1587,6 +1587,74 @@ fn an_out_of_range_target_is_rejected_and_the_rest_is_sent() -> Result<(), Dynam
     Ok(())
 }
 
+#[test]
+fn an_infinite_target_is_rejected_never_sent() -> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    let layout = powered(&mut adapter)?;
+    let desired = Desired::all_q()
+        .q(0, Q(f32::INFINITY))
+        .q(1, Q(f32::NEG_INFINITY));
+
+    let faults = write(&mut adapter, &layout, &desired);
+
+    assert_eq!(faults.rejected, mask(|index| index < 2));
+    assert_eq!(faults.bus_error, Mask::NONE);
+    let sent = adapter.backend.last_goals().iter().map(|&(id, _)| id);
+    assert!(sent.eq((2..JOINTS).map(id)));
+    Ok(())
+}
+
+#[test]
+fn a_tau_write_on_a_position_actuator_sends_nothing_and_is_rejected() -> Result<(), DynamixelError>
+{
+    let mut adapter = rig(X_TABLE);
+    let layout = powered(&mut adapter)?;
+    let mut desired = Desired::new();
+    desired.tau[2] = Tau(0.3);
+    desired.written.tau.set(2);
+
+    let faults = write(&mut adapter, &layout, &desired);
+
+    assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 0);
+    assert_eq!(faults.rejected, mask(|index| index == 2));
+    assert_eq!(faults.bus_error, Mask::NONE);
+    Ok(())
+}
+
+#[test]
+fn a_kp_or_kd_write_alone_sends_nothing_and_is_no_fault() -> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    let layout = powered(&mut adapter)?;
+    let mut desired = Desired::new().q(0, Q(0.0));
+    for index in [0, 1] {
+        desired.kp[index] = Kp(150.0);
+        desired.written.kp.set(index);
+    }
+    desired.kd[2] = Kd(1.0);
+    desired.written.kd.set(2);
+
+    let faults = write(&mut adapter, &layout, &desired);
+
+    assert_eq!(faults, Faults::default());
+    assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
+    assert_eq!(adapter.backend.last_goals(), &[(id(0), 2048)]);
+    Ok(())
+}
+
+#[test]
+fn check_warns_once_per_protocol_1_actuator_that_its_rates_are_unread() {
+    let mut adapter = rig(MIX_TABLE);
+    let mut claim = None;
+
+    let warned = warnings("Qd and Tau are never read", || {
+        claim = adapter.check(Overrides::default()).ok();
+    });
+
+    assert!(claim.is_some());
+    assert_eq!(warned, JOINTS / 2);
+    assert!(adapter.backend.calls().is_empty());
+}
+
 // ── Review findings: bring-up names, settings, ranges and costs ─────────────
 
 #[test]

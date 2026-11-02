@@ -7,7 +7,7 @@
 use core::num::NonZeroU32;
 use core::time::Duration;
 
-use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample};
+use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample, Written};
 use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 
 use super::backend::{Backend, BackendError, GoalRegister, RawState};
@@ -457,10 +457,17 @@ pub(super) fn read_due<B: Backend, const NB: usize>(
     refreshed
 }
 
+/// Whether `index` has a write a Dynamixel register takes: `Q`, `Qd` or
+/// `Tau`. `Kp` and `Kd` have none, so a write of them alone is ignored.
+fn has_goal(written: &Written, index: usize) -> bool {
+    written.q.get(index) || written.qd.get(index) || written.tau.get(index)
+}
+
 /// The per-tick write: one transaction per run of one table. An actuator
 /// not sent is `rejected`; a failed transaction sets `bus_error` on what it
 /// carried (FR-012, FR-015). An index the member does not own is another
-/// member's: skipped, its faults untouched.
+/// member's: skipped, its faults untouched. One written in `Kp` or `Kd` only
+/// is skipped too, without a fault.
 pub(super) fn write_batch<B: Backend, const NB: usize>(
     adapter: &mut Dynamixel<B, NB>,
     command: &Command<'_>,
@@ -475,6 +482,9 @@ pub(super) fn write_batch<B: Backend, const NB: usize>(
             else {
                 continue;
             };
+            if !has_goal(command.written, index) {
+                continue;
+            }
             if goals.is_some_and(|goals| goals.table != table) {
                 flush_goals(adapter, goals.take(), faults);
             }

@@ -193,7 +193,7 @@ FR-2.6, FR-13.4).
 
 **Independent Test**: SC-004 on the scripted backend.
 
-- [ ] T046 [US4] In kmr_adapters/src/dynamixel/tests.rs re-check under the strict fake: missing actuator → `Missing`; a failed read keeps the last value and sets `stale` (with `offline` for one lost actuator, `bus_error` for a failed group); a failed write sets `bus_error` and the next tick writes again; a non-finite or out-of-range target, a `Qd` write on a position actuator, a write to a read-only actuator → not sent, `rejected`; `check` warns once per Protocol 1 actuator that `Qd` and `Tau` are never read (FR-010); no test panics (SC-004 (SRS FR-13.4, NFR-2))
+- [x] T046 [US4] In kmr_adapters/src/dynamixel/tests.rs re-check under the strict fake: missing actuator → `Missing`; a failed read keeps the last value and sets `stale` (with `offline` for one lost actuator, `bus_error` for a failed group); a failed write sets `bus_error` and the next tick writes again; a non-finite or out-of-range target, a `Qd` write on a position actuator, a write to a read-only actuator → not sent, `rejected`; `check` warns once per Protocol 1 actuator that `Qd` and `Tau` are never read (FR-010); no test panics (SC-004 (SRS FR-13.4, NFR-2))
 - [ ] T047 [US4] HUMAN: Bench: unplug one actuator mid-run; `offline` and `stale` are set for it and the loop keeps its grid (the ~34 ms SDK stall is a known limit, research R13)
 
 ---
