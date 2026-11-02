@@ -52,8 +52,10 @@ pub enum Model {
     Ax12a,
     /// RX-28.
     Rx28,
-    /// MX-64 on its Protocol 1 firmware. Its Torque Ctrl Mode Enable (70)
-    /// makes it ignore Goal Position; the adapter does not read it (open).
+    /// MX-64 on its Protocol 1 firmware. Not checked yet (T071, waiting on
+    /// `dxl_rs`): its Torque Ctrl Mode Enable (70), which makes it ignore
+    /// Goal Position, and its Model Number, so an AX-12A or RX-28 declared as
+    /// an MX-64, or the reverse, is driven at the wrong position scale.
     Mx64,
     /// MX-64(2.0): the MX-64 on its Protocol 2.0 firmware, another control
     /// table.
