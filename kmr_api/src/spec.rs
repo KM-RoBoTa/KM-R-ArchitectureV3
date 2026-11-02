@@ -104,7 +104,106 @@ pub mod __brand {
         ) -> (usize, usize) {
             (NB, M)
         }
+
+        /// Engine indices `hardware` drives.
+        pub const fn indices<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+        ) -> &[usize] {
+            hardware.indices()
+        }
     }
+}
+
+/// Checks that `parts`, the engine indices each brand's part drives, cover `0..n` exactly
+/// once (SRS FR-5.1, FR-6.4).
+///
+/// # Panics
+///
+/// On an index past `n`, an index no part drives, or one two parts drive; in const
+/// evaluation, that is the compile error.
+#[doc(hidden)]
+pub const fn __check_coverage(parts: &[&[usize]], n: usize) {
+    let mut rest = parts;
+    while let [part, later @ ..] = rest {
+        let mut indices = *part;
+        while let [index, tail @ ..] = indices {
+            if *index >= n {
+                fail(
+                    "a hardware part drives engine index ",
+                    *index,
+                    ", past the robot's actuators",
+                );
+            }
+            indices = tail;
+        }
+        rest = later;
+    }
+    let mut index = 0;
+    while index < n {
+        match drivers_of(parts, index) {
+            0 => fail("no hardware part drives engine index ", index, ""),
+            1 => {}
+            _ => fail("two hardware parts drive engine index ", index, ""),
+        }
+        index += 1;
+    }
+}
+
+/// How many entries of `parts` drive engine index `index`.
+const fn drivers_of(parts: &[&[usize]], index: usize) -> usize {
+    let mut count = 0;
+    let mut rest = parts;
+    while let [part, later @ ..] = rest {
+        let mut indices = *part;
+        while let [first, tail @ ..] = indices {
+            if *first == index {
+                count += 1;
+            }
+            indices = tail;
+        }
+        rest = later;
+    }
+    count
+}
+
+/// Capacity of a coverage message.
+const MESSAGE_LEN: usize = 128;
+
+/// Stops const evaluation with `kmr: {before}{index}{after}`; `format!` is not available there.
+const fn fail(before: &str, index: usize, after: &str) -> ! {
+    let mut bytes = [0u8; MESSAGE_LEN];
+    let mut len = push(&mut bytes, 0, b"kmr: ");
+    len = push(&mut bytes, len, before.as_bytes());
+    let mut scale = 1;
+    while index / scale >= 10 {
+        scale *= 10;
+    }
+    while scale > 0 {
+        len = push(&mut bytes, len, &[b'0' + (index / scale % 10) as u8]);
+        scale /= 10;
+    }
+    len = push(&mut bytes, len, after.as_bytes());
+    let text = match bytes.split_at_checked(len) {
+        Some((text, _)) => text,
+        None => &[],
+    };
+    match core::str::from_utf8(text) {
+        Ok(text) => panic!("{}", text),
+        Err(_) => panic!("kmr: the hardware parts do not cover the robot's actuators"),
+    }
+}
+
+/// Appends `text` to `bytes` at `len`, dropping what does not fit; returns the new length.
+const fn push(bytes: &mut [u8; MESSAGE_LEN], mut len: usize, text: &[u8]) -> usize {
+    let mut rest = text;
+    while let [byte, tail @ ..] = rest {
+        if let Some((_, [slot, ..])) = bytes.split_at_mut_checked(len) {
+            *slot = *byte;
+            len += 1;
+        }
+        rest = tail;
+    }
+    len
 }
 
 #[cfg(test)]
@@ -134,6 +233,31 @@ mod tests {
             __bind_none(&[PLUGIN]),
             Err(UserError::NoHardwareDeclared)
         ));
+    }
+
+    #[test]
+    fn parts_that_cover_every_index_once_pass() {
+        __check_coverage(&[&[2, 0], &[1, 3]], 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "kmr: no hardware part drives engine index 2")]
+    fn a_gap_is_rejected() {
+        __check_coverage(&[&[0, 1], &[3]], 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "kmr: two hardware parts drive engine index 1")]
+    fn an_overlap_is_rejected() {
+        __check_coverage(&[&[0, 1], &[1, 2, 3]], 4);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "kmr: a hardware part drives engine index 4, past the robot's actuators"
+    )]
+    fn an_index_past_the_robot_is_rejected() {
+        __check_coverage(&[&[0, 1, 2, 3, 4]], 4);
     }
 
     #[test]

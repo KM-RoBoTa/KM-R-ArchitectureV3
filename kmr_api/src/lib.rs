@@ -47,7 +47,7 @@ pub use kmr_adapters::{
 #[doc(hidden)]
 pub use kmr_core::{HCons, HNil};
 #[doc(hidden)]
-pub use spec::{__DxlAdapter, __NoHardware, __bind_none, __brand, Spec};
+pub use spec::{__DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage, Spec};
 
 mod bus;
 pub use bus::Bus;

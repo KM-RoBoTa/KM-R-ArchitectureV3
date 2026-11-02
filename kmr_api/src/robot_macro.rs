@@ -13,9 +13,9 @@
 ///
 /// `hardware = { brand: part, .. }` names one part per brand, each the
 /// member that drives the engine indices the part gives: `dynamixel`, a
-/// placed [`dynamixel::Table`](crate::dynamixel::Table). A brand named twice does not build. Together the parts
-/// cover `0..N` exactly once, which `run()` checks before any I/O. The
-/// syntax is assumed, pending human (kmr_api T069).
+/// placed [`dynamixel::Table`](crate::dynamixel::Table). A brand named
+/// twice does not build, nor do parts that do not cover `0..N` exactly
+/// once. The syntax is assumed, pending human (kmr_api T069).
 ///
 /// Use the generated items instead of importing `kmr_api::{N, State, Robot}`.
 ///
@@ -55,6 +55,32 @@
 ///
 /// fn main() {}
 /// ```
+///
+/// Nor do parts that leave an actuator without a member:
+///
+/// ```compile_fail,E0080
+/// use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+///
+/// const fn xm430(id: u8) -> Actuator {
+///     Actuator {
+///         bus: 0,
+///         id,
+///         model: Model::Xm430W210,
+///         mode: Mode::Position,
+///         torque: Torque::On,
+///         zero: Zero::DEFAULT,
+///     }
+/// }
+///
+/// const ARM: Table<1, 2> = Table {
+///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+///     actuators: [xm430(1), xm430(2)],
+/// };
+///
+/// kmr_api::robot!(model = "tests/fixtures/four.urdf", hardware = { dynamixel: ARM.at([0, 1]) });
+///
+/// fn main() {}
+/// ```
 #[macro_export]
 macro_rules! robot {
     ($preset:ident) => {
@@ -71,6 +97,7 @@ macro_rules! robot {
         #[doc(hidden)]
         #[allow(dead_code)]
         const __TABLE: $crate::Table<__NB, __M> = $crate::presets::$preset::HARDWARE;
+        const _: () = $crate::__check_coverage(&[__TABLE.in_order().indices()], N);
         impl $crate::Spec for __Spec {
             type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB>, $crate::HNil>;
 
@@ -118,6 +145,10 @@ macro_rules! robot {
                 }
             )+
         }
+        const _: () = $crate::__check_coverage(
+            &[$($crate::__brand::$brand::indices(&__hardware::$brand::PART)),+],
+            N,
+        );
         impl $crate::Spec for __Spec {
             type Drivers =
                 <$crate::robot!(@parts $($brand),+) as $crate::Brands>::Drivers;
