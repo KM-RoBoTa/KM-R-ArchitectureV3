@@ -144,7 +144,7 @@ mod placed {
 
     #[test]
     fn the_part_keeps_its_placement() {
-        assert_eq!(__hardware::dynamixel::PART.indices(), &[3, 2, 1, 0]);
+        assert_eq!(__hardware::dynamixel::__PART.indices(), &[3, 2, 1, 0]);
         assert_eq!(N, 4);
     }
 
@@ -182,5 +182,46 @@ mod placed {
         // Groups are numbered in engine order: the wrist, first seen at 0, is group 0.
         assert_eq!(claim.group, [Group(0), Group(0), Group(0), Group(1)]);
         assert_eq!(claim.read_every.map(NonZeroU32::get), [2, 2, 2, 1]);
+    }
+}
+
+mod user_names {
+    use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+
+    const fn xm430(id: u8) -> Actuator {
+        Actuator {
+            bus: 0,
+            id,
+            model: Model::Xm430W210,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::DEFAULT,
+        }
+    }
+
+    /// Named like the expansion's internals once were.
+    type Part = Table<1, 4>;
+
+    /// The user's table, under a name the expansion must not shadow.
+    const SHAPE: Part = Table {
+        buses: [Bus {
+            label: "arm",
+            baud: 1_000_000,
+            read_every: None,
+        }],
+        actuators: [xm430(1), xm430(2), xm430(3), xm430(4)],
+    };
+
+    /// The user's placement, under a name the expansion must not shadow.
+    const PART: [usize; 4] = [1, 0, 3, 2];
+
+    kmr_api::robot!(
+        model = "tests/fixtures/four.urdf",
+        hardware = { dynamixel: SHAPE.at(PART) }
+    );
+
+    #[test]
+    fn a_part_naming_user_items_like_the_internals_reads_the_users() {
+        assert_eq!(__hardware::dynamixel::__PART.indices(), &PART);
     }
 }

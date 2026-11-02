@@ -64,11 +64,12 @@ kmr_api::robot!(model = "robot/arm.urdf", hardware = { dynamixel: ARM.at([0, 2, 
   (`dynamixel` today); its `Hardware<NB, M>` is the type of the part and its `shape(&part)` the bus
   and actuator counts, read in const evaluation. A Dynamixel part is a placed table,
   `Table { .. }.at([index; M])` or `.in_order()` (kmr_adapters T069, `Placement<NB, M>`).
-- The expansion puts each part in `mod __hardware::<brand>` (`SHAPE`, `type Part`, `const PART`),
-  so a brand named twice is `error[E0428]`: one member per brand, and one Dynamixel SDK per
-  process.
-- `type Drivers` is `<HCons<__hardware::a::Part, ..> as kmr_api::Brands>::Drivers`; `bind` is
-  `kmr_api::__bind(HCons { head: __hardware::a::PART, .. }, plugins)`.
+- The expansion puts each part in `mod __hardware::<brand>` (`__SHAPE`, `type __Part`,
+  `const __PART`), so a brand named twice is `error[E0428]`: one member per brand, and one
+  Dynamixel SDK per process. The part is evaluated there, under a glob import of the user's
+  module, so the generated names keep `__`: a user item named `PART` stays the user's.
+- `type Drivers` is `<HCons<__hardware::a::__Part, ..> as kmr_api::Brands>::Drivers`; `bind` is
+  `kmr_api::__bind(HCons { head: __hardware::a::__PART, .. }, plugins)`.
 - Routing: over several brands a plugin goes to the brand whose bus its label names; a label two
   brands share is `SharedBusLabel { label }`, an unknown label `UnknownBus { label, port }`, no
   label on a robot of several buses `LabelRequired { port }`, all before any bind. A robot of one brand hands that brand every plugin, so its own

@@ -133,20 +133,22 @@ macro_rules! robot {
                 /// The part of this robot's hardware of one brand.
                 #[allow(non_snake_case)]
                 pub(super) mod $brand {
+                    // `$part` names the user's items through this glob: the items below
+                    // keep `__` names so none of them shadows one.
                     #[allow(unused_imports)]
                     use super::super::*;
                     /// Bus and actuator counts of the part.
-                    const SHAPE: (usize, usize) = $crate::__brand::$brand::shape(&$part);
+                    const __SHAPE: (usize, usize) = $crate::__brand::$brand::shape(&$part);
                     /// The type of the part.
-                    pub(in super::super) type Part =
-                        $crate::__brand::$brand::Hardware<{ SHAPE.0 }, { SHAPE.1 }>;
+                    pub(in super::super) type __Part =
+                        $crate::__brand::$brand::Hardware<{ __SHAPE.0 }, { __SHAPE.1 }>;
                     /// The part.
-                    pub(in super::super) const PART: Part = $part;
+                    pub(in super::super) const __PART: __Part = $part;
                 }
             )+
         }
         const _: () = $crate::__check_coverage(
-            &[$($crate::__brand::$brand::indices(&__hardware::$brand::PART)),+],
+            &[$($crate::__brand::$brand::indices(&__hardware::$brand::__PART)),+],
             N,
         );
         impl $crate::Spec for __Spec {
@@ -161,14 +163,14 @@ macro_rules! robot {
         }
     };
     (@parts $brand:ident $(, $rest:ident)*) => {
-        $crate::HCons<__hardware::$brand::Part, $crate::robot!(@parts $($rest),*)>
+        $crate::HCons<__hardware::$brand::__Part, $crate::robot!(@parts $($rest),*)>
     };
     (@parts) => {
         $crate::HNil
     };
     (@list $brand:ident $(, $rest:ident)*) => {
         $crate::HCons {
-            head: __hardware::$brand::PART,
+            head: __hardware::$brand::__PART,
             tail: $crate::robot!(@list $($rest),*),
         }
     };
