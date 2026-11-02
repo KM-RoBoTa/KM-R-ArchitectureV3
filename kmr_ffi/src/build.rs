@@ -118,11 +118,14 @@ macro_rules! flag_names {
     };
 }
 
+#[cfg(test)]
+pub(crate) use field_names;
+
 /// Every field, from [`for_each_field!`](crate::for_each_field).
 const FIELDS: &[Field] = crate::for_each_field!(field_names);
 
 /// Every per-actuator flag, from [`for_each_flag!`](crate::for_each_flag).
-const FLAGS: &[&str] = crate::for_each_flag!(flag_names);
+pub(crate) const FLAGS: &[&str] = crate::for_each_flag!(flag_names);
 
 /// The note at the top of both headers (FR-025 (SRS NFR-2, FR-5.10)).
 const NOTE: &str = "\

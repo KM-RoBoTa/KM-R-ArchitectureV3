@@ -93,6 +93,8 @@ macro_rules! define_field_types {
 
 crate::for_each_flag!(define_flags);
 crate::for_each_field!(define_field_types);
+#[cfg(test)]
+pub(crate) use define_field_types;
 
 /// Everything foreign code reads from the state: every History slot and per-actuator ages.
 ///
