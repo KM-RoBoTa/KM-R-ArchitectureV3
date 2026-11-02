@@ -61,8 +61,9 @@ impl Reader for Urdf {
                     .marked(MULTI_ACTUATOR));
             }
         }
+        let mut coupled = Vec::new();
         for t in children(robot, "transmission") {
-            read.transmission(t)?;
+            read.transmission(t, &mut coupled)?;
         }
         for ((joint, name), kind) in named.iter().zip(kinds) {
             model.joints.push(Joint {
@@ -141,21 +142,33 @@ impl<'a, 'i> Read<'a, 'i> {
         }
     }
 
-    /// Refuses a transmission that couples several joints or actuators.
-    fn transmission(&self, t: Node) -> Result<(), ModelError> {
+    /// Refuses a transmission that couples several joints or actuators,
+    /// or shares a joint or an actuator with an earlier one in `coupled`
+    /// (`(tag, element name, transmission name)`).
+    fn transmission(
+        &self,
+        t: Node<'a, 'i>,
+        coupled: &mut Vec<(&'static str, &'a str, &'a str)>,
+    ) -> Result<(), ModelError> {
         let name = t.attribute("name").unwrap_or("(unnamed)");
+        let fault = |reason: &str| {
+            self.fault(t, "transmission", name, reason)
+                .marked(MULTI_ACTUATOR)
+        };
         for tag in ["joint", "actuator"] {
-            let count = children(t, tag).len();
-            if count > 1 {
-                return Err(self
-                    .fault(
-                        t,
-                        "transmission",
-                        name,
-                        &format!("{count} <{tag}> elements"),
-                    )
-                    .marked(MULTI_ACTUATOR));
+            let ends = children(t, tag);
+            if ends.len() > 1 {
+                return Err(fault(&format!("{} <{tag}> elements", ends.len())));
             }
+            let Some(end) = ends.first().and_then(|e| e.attribute("name")) else {
+                continue;
+            };
+            if let Some((_, _, first)) = coupled.iter().find(|(g, e, _)| *g == tag && *e == end) {
+                return Err(fault(&format!(
+                    "<{tag} name=\"{end}\"> is in transmission {first} too"
+                )));
+            }
+            coupled.push((tag, end, name));
         }
         Ok(())
     }

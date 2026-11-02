@@ -567,6 +567,28 @@ mod tests {
     }
 
     #[test]
+    fn step_5_an_actuator_in_two_transmissions_is_a_multi_actuator_joint() {
+        let t = "<transmission name=\"t1\"><joint name=\"j1\"/><actuator name=\"m1\"/></transmission>\n\
+                 <transmission name=\"t2\"><joint name=\"j2\"/><actuator name=\"m1\"/></transmission>\n";
+        let text = two(LIMIT, LIMIT).replace("</robot>", &format!("{t}</robot>"));
+        fails(
+            &text,
+            "kmr: r.urdf:6: transmission t2: <actuator name=\"m1\"> is in transmission t1 too: SRS index space: multi-actuator joint",
+        );
+    }
+
+    #[test]
+    fn step_5_a_joint_in_two_transmissions_is_a_multi_actuator_joint() {
+        let t = "<transmission name=\"t1\"><joint name=\"j1\"/><actuator name=\"m1\"/></transmission>\n\
+                 <transmission name=\"t2\"><joint name=\"j1\"/><actuator name=\"m2\"/></transmission>\n";
+        let text = two(LIMIT, LIMIT).replace("</robot>", &format!("{t}</robot>"));
+        fails(
+            &text,
+            "kmr: r.urdf:6: transmission t2: <joint name=\"j1\"> is in transmission t1 too: SRS index space: multi-actuator joint",
+        );
+    }
+
+    #[test]
     fn step_5_a_transmission_of_one_joint_and_one_actuator_builds() {
         let t = "<transmission name=\"t1\"><joint name=\"j1\"/><actuator name=\"m1\"/></transmission>\n";
         let text = two(LIMIT, LIMIT).replace("</robot>", &format!("{t}</robot>"));
