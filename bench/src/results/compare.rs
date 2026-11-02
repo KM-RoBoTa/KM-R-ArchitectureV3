@@ -1,8 +1,9 @@
 //! `results compare <dir A> <dir B>`: every figure of two builds side by side.
 //!
 //! Rules: data-model.md "Comparison". Refuses across hosts, robots or kernels,
-//! and across a reference and a non-reference set (spec US2 scenario 2);
-//! never gives a verdict (FR-022, FR-023 (SRS NFR-11, NFR-8, NFR-1); SC-009).
+//! and across a reference and a non-reference set (spec US2 scenario 2); each
+//! measurement and cell needs 1 to 16 counted repeats on each side; never gives
+//! a verdict (FR-022, FR-023 (SRS NFR-11, NFR-8, NFR-1); SC-009).
 
 use std::fmt::Write as _;
 use std::io;
@@ -38,6 +39,12 @@ pub fn compare<S: Set>(a: &S, b: &S, out: &mut impl io::Write) -> io::Result<Exi
     let mut groups = Groups::new();
     let mut files = [[FileInfo::EMPTY; MAX_FILES]; 2];
 
+    for set in sets {
+        if set.is_empty() {
+            writeln!(out, "{}: no report", set.label())?;
+            return Ok(Exit::Unreadable);
+        }
+    }
     for ((side, set), (guard, infos)) in sets
         .iter()
         .enumerate()
@@ -45,20 +52,6 @@ pub fn compare<S: Set>(a: &S, b: &S, out: &mut impl io::Write) -> io::Result<Exi
     {
         if !scan(*set, side, &mut report, guard, &mut groups, infos, out)? {
             return Ok(Exit::Unreadable);
-        }
-    }
-    for g in groups.all() {
-        for (set, repeats) in sets.iter().zip(g.repeats) {
-            if repeats > MAX_REPEATS {
-                writeln!(
-                    out,
-                    "{}: over {MAX_REPEATS} repeats of {} {}",
-                    set.label(),
-                    g.measurement.as_str(),
-                    g.cell.as_str()
-                )?;
-                return Ok(Exit::Unreadable);
-            }
         }
     }
 
@@ -78,6 +71,26 @@ pub fn compare<S: Set>(a: &S, b: &S, out: &mut impl io::Write) -> io::Result<Exi
     }
     if refusal.print(&guards[0], out)? {
         return Ok(Exit::Refused);
+    }
+    // After the refusal: sets from two kernels also differ in their cell names.
+    for (g, group) in groups.all().iter().enumerate() {
+        for ((set, infos), repeats) in sets.iter().zip(files.iter()).zip(group.repeats) {
+            if (1..=MAX_REPEATS).contains(&repeats) {
+                continue;
+            }
+            let (m, c) = (group.measurement.as_str(), group.cell.as_str());
+            if repeats == 0 {
+                writeln!(out, "{}: no repeat of {m} {c} counts", set.label())?;
+            } else {
+                writeln!(
+                    out,
+                    "{}: over {MAX_REPEATS} repeats of {m} {c}",
+                    set.label()
+                )?;
+            }
+            print_excluded(*set, infos, Some(g), out)?;
+            return Ok(Exit::Unreadable);
+        }
     }
 
     let mut table = Table::<2>::new();
@@ -111,13 +124,27 @@ pub fn compare<S: Set>(a: &S, b: &S, out: &mut impl io::Write) -> io::Result<Exi
     }
 
     for (set, infos) in sets.iter().zip(files.iter()) {
-        for (i, info) in infos.iter().enumerate().take(set.len()) {
-            if let Some(why) = info.excluded {
-                writeln!(out, "excluded: {}/{}: {why}", set.label(), set.name(i))?;
-            }
-        }
+        print_excluded(*set, infos, None, out)?;
     }
     Ok(Exit::Printed)
+}
+
+/// Prints `excluded: <dir>/<file>: <why>` for the excluded reports of `set`, of group `only`
+/// when given.
+fn print_excluded(
+    set: &impl Set,
+    infos: &[FileInfo; MAX_FILES],
+    only: Option<usize>,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    for (i, info) in infos.iter().enumerate().take(set.len()) {
+        if let Some(why) = info.excluded
+            && only.is_none_or(|g| g == info.group)
+        {
+            writeln!(out, "excluded: {}/{}: {why}", set.label(), set.name(i))?;
+        }
+    }
+    Ok(())
 }
 
 /// Reads every report of `set` once: refusal values, groups, exclusions.
@@ -402,6 +429,59 @@ mod tests {
         assert_eq!(exit, Exit::Unreadable);
         assert_eq!(exit.code(), 1);
         assert_eq!(out.0.as_str(), "B: over 16 repeats of jitter nonrt-idle\n");
+    }
+
+    #[test]
+    fn a_side_without_a_counted_repeat_is_refused_as_input() {
+        let a = jitter(&[], 100);
+        let other_cell = report(
+            &[],
+            ("jitter", "nonrt-load", "complete", "simulated"),
+            "jitter_p50_ns = 1\n",
+        );
+        let incomplete = report(&[], ("jitter", "nonrt-idle", "incomplete", ""), "");
+        let throttled = report(
+            &[],
+            ("jitter", "nonrt-idle", "complete", "throttled"),
+            "jitter_p50_ns = 1\n",
+        );
+        for (b, text) in [
+            (&[][..], "B: no report\n"),
+            (
+                &[("1.toml", other_cell.as_str())][..],
+                "B: no repeat of jitter nonrt-idle counts\n",
+            ),
+            (
+                &[
+                    ("1.toml", incomplete.as_str()),
+                    ("2.toml", throttled.as_str()),
+                ][..],
+                "B: no repeat of jitter nonrt-idle counts\n\
+                 excluded: B/1.toml: status incomplete\n\
+                 excluded: B/2.toml: throttled\n",
+            ),
+        ] {
+            let (exit, out) = run(&[("a.toml", a.as_str())], b);
+            assert_eq!(exit, Exit::Unreadable);
+            assert_eq!(exit.code(), 1);
+            assert_eq!(out.0.as_str(), text);
+        }
+        let (exit, out) = run(&[], &[("b.toml", a.as_str())]);
+        assert_eq!(exit, Exit::Unreadable);
+        assert_eq!(out.0.as_str(), "A: no report\n");
+    }
+
+    #[test]
+    fn a_refusal_wins_over_a_missing_cell() {
+        let a = jitter(&[], 100);
+        let rt = report(
+            &[("kernel_rt", "\"yes\"")],
+            ("jitter", "rt-idle", "complete", "simulated"),
+            "jitter_p50_ns = 1\n",
+        );
+        let (exit, out) = run(&[("a.toml", a.as_str())], &[("b.toml", rt.as_str())]);
+        assert_eq!(exit, Exit::Refused);
+        assert_eq!(out.0.as_str(), "refused: kernel_rt differs: no vs yes\n");
     }
 
     #[test]
