@@ -301,7 +301,7 @@ impl Goals {
 /// position mode. `None` also outside the register range (research R11).
 pub(crate) fn position_goal(actuator: &Actuator, q: Q) -> Option<u32> {
     match (actuator.mode, actuator.torque) {
-        (Mode::Position, Torque::On) => units::position_to_raw(actuator.model, q),
+        (Mode::Position, Torque::On) => units::position_to_raw(actuator, q),
         _ => None,
     }
 }
@@ -340,7 +340,6 @@ pub(crate) fn read_table<B: Backend>(
     sample: &mut Sample<'_>,
     mut report: impl FnMut(usize, Outcome),
 ) {
-    let model_of = |index: usize| actuators.get(index).map_or(table.model, |a| a.model);
     match table.model.protocol() {
         Protocol::Two => {
             let ids = table.ids();
@@ -353,8 +352,11 @@ pub(crate) fn read_table<B: Backend>(
                 return;
             }
             for (&index, result) in table.members().iter().zip(out.iter()) {
+                let Some(actuator) = actuators.get(index) else {
+                    continue;
+                };
                 match result {
-                    Ok(raw) if store_state(sample, model_of(index), index, raw) => {
+                    Ok(raw) if store_state(sample, actuator, index, raw) => {
                         report(index, Outcome::Read);
                     }
                     Ok(raw) => report(index, Outcome::Invalid(i64::from(raw.position))),
@@ -364,12 +366,14 @@ pub(crate) fn read_table<B: Backend>(
         }
         Protocol::One => {
             for (&index, &id) in table.members().iter().zip(table.ids()) {
-                let model = model_of(index);
-                match backend.read_position(table.bus, model, id) {
+                let Some(actuator) = actuators.get(index) else {
+                    continue;
+                };
+                match backend.read_position(table.bus, actuator.model, id) {
                     Ok(raw) => {
                         let read = i32::try_from(raw)
                             .ok()
-                            .and_then(|raw| units::position_to_si(model, raw));
+                            .and_then(|raw| units::position_to_si(actuator, raw));
                         match (read, sample.q.get_mut(index)) {
                             (Some(read), Some(q)) => {
                                 *q = read;
@@ -389,9 +393,10 @@ pub(crate) fn read_table<B: Backend>(
 /// Overwrites the sample of actuator `index` with `raw`. `Tau` is kept when
 /// the model has no known torque constant. Stores nothing and returns
 /// `false` when the position is outside the register range.
-fn store_state(sample: &mut Sample<'_>, model: Model, index: usize, raw: &RawState) -> bool {
+fn store_state(sample: &mut Sample<'_>, actuator: &Actuator, index: usize, raw: &RawState) -> bool {
+    let model = actuator.model;
     let (Some(read), Some(q)) = (
-        units::position_to_si(model, raw.position),
+        units::position_to_si(actuator, raw.position),
         sample.q.get_mut(index),
     ) else {
         return false;
@@ -531,9 +536,8 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize>(
             continue;
         }
         let q = present.get(index).copied().unwrap_or_default();
-        let (register, raw) = start_goal(actuator, q).ok_or_else(|| {
-            adapter.position_range(index, units::nearest_position(actuator.model, q))
-        })?;
+        let (register, raw) = start_goal(actuator, q)
+            .ok_or_else(|| adapter.position_range(index, units::nearest_position(actuator, q)))?;
         if register == GoalRegister::Position && !adapter.within_limits(index, raw) {
             return Err(adapter.outside_limits(index, raw));
         }

@@ -358,9 +358,21 @@ fn mask(select: impl Fn(usize) -> bool) -> Mask {
     mask
 }
 
-/// `units::position_to_si` of an in-range `raw`.
+/// `units::position_to_si` of an in-range `raw`, 0 rad at the center.
 fn si(model: Model, raw: i32) -> Q {
-    units::position_to_si(model, raw).unwrap()
+    units::position_to_si(&centered(model), raw).unwrap()
+}
+
+/// A powered position actuator of `model`, 0 rad at its center.
+const fn centered(model: Model) -> Actuator {
+    Actuator {
+        bus: 0,
+        id: 1,
+        model,
+        mode: Mode::Position,
+        torque: Torque::On,
+        zero: Zero::Center,
+    }
 }
 
 /// Every actuator of `adapter` torque-on before bring-up, as an earlier run
@@ -963,9 +975,9 @@ fn hold_writes_last_q_whatever_was_written() -> Result<(), DynamixelError> {
         assert_eq!(record.call, Call::SyncWriteGoal);
         for &(id, raw) in adapter.backend.goals(record) {
             let index = usize::from(id) - 1;
-            let model = MIX_TABLE.actuators[index].model;
-            assert_eq!(record.port, MIX_TABLE.actuators[index].bus);
-            assert_eq!(Some(raw), units::position_to_raw(model, last.q[index]));
+            let actuator = &MIX_TABLE.actuators[index];
+            assert_eq!(record.port, actuator.bus);
+            assert_eq!(Some(raw), units::position_to_raw(actuator, last.q[index]));
             held += 1;
         }
     }
@@ -1164,7 +1176,7 @@ fn hold_sends_last_q_to_powered_position_actuators_only() -> Result<(), Dynamixe
 
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
     let held = (0..LAST).map(|index| {
-        let raw = units::position_to_raw(Model::Xm430W210, last.q[index]);
+        let raw = units::position_to_raw(&RO_TABLE.actuators[index], last.q[index]);
         (id(index), raw)
     });
     let sent = adapter.backend.last_goals().iter();
@@ -1584,6 +1596,37 @@ fn an_out_of_range_target_is_rejected_and_the_rest_is_sent() -> Result<(), Dynam
         let sent = adapter.backend.last_goals().iter().map(|&(id, _)| id);
         assert!(sent.eq((3..JOINTS).map(id)));
     }
+    Ok(())
+}
+
+#[test]
+fn a_raw_zero_moves_0_rad_for_reads_writes_and_the_hold() -> Result<(), DynamixelError> {
+    let mut table = X_TABLE;
+    table.actuators[0].zero = Zero::Raw(1000);
+    let mut adapter = rig(table.check());
+    let layout = powered(&mut adapter)?;
+    adapter
+        .backend
+        .position(0, id(0), 1000)
+        .position(0, id(1), 1000);
+
+    let mut slot = Slot::filled(9.0);
+    read(&mut adapter, &mut slot);
+    assert_eq!(slot.q[0], Q(0.0));
+    assert_eq!(slot.q[1], si(Model::Xm430W210, 1000));
+
+    write(
+        &mut adapter,
+        &layout,
+        &Desired::new().q(0, Q(0.0)).q(1, Q(0.0)),
+    );
+    assert_eq!(
+        adapter.backend.last_goals(),
+        &[(id(0), 1000), (id(1), 2048)]
+    );
+
+    adapter.hold(Desired::new().command());
+    assert_eq!(adapter.backend.last_goals().first(), Some(&(id(0), 1000)));
     Ok(())
 }
 

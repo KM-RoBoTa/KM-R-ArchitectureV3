@@ -734,7 +734,9 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         Ok(())
     }
 
-    /// Nothing to do: Dynamixel encoders are absolute (FR-005).
+    /// Nothing to write: Dynamixel encoders are absolute and the zero is a
+    /// software offset, each actuator's `Zero` read by `units::origin`
+    /// (FR-005; D8, assumed, pending human).
     fn zero(&mut self) -> Result<(), DynamixelError> {
         Ok(())
     }
@@ -896,6 +898,9 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
 
     /// Reads every group whatever the cadence; stops at the first failure.
     /// A failed group transaction names the bus, not one of its actuators.
+    /// A seed position outside the register range is `PositionRange`: the
+    /// check of the zeros SRS FR-5.2 asks for, since with a software zero
+    /// every position inside it converts (research R7).
     fn read_all(&mut self, mut sample: Sample<'_>) -> Result<(), DynamixelError> {
         let mut failed = None;
         for table in self.groups.tables() {

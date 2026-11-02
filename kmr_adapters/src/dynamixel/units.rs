@@ -1,15 +1,16 @@
 //! Per-model conversions between raw register values and `f32` SI units
 //! (FR-021).
 //!
-//! Constants are the ROBOTIS e-Manual control tables. Zero rad is the
-//! model's center position (research R10). A value with no raw counterpart
-//! is `None`, never clamped (research R11).
+//! Constants are the ROBOTIS e-Manual control tables. Zero rad sits at the
+//! actuator's [`origin`]: the model's center, or the raw value its table
+//! names (research R7, R10). A value with no raw counterpart is `None`,
+//! never clamped (research R11).
 
 use core::f32::consts::TAU;
 
 use kmr_core::state::{Q, Qd, Tau};
 
-use super::config::Model;
+use super::config::{Actuator, Model, Zero};
 
 /// Radians per second in one rpm.
 const RAD_S_PER_RPM: f32 = TAU / 60.0;
@@ -77,33 +78,44 @@ pub(crate) const fn max_position(model: Model) -> u32 {
     scale(model).max_position
 }
 
-/// Position register value `raw` of `model`, in rad. `None` outside
-/// `0..=max_position`: a homing offset or another operating mode moved it.
-pub(crate) fn position_to_si(model: Model, raw: i32) -> Option<Q> {
-    let scale = scale(model);
+/// Position register value at 0 rad of `actuator`: the only reader of its
+/// [`Zero`] (FR-005; D8, assumed, pending human).
+pub(crate) fn origin(actuator: &Actuator) -> i64 {
+    match actuator.zero {
+        Zero::Center => i64::from(scale(actuator.model).center),
+        Zero::Raw(raw) => i64::from(raw),
+    }
+}
+
+/// Position register value `raw` of `actuator`, in rad from its
+/// [`origin`]. `None` outside `0..=max_position`: a homing offset or another
+/// operating mode moved it.
+pub(crate) fn position_to_si(actuator: &Actuator, raw: i32) -> Option<Q> {
+    let scale = scale(actuator.model);
     let raw = u32::try_from(raw)
         .ok()
         .filter(|&raw| raw <= scale.max_position)?;
     Some(Q(
-        (raw as f32 - scale.center as f32) * scale.rad_per_position
+        (i64::from(raw) - origin(actuator)) as f32 * scale.rad_per_position
     ))
 }
 
-/// Goal position register value of `model` for `q`, rounded to the nearest
-/// unit. `None` when `q` is not finite or lands outside the register range.
-pub(crate) fn position_to_raw(model: Model, q: Q) -> Option<u32> {
-    let scale = scale(model);
-    let raw = (q.0 / scale.rad_per_position + scale.center as f32).round();
+/// Goal position register value of `actuator` for `q`, rounded to the
+/// nearest unit. `None` when `q` is not finite or lands outside the register
+/// range.
+pub(crate) fn position_to_raw(actuator: &Actuator, q: Q) -> Option<u32> {
+    let scale = scale(actuator.model);
+    let raw = (q.0 / scale.rad_per_position + origin(actuator) as f32).round();
     (0.0..=scale.max_position as f32)
         .contains(&raw)
         .then_some(raw as u32)
 }
 
-/// Position register value of `model` nearest to `q`, unchecked, for an
+/// Position register value of `actuator` nearest to `q`, unchecked, for an
 /// error that names it: NaN is 0, an infinity saturates.
-pub(crate) fn nearest_position(model: Model, q: Q) -> i64 {
-    let scale = scale(model);
-    (q.0 / scale.rad_per_position + scale.center as f32).round() as i64
+pub(crate) fn nearest_position(actuator: &Actuator, q: Q) -> i64 {
+    let scale = scale(actuator.model);
+    (q.0 / scale.rad_per_position + origin(actuator) as f32).round() as i64
 }
 
 /// Present velocity register value `raw` of `model`, in rad/s.
@@ -131,6 +143,7 @@ pub(crate) fn current_to_si(model: Model, raw: i16) -> Option<Tau> {
 mod tests {
     use core::f32::consts::{FRAC_PI_2, PI};
 
+    use super::super::config::{Mode, Torque};
     use super::*;
 
     const MODELS: [Model; 6] = [
@@ -149,9 +162,21 @@ mod tests {
         Model::Xw540T260,
     ];
 
+    /// A powered position actuator of `model`, 0 rad at its center.
+    fn at(model: Model) -> Actuator {
+        Actuator {
+            bus: 0,
+            id: 1,
+            model,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::Center,
+        }
+    }
+
     /// `position_to_si` of an in-range `raw`.
     fn si(model: Model, raw: u32) -> Q {
-        position_to_si(model, i32::try_from(raw).unwrap()).unwrap()
+        position_to_si(&at(model), i32::try_from(raw).unwrap()).unwrap()
     }
 
     fn assert_close(actual: f32, expected: f32) {
@@ -166,7 +191,11 @@ mod tests {
         for model in MODELS {
             let center = scale(model).center;
             assert_eq!(si(model, center), Q(0.0), "{model:?}");
-            assert_eq!(position_to_raw(model, Q(0.0)), Some(center), "{model:?}");
+            assert_eq!(
+                position_to_raw(&at(model), Q(0.0)),
+                Some(center),
+                "{model:?}"
+            );
         }
     }
 
@@ -175,7 +204,7 @@ mod tests {
         for model in MODELS {
             for raw in 0..=scale(model).max_position {
                 let q = si(model, raw);
-                assert_eq!(position_to_raw(model, q), Some(raw), "{model:?}");
+                assert_eq!(position_to_raw(&at(model), q), Some(raw), "{model:?}");
             }
         }
     }
@@ -186,7 +215,7 @@ mod tests {
             let unit = scale(model).rad_per_position;
             for step in -250..=250_i16 {
                 let q = Q(f32::from(step) * 0.01);
-                let Some(raw) = position_to_raw(model, q) else {
+                let Some(raw) = position_to_raw(&at(model), q) else {
                     continue;
                 };
                 let error = (si(model, raw).0 - q.0).abs();
@@ -200,11 +229,11 @@ mod tests {
         for model in X_MODELS {
             let unit = scale(model).rad_per_position;
             assert_eq!(si(model, 0), Q(-PI));
-            assert_eq!(position_to_raw(model, Q(-PI)), Some(0));
-            assert_eq!(position_to_raw(model, Q(PI - unit)), Some(4095));
-            assert_eq!(position_to_raw(model, Q(PI)), None);
-            assert_eq!(position_to_raw(model, Q(-PI - unit)), None);
-            assert_eq!(position_to_raw(model, Q(-PI - unit * 0.4)), Some(0));
+            assert_eq!(position_to_raw(&at(model), Q(-PI)), Some(0));
+            assert_eq!(position_to_raw(&at(model), Q(PI - unit)), Some(4095));
+            assert_eq!(position_to_raw(&at(model), Q(PI)), None);
+            assert_eq!(position_to_raw(&at(model), Q(-PI - unit)), None);
+            assert_eq!(position_to_raw(&at(model), Q(-PI - unit * 0.4)), Some(0));
         }
     }
 
@@ -214,10 +243,10 @@ mod tests {
         for model in [Model::Ax12a, Model::Rx28] {
             let unit = scale(model).rad_per_position;
             assert_close(si(model, 0).0, -edge);
-            assert_eq!(position_to_raw(model, Q(-edge)), Some(0));
-            assert_eq!(position_to_raw(model, Q(edge - unit)), Some(1023));
-            assert_eq!(position_to_raw(model, Q(edge)), None);
-            assert_eq!(position_to_raw(model, Q(-edge - unit)), None);
+            assert_eq!(position_to_raw(&at(model), Q(-edge)), Some(0));
+            assert_eq!(position_to_raw(&at(model), Q(edge - unit)), Some(1023));
+            assert_eq!(position_to_raw(&at(model), Q(edge)), None);
+            assert_eq!(position_to_raw(&at(model), Q(-edge - unit)), None);
         }
     }
 
@@ -225,16 +254,19 @@ mod tests {
     fn non_finite_positions_are_rejected() {
         for model in MODELS {
             for q in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-                assert_eq!(position_to_raw(model, Q(q)), None, "{model:?}");
+                assert_eq!(position_to_raw(&at(model), Q(q)), None, "{model:?}");
             }
         }
     }
 
     #[test]
     fn ax_and_x_scale_differently() {
-        assert_eq!(position_to_raw(Model::Xm430W210, Q(FRAC_PI_2)), Some(3072));
-        assert_eq!(position_to_raw(Model::Ax12a, Q(FRAC_PI_2)), Some(819));
-        assert_eq!(position_to_raw(Model::Rx28, Q(FRAC_PI_2)), Some(819));
+        assert_eq!(
+            position_to_raw(&at(Model::Xm430W210), Q(FRAC_PI_2)),
+            Some(3072)
+        );
+        assert_eq!(position_to_raw(&at(Model::Ax12a), Q(FRAC_PI_2)), Some(819));
+        assert_eq!(position_to_raw(&at(Model::Rx28), Q(FRAC_PI_2)), Some(819));
         assert_close(si(Model::Xw540T260, 3072).0, FRAC_PI_2);
     }
 
@@ -242,10 +274,10 @@ mod tests {
     fn a_position_outside_the_register_range_is_no_reading() {
         for model in MODELS {
             let max = i32::try_from(scale(model).max_position).unwrap();
-            assert_eq!(position_to_si(model, -1), None, "{model:?}");
-            assert_eq!(position_to_si(model, i32::MIN), None, "{model:?}");
-            assert_eq!(position_to_si(model, max + 1), None, "{model:?}");
-            assert!(position_to_si(model, max).is_some(), "{model:?}");
+            assert_eq!(position_to_si(&at(model), -1), None, "{model:?}");
+            assert_eq!(position_to_si(&at(model), i32::MIN), None, "{model:?}");
+            assert_eq!(position_to_si(&at(model), max + 1), None, "{model:?}");
+            assert!(position_to_si(&at(model), max).is_some(), "{model:?}");
         }
     }
 
@@ -289,5 +321,39 @@ mod tests {
     fn ax_has_no_current() {
         assert_eq!(current_to_si(Model::Ax12a, 1000), None);
         assert_eq!(current_to_si(Model::Rx28, 1000), None);
+    }
+
+    #[test]
+    fn the_origin_is_the_center_or_the_raw_zero() {
+        for model in MODELS {
+            let center = i64::from(scale(model).center);
+            assert_eq!(origin(&at(model)), center, "{model:?}");
+            let raw = Actuator {
+                zero: Zero::Raw(100),
+                ..at(model)
+            };
+            assert_eq!(origin(&raw), 100, "{model:?}");
+        }
+    }
+
+    #[test]
+    fn a_raw_zero_shifts_both_ways_and_every_position_round_trips() {
+        for model in MODELS {
+            let unit = scale(model).rad_per_position;
+            let offset = Actuator {
+                zero: Zero::Raw(100),
+                ..at(model)
+            };
+            assert_eq!(position_to_si(&offset, 100), Some(Q(0.0)), "{model:?}");
+            assert_eq!(position_to_raw(&offset, Q(0.0)), Some(100), "{model:?}");
+            assert_eq!(position_to_si(&offset, 0), Some(Q(-100.0 * unit)));
+            assert_eq!(position_to_raw(&offset, Q(-100.0 * unit)), Some(0));
+            assert_eq!(position_to_raw(&offset, Q(-101.0 * unit)), None);
+            assert_eq!(nearest_position(&offset, Q(-101.0 * unit)), -1);
+            for raw in 0..=scale(model).max_position {
+                let q = position_to_si(&offset, i32::try_from(raw).unwrap()).unwrap();
+                assert_eq!(position_to_raw(&offset, q), Some(raw), "{model:?}");
+            }
+        }
     }
 }
