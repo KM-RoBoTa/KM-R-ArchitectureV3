@@ -11,7 +11,7 @@ use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample, Written};
 use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 
 use super::backend::{Backend, BackendError, GoalRegister, RawState};
-use super::config::{Actuator, Bus, Mode, Model, Placed, Protocol, Torque};
+use super::config::{self, Actuator, Bus, Mode, Model, Placed, Protocol, Series, Torque};
 use super::units;
 use super::{Dynamixel, DynamixelError};
 
@@ -87,23 +87,38 @@ impl Table {
     /// Bytes on the wire for one read of every member; `state_reads` are
     /// the data bytes of each Protocol 2 sync read of one state read.
     fn read_bytes(&self, state_reads: &[u16]) -> u64 {
-        let members = self.len as u64;
-        match self.model.protocol() {
-            Protocol::Two => state_reads
-                .iter()
-                .map(|&data| SYNC_READ_BYTES + members * (1 + STATUS_BYTES + u64::from(data)))
-                .sum(),
-            Protocol::One => members * READ_POSITION_BYTES,
-        }
+        read_bytes(self.model.protocol(), self.len as u64, state_reads)
     }
 
     /// Bytes on the wire for one goal write to every member.
     fn write_bytes(&self) -> u64 {
-        let members = self.len as u64;
-        match self.model.protocol() {
-            Protocol::Two => SYNC_WRITE_2_BYTES + members * GOAL_2_BYTES,
-            Protocol::One => SYNC_WRITE_1_BYTES + members * GOAL_1_BYTES,
+        write_bytes(self.model.protocol(), self.len as u64)
+    }
+}
+
+/// Bytes on the wire for one read of `members` actuators of one group on
+/// `protocol`; `state_reads` as in [`Table::read_bytes`].
+const fn read_bytes(protocol: Protocol, members: u64, state_reads: &[u16]) -> u64 {
+    match protocol {
+        Protocol::Two => {
+            let mut bytes = 0;
+            let mut rest = state_reads;
+            while let [data, later @ ..] = rest {
+                bytes += SYNC_READ_BYTES + members * (1 + STATUS_BYTES + *data as u64);
+                rest = later;
+            }
+            bytes
         }
+        Protocol::One => members * READ_POSITION_BYTES,
+    }
+}
+
+/// Bytes on the wire for one goal write to `members` actuators of one group
+/// on `protocol`.
+const fn write_bytes(protocol: Protocol, members: u64) -> u64 {
+    match protocol {
+        Protocol::Two => SYNC_WRITE_2_BYTES + members * GOAL_2_BYTES,
+        Protocol::One => SYNC_WRITE_1_BYTES + members * GOAL_1_BYTES,
     }
 }
 
@@ -204,10 +219,51 @@ impl Groups {
 
 /// Time `bytes` take on the wire at `baud`; zero for a zero baud.
 fn line_time(bytes: u64, baud: u64) -> Duration {
-    let nanos = (bytes * BITS_PER_BYTE * 1_000_000_000)
-        .checked_div(baud)
-        .unwrap_or(0);
-    Duration::from_nanos(nanos)
+    Duration::from_nanos(line_nanos(bytes, baud))
+}
+
+/// [`line_time`] in nanoseconds, for const evaluation.
+const fn line_nanos(bytes: u64, baud: u64) -> u64 {
+    match (bytes * BITS_PER_BYTE * 1_000_000_000).checked_div(baud) {
+        Some(nanos) => nanos,
+        None => 0,
+    }
+}
+
+/// The read and write cost `check` declares for `table` with every actuator
+/// owned, computed in const evaluation: one group per (bus, series), each
+/// at its bus's baud, as [`Groups::costs`] counts them (FR-035 (SRS NFR-11,
+/// FR-5.3)). A plugin baud set at `bind` is not in it.
+pub(crate) const fn declared_costs<const NB: usize, const N: usize>(
+    table: &config::Table<NB, N>,
+    state_reads: &[u16],
+) -> (Duration, Duration) {
+    let (mut read, mut write) = (0, 0);
+    let mut buses: &[Bus] = &table.buses;
+    let mut bus = 0;
+    while let [this, later @ ..] = buses {
+        let baud = this.baud as u64;
+        let mut series: &[Series] = &[Series::Ax, Series::X];
+        while let [kind, kinds @ ..] = series {
+            let (mut members, mut protocol) = (0, None);
+            let mut rest: &[Actuator] = &table.actuators;
+            while let [actuator, others @ ..] = rest {
+                if actuator.bus == bus && actuator.model.series() as u8 == *kind as u8 {
+                    members += 1;
+                    protocol = Some(actuator.model.protocol());
+                }
+                rest = others;
+            }
+            if let Some(protocol) = protocol {
+                read += line_nanos(read_bytes(protocol, members, state_reads), baud);
+                write += line_nanos(write_bytes(protocol, members), baud);
+            }
+            series = kinds;
+        }
+        bus += 1;
+        buses = later;
+    }
+    (Duration::from_nanos(read), Duration::from_nanos(write))
 }
 
 /// What became of one actuator in a group read.

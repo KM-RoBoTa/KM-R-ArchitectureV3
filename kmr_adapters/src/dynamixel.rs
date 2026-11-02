@@ -18,6 +18,7 @@ mod scripted;
 mod tests;
 
 use core::fmt;
+use core::time::Duration;
 use std::path::Path;
 
 use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
@@ -36,6 +37,15 @@ pub use config::{
     Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Protocol, Series, Table, Torque,
     Zero,
 };
+
+/// The read and write cost `check` declares for `table` with every actuator
+/// owned, in const evaluation: the presets' `READ_COST` and `WRITE_COST`
+/// (FR-035 (SRS NFR-11, FR-5.3)).
+pub(crate) const fn declared_costs<const NB: usize, const N: usize>(
+    table: &Table<NB, N>,
+) -> (Duration, Duration) {
+    io::declared_costs(table, backend::STATE_READS)
+}
 
 /// Ping attempts per actuator before it counts as missing (FR-007).
 const PING_ATTEMPTS: usize = 3;

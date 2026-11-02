@@ -634,8 +634,7 @@ fn get(table: &[[bool; IDS]; PORTS], port: usize, id: u8) -> bool {
 
 impl Backend for Scripted {
     const MAX_PORTS: usize = PORTS;
-    /// As `DxlRs`: present current, velocity and position, one sync read each.
-    const STATE_READS: &'static [u16] = &[2, 4, 4];
+    const STATE_READS: &'static [u16] = super::backend::STATE_READS;
 
     fn open_ports(&mut self, ports: &[PortSpec<'_>]) -> Result<(), OpenFailure> {
         self.record(Call::OpenPorts, 0, None, ports.len(), false, iter::empty());

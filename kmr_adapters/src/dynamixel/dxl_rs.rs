@@ -39,6 +39,18 @@ const PRESENT_CURRENT: (u16, u16) = (126, 2);
 const PRESENT_VELOCITY: (u16, u16) = (128, 4);
 /// Present Position, Protocol 2: `i32` at 132.
 const PRESENT_POSITION: (u16, u16) = (132, 4);
+
+// `STATE_READS` is what `sync_read_state` sends: one sync read per register.
+const _: () = assert!(
+    matches!(
+        super::backend::STATE_READS,
+        [current, velocity, position]
+            if *current == PRESENT_CURRENT.1
+                && *velocity == PRESENT_VELOCITY.1
+                && *position == PRESENT_POSITION.1
+    ),
+    "STATE_READS differs from the registers sync_read_state reads"
+);
 /// Operating Mode, X series: `u8` at 11.
 const OPERATING_MODE: (u16, u16) = (11, 1);
 /// Torque Enable, X series: `u8` at 64.
@@ -445,8 +457,7 @@ fn on_port(port: usize, source: BackendError) -> OpenFailure {
 
 impl Backend for DxlRs {
     const MAX_PORTS: usize = MAX_PORTS;
-    const STATE_READS: &'static [u16] =
-        &[PRESENT_CURRENT.1, PRESENT_VELOCITY.1, PRESENT_POSITION.1];
+    const STATE_READS: &'static [u16] = super::backend::STATE_READS;
 
     /// Claims the SDK before its first call: a second bring-up in one
     /// process is an error, never a second init.

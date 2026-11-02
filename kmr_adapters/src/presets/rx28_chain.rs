@@ -11,9 +11,10 @@
 //! 50 ms. Measured on no bench yet.
 
 use core::num::NonZeroU32;
+use core::time::Duration;
 
 use super::Preset;
-use crate::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+use crate::dynamixel::{self, Actuator, Bus, Mode, Model, Table, Torque, Zero};
 
 /// Firmware ids, in engine order: actuator `i` has `IDS[i]`.
 const IDS: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -36,6 +37,15 @@ impl Rx28Chain {
         actuators: chain(IDS),
     }
     .check();
+
+    /// Line time of one full read of [`Self::HARDWARE`], as `check`
+    /// declares it, return delay and USB latency not counted (FR-035 (SRS
+    /// NFR-11, FR-5.3)).
+    pub const READ_COST: Duration = dynamixel::declared_costs(&Self::HARDWARE).0;
+
+    /// Line time of one goal write to every actuator of
+    /// [`Self::HARDWARE`], as `check` declares it.
+    pub const WRITE_COST: Duration = dynamixel::declared_costs(&Self::HARDWARE).1;
 }
 
 impl Preset for Rx28Chain {

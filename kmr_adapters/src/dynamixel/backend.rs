@@ -346,6 +346,12 @@ pub(crate) struct PortSpec<'a> {
     pub(crate) baud: u32,
 }
 
+/// Data bytes of each Protocol 2 sync read one state read sends: present
+/// current, velocity and position, one sync read each, as `dxl_rs` reads
+/// them until its 10-byte block read (research R12). Both backends and the
+/// presets' declared costs read it, so one change moves all three.
+pub(crate) const STATE_READS: &[u16] = &[2, 4, 4];
+
 /// What the adapter needs from an SDK.
 ///
 /// `port` indexes the slice given to `open_ports`; `model` is the model of

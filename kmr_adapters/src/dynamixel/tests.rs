@@ -27,7 +27,8 @@ use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawS
 use super::scripted::{Call, HEALTHY, Record, Scripted};
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
-    Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, io as tick, port, units,
+    Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, declared_costs,
+    io as tick, port, units,
 };
 use crate::binding::{Binding, Port};
 use crate::presets::{Preset, Rx28Chain, XmBench};
@@ -2376,6 +2377,32 @@ fn table_of_rx28_chain_passes_check_with_ten_actuators() {
         ("bus0", 1_000_000, NonZeroU32::new(1))
     );
     assert_eq!(Model::Rx28.protocol(), Protocol::One);
+}
+
+#[test]
+fn table_preset_costs_are_the_ones_check_declares() -> Result<(), DynamixelError> {
+    let declared = |claim: Claim| (claim.read_cost, claim.write_cost);
+    let mut bench = Dynamixel::new(Scripted::new(), XmBench::HARDWARE.in_order());
+    assert_eq!(
+        declared(bench.check(Overrides::default())?),
+        (XmBench::READ_COST, XmBench::WRITE_COST)
+    );
+    // Three sync reads of four XM: 70, 78 and 78 bytes; one 34-byte write.
+    assert_eq!(XmBench::READ_COST, Duration::from_micros(2_260));
+    assert_eq!(XmBench::WRITE_COST, Duration::from_micros(340));
+
+    if Rx28Chain::HARDWARE.actuators.len() <= JOINTS {
+        let mut chain = Dynamixel::new(Scripted::new(), Rx28Chain::HARDWARE.in_order());
+        assert_eq!(
+            declared(chain.check(Overrides::default())?),
+            (Rx28Chain::READ_COST, Rx28Chain::WRITE_COST)
+        );
+    }
+    assert_eq!(
+        declared(rig(MIX_TABLE).check(Overrides::default())?),
+        declared_costs(&MIX_TABLE)
+    );
+    Ok(())
 }
 
 #[test]
