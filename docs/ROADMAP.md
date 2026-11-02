@@ -23,9 +23,6 @@ a runtime entity registry — keep the 1kHz hot path static.
 - [x] Learn the basics of macros https://lukaswirth.dev/tlborm/decl-macros/macros-methodical.html
 - [x] implement the runtime ctrl loop (schedule and time management included)
 - [ ] Runtime, what the loop still misses:
-    - hardware layer: the call points are designed (see below), not wired:
-      init bodies, `state_transition` (write desired, record the sensed
-      sample), final write on shutdown, torque cut on emergency stop
     - spawn the threaded controllers (blocked by the hand-off question below)
     - tick rate per controller
     - real-time sleep (`clock_nanosleep(TIMER_ABSTIME)` or spin tail)
@@ -35,21 +32,31 @@ a runtime entity registry — keep the 1kHz hot path static.
     - `complete_api_example` and `controllers/src/main.rs` now run until
       Ctrl-C
 - [ ] Hardware layer (SRS delivery step 1), in progress. Design in
-    [decision 0002](decisions/0002-hal-contract.md):
-    - done: the contract, `Hal` and `NoHardware` in `kmr_core/src/hal.rs`
-    - still to do in the core: `run_on(hal)`, `set_read_every`, the
-      per-field write mask in `Desired`, the runtime call points
-    - in progress: `kmr_adapters`, Dynamixel adapter in position mode,
-      Protocol 1 and 2, tested on a scripted backend
-    - fetch the `dxl_rs` dependency (git, pinned rev) and add the `dynamixel`
-      feature; `dxl_rs` must fail the build instead of falling back to stub
-      bindings when the C SDK is missing
+    [decision 0002](decisions/0002-hal-contract.md) and
+    `specs/001-kmr-adapters/`:
+    - done: the contract, the list of members and their claims, `run_on`, the
+      runtime call points, the per-field write mask, the opt-in hold
+    - done in `kmr_adapters`: the Dynamixel member in position mode,
+      Protocol 1 and 2, on a strict scripted backend; hardware tables checked
+      at compile time with const overrides; presets with declared costs; bus
+      plugins bound by label; torque off on every actuator; software zero
+    - the bench run of the first motor (shutdown, emergency stop, read-only
+      actuator, ten runs in a row, the missing udev rule)
+    - `dxl_rs`: push the branch the adapter uses (`force_torque_off`,
+      Protocol 1 register reads) and depend on it by git at a pinned rev; one
+      10-byte sync read per group instead of three; fail the build instead of
+      falling back to stub bindings when the C SDK is missing
+    - CI: cross-build `controllers` with the `dynamixel` feature for aarch64
+      and armv7
+    - measure the read and write cost on the bench and pick the default read
+      cadence, a placeholder of 4 ticks today
     - velocity and current modes: need the operating-mode register, which
       `dxl_rs` does not expose (SRS section 8)
     - swap `dxl_rs` for `dxl_rs_v2` behind the `Backend` trait once it has a
       bus: removes the SDK's per-tick allocations and its ~34 ms stall on a
       missing servo
-    - accept or overrule the SRS deviations listed in decision 0002
+    - accept or overrule the SRS deviations listed in decision 0002, and
+      bring it up to date with the list of members
 - [ ] Robot model (`kmr_model`), what this version leaves out:
     - several robots in one `.ron` descriptor (SRS FR-6.5); a descriptor
       with several root links is refused

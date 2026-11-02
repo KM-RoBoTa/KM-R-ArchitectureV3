@@ -155,7 +155,7 @@ type paths into the user's compiler error.
 
 ```
 pre_init → init → post_init
-loop { first → each_tick → last → clock bookkeeping → sleep }
+loop { read → first → each_tick → last → write → clock bookkeeping → sleep }
 ```
 
 The loop runs until a signal is raised. After the `Last` bucket the engine
@@ -174,10 +174,10 @@ of a slot.
 Controllers read the clock, the engine writes it, and only between two
 controller walks.
 
-Not implemented yet: the `state_transition` step (write the desired state,
-record the sensed sample), because the runtime does not call the
-[hardware layer](#hardware-layer) yet, and the startup of threaded
-controllers — see the [roadmap](ROADMAP.md).
+Each tick reads the [hardware](#hardware-layer) into a new history slot
+before `First` and writes what the controllers wrote after `Last`. Not
+implemented yet: the startup of threaded controllers — see the
+[roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
 
@@ -236,43 +236,73 @@ wait for the core's public mask width.
 The engine drives hardware through one contract, the `Hal` trait in
 `kmr_core/src/hal.rs`. It knows actuator indices, bit masks, opaque
 transaction groups and a read cadence in ticks. Buses, series, protocols,
-modes and raw units stay in the adapter; values cross as `Q`, `Qd`, `Tau` in
-SI units. `Hal` is public with a `#[doc(hidden)]` seal: adapter crates
-implement it, `controllers` cannot, since it does not depend on `kmr_core`.
-Dispatch is static: `run_on(hal)` runs the robot on an adapter, and `run()` is
-`run_on(NoHardware)`.
+modes and raw units stay in the adapter; values cross as `Q`, `Qd`, `Tau`,
+`Kp`, `Kd` in SI units. `Hal` is public with a `#[doc(hidden)]` seal: adapter
+crates implement it, `controllers` cannot, since it does not depend on
+`kmr_core`.
 
-| Moment | Engine calls |
+The robot's hardware is a list of members, one per brand, as an `HList`
+(`kmr_core/src/hal/set.rs`): `HCons { head: dynamixel, tail: HCons { .. } }`.
+Each member's `check` returns a `Claim`: the engine indices it owns, its own
+groups, read cadence and costs. Claims that do not cover every actuator
+exactly once fail before any I/O; after that each member is called with its
+own indices only. Dispatch is static: `run_on(drivers)` runs the robot on a
+list, and `run()` is `run_on` of `NoHardware` alone.
+
+| Moment | Engine calls, on every member |
 |---|---|
-| `run()` finalization, no I/O | `check` → `Layout`: groups, read cadence, cost |
+| `run()` finalization, no I/O | `check` → `Claim`: owned indices, groups, read cadence, costs |
 | Init, before user controllers | `open`, `zero` |
 | PostInit, before user controllers | `ping`, `health`, `configure`, `read_all`, `torque_on` |
 | Each tick, before `First` | `read` into a copy of the previous sample |
 | Each tick, after `Last` | `write` of the written actuators in group order, then Desired is cleared |
-| Shutdown | `hold`, `torque_off`, `close` |
+| Shutdown | `hold` (only after `set_hold`), `torque_off`, `close` |
 | Emergency stop | `torque_off`, `close` |
 
-Bring-up calls return the adapter's error and `run()` returns it. Once `open`
-was called, every exit ends with `torque_off` then `close`. `read` and `write`
-never fail: they set per-actuator fault bits (`stale`, `bus_error`, `offline`,
-`rejected`) and never allocate, lock, sleep or retry. The write mask is kept
-per field (`Written { q, qd, tau }`), so an adapter sends only the field its
-actuator's mode takes.
+Bring-up calls return the member's error and `run()` returns it. Once `open`
+was called, every exit, a controller panic included, ends with `torque_off`
+then `close`. `read` and `write` never fail: they set per-actuator fault bits
+(`stale`, `bus_error`, `offline`, `rejected`) and never allocate, lock, sleep
+or retry. The write mask is kept per field (`Written { q, qd, tau, kp, kd }`),
+so a member sends only the field its actuator's mode takes; a Dynamixel
+member ignores `Kp` and `Kd`.
 
-Adapters live in `kmr_adapters`. An adapter's configuration (buses,
-actuators, the serial id of each port) is Rust consts checked at compile time. The control
-engineer never sees it: `kmr_api` exposes no adapter, bus or port type, and
-its one hardware knob is the read cadence, `set_read_every(ticks)`.
-`kmr_api::Robot::run()` hands `kmr_adapters::Hardware` to the core: the
-Dynamixel adapter with the `dynamixel` feature, else `NoHardware`, which reads
-and writes nothing and warns once at `open`. The vendor SDK sits behind a
-private `Backend` trait, so the adapter is tested on a scripted backend and
-`dxl_rs_v2` can replace `dxl_rs` later.
+Adapters live in `kmr_adapters`. A robot's Dynamixel hardware is a
+`dynamixel::Table<NB, N>` const: buses by label, baud and read cadence; per
+actuator its bus, firmware id, model, mode, torque choice (powered or
+read-only) and zero. `Table::check` rejects a bad table in const evaluation,
+naming the actuator or the bus, so it does not build. `const fn` overrides
+(`baud`, `read_every`, `id`, `mode`, `read_only`, `zero`, and group forms)
+change a preset's defaults from `main.rs`. A preset such as
+`presets::XmBench` is the hardware half of a KM-RoBoTa robot (the model half
+is `kmr_model`'s): its `HARDWARE` table and the line time it declares,
+`READ_COST` and `WRITE_COST`. `Table::in_order` or `Table::at` places the
+table at the robot's engine indices; `robot!` names the robot and its
+hardware.
 
-Not wired yet: the runtime makes none of these calls, `run_on` and
-`set_read_every` are not in the core, and the `dynamixel` arm of `Hardware`
-waits for the `dxl_rs` dependency. The design and its departures from the SRS
-are argued in [decision 0002](decisions/0002-hal-contract.md).
+Ports are not consts. The user names each one with a bus plugin,
+`kmr_api::Bus::by_id(serial)` or `by_dev(path)`, with an optional `.baud(..)`
+and `.bus("label")`. `Dynamixel::bind` matches the plugins to the table's
+buses by label before any I/O; `open` resolves each port, checks it is a
+character device the user can read and write, refuses two buses on one
+device, flushes it and sets the 1 ms USB latency timer. With no bus plugin,
+`kmr_api::Robot::run()` runs `NoHardware`, which reads and writes nothing
+and warns once at `open`.
+
+Torque off reaches every actuator of an opened bus, read-only ones and ones
+an earlier run left powered included, through the backend's
+`force_torque_off`; a read-only actuator found powered is switched off in
+PostInit. The zero is a software offset: 0 rad sits at the model's centre
+or at the raw position the table names. The vendor SDK sits behind a private
+`Backend` trait, so the adapter is tested on a strict scripted backend that
+refuses what `dxl_rs` refuses, and `dxl_rs_v2` can replace `dxl_rs` later.
+
+Still open: Dynamixel velocity and current modes (`dxl_rs` cannot write the
+operating mode register, SRS section 8), one 10-byte sync read per group
+instead of three, `dxl_rs` as a pinned git dependency with a cross build in
+CI, and N as a const generic of the core. The contract and its departures
+from the SRS are argued in [decision 0002](decisions/0002-hal-contract.md),
+which predates the list of members.
 
 ## Real-time constraints
 
