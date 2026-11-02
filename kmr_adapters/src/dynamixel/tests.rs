@@ -24,7 +24,7 @@ use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
-use super::scripted::{Call, HEALTHY, Scripted};
+use super::scripted::{Call, HEALTHY, Record, Scripted};
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
     Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, io as tick, port, units,
@@ -254,6 +254,12 @@ impl Desired {
     /// Writes `Q(0.0)` to every actuator.
     fn all_q() -> Self {
         (0..JOINTS).fold(Self::new(), |desired, index| desired.q(index, Q(0.0)))
+    }
+
+    /// Writes [`ramp`] to every actuator.
+    fn ramp() -> Self {
+        let q = ramp();
+        (0..JOINTS).fold(Self::new(), |desired, index| desired.q(index, q[index]))
     }
 
     /// The desired state as a `Command`.
@@ -2603,14 +2609,64 @@ fn subset() -> Mask {
     mask(|index| SUBSET_AT.contains(&index))
 }
 
-/// Whether every backend call naming an actuator names one of [`SUBSET`]:
-/// id 1 on bus 0 or 1.
+/// A distinct target for every engine index: `0.1 * index` rad, so a goal
+/// shows the index it came from.
+fn ramp() -> [Q; JOINTS] {
+    core::array::from_fn(|index| Q(0.1 * index as f32))
+}
+
+/// Whether the backend saw only [`SUBSET`]'s own indices: every call naming
+/// an actuator names one of its table as declared (bus, model and id), and
+/// every goal written to it is the one [`ramp`] gives its engine index.
 fn only_subset_called(backend: &Scripted) -> bool {
+    let q = ramp();
+    let owner = |record: &Record, id: u8| {
+        SUBSET
+            .table()
+            .actuators
+            .iter()
+            .zip(SUBSET_AT)
+            .find(|(actuator, _)| {
+                (actuator.bus, Some(actuator.model), actuator.id) == (record.port, record.model, id)
+            })
+    };
     backend
         .calls()
         .iter()
         .filter(|record| record.model.is_some())
-        .all(|record| record.port < 2 && backend.ids(record).all(|id| id == 1))
+        .all(|record| {
+            let named = backend.ids(record).all(|id| owner(record, id).is_some());
+            let goals = record.call != Call::SyncWriteGoal
+                || backend.goals(record).iter().all(|&(id, raw)| {
+                    owner(record, id).is_some_and(|(actuator, index)| {
+                        q.get(index).and_then(|&q| tick::position_goal(actuator, q)) == Some(raw)
+                    })
+                });
+            named && goals
+        })
+}
+
+#[test]
+fn only_subset_called_refuses_another_index() {
+    let mut backend = Scripted::new();
+    let ramp = ramp();
+    let goal = |index: usize| tick::position_goal(&SUBSET.table().actuators[0], ramp[index]);
+    let (Some(own), Some(other)) = (goal(3), goal(2)) else {
+        panic!("the arm XM takes both targets");
+    };
+
+    // The fake logs a call before it refuses it: unpowered is fine here.
+    let _ = backend.sync_write_goal(0, Model::Xm430W210, &[(1, own)]);
+    assert!(only_subset_called(&backend));
+    let _ = backend.sync_write_goal(0, Model::Xm430W210, &[(1, other)]);
+    assert!(!only_subset_called(&backend), "index 2's goal on index 3");
+
+    backend.clear_log();
+    let _ = backend.ping(1, Model::Xm430W210, 1);
+    assert!(!only_subset_called(&backend), "the wrist bus has no XM");
+    backend.clear_log();
+    let _ = backend.ping(0, Model::Xm430W210, 2);
+    assert!(!only_subset_called(&backend), "no id 2 on the arm bus");
 }
 
 #[test]
@@ -2699,7 +2755,7 @@ fn a_placed_member_reads_and_faults_only_its_slots() -> Result<(), DynamixelErro
 fn a_placed_member_writes_holds_and_cuts_only_its_actuators() -> Result<(), DynamixelError> {
     let mut adapter = rig_placed();
     let claim = powered(&mut adapter)?;
-    let desired = Desired::all_q();
+    let desired = Desired::ramp();
 
     assert_eq!(write(&mut adapter, &claim, &desired), Faults::default());
     let writes = adapter
@@ -2816,7 +2872,7 @@ fn a_placed_member_runs_beside_another_one_on_its_own_actuators() -> io::Result<
     let mut rest = Rest::default();
 
     let control = |time: &Time, state: &mut RobotState, _: &Sensors| {
-        state.set_all([Q(0.0); JOINTS]);
+        state.set_all(ramp());
         if time.tick() == 2 {
             kmr_core::shutdown!("test: tick 2");
         }
