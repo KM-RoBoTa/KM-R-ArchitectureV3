@@ -13,4 +13,5 @@ pub mod plan;
 pub mod probe;
 pub mod procfs;
 pub mod report;
+pub mod results;
 pub mod setup;
