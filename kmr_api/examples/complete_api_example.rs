@@ -486,10 +486,16 @@ fn main() -> color_eyre::Result<()> {
     let pad: SharedPad = Arc::new(Mutex::new(GamepadInput::default()));
 
     // NOTE: `new()` should be `builder()` no ?
-    Robot::new()
-        // Hardware, Bevy-style. The preset gives brand and baud; the id is this machine's USB adapter.
-        // Leave it out and run() simulates, with one warning.
-        .add_plugins(Bus::by_id("FT8ISZ6H"))
+    let robot = Robot::new();
+    // Hardware, Bevy-style. The preset gives brand and baud; the id is this machine's USB adapter.
+    // Without this line run() simulates, with the core's one warning: here, unless the example
+    // is built with the `dynamixel` feature.
+    let robot = if cfg!(feature = "dynamixel") {
+        robot.add_plugins(Bus::by_id("FT8ISZ6H"))
+    } else {
+        robot
+    };
+    robot
         // Settings
         .set_dt(Duration::from_millis(1u64)) // NOTE: or .dt_us(10000)
         // .history_depth(1_usize) // with a maximum recommended of 5.
