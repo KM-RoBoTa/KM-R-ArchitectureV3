@@ -19,6 +19,8 @@ pub const MAX_KEY: usize = 128;
 pub const MAX_TEXT: usize = 512;
 /// Largest file, in bytes.
 pub const MAX_FILE: usize = 64 * 1024;
+/// The value of a figure every report carries but this run could not take.
+pub const NOT_MEASURED: &str = "not measured";
 
 /// How a run ended, with the reason when it did not complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,7 +240,9 @@ impl<W: io::Write> Report<W> {
 
     /// Opens `[figures]` when the run is complete, with `loop_thread_allocs` and `locks`.
     ///
-    /// `None` for a failed or incomplete run: it holds no figure (FR-024 (SRS NFR-2)).
+    /// `loop_thread_allocs` is `None` for a binary without the counting window: the key then
+    /// says `"not measured"`, as `locks` does (FR-012 (SRS NFR-1)). Returns `None` for a failed
+    /// or incomplete run: it holds no figure (FR-024 (SRS NFR-2)).
     ///
     /// # Errors
     ///
@@ -252,8 +256,11 @@ impl<W: io::Write> Report<W> {
             return Ok(None);
         }
         self.block("figures")?;
-        self.int_opt("loop_thread_allocs", loop_thread_allocs)?;
-        self.text("locks", "not measured")?;
+        match loop_thread_allocs {
+            Some(count) => self.int("loop_thread_allocs", count)?,
+            None => self.text("loop_thread_allocs", NOT_MEASURED)?,
+        }
+        self.text("locks", NOT_MEASURED)?;
         Ok(Some(Figures(self)))
     }
 
@@ -485,6 +492,18 @@ mod tests {
         assert!(text.ends_with(
             "[figures]\nloop_thread_allocs = 0\nlocks = \"not measured\"\njitter_p50_ns = 55900\n"
         ));
+    }
+
+    #[test]
+    fn a_run_without_the_counter_says_allocs_are_not_measured() {
+        let mut store = [0u8; 512];
+        let mut report = Report::new(Cursor::new(&mut store[..]));
+        report.figures(Outcome::Complete, None).expect("figures");
+        let len = usize::try_from(report.finish().expect("finish").position()).unwrap_or(0);
+        assert_eq!(
+            std::str::from_utf8(&store[..len]).expect("utf-8"),
+            "[figures]\nloop_thread_allocs = \"not measured\"\nlocks = \"not measured\"\n"
+        );
     }
 
     #[test]
