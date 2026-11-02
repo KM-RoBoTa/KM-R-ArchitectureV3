@@ -344,12 +344,13 @@ fn write_all(time: &Time, robot: &mut State, _s: &Sensors) {
     }
 }
 
-/// Runs scenario `CASE` with a plugin per brand, from an empty log.
+/// Runs scenario `CASE` with a plugin per brand and a zero hold, from an empty log.
 fn run<const CASE: u8>() -> Result<(), UserError> {
     take();
     *SEEN.lock().unwrap_or_else(PoisonError::into_inner) = None;
     kmr_api::Robot::<TwoBrands<CASE>>::new()
         .set_dt(Duration::from_millis(1))
+        .set_hold(Duration::ZERO)
         .add_plugins(Bus::by_dev("/dev/leg").bus("leg"))
         .add_plugins(Bus::by_id("ARM00001").bus("arm"))
         .add_controller(EachTick, write_all)

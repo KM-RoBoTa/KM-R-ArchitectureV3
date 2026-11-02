@@ -2830,6 +2830,7 @@ fn a_placed_member_runs_beside_another_one_on_its_own_actuators() -> io::Result<
     };
     let run = kmr_core::Robot::new()
         .set_dt(Duration::from_millis(1))
+        .set_hold(Duration::ZERO)
         .add_control_fn(EachTick, control)
         .run_on(hardware);
 
