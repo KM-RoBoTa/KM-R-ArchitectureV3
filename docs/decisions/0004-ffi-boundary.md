@@ -1,7 +1,7 @@
 # 0004 — The FFI boundary: copied views, generated headers, a returned status
 
 Status: **proposed**, waiting for the maintainer's decision. Several points rest
-on pending decisions (D1, D3, D4, D12, D13, Q1, see [Pending](#pending)).
+on pending decisions (D1, D3, D4, D12, D13, D14, Q1, see [Pending](#pending)).
 
 The research behind each point is in
 [`specs/006-kmr-ffi/research.md`](../../specs/006-kmr-ffi/research.md)
@@ -144,5 +144,8 @@ Six choices shape the boundary:
   `foreign!`.
 - **D13** (returned status, A): `Status` in `call.rs` and its `match` in
   `kmr_api/src/ffi.rs`.
+- **D14** (ROS2 baseline for SRS FR-10.4: a minimal `ros2 pkg create` node,
+  user-edited files counted): the onboarding trial T032 (SC-008) and the
+  "four files" claim under Developer experience are measured against it.
 - **Q1** (integer time and flags, no D id; coordination "FR-10.2 vs FR-3.3"):
   `TimeView` and `ActuatorFlags` in `view.rs`, and the header generator.
