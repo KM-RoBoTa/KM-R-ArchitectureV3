@@ -366,8 +366,7 @@ pub enum DynamixelError {
     /// The Model Number read is not the declared model's: another model
     /// answers at that id, its registers at another scale.
     #[error(
-        "actuator {actuator}: id {id} on bus {bus}: Model Number {found}, expected {} for the declared {}",
-        .declared.number(),
+        "actuator {actuator}: id {id} on bus {bus}: Model Number {found}, expected {expected} for the declared {}",
         .declared.name()
     )]
     ModelMismatch {
@@ -381,6 +380,8 @@ pub enum DynamixelError {
         declared: Model,
         /// Model Number read.
         found: u16,
+        /// Model Number the declared model answers with.
+        expected: u16,
     },
     /// A transaction with one actuator failed.
     #[error("actuator {actuator}: id {id} on bus {bus}: {source}")]
@@ -818,13 +819,15 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                 .backend
                 .read_model_number(bus, model, id)
                 .map_err(|error| self.actuator_error(index, error))?;
-            if found != model.number() {
+            let expected = model.number();
+            if found != expected {
                 return Err(DynamixelError::ModelMismatch {
                     actuator: index,
                     bus: self.label(bus),
                     id,
                     declared: model,
                     found,
+                    expected,
                 });
             }
         }

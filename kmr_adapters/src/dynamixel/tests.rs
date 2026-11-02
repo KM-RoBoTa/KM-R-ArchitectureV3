@@ -3610,6 +3610,7 @@ fn an_ax12_answering_as_a_declared_mx64_fails_ping_before_any_torque() {
             id: id(3),
             declared: Model::Mx64,
             found: 12,
+            expected: 310,
         })
     );
     assert_eq!(
@@ -3637,6 +3638,7 @@ fn an_mx64_answering_as_a_declared_ax12_fails_ping_before_any_torque() {
             id: id(0),
             declared: Model::Ax12a,
             found: 310,
+            expected: 12,
         })
     );
     assert_eq!(
