@@ -36,7 +36,8 @@ run of SC-001 (research R18).
 
 4. `git status --short` shows the one new report and its `.log`, nothing else.
 
-What it does, per profile (dev, then release), after one untimed warm-up build of everything:
+What it does, per profile (dev, then release) and crate, after one untimed warm-up build of
+that crate:
 
 | Kind | Crates | Step, timed |
 |---|---|---|

@@ -121,9 +121,10 @@ nonce=0
 for profile in dev release; do
     flag=()
     [[ $profile == release ]] && flag=(--release)
-    cargo build -p controllers "${flag[@]}" >>"$log" 2>&1 || failed "warm-up build, $profile"
     for crate in kmr_core controllers; do
         rootfile=$(root_of "$crate")
+        # Per crate: its own feature set, and the restored root of the crate before it.
+        cargo build -p "$crate" "${flag[@]}" >>"$log" 2>&1 || failed "warm-up build of $crate, $profile"
         clean=() body=() reg=()
         for _ in $(seq "$REPEATS"); do
             cp "$work/$crate.pristine" "$rootfile"
