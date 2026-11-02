@@ -37,9 +37,11 @@ pub enum Protocol {
 /// transaction group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Series {
-    /// AX table, the RX-28's too.
+    /// AX table, the RX-28's and the MX-64's on Protocol 1: every register
+    /// the adapter touches has the AX address and size.
     Ax,
-    /// X table.
+    /// X table, the MX-64(2.0)'s too: same address and size for every
+    /// register the adapter touches.
     X,
 }
 
@@ -50,6 +52,12 @@ pub enum Model {
     Ax12a,
     /// RX-28.
     Rx28,
+    /// MX-64 on its Protocol 1 firmware. Its Torque Ctrl Mode Enable (70)
+    /// makes it ignore Goal Position; the adapter does not read it (open).
+    Mx64,
+    /// MX-64(2.0): the MX-64 on its Protocol 2.0 firmware, another control
+    /// table.
+    Mx64V2,
     /// XM430-W210.
     Xm430W210,
     /// XW430-T200.
@@ -66,6 +74,8 @@ impl Model {
         match self {
             Self::Ax12a => "AX-12A",
             Self::Rx28 => "RX-28",
+            Self::Mx64 => "MX-64",
+            Self::Mx64V2 => "MX-64(2.0)",
             Self::Xm430W210 => "XM430-W210",
             Self::Xw430T200 => "XW430-T200",
             Self::Xw540T140 => "XW540-T140",
@@ -76,17 +86,26 @@ impl Model {
     /// Protocol the model speaks.
     pub const fn protocol(self) -> Protocol {
         match self {
-            Self::Ax12a | Self::Rx28 => Protocol::One,
-            Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => Protocol::Two,
+            Self::Ax12a | Self::Rx28 | Self::Mx64 => Protocol::One,
+            Self::Mx64V2
+            | Self::Xm430W210
+            | Self::Xw430T200
+            | Self::Xw540T140
+            | Self::Xw540T260 => Protocol::Two,
         }
     }
 
     /// Control table family. `dxl_rs` has no RX-28 table: the RX-28 shares
-    /// the AX one, as in v2 (research R7).
+    /// the AX one, as in v2 (research R7). The Protocol 1 MX-64 shares it
+    /// too, so it shares the AX sync write on its bus.
     pub const fn series(self) -> Series {
         match self {
-            Self::Ax12a | Self::Rx28 => Series::Ax,
-            Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => Series::X,
+            Self::Ax12a | Self::Rx28 | Self::Mx64 => Series::Ax,
+            Self::Mx64V2
+            | Self::Xm430W210
+            | Self::Xw430T200
+            | Self::Xw540T140
+            | Self::Xw540T260 => Series::X,
         }
     }
 
@@ -94,8 +113,8 @@ impl Model {
     /// the e-Manual's goal rates: the AX `115_200` runs at 117 647 bit/s on
     /// the actuator side, 2.1 % off.
     pub const fn accepts_baud(self, baud: u32) -> bool {
-        match self.series() {
-            Series::Ax => matches!(
+        match self {
+            Self::Ax12a | Self::Rx28 => matches!(
                 baud,
                 9_600
                     | 19_200
@@ -107,7 +126,27 @@ impl Model {
                     | 500_000
                     | 1_000_000
             ),
-            Series::X => matches!(
+            Self::Mx64 => matches!(
+                baud,
+                9_600
+                    | 19_200
+                    | 57_600
+                    | 115_200
+                    | 200_000
+                    | 250_000
+                    | 400_000
+                    | 500_000
+                    | 1_000_000
+                    | 2_000_000
+                    | 2_250_000
+                    | 2_500_000
+                    | 3_000_000
+            ),
+            Self::Mx64V2
+            | Self::Xm430W210
+            | Self::Xw430T200
+            | Self::Xw540T140
+            | Self::Xw540T260 => matches!(
                 baud,
                 9_600
                     | 57_600
@@ -121,10 +160,25 @@ impl Model {
         }
     }
 
-    /// Whether the firmware has `mode`. On AX and RX, `Velocity` is wheel
-    /// mode and there is no current control.
+    /// Whether the firmware has `mode`. On AX, RX and the Protocol 1 MX-64,
+    /// `Velocity` is wheel mode and there is no Goal Current.
     pub const fn supports(self, mode: Mode) -> bool {
         !matches!((self.series(), mode), (Series::Ax, Mode::Current))
+    }
+
+    /// CW and CCW Angle Limit that, both at this value, select multi-turn
+    /// mode; `None` on a model without one.
+    pub(crate) const fn multi_turn_limit(self) -> Option<u32> {
+        match self {
+            Self::Mx64 => Some(4095),
+            Self::Ax12a
+            | Self::Rx28
+            | Self::Mx64V2
+            | Self::Xm430W210
+            | Self::Xw430T200
+            | Self::Xw540T140
+            | Self::Xw540T260 => None,
+        }
     }
 
     /// Input voltage range of the datasheet, `(min, max)` in 0.1 V. Never
@@ -134,6 +188,7 @@ impl Model {
         match self {
             Self::Ax12a => (90, 120),
             Self::Rx28 => (120, 185),
+            Self::Mx64 | Self::Mx64V2 => (100, 148),
             Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => (100, 148),
         }
     }
@@ -144,7 +199,7 @@ impl Model {
     pub const fn datasheet_max_temperature_c(self) -> u8 {
         match self {
             Self::Ax12a => 70,
-            Self::Rx28 => 80,
+            Self::Rx28 | Self::Mx64 | Self::Mx64V2 => 80,
             Self::Xm430W210 | Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260 => 80,
         }
     }
@@ -174,7 +229,7 @@ pub enum Torque {
 /// Where 0 rad sits on an actuator (FR-005).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Zero {
-    /// The model's centre: 2048 on X, 512 on AX and RX.
+    /// The model's centre: 2048 on X and MX-64, 512 on AX and RX.
     Center,
     /// This position register value, inside the model's range.
     Raw(i32),
@@ -993,9 +1048,11 @@ impl Message {
 mod tests {
     use super::*;
 
-    const MODELS: [Model; 6] = [
+    const MODELS: [Model; 8] = [
         Model::Ax12a,
         Model::Rx28,
+        Model::Mx64,
+        Model::Mx64V2,
         Model::Xm430W210,
         Model::Xw430T200,
         Model::Xw540T140,
@@ -1038,6 +1095,8 @@ mod tests {
             );
         }
         assert_eq!(Model::Rx28.series(), Series::Ax);
+        assert_eq!(Model::Mx64.series(), Series::Ax);
+        assert_eq!(Model::Mx64V2.series(), Series::X);
     }
 
     #[test]
@@ -1052,6 +1111,12 @@ mod tests {
         assert!(!Model::Rx28.accepts_baud(2_000_000));
         assert!(Model::Xw540T260.accepts_baud(4_500_000));
         assert!(!Model::Xm430W210.accepts_baud(500_000));
+        for baud in [2_000_000, 2_250_000, 2_500_000, 3_000_000, 400_000] {
+            assert!(Model::Mx64.accepts_baud(baud), "{baud}");
+        }
+        assert!(!Model::Mx64.accepts_baud(4_000_000));
+        assert!(Model::Mx64V2.accepts_baud(4_500_000));
+        assert!(!Model::Mx64V2.accepts_baud(500_000));
     }
 
     #[test]
@@ -1079,12 +1144,18 @@ mod tests {
         assert_eq!(Model::Ax12a.datasheet_max_temperature_c(), 70);
         assert_eq!(Model::Rx28.datasheet_max_temperature_c(), 80);
         assert_eq!(Model::Xm430W210.datasheet_max_temperature_c(), 80);
+        for model in [Model::Mx64, Model::Mx64V2] {
+            assert_eq!(model.datasheet_voltage_dv(), (100, 148), "{model:?}");
+            assert_eq!(model.datasheet_max_temperature_c(), 80, "{model:?}");
+        }
     }
 
     #[test]
     fn a_position_chain_passes() {
         table(chain(Model::Xm430W210)).check();
         table(chain(Model::Ax12a)).check();
+        table(chain(Model::Mx64)).check();
+        table(chain(Model::Mx64V2)).check();
     }
 
     #[test]

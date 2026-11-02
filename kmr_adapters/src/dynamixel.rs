@@ -299,6 +299,21 @@ pub enum DynamixelError {
         /// Firmware id.
         id: u8,
     },
+    /// CW and CCW Angle Limit both at the model's multi-turn value: multi-turn
+    /// mode, not joint mode (Protocol 1 MX-64).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: CW and CCW Angle Limit both {limit}: multi-turn mode, not joint mode"
+    )]
+    MultiTurnMode {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// CW and CCW Angle Limit, raw.
+        limit: u32,
+    },
     /// CW Angle Limit above CCW Angle Limit (Protocol 1).
     #[error(
         "actuator {actuator}: id {id} on bus {bus}: CW Angle Limit {cw} above CCW Angle Limit {ccw}"
@@ -840,8 +855,9 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// Checks that every Protocol 2 actuator is in position mode, and warns
     /// about one found powered: `torque_on` switches a [`Torque::ReadOnly`]
     /// one off (research R1). Protocol 1 has no Operating Mode: its joint
-    /// mode is CW and CCW Angle Limit not both 0, read here and kept as the
-    /// range its goals must stay in. Its torque state is not read.
+    /// mode is CW and CCW Angle Limit not both 0, nor both the model's
+    /// multi-turn value, read here and kept as the range its goals must stay
+    /// in. Its torque state is not read.
     fn configure(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
@@ -856,6 +872,17 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                         actuator: index,
                         bus,
                         id,
+                    });
+                }
+                if model
+                    .multi_turn_limit()
+                    .is_some_and(|limit| cw == limit && ccw == limit)
+                {
+                    return Err(DynamixelError::MultiTurnMode {
+                        actuator: index,
+                        bus,
+                        id,
+                        limit: cw,
                     });
                 }
                 if cw > ccw {

@@ -3210,3 +3210,339 @@ fn engine_controller_panic_cuts_and_closes_then_goes_on() -> io::Result<()> {
     ends_cut_and_closed(&adapter.backend, (0..JOINTS).map(id));
     Ok(())
 }
+
+// ── T071: MX-64 beside AX-12, Protocol 1 and 2.0 firmware ───────────────────
+
+/// Whether actuator `index` sits on the MX-64 bus of [`ax_beside_mx`].
+const fn on_mx(index: usize) -> bool {
+    index % 2 == 1
+}
+
+/// Even actuators: AX-12A on bus `ax`. Odd ones: `mx` on bus `mx`. Both at
+/// 1 Mbit/s, read every tick.
+const fn ax_beside_mx(mx: Model) -> Table<2, JOINTS> {
+    let mut actuators = chain(Model::Ax12a);
+    let mut index = 0;
+    while index < JOINTS {
+        if on_mx(index) {
+            actuators[index].bus = 1;
+            actuators[index].model = mx;
+        }
+        index += 1;
+    }
+    Table {
+        buses: [
+            Bus {
+                label: "ax",
+                ..one_bus("", NonZeroU32::new(1))[0]
+            },
+            Bus {
+                label: "mx",
+                ..one_bus("", NonZeroU32::new(1))[0]
+            },
+        ],
+        actuators,
+    }
+}
+
+/// An AX-12 bus beside a Protocol 1 MX-64 bus.
+const AX_MX_TABLE: Table<2, JOINTS> = ax_beside_mx(Model::Mx64).check();
+/// An AX-12 bus beside an MX-64(2.0) bus.
+const AX_MX2_TABLE: Table<2, JOINTS> = ax_beside_mx(Model::Mx64V2).check();
+
+/// Raw present position of actuator `index` in the MX-64 scenarios: past
+/// the AX range on the MX-64 bus.
+fn mx_scenario_raw(index: usize) -> i32 {
+    let step = 10 * i32::try_from(index).unwrap_or(0);
+    if on_mx(index) {
+        3000 + step
+    } else {
+        600 + step
+    }
+}
+
+/// Every step from `check` to `close` on `table`, the MX-64 at their
+/// [`mx_scenario_raw`] with their whole angle range; the read slot is
+/// returned with the claim.
+fn run_ax_beside_mx(
+    table: Table<2, JOINTS>,
+) -> Result<(Dynamixel<Scripted, 2>, Claim, Slot), DynamixelError> {
+    let mut adapter = rig(table);
+    for index in 0..JOINTS {
+        let bus = usize::from(on_mx(index));
+        let state = RawState {
+            position: mx_scenario_raw(index),
+            velocity: 100,
+            current: 100,
+        };
+        adapter.backend.state(bus, id(index), state);
+        if on_mx(index) {
+            adapter.backend.angle_limits(bus, id(index), 0, 4095);
+        }
+    }
+    let claim = adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    adapter.zero()?;
+    adapter.ping()?;
+    adapter.health()?;
+    adapter.configure()?;
+    let mut slot = Slot::filled(9.0);
+    adapter.read_all(slot.sample())?;
+    adapter.torque_on()?;
+    let (refreshed, faults) = read(&mut adapter, &mut slot);
+    let written = write(&mut adapter, &claim, &Desired::all_q());
+    adapter.hold(Desired::all_q().command());
+    adapter.torque_off();
+    adapter.close();
+    assert_eq!(
+        (refreshed, faults, written),
+        (Mask::ALL, Faults::default(), Faults::default())
+    );
+    Ok((adapter, claim, slot))
+}
+
+/// `(port, model, count)` of each recorded `call`, in call order.
+fn sent(backend: &Scripted, call: Call) -> impl Iterator<Item = (usize, Option<Model>, usize)> {
+    backend
+        .calls()
+        .iter()
+        .filter(move |record| record.call == call)
+        .map(|record| (record.port, record.model, record.count))
+}
+
+/// Raw goals of the newest `call` on `port`, in id order.
+fn goals_on(backend: &Scripted, call: Call, port: usize) -> Option<&[(u8, u32)]> {
+    let record = backend
+        .calls()
+        .iter()
+        .rev()
+        .find(|record| record.call == call && record.port == port)?;
+    Some(backend.goals(record))
+}
+
+/// Whether `goals` are the `(id, raw)` goals of the actuators `select`
+/// picks, in index order.
+fn goals_are(
+    goals: Option<&[(u8, u32)]>,
+    select: impl Fn(usize) -> bool,
+    raw: impl Fn(usize) -> u32,
+) -> bool {
+    let expected = (0..JOINTS)
+        .filter(|&index| select(index))
+        .map(|index| (id(index), raw(index)));
+    goals.is_some_and(|goals| goals.iter().copied().eq(expected))
+}
+
+#[test]
+fn an_ax12_bus_beside_an_mx64_bus_is_one_group_per_bus_on_either_firmware()
+-> Result<(), DynamixelError> {
+    for table in [AX_MX_TABLE, AX_MX2_TABLE] {
+        let claim = rig(table).check(Overrides::default())?;
+        for index in 0..JOINTS {
+            assert_eq!(claim.group[index], Group(u8::from(on_mx(index))));
+        }
+        assert_eq!(claim.owned, Mask::ALL);
+        assert_eq!((claim.read_cost, claim.write_cost), declared_costs(&table));
+    }
+    Ok(())
+}
+
+#[test]
+fn an_ax12_bus_beside_a_protocol_1_mx64_bus_runs_every_step() -> Result<(), DynamixelError> {
+    let (adapter, _, slot) = run_ax_beside_mx(AX_MX_TABLE)?;
+    let backend = &adapter.backend;
+    let mx = (0..JOINTS).filter(|&index| on_mx(index)).count();
+
+    for (index, q) in slot.q.iter().enumerate() {
+        let model = if on_mx(index) {
+            Model::Mx64
+        } else {
+            Model::Ax12a
+        };
+        assert_eq!(*q, si(model, mx_scenario_raw(index)), "{index}");
+        assert_eq!(slot.qd[index], Qd(9.0), "Protocol 1 rates are unread");
+    }
+    let counts = [
+        (Call::ReadAngleLimits, JOINTS),
+        (Call::ReadSetting, 0),
+        (Call::SyncReadState, 0),
+        (Call::ReadPosition, 3 * JOINTS),
+        (Call::Torque, JOINTS),
+        (Call::ForceTorqueOff, JOINTS),
+    ];
+    for (call, count) in counts {
+        assert_eq!(backend.count(call), count, "{call:?}");
+    }
+    assert!(sent(backend, Call::SyncWriteGoal).take(2).eq([
+        (0, Some(Model::Ax12a), JOINTS - mx),
+        (1, Some(Model::Mx64), mx),
+    ]));
+    let start = |index| mx_scenario_raw(index).cast_unsigned();
+    assert!(goals_are(
+        goals_on(backend, Call::SyncWriteStartGoal, 1),
+        on_mx,
+        start
+    ));
+    assert!(goals_are(
+        goals_on(backend, Call::SyncWriteGoal, 1),
+        on_mx,
+        |_| 2048
+    ));
+    assert!(goals_are(
+        goals_on(backend, Call::SyncWriteGoal, 0),
+        |index| !on_mx(index),
+        |_| 512
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_ax12_bus_beside_an_mx64_v2_bus_runs_every_step() -> Result<(), DynamixelError> {
+    let (adapter, _, slot) = run_ax_beside_mx(AX_MX2_TABLE)?;
+    let backend = &adapter.backend;
+    let mx = (0..JOINTS).filter(|&index| on_mx(index)).count();
+
+    for (index, q) in slot.q.iter().enumerate() {
+        let model = if on_mx(index) {
+            Model::Mx64V2
+        } else {
+            Model::Ax12a
+        };
+        assert_eq!(*q, si(model, mx_scenario_raw(index)), "{index}");
+        if on_mx(index) {
+            assert_eq!(slot.qd[index], units::velocity_to_si(Model::Mx64V2, 100));
+            assert_eq!(
+                Some(slot.tau[index]),
+                units::current_to_si(Model::Mx64V2, 100)
+            );
+        } else {
+            assert_eq!(slot.qd[index], Qd(9.0), "Protocol 1 rates are unread");
+        }
+    }
+    let counts = [
+        (Call::ReadAngleLimits, JOINTS - mx),
+        (Call::ReadSetting, 2 * mx),
+        (Call::SyncReadState, 3 * Scripted::STATE_READS.len()),
+        (Call::ReadPosition, 3 * (JOINTS - mx)),
+        (Call::Torque, JOINTS),
+        (Call::ForceTorqueOff, JOINTS),
+    ];
+    for (call, count) in counts {
+        assert_eq!(backend.count(call), count, "{call:?}");
+    }
+    assert!(sent(backend, Call::SyncReadState).all(|read| read == (1, Some(Model::Mx64V2), mx)));
+    assert!(sent(backend, Call::SyncWriteGoal).take(2).eq([
+        (0, Some(Model::Ax12a), JOINTS - mx),
+        (1, Some(Model::Mx64V2), mx),
+    ]));
+    assert!(goals_are(
+        goals_on(backend, Call::SyncWriteGoal, 1),
+        on_mx,
+        |_| 2048
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_protocol_1_mx64_shares_the_ax_sync_write_on_one_bus() -> Result<(), DynamixelError> {
+    let mut actuators = chain(Model::Ax12a);
+    for (index, actuator) in actuators.iter_mut().enumerate() {
+        if on_mx(index) {
+            actuator.model = Model::Mx64;
+        }
+    }
+    let table = Table {
+        buses: one_bus("p1", NonZeroU32::new(1)),
+        actuators,
+    }
+    .check();
+    let mut adapter = rig(table);
+    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+        adapter.backend.angle_limits(0, id(index), 0, 4095);
+    }
+    let claim = powered(&mut adapter)?;
+    assert_eq!(claim.group, [Group(0); JOINTS]);
+    assert_eq!((claim.read_cost, claim.write_cost), declared_costs(&table));
+
+    let faults = write(&mut adapter, &claim, &Desired::all_q());
+
+    assert_eq!(faults, Faults::default());
+    assert!(sent(&adapter.backend, Call::SyncWriteGoal).eq([(0, Some(Model::Ax12a), JOINTS)]));
+    let centre = |index| if on_mx(index) { 2048 } else { 512 };
+    assert!(goals_are(
+        Some(adapter.backend.last_goals()),
+        |_| true,
+        centre
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_mx64_v2_shares_the_x_sync_read_and_write_on_one_bus() -> Result<(), DynamixelError> {
+    let mut actuators = chain(Model::Xm430W210);
+    for (index, actuator) in actuators.iter_mut().enumerate() {
+        if on_mx(index) {
+            actuator.model = Model::Mx64V2;
+        }
+    }
+    let mut adapter = rig(Table {
+        buses: one_bus("p2", NonZeroU32::new(1)),
+        actuators,
+    }
+    .check());
+    let claim = powered(&mut adapter)?;
+    assert_eq!(claim.group, [Group(0); JOINTS]);
+
+    let (refreshed, _) = read(&mut adapter, &mut Slot::filled(0.0));
+    let faults = write(&mut adapter, &claim, &Desired::all_q());
+
+    assert_eq!((refreshed, faults), (Mask::ALL, Faults::default()));
+    assert_eq!(
+        adapter.backend.count(Call::SyncReadState),
+        Scripted::STATE_READS.len()
+    );
+    assert!(sent(&adapter.backend, Call::SyncWriteGoal).eq([(0, Some(Model::Xm430W210), JOINTS)]));
+    Ok(())
+}
+
+#[test]
+fn an_mx64_in_multi_turn_mode_fails_configure_before_any_torque() -> Result<(), DynamixelError> {
+    let mut adapter = rig(AX_MX_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    adapter.backend.angle_limits(1, id(1), 4095, 4095);
+
+    let error = adapter.configure();
+
+    assert_eq!(
+        error,
+        Err(DynamixelError::MultiTurnMode {
+            actuator: 1,
+            bus: "mx",
+            id: id(1),
+            limit: 4095,
+        })
+    );
+    assert_eq!(
+        error.err().map(|error| error.to_string()).as_deref(),
+        Some(
+            "actuator 1: id 2 on bus mx: CW and CCW Angle Limit both 4095: multi-turn mode, not joint mode"
+        )
+    );
+    assert_eq!(adapter.backend.count(Call::Torque), 0);
+    Ok(())
+}
+
+#[test]
+fn an_ax12_at_4095_angle_limits_is_no_multi_turn_mode() -> Result<(), DynamixelError> {
+    let mut adapter = rig(AX_MX_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+        adapter.backend.angle_limits(1, id(index), 0, 4095);
+    }
+    adapter.backend.angle_limits(0, id(0), 4095, 4095);
+
+    assert_eq!(adapter.configure(), Ok(()));
+    Ok(())
+}

@@ -10,6 +10,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ::dxl_rs::actuator::ax_series::Ax12A;
+use ::dxl_rs::actuator::mx_series::Mx64Ar;
 use ::dxl_rs::actuator::{
     Actuator, ActuatorOff, ActuatorOn, Readable, TorqueOn, Xm430W210, Xw430T200, Xw540T140,
     Xw540T260,
@@ -78,12 +79,18 @@ fn warn_once(flag: &AtomicBool, message: &str) {
 }
 
 /// Runs `$body` with `$actuator` bound to the torque-off `dxl_rs` actuator of
-/// `$model`. The RX-28 goes through the AX-12A table (research R7).
+/// `$model`. The RX-28 goes through the AX-12A table (research R7), and so
+/// does the Protocol 1 MX-64: the `dxl_rs` MX-64 is the MX-64(2.0), and
+/// every register used here has the AX address and size on both.
 macro_rules! with_actuator {
     ($model:expr, $id:expr, $number:expr, $actuator:ident => $body:expr) => {
         match $model {
-            Model::Ax12a | Model::Rx28 => {
+            Model::Ax12a | Model::Rx28 | Model::Mx64 => {
                 let $actuator = Ax12A::new($id, $number);
+                $body
+            }
+            Model::Mx64V2 => {
+                let $actuator = Mx64Ar::new($id, $number);
                 $body
             }
             Model::Xm430W210 => {
@@ -209,10 +216,17 @@ impl DxlRs {
             .get_mut(port)
             .ok_or(BackendError::PortNotOpen { port })?;
         let actuator: ActuatorVariant<TorqueOn> = match model {
-            Model::Ax12a | Model::Rx28 => {
+            Model::Ax12a | Model::Rx28 | Model::Mx64 => {
                 let on = enable(Ax12A::new(id, number))?;
                 if !known {
                     lists.one.push(on);
+                }
+                on.into()
+            }
+            Model::Mx64V2 => {
+                let on = enable(Mx64Ar::new(id, number))?;
+                if !known {
+                    lists.two.push(on);
                 }
                 on.into()
             }
@@ -738,7 +752,7 @@ impl Backend for DxlRs {
     ) -> Result<(u32, u32), BackendError> {
         let number = self.number(port)?;
         match model {
-            Model::Ax12a | Model::Rx28 => {
+            Model::Ax12a | Model::Rx28 | Model::Mx64 => {
                 let mut actuator = Ax12A::new(id, number);
                 actuator
                     .read_goal_limits()
@@ -746,9 +760,11 @@ impl Backend for DxlRs {
                 let (cw, ccw) = actuator.goal_limits();
                 Ok((u32::from(cw), u32::from(ccw)))
             }
-            Model::Xm430W210 | Model::Xw430T200 | Model::Xw540T140 | Model::Xw540T260 => {
-                Err(BackendError::NoAngleLimits)
-            }
+            Model::Mx64V2
+            | Model::Xm430W210
+            | Model::Xw430T200
+            | Model::Xw540T140
+            | Model::Xw540T260 => Err(BackendError::NoAngleLimits),
         }
     }
 

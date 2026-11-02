@@ -45,6 +45,24 @@ const AX: Scale = Scale {
     nm_per_current: None,
 };
 
+/// MX-64 control table on Protocol 1: 4096 units per turn, Present Speed
+/// about 0.11 rpm with the AX direction bit; Present Load is no current.
+const MX_64: Scale = Scale {
+    max_position: 4095,
+    center: 2048,
+    rad_per_position: TAU / 4096.0,
+    rad_s_per_velocity: 0.11 * RAD_S_PER_RPM,
+    clockwise_bit: true,
+    nm_per_current: None,
+};
+
+/// MX-64(2.0) control table: the X encoding, its current unit about
+/// 3.36 mA, 1.463 N·m per A.
+const MX_64_2: Scale = Scale {
+    nm_per_current: Some(3.36e-3 * 1.463),
+    ..x_series(1.463)
+};
+
 /// X control table in position mode: 4096 units per turn, 0.229 rpm,
 /// 2.69 mA, with the model's torque constant in N·m per A.
 const fn x_series(nm_per_amp: f32) -> Scale {
@@ -66,6 +84,8 @@ const fn x_series(nm_per_amp: f32) -> Scale {
 const fn scale(model: Model) -> Scale {
     match model {
         Model::Ax12a | Model::Rx28 => AX,
+        Model::Mx64 => MX_64,
+        Model::Mx64V2 => MX_64_2,
         Model::Xm430W210 => x_series(1.304),
         Model::Xw430T200 => x_series(1.769),
         Model::Xw540T140 => x_series(1.408),
@@ -146,9 +166,11 @@ mod tests {
     use super::super::config::{Mode, Torque};
     use super::*;
 
-    const MODELS: [Model; 6] = [
+    const MODELS: [Model; 8] = [
         Model::Ax12a,
         Model::Rx28,
+        Model::Mx64,
+        Model::Mx64V2,
         Model::Xm430W210,
         Model::Xw430T200,
         Model::Xw540T140,
@@ -225,8 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn x_range_is_minus_pi_up_to_one_unit_short_of_pi() {
-        for model in X_MODELS {
+    fn x_and_mx_range_is_minus_pi_up_to_one_unit_short_of_pi() {
+        for model in [Model::Mx64, Model::Mx64V2].into_iter().chain(X_MODELS) {
             let unit = scale(model).rad_per_position;
             assert_eq!(si(model, 0), Q(-PI));
             assert_eq!(position_to_raw(&at(model), Q(-PI)), Some(0));
@@ -284,7 +306,7 @@ mod tests {
     #[test]
     fn x_velocity_is_signed() {
         let unit = 0.229 * TAU / 60.0;
-        for model in X_MODELS {
+        for model in [Model::Mx64V2].into_iter().chain(X_MODELS) {
             assert_close(velocity_to_si(model, 100).0, 100.0 * unit);
             assert_close(velocity_to_si(model, -100).0, -100.0 * unit);
         }
@@ -298,6 +320,20 @@ mod tests {
             assert_close(velocity_to_si(model, 0x400 | 100).0, -100.0 * unit);
             assert_eq!(velocity_to_si(model, 0x400), Qd(0.0));
         }
+    }
+
+    #[test]
+    fn mx64_on_protocol_1_has_the_direction_bit_and_no_current() {
+        let unit = 0.11 * TAU / 60.0;
+        assert_close(velocity_to_si(Model::Mx64, 100).0, 100.0 * unit);
+        assert_close(velocity_to_si(Model::Mx64, 0x400 | 100).0, -100.0 * unit);
+        assert_eq!(current_to_si(Model::Mx64, 1000), None);
+    }
+
+    #[test]
+    fn mx64_v2_current_is_3_36_ma_at_its_torque_constant() {
+        let tau = current_to_si(Model::Mx64V2, 1000).map(|tau| tau.0);
+        assert_close(tau.unwrap(), 1000.0 * 3.36e-3 * 1.463);
     }
 
     #[test]
