@@ -196,8 +196,49 @@ impl<'a, 'i> Read<'a, 'i> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// kmr_api/tests/fixtures/four.urdf, the reference robot, inline.
+    pub(crate) const FOUR: &str = r#"<?xml version="1.0"?>
+<robot name="four">
+  <link name="base"><inertial><mass value="0.5"/><origin xyz="0 0 0.02"/></inertial></link>
+  <link name="l1"><inertial><mass value="0.35"/><origin xyz="0 0 0.05"/></inertial></link>
+  <link name="l2"><inertial><mass value="0.3"/><origin xyz="0 0 0.04"/></inertial></link>
+  <link name="l3"><inertial><mass value="0.2"/><origin xyz="0 0 0.03"/></inertial></link>
+  <link name="l4"><inertial><mass value="0.1"/><origin xyz="0 0 0.02"/></inertial></link>
+  <link name="tool"><inertial><mass value="0.05"/><origin xyz="0 0 0.01"/></inertial></link>
+  <joint name="j1" type="revolute">
+    <parent link="base"/><child link="l1"/>
+    <limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/>
+  </joint>
+  <joint name="j2" type="continuous">
+    <parent link="l1"/><child link="l2"/>
+    <limit velocity="3.0" effort="1.5"/>
+  </joint>
+  <joint name="j3" type="prismatic">
+    <parent link="l2"/><child link="l3"/>
+    <limit lower="0.0" upper="0.1" velocity="0.05" effort="20"/>
+  </joint>
+  <joint name="j4" type="revolute">
+    <parent link="l3"/><child link="l4"/>
+    <limit lower="-3.14" upper="3.14" velocity="4.0" effort="2.0"/>
+  </joint>
+  <joint name="mount" type="fixed"><parent link="l4"/><child link="tool"/></joint>
+  <transmission name="t1"><joint name="j1"/><actuator name="m1"/></transmission>
+</robot>
+"#;
+
+    /// The checked robot of [`FOUR`].
+    pub(crate) fn four() -> crate::model::Robot {
+        let robot = Urdf::read(FOUR, "four.urdf")
+            .and_then(|m| crate::model::validate(m, "four.urdf"))
+            .map_err(|e| e.message());
+        match robot {
+            Ok(robot) => robot,
+            Err(e) => panic!("{e}"),
+        }
+    }
 
     /// A `<robot>` around `body`.
     fn robot(body: &str) -> String {
