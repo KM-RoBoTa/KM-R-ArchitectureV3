@@ -1,8 +1,6 @@
 //! The robot's hardware as `robot!` names it: one member per brand, each bound to the bus
 //! plugins whose label names one of its buses (SRS FR-5.1, FR-6.3, FR-6.4).
 
-use std::any::type_name;
-
 use kmr_adapters::binding::{Binding, Port};
 use kmr_core::hal::{Drivers, Hal, HardwareError, MemberError};
 use kmr_core::{HCons, HNil};
@@ -117,10 +115,7 @@ impl<B: Brand, T: Brands> Brands for HCons<B, T> {
             .collect();
         let head = self.head.bind(&mine).map_err(|refused| match refused {
             Refused::FeatureOff(feature) => Refused::FeatureOff(feature),
-            Refused::Member(error) => Refused::Member(MemberError::Head {
-                name: type_name::<B::Member>(),
-                error,
-            }),
+            Refused::Member(error) => Refused::Member(MemberError::head::<B::Member>(error)),
         })?;
         let tail = self
             .tail
