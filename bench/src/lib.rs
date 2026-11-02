@@ -10,4 +10,7 @@ pub mod calib;
 pub mod grid;
 pub mod hist;
 pub mod plan;
+pub mod probe;
 pub mod procfs;
+pub mod report;
+pub mod setup;
