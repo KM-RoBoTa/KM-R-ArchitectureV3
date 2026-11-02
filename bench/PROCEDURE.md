@@ -57,4 +57,5 @@ Every step runs `REPEATS` times (default 3). The report holds, in `[figures]`:
 
 The median of an even count is the lower middle value. `[run]` holds `measurement = "compile"`,
 `cell` = the label, `repeats` and `reg_counts`. A failed build writes a `failed` report naming
-the step; the cargo output is in the `.log`.
+the step; the cargo output is in the `.log`. A missing operator field writes a `failed` report
+before any build. A throttle at start or end flags the report `throttled`.

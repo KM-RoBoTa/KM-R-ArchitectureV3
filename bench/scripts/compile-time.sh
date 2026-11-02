@@ -38,15 +38,28 @@ dir=$REPORT_ROOT/$commit/$label
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# Fails before any build when an operator field is missing.
-BENCH_PROFILE="dev,release" BENCH_FEATURES="" "$here/meta.sh" start >"$work/meta.toml"
-
 mkdir -p "$dir"
 n=1
 while [[ -e $dir/compile-$label-$n.toml ]]; do n=$((n + 1)); done
 report=$dir/compile-$label-$n.toml
 log=${report%.toml}.log
 : >"$log"
+
+# A missing operator field fails the run before any build, as in bench_run.
+if ! BENCH_PROFILE="dev,release" BENCH_FEATURES="" "$here/meta.sh" start >"$work/meta.toml" 2>"$work/meta.err"; then
+    cat "$work/meta.err" >&2
+    {
+        if [[ -s $work/meta.toml ]]; then
+            cat "$work/meta.toml"
+        else
+            printf '[meta]\nschema = 1\nhost_id = "%s"\n' "$("$here/meta.sh" host-id)"
+        fi
+        printf '[run]\nmeasurement = "compile"\ncell = "%s"\nstatus = "failed"\nflags = ""\n' "$label"
+        printf 'reason = "%s"\n' "$(tr -d '"\n' <"$work/meta.err" | sed 's/^meta: //')"
+    } >"$report"
+    echo "${report#"$repo"/}"
+    exit 1
+fi
 
 ws=$work/ws
 mkdir -p "$ws"
@@ -180,11 +193,12 @@ for count in $REG_COUNTS; do
 done
 
 cd "$repo"
+"$here/meta.sh" end >>"$work/meta.toml"
 flags=""
 [[ $(bench_key "$work/meta.toml" reference meta) == yes ]] || flags=not_reference
+if bench_throttled "$work/meta.toml"; then flags=${flags:+$flags,}throttled; fi
 {
     cat "$work/meta.toml"
-    "$here/meta.sh" end
     printf '[run]\nmeasurement = "compile"\ncell = "%s"\nstatus = "complete"\nflags = "%s"\n' "$label" "$flags"
     printf 'repeats = %s\nreg_counts = "%s"\n' "$REPEATS" "$REG_COUNTS"
     echo "[figures]"
