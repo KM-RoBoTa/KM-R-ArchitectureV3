@@ -225,7 +225,7 @@ link exists. FR-016 (SRS FR-8.1, FR-8.3).
 - [x] T058 [P] Update docs/ARCHITECTURE.md (a model section: `robot!` calls `kmr_model` at compile time, the binary gets constants, no run-time code) and docs/ROADMAP.md (multi-robot `.ron`, SRS FR-6.5; multi-actuator joints; non-1-DOF joints; center of mass, SRS FR-8.3; lib + macro split, research R12)
 - [ ] T059 Blocked on D12 (pending human) and a plan revision (research R12); do not start. kmr_ffi plan B2 needs N in a user `build.rs` from a preset name or a descriptor path, which needs kmr_model split into a library crate and a macro crate. Not planned here; this id is what kmr_ffi B2 waits on
 - [ ] T060 Run quickstart.md §§ 1 to 8 in full, with § 5 as `cargo test -p kmr_model` and `cargo test -p kmr_api --test robot_macro -- limits names links` (one positional filter only; reported against quickstart § 5); then `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, `cargo test --workspace --no-fail-fast`; report the exact results
-- [ ] T061 Update docs/c4/kmr_model.dsl with `/speckit-ov-c4-code` (Constitution, Development Workflow)
+- [x] T061 Update docs/c4/kmr_model.dsl with `/speckit-ov-c4-code` (Constitution, Development Workflow) Done 2026-11-02: six C3 components in `kmr.control` (the macro runs in rustc while the control process builds), C4 code elements grouped under them; `structurizr validate` green on docs/workspace.dsl, workspace.json untouched. Update it after T055 removes `actuator_count` and T032 adds the bit sets.
 
 ---
 
