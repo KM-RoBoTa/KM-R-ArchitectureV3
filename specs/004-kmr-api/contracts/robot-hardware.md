@@ -50,9 +50,33 @@ actuator indices it drives. `robot!` makes one member per brand: the Dynamixel b
 member over `dynamixel::Table<NB, M>`, a CubeMars bus another. The indices of all entries cover
 `0..N` exactly once; the core checks it at `run()` (kmr_core FR-063 (SRS FR-5.1, FR-6.4)), and
 the expansion may check it in const evaluation too. A one-brand table keeps the forms above and
-owns `0..N` in model order, so the count check below stays its check. The syntax of a
-multi-brand `hardware = ..` argument is open (kmr_api T069). Bus plugins still supply serial ids
-or paths only.
+owns `0..N` in model order, so the count check below stays its check. Bus plugins still supply
+serial ids or paths only.
+
+Syntax, 2026-11-02 (kmr_api T069, **assumed, pending human**): the smallest form that names one
+part per brand.
+
+```rust
+kmr_api::robot!(model = "robot/arm.urdf", hardware = { dynamixel: ARM.at([0, 2, 3]), cubemars: LEGS });
+```
+
+- Each `brand: part` entry is one member. The brand is a module of `kmr_api::__brand`
+  (`dynamixel` today); its `Hardware<NB, M>` is the type of the part and its `shape(&part)` the bus
+  and actuator counts, read in const evaluation. A Dynamixel part is a placed table,
+  `Table { .. }.at([index; M])` or `.in_order()` (kmr_adapters T069, `Placement<NB, M>`).
+- The expansion puts each part in `mod __hardware::<brand>` (`SHAPE`, `type Part`, `const PART`),
+  so a brand named twice is `error[E0428]`: one member per brand, and one Dynamixel SDK per
+  process.
+- `type Drivers` is `<HCons<__hardware::a::Part, ..> as kmr_api::Brands>::Drivers`; `bind` is
+  `kmr_api::__bind(HCons { head: __hardware::a::PART, .. }, plugins)`.
+- Routing: over several brands a plugin goes to the brand whose bus its label names; a label two
+  brands share is `SharedBusLabel { label }`, an unknown label `UnknownBus { label, port }`, no
+  label on a robot of several buses `LabelRequired { port }`, all before any bind. A robot of one brand hands that brand every plugin, so its own
+  binding errors (`UnknownBus`, `UnboundBus` of the adapter) stay as they were.
+- A member's binding error is `BringUp` over `HardwareError::Member`, named
+  `member k (<type name>): ..` like a bring-up error; `FeatureOff` passes through.
+- Not done: the coverage check in const evaluation (the run() check stands), the
+  `hardware = Table { .. }` and `|hw| ..` forms above.
 
 ## Checks in the expansion (all compile errors, all fire under `cargo check`)
 

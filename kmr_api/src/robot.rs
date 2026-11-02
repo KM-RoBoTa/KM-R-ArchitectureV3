@@ -8,11 +8,6 @@ use kmr_core::{
     Threaded,
 };
 
-/// The driver list of the one driver `head`. The driver set (kmr_api T069) replaces it.
-fn one<D>(head: D) -> HCons<D, HNil> {
-    HCons { head, tail: HNil }
-}
-
 // The named api→core translation wrapper stored in place of the user's closure.
 //
 // Why a named struct and not just the closure: `add_controller` returns
@@ -260,7 +255,7 @@ impl<H, C> Robot<H, C> {
         self.grown(|inner| inner.add_control_fn_as_thread(schedule, ctx, ApiThreaded(f)))
     }
 
-    /// Finalizes the builder, binds the bus plugins to the robot's driver, then runs on it;
+    /// Finalizes the builder, binds the bus plugins to the robot's drivers, then runs on them;
     /// without a plugin, simulates on no hardware.
     ///
     /// The `Drive` bound is `kmr_core`'s schedule-walk trait — `pub` but `#[doc(hidden)]`,
@@ -269,8 +264,9 @@ impl<H, C> Robot<H, C> {
     /// # Errors
     ///
     /// Before any I/O: [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], then the
-    /// binding errors of [`Spec::bind`]. After: the driver's bring-up error as
-    /// [`UserError::BringUp`]. A shutdown and an emergency stop both return `Ok(())`.
+    /// binding errors of [`Spec::bind`], then the claims that do not cover the actuators as
+    /// [`UserError::BringUp`]. After: a member's bring-up error as [`UserError::BringUp`]. A
+    /// shutdown and an emergency stop both return `Ok(())`.
     pub fn run(self) -> Result<(), UserError>
     where
         H: Spec,
@@ -278,10 +274,14 @@ impl<H, C> Robot<H, C> {
     {
         let (inner, plugins) = self.finalize()?;
         if plugins.is_empty() {
-            return inner.run_on(one(NoHardware)).map_err(UserError::bring_up);
+            let simulated = HCons {
+                head: NoHardware,
+                tail: HNil,
+            };
+            return inner.run_on(simulated).map_err(UserError::bring_up);
         }
-        let adapter = H::bind(&plugins)?;
-        inner.run_on(one(adapter)).map_err(UserError::bring_up)
+        let drivers = H::bind(&plugins)?;
+        inner.run_on(drivers).map_err(UserError::bring_up)
     }
 
     /// Checks the builder data, no I/O, and hands `dt` to the core.
@@ -328,9 +328,9 @@ mod tests {
     struct TestSpec;
 
     impl Spec for TestSpec {
-        type Adapter = crate::__NoHardware;
+        type Drivers = HCons<crate::__NoHardware, HNil>;
 
-        fn bind(plugins: &[crate::Binding]) -> Result<Self::Adapter, UserError> {
+        fn bind(plugins: &[crate::Binding]) -> Result<Self::Drivers, UserError> {
             crate::__bind_none(plugins)
         }
     }

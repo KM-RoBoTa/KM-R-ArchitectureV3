@@ -172,10 +172,14 @@ mod two_buses {
     .check();
 
     impl kmr_api::Spec for TwoBuses {
-        type Adapter = kmr_api::__DxlAdapter<2>;
+        type Drivers = kmr_api::HCons<kmr_api::__DxlAdapter<2>, kmr_api::HNil>;
 
-        fn bind(plugins: &[kmr_api::Binding]) -> Result<Self::Adapter, UserError> {
-            kmr_api::__bind_dynamixel(TABLE, plugins)
+        fn bind(plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
+            let hardware = kmr_api::HCons {
+                head: TABLE.in_order(),
+                tail: kmr_api::HNil,
+            };
+            kmr_api::__bind(hardware, plugins)
         }
     }
 
@@ -191,10 +195,14 @@ mod two_buses {
         };
         assert_eq!(
             e.to_string(),
-            "hardware bring-up failed: bus right: no bus plugin binds it; add one with `.bus(\"right\")`"
+            "hardware bring-up failed: member 0 (kmr_adapters::dynamixel::Dynamixel<\
+             kmr_adapters::dynamixel::dxl_rs::DxlRs, 2>): bus right: no bus plugin binds it; add \
+             one with `.bus(\"right\")`"
         );
-        let adapter =
-            std::error::Error::source(&e).and_then(|s| s.downcast_ref::<DynamixelError>());
+        // UserError -> the hardware error -> the member's own.
+        let adapter = std::error::Error::source(&e)
+            .and_then(std::error::Error::source)
+            .and_then(|s| s.downcast_ref::<DynamixelError>());
         assert_eq!(
             adapter,
             Some(&DynamixelError::UnboundBus { bus: "right" }),
@@ -323,10 +331,13 @@ mod recording {
     struct Records;
 
     impl Spec for Records {
-        type Adapter = Recorder;
+        type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
-        fn bind(_plugins: &[kmr_api::Binding]) -> Result<Recorder, UserError> {
-            Ok(Recorder { fail_open: false })
+        fn bind(_plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
+            Ok(kmr_api::HCons {
+                head: Recorder { fail_open: false },
+                tail: kmr_api::HNil,
+            })
         }
     }
 
@@ -334,10 +345,13 @@ mod recording {
     struct FailsOpen;
 
     impl Spec for FailsOpen {
-        type Adapter = Recorder;
+        type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
-        fn bind(_plugins: &[kmr_api::Binding]) -> Result<Recorder, UserError> {
-            Ok(Recorder { fail_open: true })
+        fn bind(_plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
+            Ok(kmr_api::HCons {
+                head: Recorder { fail_open: true },
+                tail: kmr_api::HNil,
+            })
         }
     }
 

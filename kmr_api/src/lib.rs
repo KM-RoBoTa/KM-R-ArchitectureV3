@@ -35,11 +35,19 @@ trait FakeModel {}
 mod robot;
 pub use robot::Robot;
 
+mod brand;
 mod spec;
 #[doc(hidden)]
-pub use kmr_adapters::{binding::Binding, dynamixel::Table};
+pub use brand::{__bind, Brand, Brands, Refused, Route};
 #[doc(hidden)]
-pub use spec::{__DxlAdapter, __NoHardware, __bind_dynamixel, __bind_none, Spec};
+pub use kmr_adapters::{
+    binding::Binding,
+    dynamixel::{Placement, Table},
+};
+#[doc(hidden)]
+pub use kmr_core::{HCons, HNil};
+#[doc(hidden)]
+pub use spec::{__DxlAdapter, __NoHardware, __bind_none, __brand, Spec};
 
 mod bus;
 pub use bus::Bus;

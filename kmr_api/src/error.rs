@@ -91,6 +91,28 @@ pub enum UserError {
     #[error("port `{port}` is bound by two bus plugins; bind each port once")]
     DuplicateBus { port: &'static str },
 
+    /// A bus plugin names a bus no member of the robot's hardware has (SRS FR-6.4).
+    #[error(
+        "the bus plugin of `{port}` names bus `{label}`, which no driver of this robot has; check `.bus(..)` against the hardware table"
+    )]
+    UnknownBus {
+        label: &'static str,
+        port: &'static str,
+    },
+
+    /// Two brands of the robot's hardware label a bus alike: a plugin could not tell them
+    /// apart (SRS FR-6.4).
+    #[error(
+        "bus label `{label}` names a bus of two drivers; give each bus its own label in the hardware table"
+    )]
+    SharedBusLabel { label: &'static str },
+
+    /// A bus plugin names no bus, and the robot's hardware has several (SRS FR-6.4).
+    #[error(
+        "the bus plugin of `{port}` names no bus, and this robot has several; name one with `.bus(\"label\")`"
+    )]
+    LabelRequired { port: &'static str },
+
     /// Bus plugins are declared, but the adapter they need is not compiled in.
     #[error(
         "bus plugins are declared, but kmr_api was built without its `{feature}` feature; enable `kmr_api/{feature}`, or remove the plugins to simulate"
@@ -103,8 +125,9 @@ pub enum UserError {
     )]
     NoHardwareDeclared,
 
-    /// The hardware failed to come up. `source` is the adapter's own error, typed: reach it
-    /// with [`Error::source`] and `downcast_ref`.
+    /// The hardware failed to bind or to come up. `source` is the hardware error: the claims
+    /// that do not cover the actuators, or the failed member, named by its position and type;
+    /// that member's own error, typed, is the next [`Error::source`], for `downcast_ref`.
     #[error("hardware bring-up failed: {source}")]
     BringUp {
         #[source]
@@ -151,10 +174,16 @@ mod tests {
     #[error("port FT8ISZ6H not found under /dev/serial/by-id")]
     struct NotFound;
 
-    fn every_variant() -> [UserError; 6] {
+    fn every_variant() -> [UserError; 9] {
         [
             UserError::NoControllers,
             UserError::DuplicateBus { port: "FT8ISZ6H" },
+            UserError::UnknownBus {
+                label: "elbow",
+                port: "FT8ISZ6H",
+            },
+            UserError::LabelRequired { port: "FT8ISZ6H" },
+            UserError::SharedBusLabel { label: "bus0" },
             UserError::FeatureOff {
                 feature: "dynamixel",
             },
@@ -177,7 +206,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn debug_shows_the_variant_and_its_fields() {
-        let [_, bus, _, _, bring_up, _] = every_variant();
+        let [_, bus, _, _, _, _, _, bring_up, _] = every_variant();
         assert_eq!(format!("{bus:?}"), r#"DuplicateBus { port: "FT8ISZ6H" }"#);
         assert_eq!(format!("{bring_up:?}"), "BringUp { source: NotFound }");
     }
@@ -202,7 +231,20 @@ mod tests {
 
     #[test]
     fn messages_name_the_fix() {
-        let [_, _, feature, hardware, bring_up, dt] = every_variant();
+        let [
+            _,
+            _,
+            unknown,
+            unlabelled,
+            shared,
+            feature,
+            hardware,
+            bring_up,
+            dt,
+        ] = every_variant();
+        assert!(shared.to_string().contains("its own label"));
+        assert!(unknown.to_string().contains("`.bus(..)`"));
+        assert!(unlabelled.to_string().contains(r#"`.bus("label")`"#));
         assert!(feature.to_string().contains("`kmr_api/dynamixel`"));
         assert!(hardware.to_string().contains("`hardware = ..`"));
         assert!(bring_up.to_string().contains("FT8ISZ6H"));
