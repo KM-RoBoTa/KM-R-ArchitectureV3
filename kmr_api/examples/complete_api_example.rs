@@ -24,29 +24,9 @@ fn main() -> color_eyre::Result<()> {
     // color_eyre just makes them more pleasing and easy to read.
     color_eyre::install()?;
 
-    fn initialization(_time: &Time, robot: &mut State, _sensors: &Sensors) {
-        // `home_state` returns ANY state. To ensure home_state() knows what
-        // to return you, you must specify the type you wish. In that case,
-        // this is done by the `let variable: Type` notation.
-        let _desired: [Q; N] = robot.initial_state();
-
-        // You can also write it with the "turbofish" notation if you desire.
-        let _desired = robot.initial_state::<Q>();
-
-        // But, since we call `set_all_q` at the end, the compiler is
-        // smart enough to know you want Q.
-        let desired = robot.initial_state();
-
-        // You can convince yourself of that fact by commenting out the next
-        // line. This is precisely why we learned about this now... Because
-        // you might get surprised by this error, which is in reality just
-        // the compiler being confused until you tell it "i want to set Q".
-        robot.set_all_q(desired);
-        // Note that set_all_q here is a bad practice. All joint will go
-        // instantinously to the desired position.
-
-        // Prefer this special case method for that specific scenario.
-        robot.go_home(90);
+    fn initialization(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
+        // The home state is not decided yet (SRS FR-2.7): `robot.initial_state()` and
+        // `robot.go_home(ramp)` exist, but a call to either does not build until it is.
     }
 
     fn use_time(time: &Time, _robot: &mut State, _sensors: &Sensors) {

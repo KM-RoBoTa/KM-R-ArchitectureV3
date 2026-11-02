@@ -15,6 +15,9 @@ pub use error::*;
 mod state;
 pub use state::*;
 
+mod home;
+pub use home::HomeDecided;
+
 mod time;
 pub use time::Time;
 

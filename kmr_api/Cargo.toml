@@ -22,6 +22,8 @@ joints-10 = ["kmr_core/joints-10"]
 # history and a readable desired buffer, which the normal surface never gives.
 kmr_core = { workspace = true, features = ["test-util"] }
 color-eyre.workspace = true
+# Compile-fail cases of kmr_api/tests/ui/ (SC-008 (SRS NFR-3)).
+trybuild.workspace = true
 
 [[example]]
 name = "complete_api_example"

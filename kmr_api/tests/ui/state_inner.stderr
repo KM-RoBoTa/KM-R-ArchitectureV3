@@ -1,0 +1,11 @@
+error[E0616]: field `inner` of struct `State` is private
+ --> tests/ui/state_inner.rs:4:23
+  |
+4 |     let _core = state.inner;
+  |                       ^^^^^ private field
+
+error[E0609]: no field `0` on type `State<'_>`
+ --> tests/ui/state_inner.rs:8:23
+  |
+8 |     let _core = state.0;
+  |                       ^ unknown field
