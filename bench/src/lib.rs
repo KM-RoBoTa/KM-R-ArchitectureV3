@@ -4,3 +4,10 @@
 //! leave after `run()` returns, as one report per process.
 
 #![deny(clippy::unwrap_used)]
+
+pub mod buf;
+pub mod calib;
+pub mod grid;
+pub mod hist;
+pub mod plan;
+pub mod procfs;
