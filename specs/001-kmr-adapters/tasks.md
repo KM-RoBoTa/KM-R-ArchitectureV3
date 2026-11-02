@@ -227,7 +227,7 @@ FR-2.6, FR-13.4).
 - [ ] T063 HUMAN Bench SC-003: write-tick I/O under 1 ms at a 1 ms tick, read ticks logged apart, measured costs within the declared ones; pick the `DEFAULT_READ_EVERY` value (D9)
 - [ ] T064 Blocked on T063. Set `DEFAULT_READ_EVERY` in kmr_adapters/src/dynamixel/config.rs to the measured value and drop "placeholder" from its doc; hand the number to core T060 for docs/decisions/0002-hal-contract.md
 - [x] T065 Run quickstart.md §§ 0 to 3 in full (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace --no-fail-fast`). Run 2026-11-02 on agent/integration: all green, 168 unit tests (1 ignored, T051) and 17 doctests in kmr_adapters; clippy warnings only kmr_core's own. § 1's "the fake refuses Protocol 1 health" no longer holds: 09ad611 reads Protocol 1 health through `dxl_rs`, superseding T049
-- [ ] T066 Update docs/c4/kmr_adapters.dsl with `/speckit-ov-c4-code` (constitution, Development Workflow)
+- [x] T066 Update docs/c4/kmr_adapters.dsl with `/speckit-ov-c4-code` (constitution, Development Workflow)
 
 ---
 
