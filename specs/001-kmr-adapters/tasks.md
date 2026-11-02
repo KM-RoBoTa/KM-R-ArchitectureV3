@@ -214,7 +214,7 @@ FR-2.6, FR-13.4).
 - [ ] T057 [US3] Blocked on T056 (core T027, K2.7). In kmr_adapters/src/dynamixel.rs, kmr_adapters/src/binding.rs and kmr_adapters/src/dynamixel/dxl_rs.rs: `Dynamixel<B, NB, N>`, `impl Hal<N>`, `bind` takes `Table<NB, N>`, `DxlRs` sizes its handle table from N (design-const-generic-n step 9; FR-022 (SRS FR-6.1))
 - [ ] T058 [US3] Blocked on core T025 (K2.5, HUMAN: `MASK_WORDS` public in `kmr_core::hal`) only; the doctests pass literal bit sets, so kmr_model's `model::PRISMATIC` (kmr_model T032) is not needed here. In kmr_adapters/src/dynamixel/config.rs add `pub const fn check_kinds(self, prismatic: [u64; MASK_WORDS]) -> Self` (`MASK_WORDS` from `kmr_core::hal`; bit i is word i / 64, bit i % 64): a set bit is a compile error "SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion" naming its index; add a `compile_fail` doctest and a passing one. Not `[u64; N.div_ceil(64)]` (does not compile in kmr_api's `Spec<N>` on stable). Hand-off: kmr_api plan B3 calls it as `const _: Table<__NB, __M> = __TABLE.check_kinds(model::PRISMATIC);` (a `const _: () = ..` form is E0308); no kmr_api edit here (FR-021 (SRS FR-2.2); SC-006)
 - [ ] T059 [US1] HUMAN (`unsafe impl GlobalAlloc`: AGENTS.md keeps anything `unsafe` off limits for agents). In kmr_adapters/src/dynamixel/tests.rs add a counting `#[global_allocator]` under `#[cfg(test)]` (per-thread counter) and a test of 10 000 ticks of `read` and `write` on the scripted bus asserting zero allocations (SC-008 (SRS NFR-1); FR-013)
-- [ ] T060 [US1] Review kmr_adapters/src/dynamixel/io.rs and kmr_adapters/src/dynamixel.rs against FR-034 (SRS NFR-10): per-actuator data in arrays by index, read-only and unread fields as bitsets out of band, buses and groups by index, enums not trait objects, no padding in per-tick data; fix a gap in place or report it in the PR
+- [x] T060 [US1] Review kmr_adapters/src/dynamixel/io.rs and kmr_adapters/src/dynamixel.rs against FR-034 (SRS NFR-10): per-actuator data in arrays by index, read-only and unread fields as bitsets out of band, buses and groups by index, enums not trait objects, no padding in per-tick data; fix a gap in place or report it in the PR
 - [x] T067 [US1] After T023 and T045 (plan E10). In kmr_adapters/src/presets/xm_bench.rs add `pub const READ_COST: Duration` and `pub const WRITE_COST: Duration` on `XmBench`, each preset later the same: computed in const evaluation from `HARDWARE` with the line-time formula of `io::Groups::costs` (bytes per (bus, series) transaction × 10 bits ÷ baud) and the backends' read plan (`STATE_READS`: three sync reads per group today, one after T051; one crate-private const both backends and the preset read, so T051 changes all three). Add a `table` test: on the scripted backend, the `Layout` that `check` declares has `read_cost == XmBench::READ_COST` and `write_cost == XmBench::WRITE_COST`, so the consts cannot drift. Hand-off: kmr_api plan C7 re-exports them under `kmr_api::presets`; the bench records them as `declared_read_ns`, `declared_write_ns` (bench contracts/results-schema.md); no kmr_api edit here (FR-035 (SRS NFR-11, FR-5.3))
 - [ ] T068 [US1] After T045; blocked on kmr_api T021 (the front door calls `__model!`; today kmr_api/src/robot_macro.rs:24 reads `<Preset>::N`). This crate owns the presets' hardware half, so the removal is here (kmr_model T028 hands off to it): in kmr_adapters/src/presets.rs drop `Preset::N`, and in kmr_adapters/src/presets/xm_bench.rs its derivation from `HARDWARE.actuators.len()`; N comes from the preset's model half (kmr_model T024; kmr_model research R7, review #2). The table keeps its own length; the count check (T025, kmr_api T023) keeps table and model in step. Drop the "`Preset::N` is 4" check of the T026 test (FR-023 (SRS FR-6.1))
 
@@ -347,6 +347,26 @@ right reason, no build error, no abort:
 
 Already green before the fix (guards): `torque_off_before_open_sends_nothing`,
 `hold_sends_last_q_to_powered_position_actuators_only`. All seven green after T015.
+
+## T060 review (2026-11-02), for the PR
+
+kmr_adapters/src/dynamixel.rs and dynamixel/io.rs against FR-034 (SRS NFR-10). Met: per-actuator
+data in arrays by engine index (`Placed`, `limits`, `Groups::of`, group members and ids); buses and
+groups by index, never by pointer; model, mode, series, protocol and torque choice as plain enums,
+no trait object; faults and the owned set as `Mask` bitsets. Gaps, reported, not fixed in place
+(each changes a seam or the T069 placement code):
+
+1. Read-only is in band: `Actuator::torque`, read per tick by `io::position_goal` in `write` and
+   `hold`. The unread rates of Protocol 1 are a `Mask` (`io::unread_rates`) but only at `check`,
+   not kept. FR-034 asks for both as bitsets out of band.
+2. Goal entries are `(u8, u32)` tuples: 8 bytes, 3 of them padding, in `io::Goals` and through
+   `Backend::sync_write_goal` / `sync_write_start_goal` (and the scripted log). Struct-of-arrays
+   (ids and raws as two slices) changes the backend seam in both backends.
+3. `Placed` is `[Option<Actuator>; JOINTS]`, an array of structs of 24 bytes, 4 of them padding,
+   walked per tick for bus, id, model, mode and torque. Split per field it would also carry gap 1.
+
+The per-tick path is otherwise stack arrays only, no allocation (FR-013); the zero-allocation
+proof is T059 (HUMAN, `unsafe`).
 
 ## Added 2026-10-29 (D17, set of drivers)
 
