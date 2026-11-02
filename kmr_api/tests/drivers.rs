@@ -579,3 +579,84 @@ fn a_bus_label_two_brands_share_is_refused_before_any_bind() {
     );
     assert!(take().is_empty());
 }
+
+/// Scenario `CASE` with a plugin per brand and a zero hold, bound but not run, from an empty
+/// log.
+fn bound<const CASE: u8>()
+-> Result<kmr_api::Bound<TwoBrands<CASE>, impl kmr_core::Drive + use<CASE>>, UserError> {
+    take();
+    kmr_api::Robot::<TwoBrands<CASE>>::new()
+        .set_dt(Duration::from_millis(1))
+        .set_hold(Duration::ZERO)
+        .add_plugins(Bus::by_dev("/dev/leg").bus("leg"))
+        .add_plugins(Bus::by_id("ARM00001").bus("arm"))
+        .add_controller(EachTick, write_all)
+        .bind()
+}
+
+#[test]
+fn bind_reaches_the_drivers_before_any_io_and_the_run_hands_them_back() {
+    let _bus = bus();
+    let mut bound = bound::<COVERED>().expect("the plugins bind");
+    let drivers = bound.drivers().expect("two plugins, two members");
+    assert_eq!(
+        (drivers.head.port, drivers.tail.head.port),
+        ("ARM00001", "/dev/leg")
+    );
+    assert_eq!(
+        take(),
+        [
+            Event::Bound("arm", vec!["ARM00001"]),
+            Event::Bound("leg", vec!["/dev/leg"])
+        ],
+        "binding does no I/O"
+    );
+
+    let back = bound.run().expect("the run ends on its shutdown");
+    let back = back.expect("the drivers come back");
+    assert_eq!(
+        (back.head.port, back.tail.head.port),
+        ("ARM00001", "/dev/leg")
+    );
+    let calls = calls(&take());
+    assert_eq!(calls.first(), Some(&("arm", "check")));
+    assert_eq!(calls.last(), Some(&("arm", "close")), "handed back closed");
+}
+
+#[test]
+fn a_member_changed_before_the_run_is_the_one_the_run_drives() {
+    let _bus = bus();
+    let mut bound = bound::<COVERED>().expect("the plugins bind");
+    if let Some(drivers) = bound.drivers() {
+        drivers.tail.head.fail_open = true;
+    }
+    let Err(e) = bound.run() else {
+        panic!("the leg was told to fail its open, yet the run went on");
+    };
+    assert_eq!(
+        e.to_string(),
+        "hardware bring-up failed: member 1 (&mut drivers::Fake<drivers::Leg>): port /dev/leg \
+         did not answer after 3 attempts"
+    );
+    let own = e.source().and_then(Error::source);
+    let unplugged = Unplugged {
+        port: "/dev/leg",
+        attempts: 3,
+    };
+    assert_eq!(own.and_then(|s| s.downcast_ref()), Some(&unplugged));
+}
+
+#[test]
+fn without_a_plugin_bind_gives_no_drivers_and_the_run_simulates() {
+    let _bus = bus();
+    take();
+    let mut bound = kmr_api::Robot::<TwoBrands<COVERED>>::new()
+        .set_dt(Duration::from_millis(1))
+        .add_controller(EachTick, write_all)
+        .bind()
+        .expect("nothing to bind");
+    assert!(bound.drivers().is_none());
+    let back = bound.run().expect("the simulated run ends on its shutdown");
+    assert!(back.is_none());
+    assert!(take().is_empty(), "no member was built");
+}

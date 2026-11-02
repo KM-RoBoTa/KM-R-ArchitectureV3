@@ -95,7 +95,7 @@ On a scripted host and adapter (kmr_core test hooks):
 | no-hardware run | `age_at(i)` is `Ok(None)` and `sample_age()` is `None` (never read) |
 | a limited actuator without a policy (D2 B, assumed) | `run()` returns `NoPolicy { actuator }`, no I/O; with `set_limit_policy_all(..)` it runs |
 | a tick overran | `overrun_count()` +1, `last_overrun()` is the lateness (US3-AS2) |
-| `bind()?.adapter()` then `run()` | the adapter comes back after the run (FR-041) |
+| `bind()?.drivers()` then `run()` | the drivers come back after the run, closed (FR-041) |
 | builder with no controller | does not compile (US1-AS10, after core #15) |
 
 ## Phase Z: Zenoh

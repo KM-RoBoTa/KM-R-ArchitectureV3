@@ -36,7 +36,7 @@ trait FakeSensor {}
 trait FakeModel {}
 
 mod robot;
-pub use robot::Robot;
+pub use robot::{Bound, Robot};
 
 mod brand;
 mod spec;

@@ -1,8 +1,9 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use crate::spec::Lend;
 use crate::{Binding, Bus, Schedule, Sensors, Spec, State, Time, UserError, payload::Payload};
-use kmr_core::hal::NoHardware;
+use kmr_core::hal::{Drivers, NoHardware};
 use kmr_core::{
     ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
     Threaded,
@@ -273,25 +274,37 @@ impl<H, C> Robot<H, C> {
     ///
     /// # Errors
     ///
-    /// Before any I/O: [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], then the
-    /// binding errors of [`Spec::bind`], then the claims that do not cover the actuators as
-    /// [`UserError::BringUp`]. After: a member's bring-up error as [`UserError::BringUp`]. A
-    /// shutdown and an emergency stop both return `Ok(())`.
+    /// Those of [`bind`](Self::bind), then those of [`Bound::run`]. A shutdown and an emergency
+    /// stop both return `Ok(())`.
     pub fn run(self) -> Result<(), UserError>
     where
         H: Spec,
         C: kmr_core::Drive,
     {
-        let (inner, plugins) = self.finalize()?;
-        if plugins.is_empty() {
-            let simulated = HCons {
-                head: NoHardware,
-                tail: HNil,
-            };
-            return inner.run_on(simulated).map_err(UserError::bring_up);
+        let Bound { inner, drivers } = self.bind()?;
+        match drivers {
+            Some(drivers) => drive(inner, drivers),
+            None => drive(inner, simulated()),
         }
-        let drivers = H::bind(&plugins)?;
-        inner.run_on(drivers).map_err(UserError::bring_up)
+    }
+
+    /// Finalizes the builder and binds the bus plugins to the robot's drivers, no I/O: the
+    /// drivers are reachable before the run (SRS FR-5.9).
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], then the binding errors of
+    /// [`Spec::bind`].
+    pub fn bind(self) -> Result<Bound<H, C>, UserError>
+    where
+        H: Spec,
+    {
+        let (inner, plugins) = self.finalize()?;
+        let drivers = match plugins.as_slice() {
+            [] => None,
+            plugins => Some(H::bind(plugins)?),
+        };
+        Ok(Bound { inner, drivers })
     }
 
     /// Checks the builder data, no I/O, and hands `dt` to the core.
@@ -316,6 +329,58 @@ impl<H, C> Robot<H, C> {
         };
         Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
     }
+}
+
+/// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
+/// before the run and after it, never inside a tick (SRS FR-5.9).
+pub struct Bound<H: Spec, C> {
+    inner: kmr_core::Robot<C>,
+    drivers: Option<H::Drivers>,
+}
+
+impl<H: Spec, C> Bound<H, C> {
+    /// The robot's drivers, `HCons<A, HCons<B, HNil>>`; `None` without a bus plugin, where the
+    /// run simulates.
+    pub fn drivers(&mut self) -> Option<&mut H::Drivers> {
+        self.drivers.as_mut()
+    }
+
+    /// Runs the robot on its drivers, lent to the run, then hands them back, closed; `None`
+    /// when it simulated. A member's error names it `&mut <type>`, the member the run saw.
+    ///
+    /// # Errors
+    ///
+    /// Before any I/O: the claims that do not cover the actuators as [`UserError::BringUp`].
+    /// After: a member's bring-up error as [`UserError::BringUp`]. A shutdown and an emergency
+    /// stop both return `Ok`.
+    pub fn run(self) -> Result<Option<H::Drivers>, UserError>
+    where
+        C: kmr_core::Drive,
+    {
+        let Self { inner, mut drivers } = self;
+        match &mut drivers {
+            Some(drivers) => drive(inner, drivers.lend())?,
+            None => drive(inner, simulated())?,
+        }
+        Ok(drivers)
+    }
+}
+
+/// The drivers of a run without a bus plugin.
+fn simulated() -> HCons<NoHardware, HNil> {
+    HCons {
+        head: NoHardware,
+        tail: HNil,
+    }
+}
+
+/// Runs `inner` on `drivers`, its error kept typed inside [`UserError::BringUp`].
+fn drive<C, D>(inner: kmr_core::Robot<C>, drivers: D) -> Result<(), UserError>
+where
+    C: kmr_core::Drive,
+    D: Drivers<Error: Send + Sync>,
+{
+    inner.run_on(drivers).map_err(UserError::bring_up)
 }
 
 /// Shortest tick period `run()` accepts (SRS FR-3.1); interim until the core checks it (T040).

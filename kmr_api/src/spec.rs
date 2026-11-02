@@ -5,7 +5,7 @@
 
 use kmr_adapters::binding::Binding;
 use kmr_adapters::dynamixel::Placement;
-use kmr_core::hal::{Drivers, NoHardware};
+use kmr_core::hal::{Drivers, Hal, NoHardware};
 use kmr_core::{HCons, HNil};
 
 use crate::UserError;
@@ -21,7 +21,7 @@ pub(crate) mod fake;
 pub trait Spec {
     /// The robot's hardware: the list of its drivers, one member per brand,
     /// `HCons<A, HCons<B, HNil>>`. Its error crosses threads inside [`UserError::BringUp`].
-    type Drivers: Drivers<Error: Send + Sync>;
+    type Drivers: Lend;
 
     /// Binds the bus plugins to the members, no I/O. `run()` calls it only when plugins are
     /// declared.
@@ -31,6 +31,44 @@ pub trait Spec {
     /// [`UserError::FeatureOff`], [`UserError::NoHardwareDeclared`], a plugin no member takes,
     /// or a member's binding error as [`UserError::BringUp`].
     fn bind(plugins: &[Binding]) -> Result<Self::Drivers, UserError>;
+}
+
+/// A list of drivers that lends its members to a run, so [`Bound::run`](crate::Bound::run)
+/// hands the list back (SRS FR-5.9).
+///
+/// Implemented for every list of members whose errors cross threads; `Drivers` is sealed by
+/// the core, so nothing else can implement it.
+#[doc(hidden)]
+pub trait Lend: Drivers<Error: Send + Sync> {
+    /// The list of `&mut` members, a list of drivers itself.
+    type Lent<'a>: Drivers<Error: Send + Sync>
+    where
+        Self: 'a;
+
+    /// Each member, borrowed, in order.
+    fn lend(&mut self) -> Self::Lent<'_>;
+}
+
+impl Lend for HNil {
+    type Lent<'a> = HNil;
+
+    fn lend(&mut self) -> HNil {
+        HNil
+    }
+}
+
+impl<A: Hal<Error: Send + Sync>, T: Lend> Lend for HCons<A, T> {
+    type Lent<'a>
+        = HCons<&'a mut A, T::Lent<'a>>
+    where
+        Self: 'a;
+
+    fn lend(&mut self) -> Self::Lent<'_> {
+        HCons {
+            head: &mut self.head,
+            tail: self.tail.lend(),
+        }
+    }
 }
 
 /// The driver of a robot without a hardware table.
