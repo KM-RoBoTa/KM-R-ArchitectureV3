@@ -4,7 +4,21 @@
 //! layout from a header generated for one N and D (research R1). Values are in engine units.
 
 /// One bit per actuator, bit i = actuator i. Its width caps N (assumed, pending human: D4 A).
+///
+/// The `Default` of [`ReadView`], [`Slot`] and [`WriteBuf`] fails the build for an N outside
+/// `1..=64`. A struct literal skips that check: build these types through `Default`.
 pub type Mask = u64;
+
+/// Holds the compile-time check that N actuators fit a [`Mask`].
+pub(crate) struct MaskFits<const N: usize>;
+
+impl<const N: usize> MaskFits<N> {
+    /// Fails the build for an N a [`Mask`] cannot hold.
+    pub(crate) const CHECK: () = assert!(
+        N >= 1 && N <= Mask::BITS as usize,
+        "kmr_ffi: N must be in 1..=64, one mask bit per actuator"
+    );
+}
 
 /// The age of an actuator that was never read, the core's `None` (`KMR_AGE_NONE` in C).
 pub const AGE_NONE: u32 = u32::MAX;
@@ -30,7 +44,8 @@ macro_rules! define_field_types {
     ($($field:ident: $ty:ident),* $(,)?) => {
         /// One History slot: one array per field in engine units, and its faults.
         ///
-        /// A stale actuator holds its last good value, never zero.
+        /// A stale actuator holds its last good value, never zero. `Default` checks N, as
+        /// [`Mask`](crate::Mask) says.
         #[repr(C)]
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub struct Slot<const N: usize> {
@@ -48,6 +63,7 @@ macro_rules! define_field_types {
 
         impl<const N: usize> Default for Slot<N> {
             fn default() -> Self {
+                let () = $crate::view::MaskFits::<N>::CHECK;
                 Self {
                     $($field: [0.0; N],)*
                     flags: $crate::view::ActuatorFlags::default(),
@@ -68,7 +84,8 @@ macro_rules! define_field_types {
         }
 
         /// The values foreign code writes in one call; only the entries flagged in `written`
-        /// count (FR-011 (SRS FR-2.5)).
+        /// count (FR-011 (SRS FR-2.5)). `Default` checks N, as [`Mask`](crate::Mask)
+        /// says.
         #[repr(C)]
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub struct WriteBuf<const N: usize> {
@@ -82,6 +99,7 @@ macro_rules! define_field_types {
 
         impl<const N: usize> Default for WriteBuf<N> {
             fn default() -> Self {
+                let () = $crate::view::MaskFits::<N>::CHECK;
                 Self {
                     $($field: [0.0; N],)*
                     written: Written::default(),
@@ -99,7 +117,7 @@ pub(crate) use define_field_types;
 /// Everything foreign code reads from the state: every History slot and per-actuator ages.
 ///
 /// `slot[k]` is `prev(k)`, the same values as `prev_q(k)` and its siblings (FR-010 (SRS
-/// FR-2.3)). N is in `1..=64`, checked at compile time:
+/// FR-2.3)). N is in `1..=64`, checked at compile time by `Default`, as [`Mask`] says:
 ///
 /// ```
 /// let view = kmr_ffi::ReadView::<64, 4>::default();
@@ -108,6 +126,14 @@ pub(crate) use define_field_types;
 ///
 /// ```compile_fail
 /// let _ = kmr_ffi::ReadView::<65, 4>::default();
+/// ```
+///
+/// ```compile_fail
+/// let _ = kmr_ffi::Slot::<0>::default();
+/// ```
+///
+/// ```compile_fail
+/// let _ = kmr_ffi::WriteBuf::<65>::default();
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,17 +148,9 @@ pub struct ReadView<const N: usize, const D: usize> {
     pub slot: [Slot<N>; D],
 }
 
-impl<const N: usize, const D: usize> ReadView<N, D> {
-    /// Fails the build for an N a [`Mask`] cannot hold.
-    const N_FITS_A_MASK: () = assert!(
-        N >= 1 && N <= Mask::BITS as usize,
-        "kmr_ffi: N must be in 1..=64, one mask bit per actuator"
-    );
-}
-
 impl<const N: usize, const D: usize> Default for ReadView<N, D> {
     fn default() -> Self {
-        let () = Self::N_FITS_A_MASK;
+        let () = MaskFits::<N>::CHECK;
         Self {
             samples: 0,
             reserved: 0,

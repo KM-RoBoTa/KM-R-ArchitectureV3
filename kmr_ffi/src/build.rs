@@ -10,7 +10,7 @@
 // Build-script code, never on the control path (FR-019 (SRS FR-10.3)).
 #![allow(clippy::disallowed_types)]
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// What can go wrong in the build-script helper.
 #[derive(Debug, thiserror::Error)]
@@ -21,7 +21,19 @@ pub enum Error {
     /// The robot descriptor could not be read.
     #[error("robot descriptor: {0}")]
     Descriptor(String),
-    /// The headers could not be written or a C/C++ source did not compile.
+    /// N is outside `1..=64`, the actuators one [`Mask`](crate::Mask) holds.
+    #[error("kmr_ffi: N = {0} is outside 1..=64, one mask bit per actuator")]
+    ActuatorCount(usize),
+    /// A source is neither C (`.c`) nor C++ (`.cc`, `.cpp`, `.cxx`).
+    #[error("kmr_ffi: `{0}` is neither C nor C++")]
+    UnknownSource(String),
+    /// `OUT_DIR` is unset: the helper runs outside a build script.
+    #[error("kmr_ffi: OUT_DIR is unset; call this from build.rs")]
+    NoOutDir,
+    /// A header or the ABI file could not be written.
+    #[error("kmr_ffi: cannot write {}", .0.display())]
+    Write(PathBuf, #[source] std::io::Error),
+    /// The C/C++ compiler failed.
     #[error("kmr_ffi: {0}")]
     Compile(String),
 }
@@ -49,17 +61,21 @@ impl Build {
 
     /// Writes the headers and the ABI file into `OUT_DIR`, then compiles `sources` against them.
     ///
-    /// `.c` files are compiled as C11; `.cc`, `.cpp` and `.cxx` files as C++17.
+    /// `.c` files are compiled as C11; `.cc`, `.cpp` and `.cxx` files as C++17. Cargo reruns the
+    /// build when a file in a source's folder changes, so headers next to the sources count; a
+    /// header elsewhere needs its own `cargo:rerun-if-changed`.
     pub fn compile(&self, sources: &[&str]) -> Result<(), Error> {
+        if !(1..=crate::Mask::BITS as usize).contains(&self.n) {
+            return Err(Error::ActuatorCount(self.n));
+        }
         let (c, cpp) = split(sources)?;
-        let out = std::env::var_os("OUT_DIR")
-            .ok_or_else(|| Error::Compile("OUT_DIR is unset; call this from build.rs".into()))?;
+        let out = std::env::var_os("OUT_DIR").ok_or(Error::NoOutDir)?;
         let out = Path::new(&out);
         write(&out.join("kmr_ffi.h"), &c_header(self.n, self.depth))?;
         write(&out.join("kmr_ffi.hpp"), &cpp_header())?;
         write(&out.join("kmr_ffi_abi.rs"), &abi_rs(self.n, self.depth))?;
-        for src in sources {
-            println!("cargo:rerun-if-changed={src}");
+        for path in watched(sources) {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
         if !c.is_empty() {
             cc::Build::new()
@@ -90,15 +106,34 @@ fn split<'a>(sources: &[&'a str]) -> Result<(Vec<&'a str>, Vec<&'a str>), Error>
         match Path::new(src).extension().and_then(|e| e.to_str()) {
             Some("c") => c.push(*src),
             Some("cc" | "cpp" | "cxx") => cpp.push(*src),
-            _ => return Err(Error::Compile(format!("`{src}` is neither C nor C++"))),
+            _ => return Err(Error::UnknownSource((*src).into())),
         }
     }
     Ok((c, cpp))
 }
 
+/// The paths Cargo watches for `sources`: each source's folder, or the file itself at the root.
+///
+/// The crate root is never watched whole: it holds `target/`, which every build changes. An
+/// absolute path to a file at the root would watch it whole; sources are given relative.
+fn watched<'a>(sources: &[&'a str]) -> Vec<&'a Path> {
+    let mut paths: Vec<&Path> = Vec::new();
+    for src in sources {
+        let src = Path::new(*src);
+        let path = match src.parent() {
+            Some(dir) if !dir.components().all(|c| c == Component::CurDir) => dir,
+            _ => src,
+        };
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
 /// Writes `text` to `path`.
 fn write(path: &Path, text: &str) -> Result<(), Error> {
-    std::fs::write(path, text).map_err(|e| Error::Compile(format!("{}: {e}", path.display())))
+    std::fs::write(path, text).map_err(|e| Error::Write(path.to_path_buf(), e))
 }
 
 /// One field as the generators see it: its name and its typed-value name.
@@ -350,14 +385,7 @@ mod tests {
     fn compile_ok(compiler: &str, args: &[&str], dir: &Path, src: &Path) {
         let out = Command::new(compiler)
             .args(args)
-            .args([
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-pedantic",
-                "-fsyntax-only",
-                "-I",
-            ])
+            .args(["-Wall", "-Wextra", "-Werror", "-pedantic", "-I"])
             .arg(dir)
             .arg(src)
             .output()
@@ -474,7 +502,8 @@ mod tests {
         c
     }
 
-    /// A C++ function over the typed accessors, written with `KMR_CPP_CONTROLLER`.
+    /// A C++ function over the typed accessors, written with `KMR_CPP_CONTROLLER`, and a `main`
+    /// that exits 0 when tick 0 continues and writes `q[0]`, and a throw at tick 4 returns -100.
     const CPP_PROBE: &str = r#"
 #include "kmr_ffi.hpp"
 static std::int32_t body(kmr::In in, kmr::Out out, const kmr_time_view &time, void *) {
@@ -490,9 +519,28 @@ static std::int32_t body(kmr::In in, kmr::Out out, const kmr_time_view &time, vo
     return KMR_CONTINUE;
 }
 KMR_CPP_CONTROLLER(probe, body)
+
+int main() {
+    kmr_read_view in{};
+    kmr_write_buf out{};
+    kmr_time_view time{};
+    in.samples = 1;
+    in.slot[0].q[0] = 1.0f;
+    if (probe(&in, &out, &time, nullptr) != KMR_CONTINUE) {
+        return 1;
+    }
+    if (out.written.q != 1u || out.q[0] != in.slot[0].q[0] + 0.1f) {
+        return 2;
+    }
+    time.tick = 4;
+    if (probe(&in, &out, &time, nullptr) != -100) {
+        return 3;
+    }
+    return 0;
+}
 "#;
 
-    /// Writes the headers for `N`, then compiles the C layout probe and the C++ probe.
+    /// Writes the headers for `N`, checks the C layout probe, then builds and runs the C++ probe.
     fn headers_compile<const N: usize>() {
         let dir = scratch(&format!("headers_n{N}"));
         std::fs::write(dir.join("kmr_ffi.h"), c_header(N, 4)).expect("write h");
@@ -501,8 +549,17 @@ KMR_CPP_CONTROLLER(probe, body)
         std::fs::write(&c, layout_probe::<N>()).expect("write probe.c");
         let cpp = dir.join("probe.cpp");
         std::fs::write(&cpp, CPP_PROBE).expect("write probe.cpp");
-        compile_ok("cc", &["-std=c11", "-x", "c"], &dir, &c);
-        compile_ok("c++", &["-std=c++17", "-x", "c++"], &dir, &cpp);
+        compile_ok("cc", &["-std=c11", "-fsyntax-only", "-x", "c"], &dir, &c);
+        let exe = dir.join("probe_cpp");
+        let exe_arg = exe.to_str().expect("utf-8 scratch path");
+        compile_ok(
+            "c++",
+            &["-std=c++17", "-o", exe_arg, "-x", "c++"],
+            &dir,
+            &cpp,
+        );
+        let run = Command::new(&exe).output().expect("run the C++ probe");
+        assert_eq!(run.status.code(), Some(0), "C++ probe failed for N = {N}");
         let _ = std::fs::remove_dir_all(&dir);
         if let Some(parent) = dir.parent() {
             let _ = std::fs::remove_dir(parent);
@@ -587,7 +644,7 @@ KMR_CPP_CONTROLLER(probe, body)
         assert_eq!(c, ["a.c"]);
         assert_eq!(cpp, ["b.cpp", "c.cc", "d.cxx"]);
         let err = split(&["a.c", "swing.rs"]).expect_err("not C");
-        assert!(err.to_string().contains("swing.rs"));
+        assert!(matches!(&err, Error::UnknownSource(src) if src == "swing.rs"));
     }
 
     #[test]
@@ -595,6 +652,28 @@ KMR_CPP_CONTROLLER(probe, body)
         let err = Build::new(4, 4)
             .compile(&["swing.c"])
             .expect_err("no OUT_DIR");
-        assert!(err.to_string().contains("OUT_DIR"));
+        assert!(matches!(err, Error::NoOutDir));
+    }
+
+    #[test]
+    fn an_n_no_mask_holds_is_an_error() {
+        for n in [0, 65] {
+            let err = Build::new(n, 4).compile(&["swing.c"]).expect_err("bad N");
+            assert!(matches!(err, Error::ActuatorCount(got) if got == n));
+        }
+    }
+
+    #[test]
+    fn a_header_that_cannot_be_written_is_an_error() {
+        let missing = Path::new("/nonexistent/kmr_ffi.h");
+        let err = write(missing, "").expect_err("no such folder");
+        assert!(matches!(&err, Error::Write(path, _) if path == missing));
+    }
+
+    #[test]
+    fn cargo_watches_each_source_folder_once() {
+        let paths = watched(&["src/a.c", "src/b.cpp", "lib/c.c", "root.c", "./dot.c"]);
+        let expect = ["src", "lib", "root.c", "./dot.c"].map(Path::new);
+        assert_eq!(paths, expect);
     }
 }

@@ -52,8 +52,10 @@ Six choices shape the boundary:
 5. **The bridge is the controller's context** (SRS FR-1.1). `Bridge::load(..)`
    runs in `main.rs` and returns its error there, before `run()` (SRS FR-6.4);
    the bridge then goes into `add_controller_with`.
-6. **N ≤ 64** (D4 A). One `u64` per mask; `type Mask = u64` and the const
-   assert in `ReadView::default` are the one place.
+6. **N ≤ 64** (D4 A). One `u64` per mask; `type Mask = u64` and its one const
+   assert, run by the `Default` of `ReadView`, `Slot` and `WriteBuf`, are the
+   one place. `Build::compile` refuses the same N at build-script run time. A
+   struct literal skips the assert, so the glue builds views through `Default`.
 
 ## Defence
 
@@ -136,7 +138,8 @@ Six choices shape the boundary:
 - **D1** (delivery gate, A): planning before step 7, building after it. Task
   order only.
 - **D3** (`envelope` per actuator, A): one line in `for_each_flag!`.
-- **D4** (N ≤ 64, A): `type Mask` and the const assert in `ReadView::default`.
+- **D4** (N ≤ 64, A): `type Mask`, its const assert in `view.rs` and the N
+  check in `Build::compile`.
 - **D12** (build helper in the user's `build.rs`, A): `kmr_ffi::build` and
   `foreign!`.
 - **D13** (returned status, A): `Status` in `call.rs` and its `match` in
