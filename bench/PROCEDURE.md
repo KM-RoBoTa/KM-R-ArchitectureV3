@@ -56,8 +56,10 @@ Every step runs `REPEATS` times (default 3). The report holds, in `[figures]`:
 - `<crate>_<profile>_<kind>_median_ms`, `_min_ms`, `_max_ms`, e.g. `kmr_core_release_clean_median_ms`;
 - `reg<count>_dev_median_ms`, `_min_ms`, `_max_ms`, e.g. `reg123_dev_median_ms`.
 
-The median of an even count is the lower middle value. `[run]` holds `measurement = "compile"`,
-`cell` = the label, `repeats` and `reg_counts`. A failed build writes a `failed` report naming
+The median of an even count is the lower middle value. `[figures]` also says
+`loop_thread_allocs = "not measured"` and `locks = "not measured"` (FR-012): a build has no loop
+thread. `[run]` holds `measurement = "compile"`, `cell` = the label, `ticks_done = 0`, `repeats`
+and `reg_counts`. A failed build writes a `failed` report naming
 the step; the cargo output is in the `.log`. A missing operator field writes a `failed` report
 before any build. A throttle at start or end flags the report `throttled`; on the reference
 bench, so does a throttle state that could not be read (`unavailable`).

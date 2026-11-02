@@ -58,7 +58,7 @@ if ! BENCH_PROFILE="dev,release" BENCH_FEATURES="" BENCH_DIRTY=no \
             printf '[meta]\nschema = 1\nhost_id = "%s"\n' "$("$here/meta.sh" host-id)"
         fi
         printf '[run]\nmeasurement = "compile"\ncell = "%s"\nstatus = "failed"\nflags = ""\n' "$label"
-        printf 'reason = "%s"\n' "$(tr -d '"\n' <"$work/meta.err" | sed 's/^meta: //')"
+        printf 'reason = "%s"\nticks_done = 0\n' "$(tr -d '"\n' <"$work/meta.err" | sed 's/^meta: //')"
     } >"$report"
     echo "${report#"$repo"/}"
     exit 1
@@ -91,7 +91,7 @@ failed() {
         cat "$work/meta.toml"
         "$here/meta.sh" end
         printf '[run]\nmeasurement = "compile"\ncell = "%s"\nstatus = "failed"\nflags = ""\n' "$label"
-        printf 'reason = "%s"\n' "${1//\"/\'}"
+        printf 'reason = "%s"\nticks_done = 0\n' "${1//\"/\'}"
     } >"$report"
     echo "${report#"$repo"/}"
     exit 1
@@ -202,8 +202,10 @@ if bench_throttled "$work/meta.toml"; then flags=${flags:+$flags,}throttled; fi
 {
     cat "$work/meta.toml"
     printf '[run]\nmeasurement = "compile"\ncell = "%s"\nstatus = "complete"\nflags = "%s"\n' "$label" "$flags"
-    printf 'repeats = %s\nreg_counts = "%s"\n' "$REPEATS" "$REG_COUNTS"
+    printf 'ticks_done = 0\nrepeats = %s\nreg_counts = "%s"\n' "$REPEATS" "$REG_COUNTS"
     echo "[figures]"
+    # FR-012 (SRS NFR-1): a build has no loop thread.
+    printf 'loop_thread_allocs = "not measured"\nlocks = "not measured"\n'
     cat "$figures"
 } >"$report"
 echo "${report#"$repo"/}"
