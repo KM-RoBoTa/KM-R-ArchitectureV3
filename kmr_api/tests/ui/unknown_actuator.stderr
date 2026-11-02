@@ -1,0 +1,7 @@
+error: kmr: no actuator named wrist; a name matches only as a plain string literal, without raw form or escape
+ --> tests/ui/unknown_actuator.rs:5:22
+  |
+5 | const WRIST: usize = actuator!("wrist");
+  |                      ^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `actuator` (in Nightly builds, run with -Z macro-backtrace for more info)
