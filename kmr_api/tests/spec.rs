@@ -93,11 +93,12 @@ mod model {
 
 mod placed {
     use super::*;
+    use core::num::NonZeroU32;
     use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
 
-    const fn xm430(id: u8) -> Actuator {
+    const fn xm430(bus: usize, id: u8) -> Actuator {
         Actuator {
-            bus: 0,
+            bus,
             id,
             model: Model::Xm430W210,
             mode: Mode::Position,
@@ -106,14 +107,22 @@ mod placed {
         }
     }
 
-    /// Four XM430 on bus `arm`, wired in reverse engine order.
-    const ARM: Table<1, 4> = Table {
-        buses: [Bus {
-            label: "arm",
-            baud: 1_000_000,
-            read_every: None,
-        }],
-        actuators: [xm430(1), xm430(2), xm430(3), xm430(4)],
+    /// One XM430 on bus `arm`, read every tick, then three on bus `wrist`, read every
+    /// other tick, wired in reverse engine order: `in_order()` would put the arm at 0.
+    const ARM: Table<2, 4> = Table {
+        buses: [
+            Bus {
+                label: "arm",
+                baud: 1_000_000,
+                read_every: NonZeroU32::new(1),
+            },
+            Bus {
+                label: "wrist",
+                baud: 57_600,
+                read_every: NonZeroU32::new(2),
+            },
+        ],
+        actuators: [xm430(0, 1), xm430(1, 1), xm430(1, 2), xm430(1, 3)],
     };
 
     kmr_api::robot!(
@@ -121,10 +130,17 @@ mod placed {
         hardware = { dynamixel: ARM.at([3, 2, 1, 0]) }
     );
 
-    const LABELLED: Binding = Binding {
-        bus: Some("arm"),
-        ..PLUGIN
-    };
+    const LABELLED: [Binding; 2] = [
+        Binding {
+            bus: Some("arm"),
+            ..PLUGIN
+        },
+        Binding {
+            port: Port::ById("FT8WRIST"),
+            baud: None,
+            bus: Some("wrist"),
+        },
+    ];
 
     #[test]
     fn the_part_keeps_its_placement() {
@@ -137,7 +153,7 @@ mod placed {
     fn without_the_feature_the_member_is_no_hardware_and_plugins_are_refused() {
         let _: Option<HCons<kmr_core::hal::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
         assert!(matches!(
-            __Spec::bind(&[LABELLED]),
+            __Spec::bind(&LABELLED),
             Err(UserError::FeatureOff {
                 feature: "dynamixel"
             })
@@ -148,20 +164,23 @@ mod placed {
     #[test]
     fn with_the_feature_the_member_is_dynamixel_and_a_plugin_binds() {
         use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs, 1>, HNil>> = None::<<__Spec as Spec>::Drivers>;
-        assert!(__Spec::bind(&[LABELLED]).is_ok());
+        let _: Option<HCons<Dynamixel<DxlRs, 2>, HNil>> = None::<<__Spec as Spec>::Drivers>;
+        assert!(__Spec::bind(&LABELLED).is_ok());
     }
 
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_a_member_claims_its_placement() {
-        use kmr_core::hal::{Group, Hal, Overrides};
-        let Ok(HCons { head: mut dxl, .. }) = __Spec::bind(&[LABELLED]) else {
-            panic!("the plugin names the one bus");
+        use kmr_core::hal::{Group, Hal, Mask, Overrides};
+        let Ok(HCons { head: mut dxl, .. }) = __Spec::bind(&LABELLED) else {
+            panic!("the plugins name both buses");
         };
-        let claim = dxl.check(Overrides::default());
-        assert!(claim.as_ref().is_ok_and(
-            |claim| claim.owned == kmr_core::hal::Mask::ALL && claim.group == [Group(0); 4]
-        ));
+        let Ok(claim) = dxl.check(Overrides::default()) else {
+            panic!("the table is valid");
+        };
+        assert_eq!(claim.owned, Mask::ALL);
+        // Groups are numbered in engine order: the wrist, first seen at 0, is group 0.
+        assert_eq!(claim.group, [Group(0), Group(0), Group(0), Group(1)]);
+        assert_eq!(claim.read_every.map(NonZeroU32::get), [2, 2, 2, 1]);
     }
 }
