@@ -50,6 +50,15 @@ a runtime entity registry — keep the 1kHz hot path static.
       bus: removes the SDK's per-tick allocations and its ~34 ms stall on a
       missing servo
     - accept or overrule the SRS deviations listed in decision 0002
+- [ ] Robot model (`kmr_model`), what this version leaves out:
+    - several robots in one `.ron` descriptor (SRS FR-6.5); a descriptor
+      with several root links is refused
+    - joints driven by several actuators: `<mimic>` and multi-joint
+      transmissions are refused (SRS Definitions, "Index space")
+    - non-1-DOF joints, `floating` and `planar` (SRS section 8)
+    - the center of mass of the robot from the link masses (SRS FR-8.3)
+    - split `kmr_model` into a library and a thin macro crate, so a build
+      script can read a descriptor (kmr_ffi, pending D12)
 - [ ] Think carefully: threaded controller result hand-off. If a threaded
     controller's command gets written by an inline controller, a late result can
     cause unpredictable behavior (e.g. jitter in a sin wave) and the user won't

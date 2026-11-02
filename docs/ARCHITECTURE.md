@@ -1,10 +1,13 @@
 # Architecture
 
-`kmr` is one Cargo workspace. Three crates make the framework, a fourth holds
+`kmr` is one Cargo workspace. Four crates make the framework, a fifth holds
 user code:
 
 - **`kmr_core`** (`kmr_core/`) — the engine. Owns state, schedules,
   the control loop, timing, the signal bus and the hardware contract.
+- **`kmr_model`** (`kmr_model/`) — the robot model. A proc macro that reads
+  the robot descriptor at compile time; users reach it only through
+  `kmr_api::robot!`.
 - **`kmr_adapters`** (`kmr_adapters/`) — the hardware adapters, one per
   vendor, behind the core's contract. Dynamixel first.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
@@ -199,6 +202,34 @@ atomic load each on the happy path):
 
 Both are logged with their reason and, in debug builds, their call site.
 `run()` returns `Ok(())` in both cases.
+
+## Robot model
+
+`kmr_api::robot!` names the robot once, in `main.rs`: a preset
+(`robot!(XmBench)`) or a descriptor path (`robot!(model = "arm.urdf")`).
+Its front door calls the `kmr_model` proc macro, which reads the descriptor
+(URDF, `.ron` or JSON, one schema for the last two) inside the compiler,
+checks it, and emits constants at the call site:
+
+- `N`, the actuator count: every joint that is not fixed, in file order;
+- `model::NAMES`, `LOWER`, `UPPER`, `SPEED`, `EFFORT`, one array per fact,
+  indexed by actuator, in `Q`, `Qd`, `Tau` and SRS FR-2.2 units (prismatic in
+  mm);
+- `model::LINK_NAMES`, `LINK_PARENT`, `LINK_MASS`, `LINK_COM`, per link;
+- `actuator!("name")`, the index of a joint by name; another name does not
+  build.
+
+The binary gets constants only: no parser, no heap, no run-time code. A bad
+descriptor is a compile error naming the file, the element and the reason. A
+preset's model half ships in `kmr_model/presets/`, its hardware half in
+`kmr_adapters::presets`. `kmr_model` uses the heap at build time, which
+`kmr_model/clippy.toml` allows.
+
+Not wired yet: the front door still counts joints through the older
+`actuator_count` macro, so `model::*` and `actuator!` are not reachable
+through `robot!`, and N must equal the core's `JOINTS` until the core takes
+N as a const generic. The kind bit sets `model::PRISMATIC` and `CONTINUOUS`
+wait for the core's public mask width.
 
 ## Hardware layer
 

@@ -23,6 +23,14 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 frunk = "0.5.0"
 roxmltree = "0.20"
+# kmr_model's build-time plumbing: none of these reaches a binary.
+syn = { version = "2.0", default-features = false, features = ["parsing", "proc-macro"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+ron = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+trybuild = "1.0"
 color-eyre = { version = "0.6", default-features = false }
 rustix = { version = "1", features = ["termios", "fs"] }
 # Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.

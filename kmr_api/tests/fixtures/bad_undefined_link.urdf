@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Bad test descriptor: the child of j1 names no link. -->
+<robot name="bad">
+  <link name="base"/>
+  <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+</robot>

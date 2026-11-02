@@ -1,0 +1,31 @@
+<!-- PLACEHOLDER: test fixture, not the XM430 bench; limits and masses are test data; replaced by the human URDF (tasks.md T003) -->
+<!-- Four revolute joints joint1 to joint4, in the order of XmBench::HARDWARE
+     (ids 1 to 4). Every limit is the j1 limit of kmr_api/tests/fixtures/four.urdf;
+     every mass is 0: none is known. -->
+<robot name="xm_bench">
+  <link name="base"><inertial><mass value="0"/><origin xyz="0 0 0"/></inertial></link>
+  <link name="link1"><inertial><mass value="0"/><origin xyz="0 0 0"/></inertial></link>
+  <link name="link2"><inertial><mass value="0"/><origin xyz="0 0 0"/></inertial></link>
+  <link name="link3"><inertial><mass value="0"/><origin xyz="0 0 0"/></inertial></link>
+  <link name="link4"><inertial><mass value="0"/><origin xyz="0 0 0"/></inertial></link>
+  <joint name="joint1" type="revolute">
+    <parent link="base"/>
+    <child link="link1"/>
+    <limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/>
+    <child link="link4"/>
+    <limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/>
+  </joint>
+</robot>

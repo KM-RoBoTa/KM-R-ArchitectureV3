@@ -1,0 +1,15 @@
+// Bad: a Continuous joint has no position limit, so `lower` is refused
+// (contracts/descriptor-ron.md).
+Robot(
+    name: "bad",
+    links: [(name: "base", mass: 0.0, com: (0.0, 0.0, 0.0)), (name: "l1", mass: 0.0, com: (0.0, 0.0, 0.0))],
+    joints: [
+        (
+            name: "j1",
+            kind: Continuous,
+            parent: "base",
+            child: "l1",
+            limit: Some((lower: -1.57, velocity: 3.0, effort: 1.5)),
+        ),
+    ],
+)
