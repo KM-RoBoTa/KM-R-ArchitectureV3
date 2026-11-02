@@ -50,7 +50,7 @@
 //!   in a single tick is the job of the deferred per-tick write-mask, not this
 //!   layer.
 
-use crate::{Q, Qd, State, StateError, Tau};
+use crate::{Kd, Kp, Q, Qd, State, StateError, Tau};
 
 impl State<'_> {
     /// View a fixed set of joint `indices` as a [`GroupView`]. Indices may be
@@ -254,6 +254,66 @@ impl<'a, const K: usize> GroupView<'a, K> {
             .into_iter()
             .zip(self.indices)
             .try_for_each(|(value, index)| self.robot.set_tau_at(value, index))
+    }
+
+    // ---- Kp (position gain) ----
+
+    /// Newest `Kp` for each group joint. `None` if a value is unavailable.
+    /// Mirrors [`RobotState::kp`].
+    #[inline]
+    pub fn kp(&self) -> Option<[Kp; K]> {
+        gather(self.indices, |i| self.robot.kp_at(i).ok())
+    }
+
+    /// `Kp` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// the first out-of-range index or history depth.
+    #[inline]
+    pub fn prev_kp(&self, depth: usize) -> Result<[Kp; K], StateError> {
+        try_gather(self.indices, |i| self.robot.prev_kp_at(i, depth))
+    }
+
+    /// Stage `Kp` for each group joint, scattering one value per index. Joints
+    /// outside the group are untouched.
+    ///
+    /// Atomic: all indices are validated before any value is staged, so an
+    /// out-of-range index returns `Err` with nothing written.
+    #[inline]
+    pub fn set_all_kp(&mut self, values: [Kp; K]) -> Result<(), StateError> {
+        self.check_indices()?;
+        values
+            .into_iter()
+            .zip(self.indices)
+            .try_for_each(|(value, index)| self.robot.set_kp_at(value, index))
+    }
+
+    // ---- Kd (velocity gain) ----
+
+    /// Newest `Kd` for each group joint. `None` if a value is unavailable.
+    /// Mirrors [`RobotState::kd`].
+    #[inline]
+    pub fn kd(&self) -> Option<[Kd; K]> {
+        gather(self.indices, |i| self.robot.kd_at(i).ok())
+    }
+
+    /// `Kd` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// the first out-of-range index or history depth.
+    #[inline]
+    pub fn prev_kd(&self, depth: usize) -> Result<[Kd; K], StateError> {
+        try_gather(self.indices, |i| self.robot.prev_kd_at(i, depth))
+    }
+
+    /// Stage `Kd` for each group joint, scattering one value per index. Joints
+    /// outside the group are untouched.
+    ///
+    /// Atomic: all indices are validated before any value is staged, so an
+    /// out-of-range index returns `Err` with nothing written.
+    #[inline]
+    pub fn set_all_kd(&mut self, values: [Kd; K]) -> Result<(), StateError> {
+        self.check_indices()?;
+        values
+            .into_iter()
+            .zip(self.indices)
+            .try_for_each(|(value, index)| self.robot.set_kd_at(value, index))
     }
 }
 

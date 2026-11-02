@@ -259,11 +259,13 @@ where
     }
 }
 
-/// The error of member `H`, the head of the list.
-fn head<H: Hal, T>(error: H::Error) -> MemberError<H::Error, T> {
-    MemberError::Head {
-        name: type_name::<H>(),
-        error,
+impl<E, T> MemberError<E, T> {
+    /// The error of member `M`, named by its type, the head of the list.
+    pub fn head<M: Hal<Error = E>>(error: E) -> Self {
+        Self::Head {
+            name: type_name::<M>(),
+            error,
+        }
     }
 }
 
@@ -343,9 +345,10 @@ pub trait Drivers: seal::Drivers {
     #[doc(hidden)]
     fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Self::Error>;
 
-    /// [`Hal::read`] on every member; the refreshed masks, unioned.
+    /// [`Hal::read`] on every member; the refreshed masks, each cut to its
+    /// member's actuators, unioned.
     #[doc(hidden)]
-    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults) -> Mask;
+    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults, slots: Slots<'_>) -> Mask;
 
     /// [`Hal::write`] on every member with a run in `batch`, each given its
     /// own runs and writes.
@@ -392,7 +395,7 @@ impl Drivers for HNil {
         Ok(())
     }
 
-    fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+    fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults, _slots: Slots<'_>) -> Mask {
         Mask::NONE
     }
 
@@ -425,7 +428,7 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
         let claim = self
             .head
             .check(overrides)
-            .map_err(|error| HardwareError::Member(head::<H, T::Error>(error)))?;
+            .map_err(|error| HardwareError::Member(MemberError::head::<H>(error)))?;
         plan.add(type_name::<H>(), &claim)?;
         self.tail
             .claim(overrides, plan)
@@ -442,20 +445,24 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
             Step::Configure => member.configure(),
             Step::TorqueOn => member.torque_on(),
         }
-        .map_err(head::<H, T::Error>)?;
+        .map_err(MemberError::head::<H>)?;
         self.tail.step(step).map_err(MemberError::Tail)
     }
 
     fn read_all(&mut self, mut sample: Sample<'_>) -> Result<(), Self::Error> {
         self.head
             .read_all(sample.reborrow())
-            .map_err(head::<H, T::Error>)?;
+            .map_err(MemberError::head::<H>)?;
         self.tail.read_all(sample).map_err(MemberError::Tail)
     }
 
-    fn read(&mut self, mut sample: Sample<'_>, faults: &mut Faults) -> Mask {
-        let head = self.head.read(sample.reborrow(), faults);
-        head.union(self.tail.read(sample, faults))
+    fn read(&mut self, mut sample: Sample<'_>, faults: &mut Faults, slots: Slots<'_>) -> Mask {
+        let (owned, _groups, rest) = slots.split();
+        let head = self
+            .head
+            .read(sample.reborrow(), faults)
+            .intersection(owned);
+        head.union(self.tail.read(sample, faults, rest))
     }
 
     fn write(
@@ -692,6 +699,36 @@ mod tests {
         }
     }
 
+    /// Every field of every actuator at zero, to lend as a command or a
+    /// sample.
+    fn zeroed() -> crate::state::State<JOINTS> {
+        crate::state::State::default()
+    }
+
+    fn command<'a>(
+        values: &'a crate::state::State<JOINTS>,
+        written: &'a super::super::Written,
+    ) -> Command<'a> {
+        Command::new(
+            &values.q,
+            &values.qd,
+            &values.tau,
+            &values.kp,
+            &values.kd,
+            written,
+        )
+    }
+
+    fn sample(values: &mut crate::state::State<JOINTS>) -> Sample<'_> {
+        Sample::new(
+            &mut values.q,
+            &mut values.qd,
+            &mut values.tau,
+            &mut values.kp,
+            &mut values.kd,
+        )
+    }
+
     fn layout_of(hal: &mut impl Drivers) -> Layout {
         let mut plan = Plan::new();
         hal.claim(Overrides::default(), &mut plan).unwrap();
@@ -707,15 +744,11 @@ mod tests {
             q: mask([1, 3]),
             ..Default::default()
         };
-        let (q, qd, tau) = (
-            [crate::state::Q(0.0); JOINTS],
-            [crate::state::Qd(0.0); JOINTS],
-            [crate::state::Tau(0.0); JOINTS],
-        );
+        let values = zeroed();
         let mut batch = Batch::new(&layout, &written);
 
         hal.write(
-            Command::new(&q, &qd, &tau, &written),
+            command(&values, &written),
             &mut batch,
             &mut Faults::default(),
             layout.slots(),
@@ -741,15 +774,11 @@ mod tests {
             q: mask([2]),
             ..Default::default()
         };
-        let q = [crate::state::Q(0.0); JOINTS];
-        let (qd, tau) = (
-            [crate::state::Qd(0.0); JOINTS],
-            [crate::state::Tau(0.0); JOINTS],
-        );
+        let values = zeroed();
         let mut batch = Batch::new(&layout, &written);
 
         hal.write(
-            Command::new(&q, &qd, &tau, &written),
+            command(&values, &written),
             &mut batch,
             &mut Faults::default(),
             layout.slots(),
@@ -763,16 +792,23 @@ mod tests {
     fn reads_union_every_member() {
         let journal = Journal::new();
         let mut hal = two(&journal);
-        let (mut q, mut qd, mut tau) = (
-            [crate::state::Q(0.0); JOINTS],
-            [crate::state::Qd(0.0); JOINTS],
-            [crate::state::Tau(0.0); JOINTS],
-        );
-        let read = hal.read(
-            Sample::new(&mut q, &mut qd, &mut tau),
-            &mut Faults::default(),
-        );
+        let layout = layout_of(&mut hal);
+        let mut values = zeroed();
+        let read = hal.read(sample(&mut values), &mut Faults::default(), layout.slots());
         assert_eq!(read, Mask::ALL);
+    }
+
+    #[test]
+    fn a_refreshed_mask_is_cut_to_the_member_s_actuators() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        // Claims 0..2 but reports every actuator refreshed.
+        hal.head.owned = Mask::ALL;
+        hal.tail.head.owned = Mask::NONE;
+        let mut values = zeroed();
+        let read = hal.read(sample(&mut values), &mut Faults::default(), layout.slots());
+        assert_eq!(read, mask(0..2));
     }
 
     #[test]

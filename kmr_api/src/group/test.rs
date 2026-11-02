@@ -4,7 +4,7 @@
 //! `test-util` hooks, enabled for this crate's tests only.
 
 use super::{GroupView, gather, try_gather};
-use crate::{N, Q, Qd, State, StateError, Tau};
+use crate::{Kd, Kp, N, Q, Qd, State, StateError, Tau};
 
 // A macro, not a fn: the view borrows `State` for the state's own lifetime
 // (`&'a mut State<'a>`), so both owners have to live in the caller's frame.
@@ -198,6 +198,25 @@ fn writes_scatter_to_the_group_joints_only() {
     assert_eq!(core.staged::<Q>(), q);
     assert_eq!(core.staged::<Qd>(), qd);
     assert_eq!(core.staged::<Tau>(), tau);
+}
+
+#[test]
+fn gains_scatter_to_the_group_joints_only() {
+    let mut core = <kmr_core::RobotState>::default();
+    {
+        view!(group, [N - 1, 1], on core);
+
+        assert_eq!(group.set_all_kp([Kp(150.0), Kp(140.0)]), Ok(()));
+        assert_eq!(group.set_all_kd([Kd(1.0), Kd(2.0)]), Ok(()));
+    }
+
+    let mut kp = [Kp(0.0); N];
+    (kp[N - 1], kp[1]) = (Kp(150.0), Kp(140.0));
+    let mut kd = [Kd(0.0); N];
+    (kd[N - 1], kd[1]) = (Kd(1.0), Kd(2.0));
+
+    assert_eq!(core.staged::<Kp>(), kp);
+    assert_eq!(core.staged::<Kd>(), kd);
 }
 
 #[test]

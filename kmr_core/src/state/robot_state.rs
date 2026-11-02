@@ -139,6 +139,8 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
             &self.desired.q,
             &self.desired.qd,
             &self.desired.tau,
+            &self.desired.kp,
+            &self.desired.kd,
             &self.desired.written,
         )
     }
@@ -154,7 +156,13 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
         let next = self.history.buf.back().copied().unwrap_or_default();
         self.history.buf.push_back(next);
         let slot = self.history.buf.back_mut()?; // None only with a depth of 0
-        Some(Sample::new(&mut slot.q, &mut slot.qd, &mut slot.tau))
+        Some(Sample::new(
+            &mut slot.q,
+            &mut slot.qd,
+            &mut slot.tau,
+            &mut slot.kp,
+            &mut slot.kd,
+        ))
     }
 
     /// The latest sample overlaid with this tick's writes, never the cleared
@@ -166,6 +174,8 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
             q: overlay(sample.q, &self.desired.q, written.q),
             qd: overlay(sample.qd, &self.desired.qd, written.qd),
             tau: overlay(sample.tau, &self.desired.tau, written.tau),
+            kp: overlay(sample.kp, &self.desired.kp, written.kp),
+            kd: overlay(sample.kd, &self.desired.kd, written.kd),
             written,
         })
     }
@@ -191,7 +201,13 @@ fn overlay<T: Copy>(mut sample: [T; JOINTS], desired: &[T; JOINTS], mask: Mask) 
 impl<const DEPTH: usize> RobotState<DEPTH> {
     /// Push one sensed sample as the newest history entry.
     pub fn record_sample(&mut self, q: [Q; JOINTS], qd: [Qd; JOINTS], tau: [Tau; JOINTS]) {
-        self.history.buf.push_back(State { q, qd, tau });
+        let gains = State::default();
+        self.history.buf.push_back(State {
+            q,
+            qd,
+            tau,
+            ..gains
+        });
     }
 
     /// Copy of the desired buffer selected by `T`.

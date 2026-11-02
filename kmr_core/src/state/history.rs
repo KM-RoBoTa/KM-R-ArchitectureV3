@@ -1,7 +1,7 @@
 use circular_buffer::FixedCircularBuffer;
 
 use super::JOINTS;
-use super::joint_state::{Q, Qd, Tau};
+use super::joint_state::{Kd, Kp, Q, Qd, Tau};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// The current state of the robot.
@@ -17,6 +17,10 @@ pub(crate) struct State<const N: usize> {
     /// Array of all joint's torque.
     /// See [`super::joint_state::Tau`]
     pub(crate) tau: [Tau; N],
+    /// Position gains last applied. See [`super::joint_state::Kp`]
+    pub(crate) kp: [Kp; N],
+    /// Velocity gains last applied. See [`super::joint_state::Kd`]
+    pub(crate) kd: [Kd; N],
 }
 
 impl State<JOINTS> {
@@ -35,6 +39,8 @@ impl State<JOINTS> {
             q: [Q(0.0); JOINTS],
             qd: [Qd(0.0); JOINTS],
             tau: [Tau(0.0); JOINTS],
+            kp: [Kp(0.0); JOINTS],
+            kd: [Kd(0.0); JOINTS],
         }
     }
 

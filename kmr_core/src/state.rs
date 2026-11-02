@@ -14,7 +14,7 @@ pub const HISTORY_DEPTH: usize = 4;
 
 // ── types: joint-space value newtypes ───────────────────────────────────────
 mod joint_state;
-pub use joint_state::{Q, Qd, Tau};
+pub use joint_state::{Kd, Kp, Q, Qd, Tau};
 
 // ── history: read-only recorded state + its ring buffer ────────────────────
 mod history;

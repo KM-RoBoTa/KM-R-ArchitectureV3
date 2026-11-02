@@ -145,6 +145,16 @@ impl<H, C> Robot<H, C> {
         }
     }
 
+    /// After a shutdown, holds the actuators for `duration` before torque off. Without
+    /// it, a shutdown cuts torque at once; with `Duration::ZERO`, the hold command is
+    /// sent, then torque is cut.
+    pub fn set_hold(self, duration: Duration) -> Self {
+        Self {
+            inner: self.inner.set_hold(duration),
+            ..self
+        }
+    }
+
     /// Carries the builder data over to a robot whose controller set grew.
     fn grown<D>(self, grow: impl FnOnce(kmr_core::Robot<C>) -> kmr_core::Robot<D>) -> Robot<H, D> {
         Robot {

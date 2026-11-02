@@ -6,15 +6,15 @@ pub const N: usize = kmr_core::state::JOINTS;
 // ---------------------------------------------------------------------------
 // Field vocabulary (principle #2 + #3)
 //
-// `Q` / `Qd` / `Tau` are defined ONCE, in `kmr_core`, and re-exported here.
+// `Q` / `Qd` / `Tau` / `Kp` / `Kd` are defined ONCE, in `kmr_core`, and re-exported here.
 // An api-side copy would need a conversion at every accessor and a second
 // place to keep in sync; since the core is open source there is nothing left
 // to hide that would pay for that. Their arithmetic is derived in the core
 // too — the orphan rule does not let this crate add it.
 // ---------------------------------------------------------------------------
-pub use kmr_core::state::{Q, Qd, Tau};
+pub use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 
-/// A writable/readable state field: `Q`, `Qd` or `Tau`.
+/// A writable/readable state field: `Q`, `Qd`, `Tau`, `Kp` or `Kd`.
 ///
 /// This is the core's `StateField` under the name users already know. It is
 /// sealed in the core (its supertrait lives in a crate-private module), so
@@ -232,6 +232,102 @@ impl<'a> State<'a> {
     /// Stage `Tau` at joint `i`. `Err` if `i` is out of range.
     #[inline]
     pub fn set_tau_at(&mut self, value: Tau, i: usize) -> Result<(), StateError> {
+        self.0.set_at(value, i).map_err(StateError::from)
+    }
+
+    // ---- Kp (a position gain) ----
+
+    /// Newest `Kp` for every joint: the gains the adapter last applied, zero
+    /// where an actuator has none. `None` until the first sample is recorded.
+    #[inline]
+    pub fn kp(&self) -> Option<[Kp; N]> {
+        self.0.current::<Kp>().copied()
+    }
+
+    /// Newest `Kp` at joint `i`.
+    #[inline]
+    pub fn kp_at(&self, i: usize) -> Result<Kp, StateError> {
+        self.0
+            .current_at::<Kp>(i)
+            .copied()
+            .map_err(StateError::from)
+    }
+
+    /// `Kp` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// than `depth + 1` samples recorded.
+    #[inline]
+    pub fn prev_kp(&self, depth: usize) -> Result<[Kp; N], StateError> {
+        self.0.prev::<Kp>(depth).copied().map_err(StateError::from)
+    }
+
+    /// `Kp` at joint `i`, `depth` steps back (`0` = newest).
+    #[inline]
+    pub fn prev_kp_at(&self, i: usize, depth: usize) -> Result<Kp, StateError> {
+        self.0
+            .prev_at::<Kp>(depth, i)
+            .copied()
+            .map_err(StateError::from)
+    }
+
+    /// Stage `Kp` for **every** joint, overwriting the whole desired `Kp` buffer.
+    /// Actuators without a position gain ignore it.
+    #[inline]
+    pub fn set_all_kp(&mut self, values: [Kp; N]) {
+        self.0.set_all(values);
+    }
+
+    /// Stage `Kp` at joint `i`. `Err` if `i` is out of range. Actuators without
+    /// a position gain ignore it.
+    #[inline]
+    pub fn set_kp_at(&mut self, value: Kp, i: usize) -> Result<(), StateError> {
+        self.0.set_at(value, i).map_err(StateError::from)
+    }
+
+    // ---- Kd (a velocity gain) ----
+
+    /// Newest `Kd` for every joint: the gains the adapter last applied, zero
+    /// where an actuator has none. `None` until the first sample is recorded.
+    #[inline]
+    pub fn kd(&self) -> Option<[Kd; N]> {
+        self.0.current::<Kd>().copied()
+    }
+
+    /// Newest `Kd` at joint `i`.
+    #[inline]
+    pub fn kd_at(&self, i: usize) -> Result<Kd, StateError> {
+        self.0
+            .current_at::<Kd>(i)
+            .copied()
+            .map_err(StateError::from)
+    }
+
+    /// `Kd` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// than `depth + 1` samples recorded.
+    #[inline]
+    pub fn prev_kd(&self, depth: usize) -> Result<[Kd; N], StateError> {
+        self.0.prev::<Kd>(depth).copied().map_err(StateError::from)
+    }
+
+    /// `Kd` at joint `i`, `depth` steps back (`0` = newest).
+    #[inline]
+    pub fn prev_kd_at(&self, i: usize, depth: usize) -> Result<Kd, StateError> {
+        self.0
+            .prev_at::<Kd>(depth, i)
+            .copied()
+            .map_err(StateError::from)
+    }
+
+    /// Stage `Kd` for **every** joint, overwriting the whole desired `Kd` buffer.
+    /// Actuators without a velocity gain ignore it.
+    #[inline]
+    pub fn set_all_kd(&mut self, values: [Kd; N]) {
+        self.0.set_all(values);
+    }
+
+    /// Stage `Kd` at joint `i`. `Err` if `i` is out of range. Actuators without
+    /// a velocity gain ignore it.
+    #[inline]
+    pub fn set_kd_at(&mut self, value: Kd, i: usize) -> Result<(), StateError> {
         self.0.set_at(value, i).map_err(StateError::from)
     }
 }

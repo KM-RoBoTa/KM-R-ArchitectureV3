@@ -93,6 +93,14 @@ impl<CS> Robot<CS> {
         self
     }
 
+    /// After a shutdown, holds the actuators for `duration` before torque off
+    /// (SRS FR-4.1). Without it, a shutdown cuts torque at once; with
+    /// `Duration::ZERO`, the hold command is sent, then torque is cut.
+    pub fn set_hold(mut self, duration: Duration) -> Self {
+        self.config.hold = Some(duration);
+        self
+    }
+
     /// Private generic method to insert any state.
     fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<CS::Output>
     where

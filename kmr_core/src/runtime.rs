@@ -82,6 +82,23 @@ fn ctrl_c_wired(
     }
 }
 
+/// Waits `duration` after the hold command, in steps of `dt` on absolute
+/// deadlines, so an emergency stop still cuts torque within one step (SRS
+/// FR-4.1, FR-4.2). Returns that emergency stop, if any.
+fn hold_for<H: Host>(host: &mut H, duration: Duration, dt: Duration) -> Option<Signal> {
+    let start = host.now();
+    let end = start.checked_add(duration)?;
+    let mut deadline = start;
+    while deadline < end {
+        if let Some(signal) = estop(host.poll()) {
+            return Some(signal);
+        }
+        deadline = deadline.checked_add(dt).map_or(end, |next| next.min(end));
+        host.sleep_until(deadline);
+    }
+    None
+}
+
 /// Keeps the signal only if it is an emergency stop: mid-tick checks let a
 /// shutdown finish its tick.
 fn estop(signal: Option<Signal>) -> Option<Signal> {
@@ -290,7 +307,7 @@ fn control_loop<CS: Drive, H: Host, D: Drivers>(
         // Dropped until the per-slot fault flags land (SRS FR-13.4).
         let mut faults = Faults::default();
         if let Some(sample) = state.push_slot() {
-            hal.read(sample, &mut faults);
+            hal.read(sample, &mut faults, layout.slots());
         }
 
         ctrl_phase::first(robot, state, sensors);
@@ -384,11 +401,14 @@ fn run_phases<CS: Drive, H: Host, D: Drivers>(
 
     let signal = control_loop(robot, state, sensors, host, powered.0, layout);
     // An emergency stop raised since the loop ended skips the hold.
-    let signal = estop(host.poll()).unwrap_or(signal);
+    let mut signal = estop(host.poll()).unwrap_or(signal);
     if signal.kind() == SignalKind::Shutdown
+        && let Some(duration) = robot.config.hold
         && let Some(target) = state.hold_target()
     {
         powered.0.hold(target.command(), layout.slots());
+        let dt = *robot.config.time.delta();
+        signal = hold_for(host, duration, dt).unwrap_or(signal);
     }
     state.clear_desired();
     Ok(signal)
@@ -1186,7 +1206,7 @@ mod tests {
         #[test]
         fn a_shutdown_before_the_first_tick_holds_the_seed() {
             let log = Log::new();
-            let mut robot = recording_robot!(log);
+            let mut robot = recording_robot!(log).set_hold(Duration::ZERO);
             let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
 
             let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
@@ -1200,10 +1220,57 @@ mod tests {
         }
 
         #[test]
+        fn a_shutdown_without_a_hold_cuts_torque_at_once() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
+
+            let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[11..], [TorqueOff, Close]);
+            assert_eq!(log.hold.get(), None);
+        }
+
+        #[test]
+        fn a_hold_lasts_its_duration_in_tick_steps() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log).set_hold(DT * 5 / 2);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
+
+            let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[11..], [Hold, TorqueOff, Close]);
+            assert_eq!(host.sleep_calls, 3);
+            assert_eq!(
+                host.sleeps[..3],
+                [Some(host.at(10)), Some(host.at(20)), Some(host.at(25))]
+            );
+        }
+
+        #[test]
+        fn an_emergency_stop_during_the_hold_cuts_torque_at_once() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log).set_hold(DT * 10);
+            // Check 4 follows the loop; the hold polls from check 5.
+            let mut host = Scripted::new(Instant::now())
+                .shutdown_from(TICK_START)
+                .estop_from(TICK_START + 3);
+
+            let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(log.calls()[11..], [Hold, TorqueOff, Close]);
+            assert_eq!(host.sleep_calls, 1);
+        }
+
+        #[test]
         fn startup_writes_never_reach_the_adapter() {
             static WARNINGS: AtomicU32 = AtomicU32::new(0);
             let log = Log::new();
             let mut robot = recording_robot!(log)
+                .set_hold(Duration::ZERO)
                 .add_controller(crate::PreInit, |_t, state, _se| {
                     state.set_all([Q(99.0); JOINTS]);
                 })
@@ -1256,8 +1323,9 @@ mod tests {
         #[test]
         fn shutdown_reads_before_first_writes_after_last_then_holds_and_cuts_torque() {
             let log = Log::new();
-            let mut robot =
-                recording_robot!(log).add_controller(crate::EachTick, |_t, state, _se| {
+            let mut robot = recording_robot!(log)
+                .set_hold(Duration::ZERO)
+                .add_controller(crate::EachTick, |_t, state, _se| {
                     state.set_at(Q(5.0), 1).expect("in range");
                 });
             let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST);
@@ -1283,8 +1351,9 @@ mod tests {
         #[test]
         fn every_tick_runs_read_first_each_last_write_and_desired_clears() {
             let log = Log::new();
-            let mut robot =
-                recording_robot!(log).add_controller(crate::EachTick, |time, state, _se| {
+            let mut robot = recording_robot!(log)
+                .set_hold(Duration::ZERO)
+                .add_controller(crate::EachTick, |time, state, _se| {
                     if time.tick() == 0 {
                         state.set_at(Q(5.0), 1).expect("in range");
                     }
@@ -1429,8 +1498,43 @@ mod tests {
 
         impl Counter {
             fn new(needle: &'static str, count: &'static AtomicU32) -> Self {
+                static SILENT: std::sync::Once = std::sync::Once::new();
+                SILENT.call_once(|| {
+                    let _ = tracing::subscriber::set_global_default(Silent);
+                });
                 Self { needle, count }
             }
+        }
+
+        /// The process-wide subscriber of the tests: prints nothing, but asks
+        /// each time. Tracing caches per log line whether anyone listens; a
+        /// line first hit on a thread without a `Counter` while another
+        /// thread installs one could cache "never" and hide the counted
+        /// warning.
+        struct Silent;
+
+        impl tracing::Subscriber for Silent {
+            fn register_callsite(
+                &self,
+                _metadata: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::sometimes()
+            }
+
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                false
+            }
+
+            fn event(&self, _event: &tracing::Event<'_>) {}
+
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
         }
 
         /// Looks for the needle in what is written to it.
@@ -1482,6 +1586,199 @@ mod tests {
             }
             fn enter(&self, _span: &tracing::span::Id) {}
             fn exit(&self, _span: &tracing::span::Id) {}
+        }
+    }
+
+    mod three_members {
+        //! An AX-12 on one Dynamixel bus, an MX-64 on another and an AK60 on
+        //! CAN, as one robot of three members: each sees only its own
+        //! actuators, from `check` to `close`.
+
+        use core::convert::Infallible;
+        use core::ops::Range;
+
+        use super::*;
+
+        /// What one member was handed during the run.
+        #[derive(Default)]
+        struct Seen {
+            steps: Cell<u32>,
+            reads: Cell<u32>,
+            writes: Cell<u32>,
+            /// Actuators of its runs and of its write masks, every tick.
+            written: Cell<Mask>,
+            holds: Cell<u32>,
+            held: Cell<Mask>,
+            torque_off: Cell<bool>,
+            closed: Cell<bool>,
+        }
+
+        impl Seen {
+            fn step(&self) -> Result<(), Infallible> {
+                self.steps.set(self.steps.get() + 1);
+                Ok(())
+            }
+        }
+
+        /// A member on `owned` that reads `value` on each of them.
+        struct Fake<'a> {
+            owned: Mask,
+            value: Q,
+            seen: &'a Seen,
+        }
+
+        impl Fake<'_> {
+            fn fill(&self, sample: Sample<'_>) {
+                for actuator in self.owned.iter() {
+                    sample.q[actuator] = self.value;
+                }
+            }
+        }
+
+        impl seal::Adapter for Fake<'_> {}
+
+        impl Hal for Fake<'_> {
+            type Error = Infallible;
+
+            fn check(&mut self, _overrides: Overrides) -> Result<Claim, Infallible> {
+                Ok(Claim {
+                    owned: self.owned,
+                    group: [Group(0); JOINTS],
+                    read_every: [NonZeroU32::MIN; JOINTS],
+                    read_cost: Duration::ZERO,
+                    write_cost: Duration::ZERO,
+                })
+            }
+
+            fn open(&mut self) -> Result<(), Infallible> {
+                self.seen.step()
+            }
+
+            fn zero(&mut self) -> Result<(), Infallible> {
+                self.seen.step()
+            }
+
+            fn ping(&mut self) -> Result<(), Infallible> {
+                self.seen.step()
+            }
+
+            fn health(&mut self) -> Result<(), Infallible> {
+                self.seen.step()
+            }
+
+            fn configure(&mut self) -> Result<(), Infallible> {
+                self.seen.step()
+            }
+
+            fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Infallible> {
+                self.fill(sample);
+                self.seen.step()
+            }
+
+            fn torque_on(&mut self) -> Result<(), Infallible> {
+                self.seen.step()
+            }
+
+            fn read(&mut self, sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+                self.fill(sample);
+                self.seen.reads.set(self.seen.reads.get() + 1);
+                self.owned
+            }
+
+            fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+                self.seen.writes.set(self.seen.writes.get() + 1);
+                let mut written = self.seen.written.get().union(command.written.any());
+                for &actuator in batch.runs().flat_map(|(_group, run)| run) {
+                    written.set(actuator);
+                }
+                self.seen.written.set(written);
+            }
+
+            fn hold(&mut self, target: Command<'_>) {
+                self.seen.holds.set(self.seen.holds.get() + 1);
+                let held = self.seen.held.get().union(target.written.any());
+                self.seen.held.set(held);
+            }
+
+            fn torque_off(&mut self) {
+                self.seen.torque_off.set(true);
+            }
+
+            fn close(&mut self) {
+                self.seen.closed.set(true);
+            }
+        }
+
+        fn owned(actuators: Range<usize>) -> Mask {
+            let mut mask = Mask::NONE;
+            actuators.for_each(|actuator| mask.set(actuator));
+            mask
+        }
+
+        #[test]
+        fn ax12_mx64_and_ak60_each_see_only_their_actuators() {
+            let (ax12, mx64, ak60) = (Seen::default(), Seen::default(), Seen::default());
+            let members = [
+                (&ax12, owned(0..1)),
+                (&mx64, owned(1..2)),
+                (&ak60, owned(2..JOINTS)),
+            ];
+            let mut hal = HCons {
+                head: Fake {
+                    owned: members[0].1,
+                    value: Q(1.0),
+                    seen: &ax12,
+                },
+                tail: HCons {
+                    head: Fake {
+                        owned: members[1].1,
+                        value: Q(2.0),
+                        seen: &mx64,
+                    },
+                    tail: HCons {
+                        head: Fake {
+                            owned: members[2].1,
+                            value: Q(3.0),
+                            seen: &ak60,
+                        },
+                        tail: HNil,
+                    },
+                },
+            };
+            let sampled = Cell::new([Q(0.0); JOINTS]);
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .set_hold(Duration::ZERO)
+                .add_controller(crate::First, |_t, state: &mut RobotState, _se| {
+                    if let Some(q) = state.current::<Q>() {
+                        sampled.set(*q);
+                    }
+                })
+                .add_controller(crate::EachTick, |_t, state: &mut RobotState, _se| {
+                    for actuator in 0..JOINTS {
+                        state.set_at(Q(0.5), actuator).expect("in range");
+                    }
+                });
+            // Raised at the last check of tick 1: two ticks, then the hold.
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START + 9);
+
+            let signal =
+                run_with(&mut robot, &mut host, &mut hal).expect("the claims cover the robot");
+
+            assert_eq!(signal.kind(), SignalKind::Shutdown);
+            let expected: [Q; JOINTS] = core::array::from_fn(|actuator| match actuator {
+                0 => Q(1.0),
+                1 => Q(2.0),
+                _ => Q(3.0),
+            });
+            assert_eq!(sampled.get(), expected);
+            for (seen, mine) in members {
+                assert_eq!(seen.steps.get(), 7, "every bring-up step");
+                assert_eq!((seen.reads.get(), seen.writes.get()), (2, 2));
+                assert_eq!(seen.written.get(), mine);
+                assert_eq!((seen.holds.get(), seen.held.get()), (1, mine));
+                assert!(seen.torque_off.get() && seen.closed.get());
+            }
         }
     }
 }

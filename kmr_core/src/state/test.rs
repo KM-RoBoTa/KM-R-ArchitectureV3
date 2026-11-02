@@ -4,7 +4,10 @@ use crate::{
     RobotState,
     error::StateError,
     hal::{Mask, Written},
-    state::{Desired, HISTORY_DEPTH, History, JOINTS, Q, Qd, State, StateField, Tau, sealed::Slot},
+    state::{
+        Desired, HISTORY_DEPTH, History, JOINTS, Kd, Kp, Q, Qd, State, StateField, Tau,
+        sealed::Slot,
+    },
 };
 use rstest::rstest;
 
@@ -26,6 +29,8 @@ fn zeroed_desired() -> Desired {
         q: [Q(0.0); JOINTS],
         qd: [Qd(0.0); JOINTS],
         tau: [Tau(0.0); JOINTS],
+        kp: [Kp(0.0); JOINTS],
+        kd: [Kd(0.0); JOINTS],
         written: Written::default(),
     }
 }
@@ -35,6 +40,8 @@ fn zeroed_state() -> State<JOINTS> {
         q: [Q(0.0); JOINTS],
         qd: [Qd(0.0); JOINTS],
         tau: [Tau(0.0); JOINTS],
+        kp: [Kp(0.0); JOINTS],
+        kd: [Kd(0.0); JOINTS],
     }
 }
 
@@ -42,6 +49,8 @@ fn zeroed_state() -> State<JOINTS> {
 #[case(Q(2.0))]
 #[case(Qd(2.0))]
 #[case(Tau(2.0))]
+#[case(Kp(2.0))]
+#[case(Kd(2.0))]
 fn write_single_desired_state<T: StateField + PartialEq + core::fmt::Debug>(#[case] value: T) {
     let mut robot = create_test_robot();
 
@@ -56,6 +65,8 @@ fn write_single_desired_state<T: StateField + PartialEq + core::fmt::Debug>(#[ca
 #[case(Q(2.0))]
 #[case(Qd(2.0))]
 #[case(Tau(2.0))]
+#[case(Kp(2.0))]
+#[case(Kd(2.0))]
 fn out_of_range_write_single_desired(#[case] value: impl StateField) {
     let mut robot = create_test_robot();
     let index: usize = JOINTS + 1; // guarantee OOR
@@ -369,6 +380,8 @@ fn write_all_desired_with_closure<T: StateField + PartialEq + Debug>(#[case] des
 #[case(Q(1_f32))]
 #[case(Qd(1_f32))]
 #[case(Tau(1_f32))]
+#[case(Kp(1_f32))]
+#[case(Kd(1_f32))]
 fn generic_slot_routes_to_corresponding_generic_array<T: StateField + PartialEq + Debug>(
     #[case] desired: T,
 ) {
@@ -488,6 +501,8 @@ fn history_depth_is_independent_of_the_joint_count() {
 #[case(Q(1.0))]
 #[case(Qd(1.0))]
 #[case(Tau(1.0))]
+#[case(Kp(1.0))]
+#[case(Kd(1.0))]
 fn a_write_sets_the_bit_of_its_field_only<T: StateField>(#[case] value: T) {
     let mut robot = create_test_robot();
     let mut expected = Written::default();
@@ -502,6 +517,8 @@ fn a_write_sets_the_bit_of_its_field_only<T: StateField>(#[case] value: T) {
 #[case(Q(1.0))]
 #[case(Qd(1.0))]
 #[case(Tau(1.0))]
+#[case(Kp(1.0))]
+#[case(Kd(1.0))]
 fn an_out_of_range_write_sets_no_bit<T: StateField>(#[case] value: T) {
     let mut robot = create_test_robot();
 

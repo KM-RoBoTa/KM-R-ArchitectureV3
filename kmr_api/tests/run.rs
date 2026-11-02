@@ -369,6 +369,7 @@ mod recording {
         take();
         let res = kmr_api::Robot::<Records>::new()
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+            .set_hold(Duration::ZERO)
             .add_controller(EachTick, write_then_stop)
             .run();
         assert!(res.is_ok(), "{res:?}");

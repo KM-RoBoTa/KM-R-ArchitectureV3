@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use kmr_core::hal::{
     Batch, Claim, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written,
 };
-use kmr_core::state::{JOINTS, Q, Qd, Tau};
+use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
@@ -191,6 +191,8 @@ struct Slot {
     q: [Q; JOINTS],
     qd: [Qd; JOINTS],
     tau: [Tau; JOINTS],
+    kp: [Kp; JOINTS],
+    kd: [Kd; JOINTS],
 }
 
 impl Slot {
@@ -200,12 +202,20 @@ impl Slot {
             q: [Q(value); JOINTS],
             qd: [Qd(value); JOINTS],
             tau: [Tau(value); JOINTS],
+            kp: [Kp(value); JOINTS],
+            kd: [Kd(value); JOINTS],
         }
     }
 
     /// The slot as a `Sample`.
     fn sample(&mut self) -> Sample<'_> {
-        Sample::new(&mut self.q, &mut self.qd, &mut self.tau)
+        Sample::new(
+            &mut self.q,
+            &mut self.qd,
+            &mut self.tau,
+            &mut self.kp,
+            &mut self.kd,
+        )
     }
 }
 
@@ -214,6 +224,8 @@ struct Desired {
     q: [Q; JOINTS],
     qd: [Qd; JOINTS],
     tau: [Tau; JOINTS],
+    kp: [Kp; JOINTS],
+    kd: [Kd; JOINTS],
     written: Written,
 }
 
@@ -224,6 +236,8 @@ impl Desired {
             q: [Q(0.0); JOINTS],
             qd: [Qd(0.0); JOINTS],
             tau: [Tau(0.0); JOINTS],
+            kp: [Kp(0.0); JOINTS],
+            kd: [Kd(0.0); JOINTS],
             written: Written::default(),
         }
     }
@@ -244,7 +258,14 @@ impl Desired {
 
     /// The desired state as a `Command`.
     fn command(&self) -> Command<'_> {
-        Command::new(&self.q, &self.qd, &self.tau, &self.written)
+        Command::new(
+            &self.q,
+            &self.qd,
+            &self.tau,
+            &self.kp,
+            &self.kd,
+            &self.written,
+        )
     }
 }
 
@@ -270,9 +291,18 @@ fn write<const NB: usize>(
     written.q = written.q.intersection(claim.owned);
     written.qd = written.qd.intersection(claim.owned);
     written.tau = written.tau.intersection(claim.owned);
+    written.kp = written.kp.intersection(claim.owned);
+    written.kd = written.kd.intersection(claim.owned);
     let layout = layout_of(claim);
     let batch = Batch::new(&layout, &written);
-    let command = Command::new(&desired.q, &desired.qd, &desired.tau, &written);
+    let command = Command::new(
+        &desired.q,
+        &desired.qd,
+        &desired.tau,
+        &desired.kp,
+        &desired.kd,
+        &written,
+    );
     adapter.write(command, &batch, &mut faults);
     faults
 }

@@ -6,4 +6,7 @@
 pub(crate) struct RobotConfig {
     /// The time struct. See [`crate::clock::Time`].
     pub(crate) time: crate::clock::Time,
+    /// How long a shutdown holds before torque off; `None`: no hold
+    /// (SRS FR-4.1).
+    pub(crate) hold: Option<core::time::Duration>,
 }

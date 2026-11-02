@@ -26,7 +26,7 @@ use kmr_adapters::binding::{Binding, Port};
 use kmr_adapters::dynamixel::{DxlRs, Dynamixel, DynamixelError, Table};
 use kmr_adapters::presets::{Rx28Chain, XmBench};
 use kmr_core::hal::{Hal, Overrides, Sample};
-use kmr_core::state::{JOINTS, Q, Qd, Tau};
+use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 
 /// The adapter on the `dxl_rs` SDK for the one bus of the preset.
 type Hardware = Dynamixel<DxlRs, 1>;
@@ -177,9 +177,10 @@ fn run(table: Table<1, JOINTS>, port: Port, torque: bool) -> Result<(), Early> {
     step("configure", hal.configure())?;
     let mut q = [Q::default(); JOINTS];
     let (mut qd, mut tau) = ([Qd::default(); JOINTS], [Tau::default(); JOINTS]);
+    let (mut kp, mut kd) = ([Kp::default(); JOINTS], [Kd::default(); JOINTS]);
     step(
         "read_all",
-        hal.read_all(Sample::new(&mut q, &mut qd, &mut tau)),
+        hal.read_all(Sample::new(&mut q, &mut qd, &mut tau, &mut kp, &mut kd)),
     )?;
     print_positions(&table, &q);
     if !torque {
@@ -192,7 +193,7 @@ fn run(table: Table<1, JOINTS>, port: Port, torque: bool) -> Result<(), Early> {
     step("torque_on", hal.torque_on())?;
     for read in 1..=READS {
         thread::sleep(PERIOD);
-        let result = hal.read_all(Sample::new(&mut q, &mut qd, &mut tau));
+        let result = hal.read_all(Sample::new(&mut q, &mut qd, &mut tau, &mut kp, &mut kd));
         step(format_args!("read_all {:?}", PERIOD * read), result)?;
         print_positions(&table, &q);
     }

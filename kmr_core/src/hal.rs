@@ -11,7 +11,7 @@ use core::time::Duration;
 
 use tracing::warn;
 
-use crate::state::{JOINTS, Q, Qd, Tau};
+use crate::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 
 mod set;
 
@@ -225,6 +225,10 @@ pub struct Written {
     pub qd: Mask,
     /// Actuators whose `Tau` was written.
     pub tau: Mask,
+    /// Actuators whose `Kp` was written.
+    pub kp: Mask,
+    /// Actuators whose `Kd` was written.
+    pub kd: Mask,
 }
 
 impl Written {
@@ -233,11 +237,17 @@ impl Written {
         q: Mask::ALL,
         qd: Mask::ALL,
         tau: Mask::ALL,
+        kp: Mask::ALL,
+        kd: Mask::ALL,
     };
 
     /// Actuators with at least one field written.
     pub fn any(&self) -> Mask {
-        self.q.union(self.qd).union(self.tau)
+        self.q
+            .union(self.qd)
+            .union(self.tau)
+            .union(self.kp)
+            .union(self.kd)
     }
 
     /// The writes of the actuators of `owned` only.
@@ -246,6 +256,8 @@ impl Written {
             q: self.q.intersection(owned),
             qd: self.qd.intersection(owned),
             tau: self.tau.intersection(owned),
+            kp: self.kp.intersection(owned),
+            kd: self.kd.intersection(owned),
         }
     }
 }
@@ -260,6 +272,10 @@ pub struct Command<'a> {
     pub qd: &'a [Qd; JOINTS],
     /// Desired torques.
     pub tau: &'a [Tau; JOINTS],
+    /// Desired position gains.
+    pub kp: &'a [Kp; JOINTS],
+    /// Desired velocity gains.
+    pub kd: &'a [Kd; JOINTS],
     /// Fields written this tick.
     pub written: &'a Written,
 }
@@ -270,12 +286,16 @@ impl<'a> Command<'a> {
         q: &'a [Q; JOINTS],
         qd: &'a [Qd; JOINTS],
         tau: &'a [Tau; JOINTS],
+        kp: &'a [Kp; JOINTS],
+        kd: &'a [Kd; JOINTS],
         written: &'a Written,
     ) -> Self {
         Self {
             q,
             qd,
             tau,
+            kp,
+            kd,
             written,
         }
     }
@@ -288,13 +308,22 @@ pub(crate) struct HoldTarget {
     pub(crate) q: [Q; JOINTS],
     pub(crate) qd: [Qd; JOINTS],
     pub(crate) tau: [Tau; JOINTS],
+    pub(crate) kp: [Kp; JOINTS],
+    pub(crate) kd: [Kd; JOINTS],
     pub(crate) written: Written,
 }
 
 impl HoldTarget {
     /// Borrows the target as the command `hold` takes.
     pub(crate) fn command(&self) -> Command<'_> {
-        Command::new(&self.q, &self.qd, &self.tau, &self.written)
+        Command::new(
+            &self.q,
+            &self.qd,
+            &self.tau,
+            &self.kp,
+            &self.kd,
+            &self.written,
+        )
     }
 }
 
@@ -309,6 +338,10 @@ pub struct Sample<'a> {
     pub qd: &'a mut [Qd; JOINTS],
     /// Read torques.
     pub tau: &'a mut [Tau; JOINTS],
+    /// Position gains the adapter last applied; untouched by those without.
+    pub kp: &'a mut [Kp; JOINTS],
+    /// Velocity gains the adapter last applied; untouched by those without.
+    pub kd: &'a mut [Kd; JOINTS],
 }
 
 impl<'a> Sample<'a> {
@@ -317,13 +350,15 @@ impl<'a> Sample<'a> {
         q: &'a mut [Q; JOINTS],
         qd: &'a mut [Qd; JOINTS],
         tau: &'a mut [Tau; JOINTS],
+        kp: &'a mut [Kp; JOINTS],
+        kd: &'a mut [Kd; JOINTS],
     ) -> Self {
-        Self { q, qd, tau }
+        Self { q, qd, tau, kp, kd }
     }
 
     /// Lends the same slot again, to the next member.
     pub(crate) fn reborrow(&mut self) -> Sample<'_> {
-        Sample::new(self.q, self.qd, self.tau)
+        Sample::new(self.q, self.qd, self.tau, self.kp, self.kd)
     }
 }
 

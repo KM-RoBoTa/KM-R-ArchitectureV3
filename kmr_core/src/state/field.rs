@@ -1,7 +1,7 @@
 use super::JOINTS;
 use super::desired::Desired;
 use super::history::State;
-use super::joint_state::{Q, Qd, Tau};
+use super::joint_state::{Kd, Kp, Q, Qd, Tau};
 use crate::hal::{Mask, Written};
 
 /// Routes a field element type to its storage slot in [`Desired`].
@@ -82,5 +82,45 @@ impl StateField for Tau {}
 impl From<f32> for Tau {
     fn from(value: f32) -> Self {
         Tau(value)
+    }
+}
+
+impl sealed::Slot for Kp {
+    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+        &mut desired.kp
+    }
+
+    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+        &state.kp
+    }
+
+    fn mask(written: &mut Written) -> &mut Mask {
+        &mut written.kp
+    }
+}
+impl StateField for Kp {}
+impl From<f32> for Kp {
+    fn from(value: f32) -> Self {
+        Kp(value)
+    }
+}
+
+impl sealed::Slot for Kd {
+    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+        &mut desired.kd
+    }
+
+    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+        &state.kd
+    }
+
+    fn mask(written: &mut Written) -> &mut Mask {
+        &mut written.kd
+    }
+}
+impl StateField for Kd {}
+impl From<f32> for Kd {
+    fn from(value: f32) -> Self {
+        Kd(value)
     }
 }

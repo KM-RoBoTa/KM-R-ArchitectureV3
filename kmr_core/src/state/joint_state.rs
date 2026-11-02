@@ -15,3 +15,13 @@ pub struct Qd(pub f32);
 #[derive(Debug, Default, PartialEq, Clone, Copy, Add, Sub, Mul, Div)]
 /// The joint torque
 pub struct Tau(pub f32);
+
+#[derive(Debug, Default, PartialEq, Clone, Copy, Add, Sub, Mul, Div)]
+/// The position gain of an impedance (MIT) command. Ignored by actuators
+/// without one.
+pub struct Kp(pub f32);
+
+#[derive(Debug, Default, PartialEq, Clone, Copy, Add, Sub, Mul, Div)]
+/// The velocity gain of an impedance (MIT) command. Ignored by actuators
+/// without one.
+pub struct Kd(pub f32);
