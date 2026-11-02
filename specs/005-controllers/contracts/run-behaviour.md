@@ -16,7 +16,9 @@ Rules on every row:
 
 - No panic, no `unwrap` path, no marker reached (FR-008, FR-011 (SRS NFR-2)).
 - The binary prints nothing of its own. Every message comes from `kmr_api` or `kmr_core`.
-- "Readable" means the `Display` text of the error, not its `Debug` form. Today `main`
-  returning `Err` prints `Debug` ([research.md](../research.md) R12): a `kmr_api` need.
+- "Readable" means the `Display` text of the error, not its `Debug` form. `main` returning
+  `Err` prints `Debug`; `kmr_api` makes that the `Display` text in release builds only, and
+  derives `Debug` in debug builds (2026-10-29; [research.md](../research.md) R12). Rows 2 and
+  3 are checked with `--release`.
 - Row 1, simulation History: either empty ("no sample") or zeros. Both satisfy the row
   (research R11).

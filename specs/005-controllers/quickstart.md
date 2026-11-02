@@ -61,12 +61,14 @@ proves the compile half only.
 Add the walkthrough line `.add_plugins(Bus::by_id("<serial>"))`, robot unplugged.
 
 ```sh
-cargo run -p controllers; echo "exit=$?"                     # row 2
-cargo run -p controllers --features hardware; echo "exit=$?" # row 3
+cargo run -p controllers --release; echo "exit=$?"                     # row 2
+cargo run -p controllers --features hardware --release; echo "exit=$?" # row 3
 ```
 
-Expected: row 2, an error naming the `hardware` feature; row 3, a readable bring-up error
-naming the port. Both non-zero, no panic, printed as text, not as `Debug` (research R12).
+Expected: row 2, an error naming the adapter feature, `kmr_api/dynamixel`, which `hardware`
+turns on; row 3, a bring-up error naming the port. Both non-zero, no panic. A release build
+prints the `Display` text; a debug build prints the derived `Debug`, variant and fields
+(kmr_api, 2026-10-29: `UserError` in kmr_api/src/error.rs; research R12).
 
 ## V5. Bench run (HUMAN, SC-009, SC-010, row 4)
 
