@@ -27,11 +27,11 @@ to be fixed:
 | Emitted `N`, `model::NAMES`, `LOWER`, `UPPER`, `SPEED`, `EFFORT`, `LINK_*`, `actuator!` | written |
 | Emitted `model::PRISMATIC`, `CONTINUOUS` | not written: wait on `MASK_WORDS` public (core K2.5, human) |
 | Presets `XmBench`, `Rx28Chain` (model half) | placeholders, marked as test fixtures; the bench URDF is human data (T003) |
-| `kmr_api::robot!` calls `model!` | not yet: it still calls `actuator_count` (kmr_api T021) |
-| `robot!(model = ..)` | URDF only, through `actuator_count`; `.ron` and JSON reach the user after kmr_api T021 |
-| `robot!(Preset)` N | from the hardware half (`kmr_adapters::presets`), not yet from the model half |
-| `actuator!` for users | not yet: emitted by `model!`, reached through `robot!` after kmr_api T021 |
-| Front door N ≤ 64 cap | not written (kmr_api T021, D4) |
+| `kmr_api::robot!` calls `model!` | written (kmr_api T021), through the hidden `kmr_api::__model!`; `actuator_count` is gone (T055) |
+| `robot!(model = ..)` | URDF, `.ron` and JSON |
+| `robot!(Preset)` N | from the model half; the hardware half is checked to cover `0..N` |
+| `actuator!` for users | written, emitted at the `robot!` call site |
+| Front door N ≤ 64 cap | written (kmr_api T021, D4 A, assumed, pending human); its ui case waits on kmr_api T033 |
 
 Below, a point the table marks as not written is the planned design, not
 the branch's behaviour.

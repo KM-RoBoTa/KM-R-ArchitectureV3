@@ -225,11 +225,12 @@ preset's model half ships in `kmr_model/presets/`, its hardware half in
 `kmr_adapters::presets`. `kmr_model` uses the heap at build time, which
 `kmr_model/clippy.toml` allows.
 
-Not wired yet: the front door still counts joints through the older
-`actuator_count` macro, so `model::*` and `actuator!` are not reachable
-through `robot!`, and N must equal the core's `JOINTS` until the core takes
-N as a const generic. The kind bit sets `model::PRISMATIC` and `CONTINUOUS`
-wait for the core's public mask width.
+`robot!` calls `model!` through the hidden `kmr_api::__model!`: a preset by
+name, a descriptor by path, the `hardware = ..` argument split off first.
+The front door adds the `State` and `Robot` aliases and two checks: N ≤ 64,
+and, until the core takes N as a const generic, N equal to the core's
+`JOINTS`. The kind bit sets `model::PRISMATIC` and `CONTINUOUS` wait for the
+core's public mask width.
 
 ## Hardware layer
 

@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: kmr: this robot's actuator count differs from kmr_core's; N as a const generic is pending in kmr_core
+ --> tests/ui/n_differs_from_core.rs:6:1
+  |
+6 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/three.urdf");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here
+  |
+  = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)

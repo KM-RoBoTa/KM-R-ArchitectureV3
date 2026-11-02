@@ -68,6 +68,6 @@ pub mod dynamixel {
 }
 
 #[doc(hidden)]
-pub use kmr_model::actuator_count as __actuator_count;
+pub use kmr_model::model as __model;
 
 pub use kmr_core::{emergency_stop, shutdown};

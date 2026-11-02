@@ -23,9 +23,6 @@
         modelFn = component "kmr_model::model" "The #[proc_macro] entry point; expand() loads, checks and emits." "Rust fn" {
             tags "Code"
         }
-        modelActuatorCount = component "kmr_model::actuator_count" "The URDF-only count macro kmr_api still calls, until it calls only model! (T055)." "Rust fn" {
-            tags "Code"
-        }
     }
 
     group "kmr_model: input" {

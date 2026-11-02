@@ -2,8 +2,9 @@
 
 /// Names the robot this crate drives and gives it `N`, `State` and `Robot`.
 ///
-/// A KM-RoBoTa preset, or the path of a URDF descriptor (relative to the
-/// crate's `Cargo.toml`), read at compile time, with or without its hardware:
+/// A KM-RoBoTa preset, or the path of a `.urdf`, `.ron` or `.json` descriptor
+/// (relative to the crate's `Cargo.toml`), read at compile time by
+/// `kmr_model`, with or without its hardware:
 ///
 /// ```ignore
 /// kmr_api::robot!(XmBench);
@@ -17,17 +18,16 @@
 /// twice does not build, nor do parts that do not cover `0..N` exactly
 /// once. The syntax is assumed, pending human (kmr_api T069).
 ///
-/// Use the generated items instead of importing `kmr_api::{N, State, Robot}`.
+/// The model gives `N`, the `model` module of constants (names, limits, links)
+/// and `actuator!("name")`, the index of an actuator. Use the generated items
+/// instead of importing `kmr_api::{N, State, Robot}`.
 ///
 /// Until `kmr_core` takes N as a const generic, N must equal the core's
-/// actuator count: anything else is a compile error. `Rx28Chain`, ten RX-28,
-/// builds with the `joints-10` feature only.
+/// actuator count: anything else is a compile error (kmr_api/tests/ui/n_differs_from_core.rs).
+/// `Rx28Chain`, ten RX-28, builds with the `joints-10` feature only. More than 64
+/// actuators never build (SRS write mask; D4 A, assumed, pending human).
 ///
-/// ```compile_fail
-/// kmr_api::robot!(model = "tests/fixtures/three.urdf");
-/// ```
-///
-/// Nor does a brand named twice:
+/// A brand named twice does not build:
 ///
 /// ```compile_fail,E0428
 /// use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
@@ -84,7 +84,8 @@
 #[macro_export]
 macro_rules! robot {
     ($preset:ident) => {
-        $crate::robot!(@items <$crate::presets::$preset as $crate::presets::Preset>::N);
+        $crate::__model!($crate; preset = $preset);
+        $crate::__robot_items!();
         /// Bus count of this robot's hardware table.
         #[doc(hidden)]
         #[allow(dead_code)]
@@ -113,7 +114,8 @@ macro_rules! robot {
         }
     };
     (model = $path:literal) => {
-        $crate::robot!(@items $crate::__actuator_count!($path));
+        $crate::__model!($crate; model = $path);
+        $crate::__robot_items!();
         impl $crate::Spec for __Spec {
             type Drivers = $crate::HCons<$crate::__NoHardware, $crate::HNil>;
 
@@ -125,7 +127,8 @@ macro_rules! robot {
         }
     };
     (model = $path:literal, hardware = { $($brand:ident : $part:expr),+ $(,)? }) => {
-        $crate::robot!(@items $crate::__actuator_count!($path));
+        $crate::__model!($crate; model = $path);
+        $crate::__robot_items!();
         /// This robot's hardware, one module per brand.
         #[doc(hidden)]
         mod __hardware {
@@ -177,10 +180,14 @@ macro_rules! robot {
     (@list) => {
         $crate::HNil
     };
-    (@items $n:expr) => {
-        /// Actuator count of this robot.
-        #[allow(dead_code)]
-        pub const N: usize = $n;
+}
+
+/// The items of `robot!` that do not come from the model: the aliases, `__Spec` and the
+/// checks on `N`. Hidden, so a user cannot set `N` through it (003 review #7).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __robot_items {
+    () => {
         /// The state handle of this robot.
         #[allow(dead_code)]
         pub type State<'a> = $crate::State<'a>;
@@ -194,6 +201,7 @@ macro_rules! robot {
             N == $crate::N,
             "kmr: this robot's actuator count differs from kmr_core's; N as a const generic is pending in kmr_core"
         );
+        const _: () = assert!(N >= 1 && N <= 64, "SRS write mask: more than 64 actuators");
     };
 }
 
