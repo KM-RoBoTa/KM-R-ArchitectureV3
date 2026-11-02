@@ -87,7 +87,7 @@ buckets of 100 ns, overflow count, exact min (stored inverted) and max, sample c
 |---|---|---|
 | `simulated` | no bus plugin, or kmr printed "not driven yet" | no I/O figure |
 | `not_reference` | board revision, distro or kernel line differs from SRS NFR-1 | never compared with reference reports |
-| `throttled` | a throttle flag set at start or end | kept out of comparisons |
+| `throttled` | a throttle flag set at start or end; on a reference report, also a throttle state not read (`unavailable`) | kept out of comparisons |
 | `inconsistent` | simulated and the two overrun counts differ (phase B); or the simulation warning seen ≠ 1 time on a run with no plugin | kept out of comparisons |
 | `uncalibrated` | `drift_permille > 20` | overhead kept, marked |
 | `alloc_seen` | `loop_thread_allocs > 0` | figure kept, marked |
