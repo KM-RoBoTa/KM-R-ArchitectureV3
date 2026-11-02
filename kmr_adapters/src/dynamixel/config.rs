@@ -322,6 +322,278 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     }
 }
 
+/// Overrides of a preset's defaults, chained in a `const` from `main.rs`
+/// (FR-026 (SRS FR-6.1)). Each one changes only what it names and returns
+/// the table through [`Table::check`]; an unknown label or an index past the
+/// table, in a group too, is a compile error naming it.
+///
+/// # Examples
+///
+/// A chain changes the values it names and no other:
+///
+/// ```
+/// use kmr_adapters::dynamixel::{Table, Torque, Zero};
+/// use kmr_adapters::presets::XmBench;
+///
+/// const BENCH: Table<1, 4> = XmBench::HARDWARE
+///     .baud("bus0", 3_000_000)
+///     .read_every("bus0", 2)
+///     .id(2, 7)
+///     .read_only(3)
+///     .zero_group(&[0, 1], 1024);
+///
+/// let bus = BENCH.buses[0];
+/// assert_eq!((bus.label, bus.baud), ("bus0", 3_000_000));
+/// assert_eq!(bus.read_every.map(|ticks| ticks.get()), Some(2));
+/// let ids = BENCH.actuators.map(|actuator| actuator.id);
+/// assert_eq!(ids, [1, 2, 7, 4]);
+/// let torque = BENCH.actuators.map(|actuator| actuator.torque);
+/// assert_eq!(torque, [Torque::On, Torque::On, Torque::On, Torque::ReadOnly]);
+/// let zero = BENCH.actuators.map(|actuator| actuator.zero);
+/// assert_eq!(zero, [Zero::Raw(1024), Zero::Raw(1024), Zero::Center, Zero::Center]);
+/// for (new, old) in BENCH.actuators.iter().zip(&XmBench::HARDWARE.actuators) {
+///     assert_eq!((new.bus, new.model, new.mode), (old.bus, old.model, old.mode));
+/// }
+/// ```
+///
+/// Each of these tables fails to build (SC-006 (SRS FR-6.4)). An id taken
+/// twice on one bus:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.id(1, 1);
+/// ```
+///
+/// Id 253, which Protocol 2 reserves:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.id(0, 253);
+/// ```
+///
+/// A label the table does not have:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.baud("bus1", 1_000_000);
+/// ```
+///
+/// A baud the XM430-W210 does not take:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.baud("bus0", 500_000);
+/// ```
+///
+/// A mode other than `Position`, which `dxl_rs` cannot write:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::{Mode, Table}, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.mode(0, Mode::Velocity);
+/// ```
+///
+/// A bus read every 0 ticks:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.read_every("bus0", 0);
+/// ```
+///
+/// A zero outside the position range, 0 to 4095 on X:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.zero(1, 4096);
+/// ```
+///
+/// An empty label:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::{Bus, Table}, presets::XmBench};
+/// const BENCH: Table<1, 4> = XmBench::HARDWARE;
+/// const _: Table<1, 4> = Table {
+///     buses: [Bus { label: "", ..BENCH.buses[0] }],
+///     ..BENCH
+/// }
+/// .check();
+/// ```
+///
+/// No bus:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<0, 4> = Table {
+///     buses: [],
+///     actuators: XmBench::HARDWARE.actuators,
+/// }
+/// .check();
+/// ```
+///
+/// A group naming an index past the table:
+///
+/// ```compile_fail,E0080
+/// # use kmr_adapters::{dynamixel::Table, presets::XmBench};
+/// const _: Table<1, 4> = XmBench::HARDWARE.read_only_group(&[1, 4]);
+/// ```
+///
+/// The count check of `robot!` (FR-024 (SRS FR-6.1, FR-6.4)): a table of
+/// four actuators on a robot of three is E0308, "expected an array with a
+/// size of 3, found one with a size of 4":
+///
+/// ```compile_fail,E0308
+/// # use kmr_adapters::{dynamixel::Actuator, presets::XmBench};
+/// const _: &[Actuator; 3] = &XmBench::HARDWARE.actuators;
+/// ```
+impl<const NB: usize, const N: usize> Table<NB, N> {
+    /// Bus `bus` runs at `baud` bit/s, which every model on it must accept.
+    ///
+    /// # Panics
+    ///
+    /// On an unknown label or a rejected table; in const evaluation, that is
+    /// the compile error.
+    pub const fn baud(mut self, bus: &str, baud: u32) -> Self {
+        bus_mut(&mut self.buses, bus).baud = baud;
+        self.check()
+    }
+
+    /// Bus `bus` is read every `ticks` ticks (FR-009).
+    ///
+    /// # Panics
+    ///
+    /// On an unknown label, on `ticks` = 0 and on a rejected table; in const
+    /// evaluation, that is the compile error.
+    pub const fn read_every(mut self, bus: &str, ticks: u32) -> Self {
+        let Some(ticks) = NonZeroU32::new(ticks) else {
+            fail(
+                Message::new()
+                    .text("bus ")
+                    .text(bus)
+                    .text(": read_every 0, a bus is read every 1 tick or more"),
+            );
+        };
+        bus_mut(&mut self.buses, bus).read_every = Some(ticks);
+        self.check()
+    }
+
+    /// Actuator `actuator` answers to firmware id `id`.
+    ///
+    /// # Panics
+    ///
+    /// On an index past the table or a rejected table; in const evaluation,
+    /// that is the compile error.
+    pub const fn id(mut self, actuator: usize, id: u8) -> Self {
+        actuator_mut(&mut self.actuators, actuator).id = id;
+        self.check()
+    }
+
+    /// Actuator `actuator` runs in `mode`.
+    ///
+    /// # Panics
+    ///
+    /// On an index past the table or a rejected table, every mode but
+    /// `Position` included; in const evaluation, that is the compile error.
+    pub const fn mode(mut self, actuator: usize, mode: Mode) -> Self {
+        actuator_mut(&mut self.actuators, actuator).mode = mode;
+        self.check()
+    }
+
+    /// Actuator `actuator` is read, never powered, never written (SRS
+    /// FR-5.8).
+    ///
+    /// # Panics
+    ///
+    /// On an index past the table; in const evaluation, that is the compile
+    /// error.
+    pub const fn read_only(mut self, actuator: usize) -> Self {
+        actuator_mut(&mut self.actuators, actuator).torque = Torque::ReadOnly;
+        self.check()
+    }
+
+    /// 0 rad of actuator `actuator` sits at position register value `raw`
+    /// (FR-005).
+    ///
+    /// # Panics
+    ///
+    /// On an index past the table, and on a `raw` outside the model's
+    /// position range; in const evaluation, that is the compile error.
+    pub const fn zero(mut self, actuator: usize, raw: i32) -> Self {
+        actuator_mut(&mut self.actuators, actuator).zero = Zero::Raw(raw);
+        self.check()
+    }
+
+    /// [`Table::read_only`] for every actuator of `group`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Table::read_only`], for any index of `group`.
+    pub const fn read_only_group<const K: usize>(mut self, group: &[usize; K]) -> Self {
+        let mut rest: &[usize] = group;
+        while let [actuator, later @ ..] = rest {
+            actuator_mut(&mut self.actuators, *actuator).torque = Torque::ReadOnly;
+            rest = later;
+        }
+        self.check()
+    }
+
+    /// [`Table::mode`] for every actuator of `group`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Table::mode`], for any index of `group`.
+    pub const fn mode_group<const K: usize>(mut self, group: &[usize; K], mode: Mode) -> Self {
+        let mut rest: &[usize] = group;
+        while let [actuator, later @ ..] = rest {
+            actuator_mut(&mut self.actuators, *actuator).mode = mode;
+            rest = later;
+        }
+        self.check()
+    }
+
+    /// [`Table::zero`] for every actuator of `group`, all at one `raw`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Table::zero`], for any index of `group`.
+    pub const fn zero_group<const K: usize>(mut self, group: &[usize; K], raw: i32) -> Self {
+        let mut rest: &[usize] = group;
+        while let [actuator, later @ ..] = rest {
+            actuator_mut(&mut self.actuators, *actuator).zero = Zero::Raw(raw);
+            rest = later;
+        }
+        self.check()
+    }
+}
+
+/// The bus labelled `label`; a compile error naming it if there is none.
+const fn bus_mut<'a>(buses: &'a mut [Bus], label: &str) -> &'a mut Bus {
+    let Some(index) = find_label(buses, label) else {
+        fail(
+            Message::new()
+                .text("no bus labelled ")
+                .text(label)
+                .text(" in the table"),
+        );
+    };
+    match buses.split_at_mut_checked(index) {
+        Some((_, [bus, ..])) => bus,
+        _ => fail(Message::new().text("no bus labelled ").text(label)),
+    }
+}
+
+/// Actuator `index`; a compile error naming it past the table.
+const fn actuator_mut(actuators: &mut [Actuator], index: usize) -> &mut Actuator {
+    let len = actuators.len();
+    match actuators.split_at_mut_checked(index) {
+        Some((_, [actuator, ..])) => actuator,
+        _ => fail(
+            Message::actuator(index)
+                .text("past the table's ")
+                .number(len)
+                .text(" actuators"),
+        ),
+    }
+}
+
 /// A checked [`Table`] placed in the robot: the engine index of each of its
 /// actuators, in table order. The Dynamixel member owns these indices and no
 /// other (SRS FR-5.1). Built through [`Table::at`] or [`Table::in_order`].
@@ -979,6 +1251,95 @@ mod tests {
         let mut actuators = chain(Model::Xm430W210);
         actuators[1].id = actuators[0].id;
         table(actuators).in_order();
+    }
+
+    #[test]
+    fn group_overrides_change_only_their_members() {
+        let table = table(chain(Model::Xm430W210))
+            .read_only_group(&[0, 2])
+            .mode_group(&[1, 3], Mode::Position)
+            .zero_group(&[3], 100)
+            .zero(1, 4095);
+        let torque = table.actuators.map(|actuator| actuator.torque);
+        assert_eq!(
+            torque,
+            [Torque::ReadOnly, Torque::On, Torque::ReadOnly, Torque::On]
+        );
+        let zero = table.actuators.map(|actuator| actuator.zero);
+        assert_eq!(
+            zero,
+            [Zero::Center, Zero::Raw(4095), Zero::Center, Zero::Raw(100)]
+        );
+        assert!(
+            table
+                .actuators
+                .iter()
+                .all(|actuator| actuator.mode == Mode::Position)
+        );
+    }
+
+    #[test]
+    fn an_empty_group_changes_nothing() {
+        let table = table(chain(Model::Ax12a)).read_only_group(&[]);
+        assert!(
+            table
+                .actuators
+                .iter()
+                .all(|actuator| actuator.torque == Torque::On)
+        );
+    }
+
+    #[test]
+    fn bus_overrides_find_the_bus_by_label() {
+        let buses = [
+            BUS,
+            Bus {
+                label: "bus1",
+                ..BUS
+            },
+        ];
+        let table = Table {
+            buses,
+            actuators: chain(Model::Xm430W210),
+        }
+        .baud("bus1", 57_600)
+        .read_every("bus1", 5);
+        assert_eq!(
+            (table.buses[0].baud, table.buses[1].baud),
+            (1_000_000, 57_600)
+        );
+        assert_eq!(table.buses[0].read_every, NonZeroU32::new(1));
+        assert_eq!(table.buses[1].read_every, NonZeroU32::new(5));
+    }
+
+    #[test]
+    #[should_panic(expected = "no bus labelled arm in the table")]
+    fn read_every_of_an_unknown_label_is_rejected() {
+        table(chain(Model::Xm430W210)).read_every("arm", 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "bus bus0: read_every 0")]
+    fn read_every_zero_is_rejected() {
+        table(chain(Model::Xm430W210)).read_every("bus0", 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 4: past the table's 4 actuators")]
+    fn an_override_past_the_table_names_the_index() {
+        table(chain(Model::Xm430W210)).read_only(4);
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 7: past the table's 4 actuators")]
+    fn a_group_index_past_the_table_names_the_index() {
+        table(chain(Model::Xm430W210)).zero_group(&[0, 7], 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 2: zero outside 0..=1023")]
+    fn a_group_zero_outside_the_range_is_rejected() {
+        table(chain(Model::Ax12a)).zero_group(&[2, 3], 2048);
     }
 
     #[test]
