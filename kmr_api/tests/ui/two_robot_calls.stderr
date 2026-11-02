@@ -77,4 +77,4 @@ error[E0119]: conflicting implementations of trait `kmr_api::Spec` for type `__S
 4 | kmr_api::robot!(XmBench);
   | ^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `__Spec`
   |
-  = note: this error originates in the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)

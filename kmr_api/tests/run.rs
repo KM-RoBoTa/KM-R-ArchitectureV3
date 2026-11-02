@@ -432,3 +432,75 @@ mod recording {
         assert!(take().is_empty());
     }
 }
+
+/// `robot!(Preset, hardware = |hw| ..)`: the preset's table through const overrides.
+mod overrides {
+    use kmr_api::dynamixel::Torque;
+
+    kmr_api::robot!(
+        XmBench,
+        hardware = |hw| hw.read_only(3).read_only_group(&[0, 1])
+    );
+
+    #[test]
+    fn overrides_mark_actuators_read_only_and_keep_the_shape() {
+        let read_only = __TABLE
+            .actuators
+            .map(|a| matches!(a.torque, Torque::ReadOnly));
+        assert_eq!(read_only, [true, true, false, true]);
+        assert_eq!((__NB, __M, N), (1, 4, 4));
+    }
+}
+
+/// `robot!(model = ..)` names no hardware: a plugin is refused before any I/O.
+mod no_table {
+    use super::*;
+
+    kmr_api::robot!(model = "tests/fixtures/four.urdf");
+
+    #[test]
+    fn a_plugin_is_refused_before_the_run() {
+        let record = seen();
+        let res = Robot::new()
+            .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .run();
+        assert!(matches!(res, Err(UserError::NoHardwareDeclared)), "{res:?}");
+        assert!(ticks(&record).is_empty());
+    }
+}
+
+/// `robot!(model = .., hardware = Table { .. })`: one table, one row per actuator.
+mod table {
+    use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+
+    const fn xm430(id: u8) -> Actuator {
+        Actuator {
+            bus: 0,
+            id,
+            model: Model::Xm430W210,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::DEFAULT,
+        }
+    }
+
+    kmr_api::robot!(
+        model = "tests/fixtures/four.urdf",
+        hardware = Table {
+            buses: [Bus {
+                label: "arm",
+                baud: 1_000_000,
+                read_every: None
+            }],
+            actuators: [xm430(1), xm430(2), xm430(3), xm430(4)],
+        }
+    );
+
+    #[test]
+    fn the_table_is_the_robots_hardware_in_model_order() {
+        assert_eq!((__NB, __M, N), (1, 4, 4));
+        assert_eq!(__TABLE.actuators.map(|a| a.id), [1, 2, 3, 4]);
+        assert_eq!(__TABLE.buses[0].label, "arm");
+    }
+}

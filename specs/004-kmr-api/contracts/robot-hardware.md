@@ -85,7 +85,7 @@ kmr_api::robot!(model = "robot/arm.urdf", hardware = { dynamixel: ARM.at([0, 2, 
 - The table types are re-exported as `kmr_api::dynamixel::{Actuator, Bus, Mode, Model,
   Placement, Table, Torque, Zero, DEFAULT_READ_EVERY}`: a module, since `kmr_api::Bus` is the
   plugin builder. The module path is assumed, pending human, with the syntax.
-- Not done: the `hardware = Table { .. }` and `|hw| ..` forms above.
+- The `hardware = Table { .. }` and `|hw| ..` forms above are written (kmr_api T023, 2026-11-02): one Dynamixel member over the table in model order, with the count check below.
 
 ## Checks in the expansion (all compile errors, all fire under `cargo check`)
 

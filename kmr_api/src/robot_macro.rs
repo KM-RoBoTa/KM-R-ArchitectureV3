@@ -8,9 +8,17 @@
 ///
 /// ```ignore
 /// kmr_api::robot!(XmBench);
+/// kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(3).baud("bus0", 3_000_000));
 /// kmr_api::robot!(model = "models/arm.urdf");
+/// kmr_api::robot!(model = "models/arm.urdf", hardware = ARM);
 /// kmr_api::robot!(model = "models/arm.urdf", hardware = { dynamixel: ARM.at([0, 1, 2]) });
 /// ```
+///
+/// `|hw| ..` changes a preset's table through its `const fn` overrides; an
+/// override that names an index or a label the table does not have does not
+/// build. `hardware = ARM` is one [`dynamixel::Table`](crate::dynamixel::Table),
+/// one row per actuator in model order: a row count other than `N` does not
+/// build. Both forms are assumed, pending human (D7 A).
 ///
 /// `hardware = { brand: part, .. }` names one part per brand, each the
 /// member that drives the engine indices the part gives: `dynamixel`, a
@@ -84,34 +92,27 @@
 #[macro_export]
 macro_rules! robot {
     ($preset:ident) => {
+        $crate::robot!($preset, hardware = |hw| hw);
+    };
+    ($preset:ident, hardware = |$hw:ident| $table:expr) => {
         $crate::__model!($crate; preset = $preset);
         $crate::__robot_items!();
-        /// Bus count of this robot's hardware table.
+        /// Bus count of this robot's hardware table, the preset's.
         #[doc(hidden)]
         #[allow(dead_code)]
         const __NB: usize = $crate::presets::$preset::HARDWARE.buses.len();
-        /// Actuator count of this robot's hardware table.
+        /// Actuator count of this robot's hardware table, the preset's.
         #[doc(hidden)]
         #[allow(dead_code)]
         const __M: usize = $crate::presets::$preset::HARDWARE.actuators.len();
-        /// This robot's hardware table.
+        /// This robot's hardware table: the preset's, through the overrides.
         #[doc(hidden)]
         #[allow(dead_code)]
-        const __TABLE: $crate::Table<__NB, __M> = $crate::presets::$preset::HARDWARE;
-        const _: () = $crate::__check_coverage(&[__TABLE.in_order().indices()], N);
-        impl $crate::Spec for __Spec {
-            type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB>, $crate::HNil>;
-
-            fn bind(
-                plugins: &[$crate::Binding],
-            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
-                let hardware = $crate::HCons {
-                    head: __TABLE.in_order(),
-                    tail: $crate::HNil,
-                };
-                $crate::__bind(hardware, plugins)
-            }
-        }
+        const __TABLE: $crate::Table<__NB, __M> = {
+            let $hw = $crate::presets::$preset::HARDWARE;
+            $table
+        };
+        $crate::__robot_items!(@table);
     };
     (model = $path:literal) => {
         $crate::__model!($crate; model = $path);
@@ -165,6 +166,23 @@ macro_rules! robot {
             }
         }
     };
+    (model = $path:literal, hardware = $table:expr) => {
+        $crate::__model!($crate; model = $path);
+        $crate::__robot_items!();
+        /// Bus count of this robot's hardware table.
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        const __NB: usize = $crate::__brand::dynamixel::shape(&$table.in_order()).0;
+        /// Actuator count of this robot's hardware table.
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        const __M: usize = $crate::__brand::dynamixel::shape(&$table.in_order()).1;
+        /// This robot's hardware table.
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        const __TABLE: $crate::Table<__NB, __M> = $table;
+        $crate::__robot_items!(@table);
+    };
     (@parts $brand:ident $(, $rest:ident)*) => {
         $crate::HCons<__hardware::$brand::__Part, $crate::robot!(@parts $($rest),*)>
     };
@@ -183,10 +201,28 @@ macro_rules! robot {
 }
 
 /// The items of `robot!` that do not come from the model: the aliases, `__Spec` and the
-/// checks on `N`. Hidden, so a user cannot set `N` through it (003 review #7).
+/// checks on `N`; with `@table`, the count check and `Spec` of a one-table robot. Hidden, so
+/// a user cannot set `N` through it (003 review #7).
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __robot_items {
+    (@table) => {
+        // The count check: one table row per actuator, in model order (FR-007 (SRS FR-6.4)).
+        const _: [$crate::dynamixel::Actuator; N] = __TABLE.actuators;
+        impl $crate::Spec for __Spec {
+            type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB>, $crate::HNil>;
+
+            fn bind(
+                plugins: &[$crate::Binding],
+            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
+                let hardware = $crate::HCons {
+                    head: __TABLE.in_order(),
+                    tail: $crate::HNil,
+                };
+                $crate::__bind(hardware, plugins)
+            }
+        }
+    };
     () => {
         /// The state handle of this robot.
         #[allow(dead_code)]
