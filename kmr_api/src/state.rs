@@ -64,7 +64,7 @@ impl<'a> State<'a> {
 
     // ---- Q (position) ----
 
-    /// Newest sensed `Q` for every joint. `None` until the first sample is recorded.
+    /// Newest sensed `Q` for every actuator. `None` until the first sample is recorded.
     #[inline]
     pub fn q(&self) -> Option<[Q; N]> {
         self.inner.current::<Q>().copied()
@@ -76,7 +76,7 @@ impl<'a> State<'a> {
         self.q()
     }
 
-    /// Newest `Q` at joint `i`.
+    /// Newest `Q` at actuator `i`.
     #[inline]
     pub fn q_at(&self, i: usize) -> Result<Q, StateError> {
         self.inner
@@ -85,7 +85,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Q` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// `Q` for every actuator, `depth` steps back (`0` = newest). `Err` if fewer
     /// than `depth + 1` samples recorded.
     #[inline]
     pub fn prev_q(&self, depth: usize) -> Result<[Q; N], StateError> {
@@ -95,7 +95,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Q` at joint `i`, `depth` steps back (`0` = newest).
+    /// `Q` at actuator `i`, `depth` steps back (`0` = newest).
     #[inline]
     pub fn prev_q_at(&self, i: usize, depth: usize) -> Result<Q, StateError> {
         self.inner
@@ -104,13 +104,13 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// Stage `Q` for **every** joint, overwriting the whole desired `Q` buffer.
+    /// Stage `Q` for **every** actuator, overwriting the whole desired `Q` buffer.
     #[inline]
     pub fn set_all_q(&mut self, values: [Q; N]) {
         self.inner.set_all(values);
     }
 
-    /// Stage `Q` at joint `i`. `Err` if `i` is out of range.
+    /// Stage `Q` at actuator `i`. `Err` if `i` is out of range.
     #[inline]
     pub fn set_q_at(&mut self, value: Q, i: usize) -> Result<(), StateError> {
         self.inner.set_at(value, i).map_err(StateError::from)
@@ -118,7 +118,7 @@ impl<'a> State<'a> {
 
     // ---- Qd (velocity) ----
 
-    /// Newest sensed `Qd` for every joint. `None` until the first sample is recorded.
+    /// Newest sensed `Qd` for every actuator. `None` until the first sample is recorded.
     #[inline]
     pub fn qd(&self) -> Option<[Qd; N]> {
         self.inner.current::<Qd>().copied()
@@ -130,7 +130,7 @@ impl<'a> State<'a> {
         self.qd()
     }
 
-    /// Newest `Qd` at joint `i`.
+    /// Newest `Qd` at actuator `i`.
     #[inline]
     pub fn qd_at(&self, i: usize) -> Result<Qd, StateError> {
         self.inner
@@ -139,7 +139,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Qd` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// `Qd` for every actuator, `depth` steps back (`0` = newest). `Err` if fewer
     /// than `depth + 1` samples recorded.
     #[inline]
     pub fn prev_qd(&self, depth: usize) -> Result<[Qd; N], StateError> {
@@ -149,7 +149,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Qd` at joint `i`, `depth` steps back (`0` = newest).
+    /// `Qd` at actuator `i`, `depth` steps back (`0` = newest).
     #[inline]
     pub fn prev_qd_at(&self, i: usize, depth: usize) -> Result<Qd, StateError> {
         self.inner
@@ -158,13 +158,13 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// Stage `Qd` for **every** joint, overwriting the whole desired `Qd` buffer.
+    /// Stage `Qd` for **every** actuator, overwriting the whole desired `Qd` buffer.
     #[inline]
     pub fn set_all_qd(&mut self, values: [Qd; N]) {
         self.inner.set_all(values);
     }
 
-    /// Stage `Qd` at joint `i`. `Err` if `i` is out of range.
+    /// Stage `Qd` at actuator `i`. `Err` if `i` is out of range.
     #[inline]
     pub fn set_qd_at(&mut self, value: Qd, i: usize) -> Result<(), StateError> {
         self.inner.set_at(value, i).map_err(StateError::from)
@@ -172,7 +172,7 @@ impl<'a> State<'a> {
 
     // ---- Tau (torque / effort) ----
 
-    /// Newest sensed `Tau` for every joint. `None` until the first sample is recorded.
+    /// Newest sensed `Tau` for every actuator. `None` until the first sample is recorded.
     #[inline]
     pub fn tau(&self) -> Option<[Tau; N]> {
         self.inner.current::<Tau>().copied()
@@ -190,7 +190,7 @@ impl<'a> State<'a> {
         self.tau()
     }
 
-    /// Newest `Tau` at joint `i`.
+    /// Newest `Tau` at actuator `i`.
     #[inline]
     pub fn tau_at(&self, i: usize) -> Result<Tau, StateError> {
         self.inner
@@ -199,7 +199,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Tau` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// `Tau` for every actuator, `depth` steps back (`0` = newest). `Err` if fewer
     /// than `depth + 1` samples recorded.
     #[inline]
     pub fn prev_tau(&self, depth: usize) -> Result<[Tau; N], StateError> {
@@ -209,7 +209,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Tau` at joint `i`, `depth` steps back (`0` = newest).
+    /// `Tau` at actuator `i`, `depth` steps back (`0` = newest).
     #[inline]
     pub fn prev_tau_at(&self, i: usize, depth: usize) -> Result<Tau, StateError> {
         self.inner
@@ -218,13 +218,13 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// Stage `Tau` for **every** joint, overwriting the whole desired `Tau` buffer.
+    /// Stage `Tau` for **every** actuator, overwriting the whole desired `Tau` buffer.
     #[inline]
     pub fn set_all_tau(&mut self, values: [Tau; N]) {
         self.inner.set_all(values);
     }
 
-    /// Stage `Tau` at joint `i`. `Err` if `i` is out of range.
+    /// Stage `Tau` at actuator `i`. `Err` if `i` is out of range.
     #[inline]
     pub fn set_tau_at(&mut self, value: Tau, i: usize) -> Result<(), StateError> {
         self.inner.set_at(value, i).map_err(StateError::from)
@@ -232,14 +232,14 @@ impl<'a> State<'a> {
 
     // ---- Kp (a position gain) ----
 
-    /// Newest `Kp` for every joint: the gains the adapter last applied, zero
+    /// Newest `Kp` for every actuator: the gains the adapter last applied, zero
     /// where an actuator has none. `None` until the first sample is recorded.
     #[inline]
     pub fn kp(&self) -> Option<[Kp; N]> {
         self.inner.current::<Kp>().copied()
     }
 
-    /// Newest `Kp` at joint `i`.
+    /// Newest `Kp` at actuator `i`.
     #[inline]
     pub fn kp_at(&self, i: usize) -> Result<Kp, StateError> {
         self.inner
@@ -248,7 +248,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Kp` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// `Kp` for every actuator, `depth` steps back (`0` = newest). `Err` if fewer
     /// than `depth + 1` samples recorded.
     #[inline]
     pub fn prev_kp(&self, depth: usize) -> Result<[Kp; N], StateError> {
@@ -258,7 +258,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Kp` at joint `i`, `depth` steps back (`0` = newest).
+    /// `Kp` at actuator `i`, `depth` steps back (`0` = newest).
     #[inline]
     pub fn prev_kp_at(&self, i: usize, depth: usize) -> Result<Kp, StateError> {
         self.inner
@@ -267,14 +267,14 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// Stage `Kp` for **every** joint, overwriting the whole desired `Kp` buffer.
+    /// Stage `Kp` for **every** actuator, overwriting the whole desired `Kp` buffer.
     /// Actuators without a position gain ignore it.
     #[inline]
     pub fn set_all_kp(&mut self, values: [Kp; N]) {
         self.inner.set_all(values);
     }
 
-    /// Stage `Kp` at joint `i`. `Err` if `i` is out of range. Actuators without
+    /// Stage `Kp` at actuator `i`. `Err` if `i` is out of range. Actuators without
     /// a position gain ignore it.
     #[inline]
     pub fn set_kp_at(&mut self, value: Kp, i: usize) -> Result<(), StateError> {
@@ -283,14 +283,14 @@ impl<'a> State<'a> {
 
     // ---- Kd (a velocity gain) ----
 
-    /// Newest `Kd` for every joint: the gains the adapter last applied, zero
+    /// Newest `Kd` for every actuator: the gains the adapter last applied, zero
     /// where an actuator has none. `None` until the first sample is recorded.
     #[inline]
     pub fn kd(&self) -> Option<[Kd; N]> {
         self.inner.current::<Kd>().copied()
     }
 
-    /// Newest `Kd` at joint `i`.
+    /// Newest `Kd` at actuator `i`.
     #[inline]
     pub fn kd_at(&self, i: usize) -> Result<Kd, StateError> {
         self.inner
@@ -299,7 +299,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Kd` for every joint, `depth` steps back (`0` = newest). `Err` if fewer
+    /// `Kd` for every actuator, `depth` steps back (`0` = newest). `Err` if fewer
     /// than `depth + 1` samples recorded.
     #[inline]
     pub fn prev_kd(&self, depth: usize) -> Result<[Kd; N], StateError> {
@@ -309,7 +309,7 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// `Kd` at joint `i`, `depth` steps back (`0` = newest).
+    /// `Kd` at actuator `i`, `depth` steps back (`0` = newest).
     #[inline]
     pub fn prev_kd_at(&self, i: usize, depth: usize) -> Result<Kd, StateError> {
         self.inner
@@ -318,14 +318,14 @@ impl<'a> State<'a> {
             .map_err(StateError::from)
     }
 
-    /// Stage `Kd` for **every** joint, overwriting the whole desired `Kd` buffer.
+    /// Stage `Kd` for **every** actuator, overwriting the whole desired `Kd` buffer.
     /// Actuators without a velocity gain ignore it.
     #[inline]
     pub fn set_all_kd(&mut self, values: [Kd; N]) {
         self.inner.set_all(values);
     }
 
-    /// Stage `Kd` at joint `i`. `Err` if `i` is out of range. Actuators without
+    /// Stage `Kd` at actuator `i`. `Err` if `i` is out of range. Actuators without
     /// a velocity gain ignore it.
     #[inline]
     pub fn set_kd_at(&mut self, value: Kd, i: usize) -> Result<(), StateError> {

@@ -1,3 +1,11 @@
+//! Payloads registered on the robot. A placeholder: T027 rewrites it as the medium and heavy
+//! tiers on a model link (SRS FR-8.4).
+#![expect(
+    dead_code,
+    clippy::wrong_self_convention,
+    reason = "placeholder until T027 rewrites the payload tiers"
+)]
+
 #[derive(Default)]
 enum PayloadMode {
     #[default]

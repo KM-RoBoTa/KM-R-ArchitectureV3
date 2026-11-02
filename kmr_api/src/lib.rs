@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-#![allow(dead_code)]
 #![deny(clippy::unwrap_used)]
 // #![deny(clippy::todo)]
 
@@ -25,15 +23,11 @@ mod units;
 pub use units::*;
 
 mod payload;
-use payload::Payload;
 
 // Schedule labels + the sealed `Schedule` trait come straight from kmr_core: it
 // owns the phase set the control loop can actually run, and the seal stops users
 // inventing a phase that would silently do nothing.
 pub use kmr_core::{EachTick, First, Init, Last, PostInit, PreInit, Schedule};
-
-trait FakeSensor {}
-trait FakeModel {}
 
 mod robot;
 pub use robot::{Bound, Robot};

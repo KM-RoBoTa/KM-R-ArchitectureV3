@@ -12,7 +12,7 @@ use kmr_core::error::{ApiError as CoreApiError, StateError as CoreStateError};
 /// the core cause across the boundary.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum StateError {
-    /// A joint index exceeded the number of recorded entries / joints.
+    /// An actuator index exceeded the number of recorded entries or actuators.
     #[error("index {index} is out of range: only {len} entries are available")]
     OutOfRange { index: usize, len: usize },
 
@@ -36,7 +36,7 @@ pub enum StateError {
 /// `{ .. }` binding. Get it via [`PrivateStateError::kind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateErrorKind {
-    /// A joint index exceeded the number of recorded entries / joints.
+    /// An actuator index exceeded the number of recorded entries or actuators.
     OutOfRange,
     /// A requested history depth exceeded the retained history.
     HistoryValueOutOfRange,

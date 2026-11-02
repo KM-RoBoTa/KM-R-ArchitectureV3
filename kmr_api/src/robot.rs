@@ -183,8 +183,7 @@ impl<H, C> Robot<H, C> {
     // const...
     // pub fn history_depth(self, depth: usize) {}
 
-    // FakeModel. Api-only: registering a payload does not add a controller, so
-    // the type-state `C` is unchanged.
+    /// Registers a payload; not implemented yet (T027). The type-state `C` is unchanged.
     pub fn register_payload(self, model: Payload) -> Self {
         let _ = model;
         todo!()

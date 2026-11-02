@@ -4,6 +4,7 @@
 /// boundary so the core type never appears in a public signature.
 pub struct Sensors<'a> {
     /// The core sensor handle the runtime lends for one tick.
+    #[expect(dead_code, reason = "the core's Sensors has no reading yet to forward")]
     inner: &'a kmr_core::Sensors,
 }
 
