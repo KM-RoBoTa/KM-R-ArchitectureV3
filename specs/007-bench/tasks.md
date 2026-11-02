@@ -252,7 +252,7 @@ cadence: core K3.8 and kmr_api C3; declared costs: kmr_adapters T067 and kmr_api
 
 ## Phase 15: Polish and cross-cutting
 
-- [ ] T067 [P] docs/decisions/NNNN-bench-method.md, NNNN the next free number in docs/decisions/ at commit time (plan A-8; 0001 and 0002 exist): black-box through kmr_api only, the budget method and calibration, the slot replay and the overrun deadline (research R5: tick k's deadline is `origin + (k+1)·dt`), the histogram, the counting allocator, one process per run, the report format, no verdict; the SRS problems of research.md for the human (SRS NFR-6; constitution V). HUMAN accepts it
+- [ ] T067 [P] docs/decisions/NNNN-bench-method.md, NNNN the next free number in docs/decisions/ at commit time (plan A-8; 0001 and 0002 exist): black-box through kmr_api only, the budget method and calibration, the slot replay and the overrun deadline (research R5: tick k's deadline is `origin + (k+1)·dt`), the histogram, the counting allocator, one process per run, the report format, no verdict; the SRS problems of research.md for the human (SRS NFR-6; constitution V). HUMAN accepts it. Drafted 2026-11-02 as docs/decisions/0006-bench-method.md, status proposed (0001 to 0005 taken, 0004 twice); left open until the human accepts it
 - [ ] T068 [P] docs/c4/bench.dsl with `/speckit-ov-c4-code` (constitution, Development Workflow)
 - [ ] T069 Review bench/src: `unsafe` only in bench/src/alloc.rs; no heap type, no `dyn`, no lock, no stdout write in a controller; `size -A` on `tick` shows the histograms in `.bss` (research R21 P5) (FR-018 (SRS NFR-1))
 - [ ] T070 Run quickstart §1, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace --no-fail-fast` (constitution, Technical Constraints)
