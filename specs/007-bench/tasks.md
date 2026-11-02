@@ -55,7 +55,7 @@ Paths are from the repository root.
 
 - [x] T001 Run from the repo root `cargo build --workspace`, `cargo clippy --workspace --all-targets`, `cargo test --workspace --no-fail-fast`, `cargo fmt --all --check`; write down the warnings already there (research R21 P1: 6 in kmr_core, 6 in kmr_api), so new ones stand out; stop and report if anything is red
 - [x] T002 Add `"bench"` to `members` in the root Cargo.toml, the only line outside `bench/` that phase A touches (plan A-1). A new crate is agentic work: it needs the maintainer's recorded authorization on the PR (AGENTS.md "Agentic work"; plan Constitution Check)
-- [x] T003 Create bench/Cargo.toml: package `kmr_bench` (research R1), `edition.workspace = true`, one dependency `kmr_api = { path = "../kmr_api" }`, no external crate; feature `hardware = ["kmr_api/dynamixel"]`; `[[bin]] name = "tick_hw"` with `required-features = ["hardware"]` (lands with T056: Cargo refuses a declared bin whose file does not exist). No bench/clippy.toml: the root heap ban applies (research R2; FR-018 (SRS NFR-1))
+- [ ] T003 Create bench/Cargo.toml: package `kmr_bench` (research R1), `edition.workspace = true`, one dependency `kmr_api = { path = "../kmr_api" }`, no external crate; feature `hardware = ["kmr_api/dynamixel"]`; `[[bin]] name = "tick_hw"` with `required-features = ["hardware"]`. No bench/clippy.toml: the root heap ban applies (research R2; FR-018 (SRS NFR-1))
 - [x] T004 Create bench/src/lib.rs: `#![deny(clippy::unwrap_used)]`, a module doc "black-box: kmr_api only" (FR-003 (SRS NFR-8)), and the `mod` lines of Phase 2; `cargo build -p kmr_bench` and `cargo clippy -p kmr_bench --all-targets` green
 
 ---
@@ -341,6 +341,9 @@ Reference set: T042 → T043 → T044 (HUMAN) → T045 (HUMAN)
   (assumed, pending human). The gate lives in plan.md "Order of work", column "Gate".
 - An agent that reaches a HUMAN task, or a task waiting on one, stops and hands it over.
 - The debug-only allocation of T019 is test code: release binaries never allocate in a tick.
+- 2026-11-02: T003 stays open. bench/Cargo.toml has all but the `tick_hw` `[[bin]]` entry, which
+  Cargo refuses while bench/src/bin/tick_hw.rs does not exist; it lands with T056. The dependency
+  is `kmr_api.workspace = true`, the workspace's own path entry for `../kmr_api`.
 
 ## Analysis 2026-10-28 (cross-module)
 
