@@ -19,7 +19,8 @@ only with figures of the same label. Compile time is not part of `all.sh` and no
 run of SC-001 (research R18).
 
 1. Check out the commit to measure. The script builds a copy of `HEAD` (`git archive`), so
-   uncommitted changes are not measured and the working tree is never edited.
+   uncommitted changes are not measured and the working tree is never edited. `[meta]` describes
+   that copy: `dirty = "no"`, and `rust_log = "unset"` (the builds run without `RUST_LOG`).
 2. Set the four operator fields, as for any run:
 
    ```sh

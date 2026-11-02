@@ -12,7 +12,8 @@
 # BENCH_SUPPLY_MV, BENCH_SUPPLY_METER, BENCH_AMBIENT_MC and BENCH_THERMOMETER. A missing
 # operator field prints "meta: missing <var>" on stderr and exits 2 before any output.
 # Optional: BENCH_HOST_ID replaces the derived host id; BENCH_CHAIN (e.g. u2d2-FT8ISZ6H) is
-# appended to it. Sourced, it defines its functions and runs nothing.
+# appended to it; BENCH_DIRTY replaces the working-tree check, for a build of a clean copy of
+# HEAD (compile-time.sh). Sourced, it defines its functions and runs nothing.
 
 set -euo pipefail
 
@@ -177,7 +178,13 @@ start() {
     if soc=$(soc_mc) && [[ $soc =~ ^[0-9]+$ ]]; then int soc_mc_start "$soc"; fi
     commit=$(git rev-parse HEAD 2>/dev/null || printf 'unknown')
     txt commit "$commit"
-    if [[ -n $(git status --porcelain --untracked-files=no 2>/dev/null) ]]; then dirty=yes; else dirty=no; fi
+    if [[ -n ${BENCH_DIRTY:-} ]]; then
+        dirty=$BENCH_DIRTY
+    elif [[ -n $(git status --porcelain --untracked-files=no 2>/dev/null) ]]; then
+        dirty=yes
+    else
+        dirty=no
+    fi
     txt dirty "$dirty"
     txt profile "${BENCH_PROFILE:-release}"
     txt features "${BENCH_FEATURES:-}"

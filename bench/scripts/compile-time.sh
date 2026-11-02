@@ -45,8 +45,11 @@ report=$dir/compile-$label-$n.toml
 log=${report%.toml}.log
 : >"$log"
 
-# A missing operator field fails the run before any build, as in bench_run.
-if ! BENCH_PROFILE="dev,release" BENCH_FEATURES="" "$here/meta.sh" start >"$work/meta.toml" 2>"$work/meta.err"; then
+# Unset before meta.sh, so rust_log records the environment of the builds.
+unset RUST_LOG CARGO_BUILD_RUSTFLAGS
+# A missing operator field fails the run before any build, as in bench_run. The copy is HEAD.
+if ! BENCH_PROFILE="dev,release" BENCH_FEATURES="" BENCH_DIRTY=no \
+    "$here/meta.sh" start >"$work/meta.toml" 2>"$work/meta.err"; then
     cat "$work/meta.err" >&2
     {
         if [[ -s $work/meta.toml ]]; then
@@ -69,7 +72,6 @@ sed -n 's/.*path *= *"\.\.\/\([^"]*\)".*/\1/p' Cargo.toml | while read -r sib; d
     if [[ -e $repo/../$sib ]]; then ln -s "$(cd "$repo/../$sib" && pwd)" "$work/$sib"; fi
 done
 export CARGO_TARGET_DIR=$work/target
-unset RUST_LOG CARGO_BUILD_RUSTFLAGS
 
 figures=$work/figures
 : >"$figures"
@@ -174,7 +176,7 @@ for count in $REG_COUNTS; do
         fns+="fn c$i(_: &Time, _: &mut State, _: &Sensors) {}"$'\n'
         regs+="        .add_controller(EachTick, c$i)"$'\n'
     done
-    template=$(<"$repo/bench/gen/registrations.rs.in")
+    template=$(<"$ws/bench/gen/registrations.rs.in")
     template=${template//@COUNT@/$count}
     template=${template//@FNS@/$fns}
     template=${template//@REGS@/$regs}
