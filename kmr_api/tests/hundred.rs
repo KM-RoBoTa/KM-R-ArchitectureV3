@@ -2,7 +2,7 @@
 //! (FR-021, SRS NFR-11). Direct call, since N = 100 is above `robot!`'s caps.
 
 mod hundred {
-    kmr_model::model!(kmr_api; model = "tests/fixtures/hundred.urdf");
+    kmr_api::__model!(kmr_api; model = "tests/fixtures/hundred.urdf");
 
     #[test]
     fn hundred_joints_give_n_100_in_file_order() {
