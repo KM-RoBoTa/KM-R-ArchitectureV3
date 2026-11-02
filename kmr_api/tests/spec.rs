@@ -93,7 +93,7 @@ mod model {
 
 mod placed {
     use super::*;
-    use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+    use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
 
     const fn xm430(id: u8) -> Actuator {
         Actuator {

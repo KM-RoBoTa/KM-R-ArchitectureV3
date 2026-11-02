@@ -13,7 +13,7 @@
 ///
 /// `hardware = { brand: part, .. }` names one part per brand, each the
 /// member that drives the engine indices the part gives: `dynamixel`, a
-/// placed `Table`. A brand named twice does not build. Together the parts
+/// placed [`dynamixel::Table`](crate::dynamixel::Table). A brand named twice does not build. Together the parts
 /// cover `0..N` exactly once, which `run()` checks before any I/O. The
 /// syntax is assumed, pending human (kmr_api T069).
 ///
@@ -30,7 +30,7 @@
 /// Nor does a brand named twice:
 ///
 /// ```compile_fail,E0428
-/// use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+/// use kmr_api::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
 ///
 /// const fn xm430(id: u8) -> Actuator {
 ///     Actuator {

@@ -75,6 +75,9 @@ kmr_api::robot!(model = "robot/arm.urdf", hardware = { dynamixel: ARM.at([0, 2, 
   binding errors (`UnknownBus`, `UnboundBus` of the adapter) stay as they were.
 - A member's binding error is `BringUp` over `HardwareError::Member`, named
   `member k (<type name>): ..` like a bring-up error; `FeatureOff` passes through.
+- The table types are re-exported as `kmr_api::dynamixel::{Actuator, Bus, Mode, Model,
+  Placement, Table, Torque, Zero, DEFAULT_READ_EVERY}`: a module, since `kmr_api::Bus` is the
+  plugin builder. The module path is assumed, pending human, with the syntax.
 - Not done: the coverage check in const evaluation (the run() check stands), the
   `hardware = Table { .. }` and `|hw| ..` forms above.
 

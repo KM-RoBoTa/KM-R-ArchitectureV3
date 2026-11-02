@@ -57,6 +57,13 @@ mod robot_macro;
 /// The robots KM-RoBoTa ships, for [`robot!`].
 pub use kmr_adapters::presets;
 
+/// The Dynamixel hardware table, for `robot!(model = .., hardware = { dynamixel: .. })`.
+pub mod dynamixel {
+    pub use kmr_adapters::dynamixel::{
+        Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
+    };
+}
+
 #[doc(hidden)]
 pub use kmr_model::actuator_count as __actuator_count;
 
