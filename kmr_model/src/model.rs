@@ -128,7 +128,7 @@ pub(crate) struct CheckedLink {
     /// The link's name.
     pub(crate) name: String,
     /// Index of the parent link; `None` for the root.
-    pub(crate) parent: Option<usize>,
+    pub(crate) parent: Option<u16>,
     /// Mass, kg.
     pub(crate) mass: f32,
     /// Mass center in the link frame, m.
@@ -271,13 +271,23 @@ pub(crate) fn validate(model: Model, file: &str) -> Result<Robot, ModelError> {
         .iter()
         .zip(bodies)
         .zip(parents)
-        .map(|((l, (mass, com)), parent)| CheckedLink {
-            name: l.name.clone(),
-            parent,
-            mass,
-            com,
+        .map(|((l, (mass, com)), parent)| {
+            let parent = parent.map(u16::try_from).transpose().map_err(|_| {
+                ModelError::element(
+                    file,
+                    l.pos,
+                    format!("link {}", l.name),
+                    "parent index does not fit u16",
+                )
+            })?;
+            Ok(CheckedLink {
+                name: l.name.clone(),
+                parent,
+                mass,
+                com,
+            })
         })
-        .collect();
+        .collect::<Result<_, ModelError>>()?;
     Ok(Robot { actuators, links })
 }
 

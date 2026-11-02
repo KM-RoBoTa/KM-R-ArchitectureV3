@@ -37,10 +37,12 @@ impl Reader for Urdf {
 
         let mut model = Model::default();
         for link in &links {
+            let name = read.name(*link, "link")?;
+            let (mass, com) = read.inertial(*link, name)?;
             model.links.push(Link {
-                name: read.name(*link, "link")?.to_owned(),
-                mass: 0.0,
-                com: [0.0; 3],
+                name: name.to_owned(),
+                mass,
+                com,
                 pos: Some(read.pos(*link)),
             });
         }
@@ -166,6 +168,44 @@ impl<'a, 'i> Read<'a, 'i> {
             .ok_or_else(|| self.fault(joint, "joint", name, &format!("no <{tag} link>")))
     }
 
+    /// A link's mass (kg) and mass center (m, link frame); without
+    /// `<inertial>`, mass 0 at the link origin, the URDF default.
+    fn inertial(&self, link: Node, name: &str) -> Result<(f64, [f64; 3]), ModelError> {
+        let Some(inertial) = children(link, "inertial").first().copied() else {
+            return Ok((0.0, [0.0; 3]));
+        };
+        let fault = |node: Node, reason: &str| self.fault(node, "link", name, reason);
+        let mass = children(inertial, "mass")
+            .first()
+            .and_then(|m| m.attribute("value").map(|v| (*m, v)))
+            .ok_or_else(|| fault(inertial, "<inertial> has no <mass value>"))?;
+        let mass = mass.1.trim().parse::<f64>().map_err(|_| {
+            fault(
+                mass.0,
+                &format!("<mass value=\"{}\"> is not a number", mass.1),
+            )
+        })?;
+        let Some((origin, xyz)) = children(inertial, "origin")
+            .first()
+            .and_then(|o| o.attribute("xyz").map(|v| (*o, v)))
+        else {
+            return Ok((mass, [0.0; 3]));
+        };
+        let com = xyz
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<Result<Vec<f64>, _>>()
+            .ok()
+            .and_then(|v| <[f64; 3]>::try_from(v).ok())
+            .ok_or_else(|| {
+                fault(
+                    origin,
+                    &format!("<origin xyz=\"{xyz}\"> is not three numbers"),
+                )
+            })?;
+        Ok((mass, com))
+    }
+
     /// A joint's `<limit>`, each attribute that is there read as a number.
     fn limit(&self, joint: Node, name: &str) -> Result<Option<Limit>, ModelError> {
         let Some(limit) = children(joint, "limit").first().copied() else {
@@ -238,6 +278,83 @@ pub(crate) mod tests {
             Ok(robot) => robot,
             Err(e) => panic!("{e}"),
         }
+    }
+
+    /// The link named `name` of the checked [`FOUR`].
+    fn link(name: &str) -> crate::model::CheckedLink {
+        let robot = four();
+        let found = robot.links.iter().find(|l| l.name == name).cloned();
+        match found {
+            Some(link) => link,
+            None => panic!("no link {name}"),
+        }
+    }
+
+    #[test]
+    fn a_link_has_its_mass_and_mass_center() {
+        let l1 = link("l1");
+        assert_eq!((l1.mass, l1.com), (0.35, [0.0, 0.0, 0.05]));
+    }
+
+    #[test]
+    fn a_link_hangs_from_its_joint_parent_link() {
+        let robot = four();
+        let parents: Vec<_> = robot.links.iter().map(|l| l.parent).collect();
+        assert_eq!(parents, [None, Some(0), Some(1), Some(2), Some(3), Some(4)]);
+    }
+
+    #[test]
+    fn a_link_without_inertial_has_no_mass_at_its_origin() {
+        let model = read(&chain(&[("j", "revolute")]));
+        let l0 = model.map(|m| (m.links[0].mass, m.links[0].com));
+        assert_eq!(l0, Ok((0.0, [0.0; 3])));
+    }
+
+    #[test]
+    fn an_inertial_without_origin_puts_the_mass_center_at_the_link_origin() {
+        let text = FOUR.replace("<origin xyz=\"0 0 0.05\"/>", "");
+        let model = read(&text);
+        assert_eq!(
+            model.map(|m| (m.links[1].mass, m.links[1].com)),
+            Ok((0.35, [0.0; 3]))
+        );
+    }
+
+    #[test]
+    fn a_bad_inertial_names_the_link() {
+        let cases = [
+            (
+                "<mass value=\"0.35\"/>",
+                "",
+                "<inertial> has no <mass value>",
+            ),
+            (
+                "value=\"0.35\"",
+                "value=\"heavy\"",
+                "<mass value=\"heavy\"> is not a number",
+            ),
+            (
+                "xyz=\"0 0 0.05\"",
+                "xyz=\"0 0\"",
+                "<origin xyz=\"0 0\"> is not three numbers",
+            ),
+        ];
+        for (from, to, reason) in cases {
+            let err = read(&FOUR.replace(from, to));
+            assert_eq!(err, Err(format!("kmr: r.urdf:4: link l1: {reason}")));
+        }
+    }
+
+    #[test]
+    fn a_mass_that_is_not_finite_fails_step_8() {
+        let text = FOUR.replace("value=\"0.35\"", "value=\"inf\"");
+        let err = Urdf::read(&text, "r.urdf")
+            .and_then(|m| crate::model::validate(m, "r.urdf"))
+            .map_err(|e| e.message());
+        assert_eq!(
+            err,
+            Err("kmr: r.urdf:4: link l1: mass does not fit f32".to_owned())
+        );
     }
 
     /// A `<robot>` around `body`.

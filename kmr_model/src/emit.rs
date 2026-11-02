@@ -22,6 +22,7 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
     let names = robot.actuators.iter().map(|a| Literal::string(&a.name));
     let [lower, upper, speed, effort] = columns(robot).map(|c| c.into_iter().map(float));
     let lookup = lookup(robot);
+    let links = links(robot);
     quote! {
         /// Actuator count of this robot, from its descriptor.
         #[allow(dead_code)]
@@ -54,6 +55,8 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
             /// Top effort per actuator: N·m (revolute, continuous) or N
             /// (prismatic).
             pub const EFFORT: [#krate::Tau; super::N] = [#(#krate::Tau(#effort)),*];
+
+            #links
         }
     }
 }
@@ -83,6 +86,39 @@ fn lookup(robot: &Robot) -> TokenStream {
         /// [`actuator!`] for the whole crate.
         #[allow(unused_imports)]
         pub(crate) use actuator;
+    }
+}
+
+/// `LINK_NAMES`, `LINK_PARENT`, `LINK_MASS`, `LINK_COM`, in file order
+/// (FR-016 (SRS FR-8.1)).
+fn links(robot: &Robot) -> TokenStream {
+    let l = Literal::usize_unsuffixed(robot.links.len());
+    let names = robot.links.iter().map(|l| Literal::string(&l.name));
+    let parents = robot.links.iter().map(|l| match l.parent {
+        Some(p) => {
+            let p = Literal::u16_suffixed(p);
+            quote!(::core::option::Option::Some(#p))
+        }
+        None => quote!(::core::option::Option::None),
+    });
+    let masses = robot.links.iter().map(|l| float(l.mass));
+    let coms = robot.links.iter().map(|l| {
+        let [x, y, z] = l.com.map(float);
+        quote!([#x, #y, #z])
+    });
+    quote! {
+        /// Link names, in descriptor order.
+        pub const LINK_NAMES: [&str; #l] = [#(#names),*];
+
+        /// Parent of each link, as an index into `LINK_NAMES`; `None` for
+        /// the root.
+        pub const LINK_PARENT: [::core::option::Option<u16>; #l] = [#(#parents),*];
+
+        /// Mass of each link, kg.
+        pub const LINK_MASS: [f32; #l] = [#(#masses),*];
+
+        /// Mass center of each link, m, in the link frame.
+        pub const LINK_COM: [[f32; 3]; #l] = [#(#coms),*];
     }
 }
 
@@ -162,6 +198,24 @@ mod tests {
         );
         assert!(out.contains("pub (crate) use actuator ;"), "{out}");
         assert!(!out.contains("macro_export"), "{out}");
+    }
+
+    #[test]
+    fn links_in_descriptor_order() {
+        let out = links(&four()).to_string();
+        assert!(
+            out.contains("LINK_NAMES : [& str ; 6] = [\"base\" , \"l1\" , \"l2\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("= [:: core :: option :: Option :: None , :: core :: option :: Option :: Some (0u16) ,"),
+            "{out}"
+        );
+        assert!(
+            out.contains("LINK_MASS : [f32 ; 6] = [0.5f32 , 0.35f32"),
+            "{out}"
+        );
+        assert!(out.contains("[0f32 , 0f32 , 0.05f32]"), "{out}");
     }
 
     #[test]
