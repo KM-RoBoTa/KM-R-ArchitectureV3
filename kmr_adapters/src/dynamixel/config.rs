@@ -6,6 +6,9 @@
 
 use core::num::NonZeroU32;
 
+use kmr_core::hal::Mask;
+use kmr_core::state::JOINTS;
+
 use super::units;
 
 /// Highest firmware id: Protocol 2 reserves 253, 254 is the broadcast id.
@@ -194,7 +197,8 @@ pub struct Bus {
     pub read_every: Option<NonZeroU32>,
 }
 
-/// One actuator; its position in [`Table::actuators`] is its engine index.
+/// One actuator; its engine index is its position in [`Table::actuators`],
+/// or the one [`Table::at`] gives it.
 #[derive(Clone, Copy, Debug)]
 pub struct Actuator {
     /// Index into the buses.
@@ -316,6 +320,188 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
         }
         self
     }
+}
+
+/// A checked [`Table`] placed in the robot: the engine index of each of its
+/// actuators, in table order. The Dynamixel member owns these indices and no
+/// other (SRS FR-5.1). Built through [`Table::at`] or [`Table::in_order`].
+#[derive(Clone, Copy, Debug)]
+pub struct Placement<const NB: usize, const M: usize> {
+    /// The table, checked.
+    pub(crate) table: Table<NB, M>,
+    /// Engine index of each actuator of `table`, distinct, below `JOINTS`.
+    pub(crate) at: [usize; M],
+}
+
+impl<const NB: usize, const M: usize> Placement<NB, M> {
+    /// The table placed.
+    pub const fn table(&self) -> &Table<NB, M> {
+        &self.table
+    }
+
+    /// Engine index of each actuator of the table, in table order.
+    pub const fn indices(&self) -> &[usize; M] {
+        &self.at
+    }
+}
+
+impl<const NB: usize, const M: usize> Table<NB, M> {
+    /// The table checked by [`Table::check`], actuator `k` at engine index
+    /// `at[k]`: the Dynamixel member of a robot that mixes brands.
+    ///
+    /// Rejects an index past the robot's actuators and an index two
+    /// actuators share.
+    ///
+    /// # Panics
+    ///
+    /// On a rejected table or placement; in const evaluation, that is the
+    /// compile error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Placement, Table, Torque, Zero};
+    ///
+    /// const fn xm430(id: u8) -> Actuator {
+    ///     Actuator {
+    ///         bus: 0,
+    ///         id,
+    ///         model: Model::Xm430W210,
+    ///         mode: Mode::Position,
+    ///         torque: Torque::On,
+    ///         zero: Zero::DEFAULT,
+    ///     }
+    /// }
+    ///
+    /// const WRIST: Placement<1, 2> = Table {
+    ///     buses: [Bus { label: "wrist", baud: 1_000_000, read_every: None }],
+    ///     actuators: [xm430(1), xm430(2)],
+    /// }
+    /// .at([3, 1]);
+    /// ```
+    ///
+    /// Two actuators on one engine index do not build:
+    ///
+    /// ```compile_fail,E0080
+    /// # use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Placement, Table, Torque, Zero};
+    /// # const fn xm430(id: u8) -> Actuator {
+    /// #     Actuator {
+    /// #         bus: 0,
+    /// #         id,
+    /// #         model: Model::Xm430W210,
+    /// #         mode: Mode::Position,
+    /// #         torque: Torque::On,
+    /// #         zero: Zero::DEFAULT,
+    /// #     }
+    /// # }
+    /// const _: Placement<1, 2> = Table {
+    ///     buses: [Bus { label: "wrist", baud: 1_000_000, read_every: None }],
+    ///     actuators: [xm430(1), xm430(2)],
+    /// }
+    /// .at([1, 1]);
+    /// ```
+    pub const fn at(self, at: [usize; M]) -> Placement<NB, M> {
+        let table = self.check();
+        let mut index = 0;
+        let mut rest: &[usize] = &at;
+        while let [engine, later @ ..] = rest {
+            if *engine >= JOINTS {
+                fail(
+                    Message::actuator(index)
+                        .text("engine index ")
+                        .number(*engine)
+                        .text(" past the robot's ")
+                        .number(JOINTS)
+                        .text(" actuators"),
+                );
+            }
+            if let Some(offset) = position(later, *engine) {
+                fail(
+                    Message::actuator(index + 1 + offset)
+                        .text("engine index ")
+                        .number(*engine)
+                        .text(" already taken by actuator ")
+                        .number(index),
+                );
+            }
+            index += 1;
+            rest = later;
+        }
+        Placement { table, at }
+    }
+
+    /// The table checked by [`Table::check`], actuator `k` at engine index
+    /// `k`: a one-brand robot, in the model's actuator order.
+    ///
+    /// # Panics
+    ///
+    /// On a rejected table, and on a table of more actuators than the
+    /// robot; in const evaluation, that is the compile error.
+    pub const fn in_order(self) -> Placement<NB, M> {
+        let mut at = [0; M];
+        let mut index = 0;
+        while index < M {
+            at[index] = index;
+            index += 1;
+        }
+        self.at(at)
+    }
+}
+
+/// The actuators of a [`Placement`] by engine index, `None` at the indices
+/// the member does not own.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Placed([Option<Actuator>; JOINTS]);
+
+impl Placed {
+    /// The actuators of `placement`, each at its engine index.
+    pub(crate) const fn new<const NB: usize, const M: usize>(placement: &Placement<NB, M>) -> Self {
+        let mut slots = [None; JOINTS];
+        let mut rest: &[Actuator] = &placement.table.actuators;
+        let mut at: &[usize] = &placement.at;
+        while let ([actuator, more @ ..], [index, later @ ..]) = (rest, at) {
+            if let Some((_, [slot, ..])) = slots.split_at_mut_checked(*index) {
+                *slot = Some(*actuator);
+            }
+            rest = more;
+            at = later;
+        }
+        Self(slots)
+    }
+
+    /// The actuator at engine index `index`, if the member owns it.
+    pub(crate) fn get(&self, index: usize) -> Option<&Actuator> {
+        self.0.get(index).and_then(Option::as_ref)
+    }
+
+    /// The owned actuators with their engine indices, ascending.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &Actuator)> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.as_ref().map(|actuator| (index, actuator)))
+    }
+
+    /// The engine indices the member owns.
+    pub(crate) fn owned(&self) -> Mask {
+        let mut owned = Mask::NONE;
+        self.iter().for_each(|(index, _)| owned.set(index));
+        owned
+    }
+}
+
+/// Position in `indices` of the first `index`.
+const fn position(indices: &[usize], index: usize) -> Option<usize> {
+    let mut found = 0;
+    let mut rest = indices;
+    while let [first, tail @ ..] = rest {
+        if *first == index {
+            return Some(found);
+        }
+        found += 1;
+        rest = tail;
+    }
+    None
 }
 
 /// Rejects an empty label, and a label a later bus takes again.
@@ -762,6 +948,37 @@ mod tests {
         let mut actuators = chain(Model::Ax12a);
         actuators[3].zero = Zero::Raw(-1);
         table(actuators).check();
+    }
+
+    #[test]
+    fn a_placement_keeps_each_engine_index() {
+        let placed = table(chain(Model::Xm430W210)).at([2, 0, 3, 1]);
+        assert_eq!(placed.indices(), &[2, 0, 3, 1]);
+        assert_eq!(placed.table().actuators[1].id, 2);
+        assert_eq!(
+            table(chain(Model::Ax12a)).in_order().indices(),
+            &[0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 1: engine index 9999 past the robot's")]
+    fn an_engine_index_past_the_robot_is_rejected() {
+        table(chain(Model::Xm430W210)).at([0, 9999, 2, 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 3: engine index 1 already taken by actuator 1")]
+    fn an_engine_index_taken_twice_names_both_actuators() {
+        table(chain(Model::Xm430W210)).at([0, 1, 2, 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "actuator 1: id 1 already used")]
+    fn a_placement_checks_its_table() {
+        let mut actuators = chain(Model::Xm430W210);
+        actuators[1].id = actuators[0].id;
+        table(actuators).in_order();
     }
 
     #[test]

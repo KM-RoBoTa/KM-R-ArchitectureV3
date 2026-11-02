@@ -11,7 +11,7 @@ use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample};
 use kmr_core::state::{JOINTS, Q, Qd, Tau};
 
 use super::backend::{Backend, BackendError, GoalRegister, RawState};
-use super::config::{Actuator, Bus, Mode, Model, Protocol, Torque};
+use super::config::{Actuator, Bus, Mode, Model, Placed, Protocol, Torque};
 use super::units;
 use super::{Dynamixel, DynamixelError};
 
@@ -126,14 +126,11 @@ impl Groups {
         of: [0; JOINTS],
     };
 
-    /// Numbers the distinct (bus, series) pairs from 0 in first-seen
-    /// actuator order; `every` is the cadence of each bus.
-    pub(crate) fn build<const NB: usize>(
-        actuators: &[Actuator; JOINTS],
-        every: &[NonZeroU32; NB],
-    ) -> Self {
+    /// Numbers the distinct (bus, series) pairs of the owned actuators from
+    /// 0 in first-seen engine order; `every` is the cadence of each bus.
+    pub(crate) fn build<const NB: usize>(actuators: &Placed, every: &[NonZeroU32; NB]) -> Self {
         let mut groups = Self::EMPTY;
-        for (index, actuator) in actuators.iter().enumerate() {
+        for (index, actuator) in actuators.iter() {
             let series = actuator.model.series();
             let found = groups
                 .tables()
@@ -339,7 +336,7 @@ fn start_goal(actuator: &Actuator, present: Q) -> Option<(GoalRegister, u32)> {
 pub(crate) fn read_table<B: Backend>(
     backend: &mut B,
     table: &Table,
-    actuators: &[Actuator; JOINTS],
+    actuators: &Placed,
     sample: &mut Sample<'_>,
     mut report: impl FnMut(usize, Outcome),
 ) {
@@ -414,9 +411,9 @@ fn store_state(sample: &mut Sample<'_>, model: Model, index: usize, raw: &RawSta
 
 /// Actuators whose `Qd` and `Tau` are never read: Protocol 1 reads the
 /// position only (research R12).
-pub(crate) fn unread_rates(actuators: &[Actuator; JOINTS]) -> Mask {
+pub(crate) fn unread_rates(actuators: &Placed) -> Mask {
     let mut unread = Mask::NONE;
-    for (index, actuator) in actuators.iter().enumerate() {
+    for (index, actuator) in actuators.iter() {
         if actuator.model.protocol() == Protocol::One {
             unread.set(index);
         }
@@ -441,7 +438,7 @@ pub(super) fn read_due<B: Backend, const NB: usize>(
         read_table(
             &mut adapter.backend,
             table,
-            &adapter.table.actuators,
+            &adapter.actuators,
             &mut sample,
             |index, outcome| match outcome {
                 Outcome::Read => refreshed.set(index),
@@ -462,7 +459,8 @@ pub(super) fn read_due<B: Backend, const NB: usize>(
 
 /// The per-tick write: one transaction per run of one table. An actuator
 /// not sent is `rejected`; a failed transaction sets `bus_error` on what it
-/// carried (FR-012, FR-015).
+/// carried (FR-012, FR-015). An index the member does not own is another
+/// member's: skipped, its faults untouched.
 pub(super) fn write_batch<B: Backend, const NB: usize>(
     adapter: &mut Dynamixel<B, NB>,
     command: &Command<'_>,
@@ -472,11 +470,9 @@ pub(super) fn write_batch<B: Backend, const NB: usize>(
     for (_, run) in batch.runs() {
         let mut goals: Option<Goals> = None;
         for &index in run {
-            let (Some(&actuator), Some(&table)) = (
-                adapter.table.actuators.get(index),
-                adapter.groups.of.get(index),
-            ) else {
-                faults.rejected.set(index);
+            let (Some(&actuator), Some(&table)) =
+                (adapter.actuators.get(index), adapter.groups.of.get(index))
+            else {
                 continue;
             };
             if goals.is_some_and(|goals| goals.table != table) {
@@ -509,19 +505,16 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize>(
         return Ok(());
     };
     let mut present = [Q::default(); JOINTS];
-    let reads = table.members().iter().any(|&index| {
-        adapter
-            .table
-            .actuators
-            .get(index)
-            .is_some_and(starts_at_present)
-    });
+    let reads = table
+        .members()
+        .iter()
+        .any(|&index| adapter.actuators.get(index).is_some_and(starts_at_present));
     if reads {
         read_present(adapter, &table, &mut present)?;
     }
     let mut goals = GoalRegister::ALL.map(|_| Goals::new(number));
     for &index in table.members() {
-        let Some(actuator) = adapter.table.actuators.get(index) else {
+        let Some(actuator) = adapter.actuators.get(index) else {
             continue;
         };
         if actuator.torque == Torque::ReadOnly {
@@ -558,7 +551,7 @@ fn read_present<B: Backend, const NB: usize>(
 ) -> Result<(), DynamixelError> {
     let (mut qd, mut tau) = ([Qd::default(); JOINTS], [Tau::default(); JOINTS]);
     let mut sample = Sample::new(present, &mut qd, &mut tau);
-    let actuators = &adapter.table.actuators;
+    let actuators = &adapter.actuators;
     let mut failed = None;
     read_table(
         &mut adapter.backend,
@@ -602,6 +595,7 @@ mod tests {
     use kmr_core::state::{Qd, Tau};
 
     use super::super::scripted::{Call, Scripted};
+    use super::super::tests::layout_of;
     use super::super::{DynamixelError, Table, Torque, Zero};
     use super::*;
     use crate::binding::{Binding, Port};
@@ -635,14 +629,9 @@ mod tests {
     /// The adapter checked, its ports open and its actuators powered; the
     /// backend log is cleared.
     fn adapter() -> (Dynamixel<Scripted, 1>, Layout) {
-        let mut adapter = Dynamixel::new(Scripted::new(), TABLE);
+        let mut adapter = Dynamixel::new(Scripted::new(), TABLE.in_order());
         let claim = adapter.check(Overrides::default()).unwrap();
-        let layout = Layout::new(
-            claim.group,
-            claim.read_every,
-            claim.read_cost,
-            claim.write_cost,
-        );
+        let layout = layout_of(&claim);
         adapter.backend.open_ports(&[]).unwrap();
         adapter.open = true;
         adapter.torque_on().unwrap();
@@ -705,7 +694,7 @@ mod tests {
             baud: None,
             bus: None,
         };
-        let mut adapter = Dynamixel::bind(Scripted::new(), TABLE, &[plugin]).unwrap();
+        let mut adapter = Dynamixel::bind(Scripted::new(), TABLE.in_order(), &[plugin]).unwrap();
         adapter.check(Overrides::default()).unwrap();
         let mut adapter = adapter.with_roots(root, root);
         let error = adapter.open();

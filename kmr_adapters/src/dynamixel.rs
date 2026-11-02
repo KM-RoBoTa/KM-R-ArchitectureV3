@@ -31,12 +31,16 @@ use port::DevicePath;
 
 #[cfg(feature = "dynamixel")]
 pub use self::dxl_rs::DxlRs;
+use config::Placed;
 pub use config::{
-    Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Protocol, Series, Table, Torque, Zero,
+    Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Protocol, Series, Table, Torque,
+    Zero,
 };
 
 /// Ping attempts per actuator before it counts as missing (FR-007).
 const PING_ATTEMPTS: usize = 3;
+/// Local transaction groups one member may claim: `Group` is a `u8`.
+const MAX_GROUPS: usize = 256;
 /// Force torque off attempts per actuator, back to back, before a warning
 /// names it.
 const TORQUE_OFF_ATTEMPTS: usize = 3;
@@ -51,6 +55,14 @@ pub enum DynamixelError {
         /// Buses declared.
         buses: usize,
         /// Ports the backend opens.
+        max: usize,
+    },
+    /// More (bus, series) groups than the engine numbers for one member.
+    #[error("{groups} transaction groups (bus, series) declared, the engine numbers at most {max}")]
+    TooManyGroups {
+        /// Groups declared.
+        groups: usize,
+        /// Groups one member may have.
         max: usize,
     },
     /// A bus plugin names a label no table bus has.
@@ -410,14 +422,18 @@ impl fmt::Display for Alarms {
     }
 }
 
-/// The Dynamixel adapter over `NB` buses, talking through backend `B`.
+/// The Dynamixel adapter over `NB` buses, talking through backend `B`: one
+/// member of the robot's hardware, owning the engine indices of its
+/// [`Placement`] (SRS FR-5.1).
 ///
 /// One per process: the C SDK keeps global port state (research R7).
 pub struct Dynamixel<B, const NB: usize> {
     /// The SDK seam.
     backend: B,
-    /// Buses and actuators, with the bus plugins' bauds.
-    table: Table<NB, JOINTS>,
+    /// Buses, with the bus plugins' bauds.
+    buses: [Bus; NB],
+    /// The actuators the member owns, by engine index.
+    actuators: Placed,
     /// Port of each bus, from its bus plugin; `None` until bound.
     ports: [Option<Port>; NB],
     /// Where serial ids are resolved; `None` is [`port::BY_ID`].
@@ -438,12 +454,13 @@ pub struct Dynamixel<B, const NB: usize> {
 }
 
 impl<B, const NB: usize> Dynamixel<B, NB> {
-    /// An adapter for `table`, one that passed [`Table::check`], with no bus
-    /// bound yet: `open` fails until [`Dynamixel::bind`] binds them.
-    pub const fn new(backend: B, table: Table<NB, JOINTS>) -> Self {
+    /// An adapter owning the actuators of `placement` and no other, with no
+    /// bus bound yet: `open` fails until [`Dynamixel::bind`] binds them.
+    pub const fn new<const M: usize>(backend: B, placement: Placement<NB, M>) -> Self {
         Self {
             backend,
-            table,
+            buses: placement.table.buses,
+            actuators: Placed::new(&placement),
             ports: [None; NB],
             by_id: None,
             sysfs: None,
@@ -455,7 +472,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
         }
     }
 
-    /// An adapter for `table` with `plugins` bound to its buses by label,
+    /// An adapter for `placement` with `plugins` bound to its buses by label,
     /// each plugin baud replacing its bus's (FR-030 (SRS FR-6.3, FR-6.4)).
     /// No I/O: the backend is not called.
     ///
@@ -463,12 +480,12 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
     ///
     /// A plugin that binds no bus or one already bound, a bus left unbound,
     /// and a plugin baud a model on its bus rejects (FR-027 (SRS FR-6.4)).
-    pub fn bind(
+    pub fn bind<const M: usize>(
         backend: B,
-        table: Table<NB, JOINTS>,
+        placement: Placement<NB, M>,
         plugins: &[Binding],
     ) -> Result<Self, DynamixelError> {
-        let mut adapter = Self::new(backend, table);
+        let mut adapter = Self::new(backend, placement);
         adapter.attach(plugins)?;
         Ok(adapter)
     }
@@ -476,8 +493,8 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
     /// Binds `plugins` to the buses and takes their bauds; changes nothing
     /// on an error.
     fn attach(&mut self, plugins: &[Binding]) -> Result<(), DynamixelError> {
-        let bindings = binding::match_plugins(self.table.buses.map(|bus| bus.label), plugins)?;
-        for (index, actuator) in self.table.actuators.iter().enumerate() {
+        let bindings = binding::match_plugins(self.buses.map(|bus| bus.label), plugins)?;
+        for (index, actuator) in self.actuators.iter() {
             let baud = bindings.get(actuator.bus).and_then(|binding| binding.baud);
             if let Some(baud) = baud
                 && !actuator.model.accepts_baud(baud)
@@ -490,7 +507,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
                 });
             }
         }
-        for (bus, binding) in self.table.buses.iter_mut().zip(&bindings) {
+        for (bus, binding) in self.buses.iter_mut().zip(&bindings) {
             if let Some(baud) = binding.baud {
                 bus.baud = baud;
             }
@@ -509,7 +526,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
 
     /// Label of bus `bus`.
     fn label(&self, bus: usize) -> &'static str {
-        self.table.buses.get(bus).map_or("", |bus| bus.label)
+        self.buses.get(bus).map_or("", |bus| bus.label)
     }
 
     /// Port of bus `bus`, from its bus plugin.
@@ -519,8 +536,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
 
     /// Bus label and firmware id of actuator `index`.
     fn named(&self, index: usize) -> (&'static str, u8) {
-        self.table
-            .actuators
+        self.actuators
             .get(index)
             .map_or(("", 0), |actuator| (self.label(actuator.bus), actuator.id))
     }
@@ -549,7 +565,6 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
     fn position_range(&self, index: usize, raw: i64) -> DynamixelError {
         let (bus, id) = self.named(index);
         let max = self
-            .table
             .actuators
             .get(index)
             .map_or(0, |actuator| units::max_position(actuator.model));
@@ -587,7 +602,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
     /// Raw goal position of actuator `index` for `q`: [`io::position_goal`],
     /// and `None` too outside its angle limits, never clamped.
     fn goal(&self, index: usize, q: Q) -> Option<u32> {
-        let actuator = self.table.actuators.get(index)?;
+        let actuator = self.actuators.get(index)?;
         io::position_goal(actuator, q).filter(|&raw| self.within_limits(index, raw))
     }
 
@@ -611,9 +626,10 @@ impl<B, const NB: usize> seal::Adapter for Dynamixel<B, NB> {}
 impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     type Error = DynamixelError;
 
-    /// Groups per (bus, series); each bus is read every `read_every` ticks,
-    /// else every [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no
-    /// cadence: it is a table field (core K3.8).
+    /// Claims the placement's indices, grouped per (bus, series) with local
+    /// ids from 0; each bus is read every `read_every` ticks, else every
+    /// [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no cadence: it is
+    /// a table field (core K3.8).
     fn check(&mut self, _overrides: Overrides) -> Result<Claim, DynamixelError> {
         if NB > B::MAX_PORTS {
             return Err(DynamixelError::TooManyBuses {
@@ -622,22 +638,26 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
             });
         }
         let every = self
-            .table
             .buses
             .map(|bus| bus.read_every.unwrap_or(DEFAULT_READ_EVERY));
-        self.groups = Groups::build(&self.table.actuators, &every);
-        let unread = io::unread_rates(&self.table.actuators);
+        self.groups = Groups::build(&self.actuators, &every);
+        let groups = self.groups.tables().len();
+        if groups > MAX_GROUPS {
+            return Err(DynamixelError::TooManyGroups {
+                groups,
+                max: MAX_GROUPS,
+            });
+        }
+        let unread = io::unread_rates(&self.actuators);
         for index in (0..JOINTS).filter(|&index| unread.get(index)) {
             warn!(
                 actuator = index,
                 "Protocol 1: Qd and Tau are never read and keep their last value (research R12)"
             );
         }
-        let (read_cost, write_cost) = self.groups.costs(&self.table.buses, B::STATE_READS);
-        // Every engine index is a Dynamixel actuator until the table names
-        // its own indices (adapters T069).
+        let (read_cost, write_cost) = self.groups.costs(&self.buses, B::STATE_READS);
         Ok(Claim {
-            owned: Mask::ALL,
+            owned: self.actuators.owned(),
             group: self.groups.numbers(),
             read_every: self.groups.cadence(),
             read_cost,
@@ -693,7 +713,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
             path: Path::new(""),
             baud: 0,
         }; NB];
-        for ((spec, device), bus) in specs.iter_mut().zip(&self.devices).zip(&self.table.buses) {
+        for ((spec, device), bus) in specs.iter_mut().zip(&self.devices).zip(&self.buses) {
             if let Some(device) = device {
                 *spec = PortSpec {
                     path: device.as_path(),
@@ -724,7 +744,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
 
     /// Pings each actuator up to [`PING_ATTEMPTS`] times, without sleep.
     fn ping(&mut self) -> Result<(), DynamixelError> {
-        for (index, actuator) in self.table.actuators.iter().enumerate() {
+        for (index, actuator) in self.actuators.iter() {
             let mut answer = Err(BackendError::Timeout);
             for _ in 0..PING_ATTEMPTS {
                 answer = self.backend.ping(actuator.bus, actuator.model, actuator.id);
@@ -742,7 +762,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// Protocol 2 its Hardware Error Status. Inside those limits but outside
     /// the model's datasheet range is one warning per value, no error.
     fn health(&mut self) -> Result<(), DynamixelError> {
-        for (index, actuator) in self.table.actuators.iter().enumerate() {
+        for (index, actuator) in self.actuators.iter() {
             let (model, id) = (actuator.model, actuator.id);
             let health = self
                 .backend
@@ -814,7 +834,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// mode is CW and CCW Angle Limit not both 0, read here and kept as the
     /// range its goals must stay in. Its torque state is not read.
     fn configure(&mut self) -> Result<(), DynamixelError> {
-        for (index, actuator) in self.table.actuators.iter().enumerate() {
+        for (index, actuator) in self.actuators.iter() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             if model.protocol() != Protocol::Two {
                 let (cw, ccw) = self
@@ -885,7 +905,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
             io::read_table(
                 &mut self.backend,
                 table,
-                &self.table.actuators,
+                &self.actuators,
                 &mut sample,
                 |index, outcome| {
                     if !matches!(outcome, Outcome::Read) {
@@ -910,7 +930,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         for number in 0..self.groups.tables().len() {
             io::write_start_goals(self, number)?;
         }
-        for (index, actuator) in self.table.actuators.iter().enumerate() {
+        for (index, actuator) in self.actuators.iter() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             match actuator.torque {
                 Torque::On => self.backend.torque(bus, model, id, true),
@@ -938,7 +958,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         for (number, table) in self.groups.tables().iter().enumerate() {
             let mut goals = Goals::new(number);
             for &index in table.members() {
-                let Some(actuator) = self.table.actuators.get(index) else {
+                let Some(actuator) = self.actuators.get(index) else {
                     continue;
                 };
                 let raw = last.q.get(index).and_then(|&q| self.goal(index, q));
@@ -968,7 +988,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         if !self.open {
             return;
         }
-        for (index, actuator) in self.table.actuators.iter().enumerate() {
+        for (index, actuator) in self.actuators.iter() {
             let mut answer = Err(BackendError::Timeout);
             for _ in 0..TORQUE_OFF_ATTEMPTS {
                 answer = self

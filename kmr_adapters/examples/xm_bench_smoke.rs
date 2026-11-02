@@ -161,7 +161,10 @@ fn run(table: Table<1, JOINTS>, port: Port, torque: bool) -> Result<(), Early> {
         baud: None,
         bus: None,
     };
-    let mut hardware = step("bind", Hardware::bind(DxlRs::new(), table, &[plugin]))?;
+    let mut hardware = step(
+        "bind",
+        Hardware::bind(DxlRs::new(), table.in_order(), &[plugin]),
+    )?;
     let layout = step("check", hardware.check(Overrides::default()))?;
     println!(
         "  wire time: {:?} per full read, {:?} per full write",

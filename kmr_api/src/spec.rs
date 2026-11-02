@@ -65,7 +65,7 @@ pub fn __bind_dynamixel<const NB: usize>(
     plugins: &[Binding],
 ) -> Result<__DxlAdapter<NB>, UserError> {
     use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
-    Dynamixel::bind(DxlRs::new(), table, plugins).map_err(UserError::bring_up)
+    Dynamixel::bind(DxlRs::new(), table.in_order(), plugins).map_err(UserError::bring_up)
 }
 
 /// Refuses the plugins: the Dynamixel adapter is not compiled in.
