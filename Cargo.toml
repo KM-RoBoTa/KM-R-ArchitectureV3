@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "kmr_ffi", "controllers"]
+members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "controllers"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,7 +13,6 @@ kmr_core = { path = "kmr_core" }
 kmr_adapters = { path = "kmr_adapters" }
 kmr_api = { path = "kmr_api" }
 kmr_model = { path = "kmr_model" }
-kmr_ffi = { path = "kmr_ffi" }
 
 thiserror = "2.0.18"
 rstest = "0.26.1"
