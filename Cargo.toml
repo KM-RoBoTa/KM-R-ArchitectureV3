@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "controllers"]
+members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "kmr_ffi", "controllers"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ kmr_core = { path = "kmr_core" }
 kmr_adapters = { path = "kmr_adapters" }
 kmr_api = { path = "kmr_api" }
 kmr_model = { path = "kmr_model" }
+kmr_ffi = { path = "kmr_ffi" }
 
 thiserror = "2.0.18"
 rstest = "0.26.1"
@@ -25,6 +26,9 @@ frunk = "0.5.0"
 roxmltree = "0.20"
 color-eyre = { version = "0.6", default-features = false }
 rustix = { version = "1", features = ["termios", "fs"] }
+cc = "1.10.0"
+pyo3 = { version = "0.30.1", features = ["auto-initialize"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
 # Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
 # dev bench: dxl_rs branch agent/force-torque-off
 dxl_rs = { path = "../dxl_rs-agent" }
