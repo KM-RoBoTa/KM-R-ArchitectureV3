@@ -173,14 +173,16 @@ macro_rules! robot {
     (model = $path:literal, hardware = $table:expr) => {
         $crate::__model!($crate; model = $path);
         $crate::__robot_items!();
+        // Read off the table's arrays, never its placement, so a row count other than `N`
+        // reaches the count check as one E0308 (research R7).
         /// Bus count of this robot's hardware table.
         #[doc(hidden)]
         #[allow(dead_code)]
-        const __NB: usize = $crate::__brand::dynamixel::shape(&$table.in_order()).0;
+        const __NB: usize = $table.buses.len();
         /// Actuator count of this robot's hardware table.
         #[doc(hidden)]
         #[allow(dead_code)]
-        const __M: usize = $crate::__brand::dynamixel::shape(&$table.in_order()).1;
+        const __M: usize = $table.actuators.len();
         /// This robot's hardware table.
         #[doc(hidden)]
         #[allow(dead_code)]
