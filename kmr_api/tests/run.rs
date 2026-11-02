@@ -227,9 +227,8 @@ mod two_buses {
         };
         assert_eq!(
             e.to_string(),
-            "hardware bring-up failed: member 0 (kmr_adapters::dynamixel::Dynamixel<\
-             kmr_adapters::dynamixel::dxl_rs::DxlRs, 2>): bus right: no bus plugin binds it; add \
-             one with `.bus(\"right\")`"
+            "hardware bring-up failed: member 0 (Dynamixel): bus right: no bus plugin binds it; \
+             add one with `.bus(\"right\")`"
         );
         // UserError -> the hardware error -> the member's own.
         let adapter = std::error::Error::source(&e)
@@ -446,7 +445,7 @@ mod recording {
         };
         assert_eq!(
             e.to_string(),
-            "hardware bring-up failed: member 0 (run::recording::Recorder): actuator 2 on serial \
+            "hardware bring-up failed: member 0 (Recorder): actuator 2 on serial \
              kmr-test-no-such-serial: no answer"
         );
         // UserError -> the hardware error -> the member's own.

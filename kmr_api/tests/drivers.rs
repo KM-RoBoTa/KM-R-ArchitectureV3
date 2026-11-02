@@ -1,6 +1,6 @@
 //! A robot of two brands, end to end and without hardware: each member drives its own
 //! actuators, bus plugins reach their member by label, the claims are checked before any
-//! port opens, and a member's error names its position and type.
+//! port opens, and a member's error names its position and type, short in the message.
 
 use std::error::Error;
 use std::fmt;
@@ -458,8 +458,7 @@ fn an_overlap_fails_before_any_open_naming_both_members() {
     );
     assert_eq!(
         e.to_string(),
-        "hardware bring-up failed: actuator 0 is owned by member 0 (drivers::Fake<drivers::Arm>) \
-         and member 1 (drivers::Fake<drivers::Leg>)"
+        "hardware bring-up failed: actuator 0 is owned by member 0 (Fake) and member 1 (Fake)"
     );
     assert_eq!(calls(&take()), [("arm", "check"), ("leg", "check")]);
 }
@@ -472,8 +471,7 @@ fn a_member_error_names_its_position_and_type_and_keeps_its_data() {
     };
     assert_eq!(
         e.to_string(),
-        "hardware bring-up failed: member 1 (drivers::Fake<drivers::Leg>): port /dev/leg did not \
-         answer after 3 attempts"
+        "hardware bring-up failed: member 1 (Fake): port /dev/leg did not answer after 3 attempts"
     );
     let unplugged = Unplugged {
         port: "/dev/leg",
@@ -514,8 +512,7 @@ fn a_binding_error_names_the_member_like_a_bring_up_error() {
     };
     assert_eq!(
         e.to_string(),
-        "hardware bring-up failed: member 1 (drivers::Fake<drivers::Leg>): port /dev/leg did not \
-         answer after 0 attempts"
+        "hardware bring-up failed: member 1 (Fake): port /dev/leg did not answer after 0 attempts"
     );
     let own = e.source().and_then(Error::source);
     assert!(own.and_then(|s| s.downcast_ref::<Unplugged>()).is_some());
@@ -637,8 +634,13 @@ fn a_member_changed_before_the_run_is_the_one_the_run_drives() {
     };
     assert_eq!(
         e.to_string(),
-        "hardware bring-up failed: member 1 (&mut drivers::Fake<drivers::Leg>): port /dev/leg \
-         did not answer after 3 attempts"
+        "hardware bring-up failed: member 1 (Fake): port /dev/leg did not answer after 3 attempts"
+    );
+    let full = e.source().map(ToString::to_string);
+    assert!(
+        full.as_deref()
+            .is_some_and(|full| full.starts_with("member 1 (&mut drivers::Fake<drivers::Leg>)")),
+        "{full:?}"
     );
     let own = e.source().and_then(Error::source);
     let unplugged = Unplugged {

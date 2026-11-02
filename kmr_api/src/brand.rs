@@ -165,7 +165,7 @@ fn port(plugin: &Binding) -> &'static str {
 /// Over several brands, [`UserError::SharedBusLabel`], [`UserError::UnknownBus`] and
 /// [`UserError::LabelRequired`]; then
 /// [`UserError::FeatureOff`], or a member's binding error as [`UserError::BringUp`], named by
-/// its position and type, as a bring-up error would be.
+/// its position and short type name, as a bring-up error would be.
 #[doc(hidden)]
 pub fn __bind<H>(hardware: H, plugins: &[Binding]) -> Result<H::Drivers, UserError>
 where

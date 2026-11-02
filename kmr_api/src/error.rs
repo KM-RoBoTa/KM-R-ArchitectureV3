@@ -127,8 +127,10 @@ pub enum UserError {
 
     /// The hardware failed to bind or to come up. `source` is the hardware error: the claims
     /// that do not cover the actuators, or the failed member, named by its position and type;
-    /// that member's own error, typed, is the next [`Error::source`], for `downcast_ref`.
-    #[error("hardware bring-up failed: {source}")]
+    /// that member's own error, typed, is the next [`Error::source`], for `downcast_ref`. The
+    /// message names each member by its type's last path segment, `member 0 (Dynamixel)`;
+    /// `source` keeps the full type name.
+    #[error("hardware bring-up failed: {}", bring_up_message(&**.source))]
     BringUp {
         #[source]
         source: Box<dyn Error + Send + Sync>,
@@ -163,6 +165,72 @@ impl UserError {
     }
 }
 
+/// Last path segment of a type name, without its generics or a reference:
+/// `&mut kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, 1>` is
+/// `Dynamixel`.
+pub(crate) fn short_name(name: &str) -> &str {
+    let path = name.split_once('<').map_or(name, |(path, _)| path);
+    let last = path.rsplit_once("::").map_or(path, |(_, last)| last);
+    let last = last.rsplit_once(' ').map_or(last, |(_, last)| last);
+    last.trim_start_matches('&')
+}
+
+/// The hardware error's text, each `member N (type)` the engine wrote before the member's own
+/// error shortened by [`short_name`]; the member's own text is left as it is.
+fn bring_up_message(source: &(dyn Error + 'static)) -> String {
+    let text = source.to_string();
+    let own = source.source().map(ToString::to_string);
+    let engine = match &own {
+        Some(own) => text.strip_suffix(own.as_str()).unwrap_or(&text),
+        None => &text,
+    };
+    let mut message = shorten_members(engine);
+    message.push_str(&text[engine.len()..]);
+    message
+}
+
+/// `text` with the type of each `member N (type)` shortened by [`short_name`].
+fn shorten_members(text: &str) -> String {
+    const MEMBER: &str = "member ";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MEMBER) {
+        let (before, after) = rest.split_at(at + MEMBER.len());
+        out.push_str(before);
+        rest = after;
+        let position = after.trim_start_matches(|c: char| c.is_ascii_digit());
+        let Some(name) = position
+            .strip_prefix(" (")
+            .filter(|_| position.len() < after.len())
+        else {
+            continue;
+        };
+        let Some(end) = closing(name) else {
+            continue;
+        };
+        out.push_str(&after[..after.len() - position.len()]);
+        out.push_str(" (");
+        out.push_str(short_name(&name[..end]));
+        rest = &name[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Byte offset of the `)` that closes a `(` opened just before `text`.
+fn closing(text: &str) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (at, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(at),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 impl From<CoreApiError> for UserError {
     fn from(e: CoreApiError) -> Self {
         match e {
@@ -174,6 +242,8 @@ impl From<CoreApiError> for UserError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::convert::Infallible;
+    use kmr_core::hal::{Coverage, HardwareError, Member, MemberError};
 
     /// Stands for an adapter error.
     #[derive(Debug, thiserror::Error)]
@@ -226,6 +296,87 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "hardware bring-up failed: port FT8ISZ6H not found under /dev/serial/by-id"
+        );
+    }
+
+    /// An adapter error whose own text looks like the engine's.
+    #[derive(Debug, PartialEq, thiserror::Error)]
+    #[error("member 0 (bus::Echo<u8>) answered")]
+    struct Echo;
+
+    /// The hardware error of member 0, `name`, failing with `error`.
+    fn member<E: Error + 'static>(
+        name: &'static str,
+        error: E,
+    ) -> HardwareError<MemberError<E, Infallible>> {
+        HardwareError::Member(MemberError::Head { name, error })
+    }
+
+    #[test]
+    fn a_short_name_is_the_last_path_segment_without_generics() {
+        let names = [
+            (
+                "kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, 1>",
+                "Dynamixel",
+            ),
+            ("a::B<c::D<e::F<g::H, 2>>, [i::J; 3], (k::L, m::N)>", "B"),
+            ("&mut drivers::Fake<drivers::Leg>", "Fake"),
+            ("&mut Fake<Leg>", "Fake"),
+            ("&kmr_api::Fake", "Fake"),
+            ("run::recording::Recorder", "Recorder"),
+            ("Recorder", "Recorder"),
+        ];
+        for (name, short) in names {
+            assert_eq!(short_name(name), short, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_member_error_names_the_member_short_and_keeps_the_chain() {
+        let full = "&mut kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, 1>";
+        let e = UserError::bring_up(member(full, NotFound));
+
+        assert_eq!(
+            e.to_string(),
+            "hardware bring-up failed: member 0 (Dynamixel): port FT8ISZ6H not found under \
+             /dev/serial/by-id"
+        );
+        let hardware = e
+            .source()
+            .and_then(|s| s.downcast_ref::<HardwareError<MemberError<NotFound, Infallible>>>());
+        assert!(hardware.is_some_and(|h| h.to_string().contains(full)));
+        let own = e.source().and_then(Error::source);
+        assert!(own.and_then(|s| s.downcast_ref::<NotFound>()).is_some());
+    }
+
+    #[test]
+    fn the_members_own_text_is_left_as_it_is() {
+        let e = UserError::bring_up(member("a::b::Fake<a::Arm>", Echo));
+
+        assert_eq!(
+            e.to_string(),
+            "hardware bring-up failed: member 0 (Fake): member 0 (bus::Echo<u8>) answered"
+        );
+    }
+
+    #[test]
+    fn a_coverage_error_names_both_members_short() {
+        let overlap = Coverage::Overlap {
+            actuator: 0,
+            first: Member {
+                position: 0,
+                name: "drivers::Fake<drivers::Arm>",
+            },
+            second: Member {
+                position: 1,
+                name: "&mut drivers::Fake<(drivers::Leg, u8)>",
+            },
+        };
+        let e = UserError::bring_up(HardwareError::<Infallible>::Coverage(overlap));
+
+        assert_eq!(
+            e.to_string(),
+            "hardware bring-up failed: actuator 0 is owned by member 0 (Fake) and member 1 (Fake)"
         );
     }
 

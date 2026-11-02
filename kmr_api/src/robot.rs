@@ -362,7 +362,8 @@ impl<H: Spec, C> Bound<H, C> {
     }
 
     /// Runs the robot on its drivers, lent to the run, then hands them back, closed; `None`
-    /// when it simulated. A member's error names it `&mut <type>`, the member the run saw.
+    /// when it simulated. A member's error names it by its type, short in the message; its
+    /// source names the full `&mut <type>`, the member the run saw.
     ///
     /// # Errors
     ///
