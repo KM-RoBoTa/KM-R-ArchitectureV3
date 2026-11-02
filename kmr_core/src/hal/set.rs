@@ -11,7 +11,7 @@ use core::time::Duration;
 use frunk::{HCons, HNil};
 
 use super::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Slots};
-use crate::state::JOINTS;
+use crate::state::{JOINTS, State};
 
 /// Transaction groups the whole robot may have, `Group` being a `u8`.
 const MAX_GROUPS: u16 = 256;
@@ -322,6 +322,124 @@ mod seal {
     }
 }
 
+/// Debug builds: the first actuator a member changed without owning it, in
+/// its sample slots or its fault bits. Always empty in release builds.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Audit {
+    stray: Option<Stray>,
+}
+
+/// An actuator changed by a member that does not own it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stray {
+    /// Type name of the member.
+    pub(crate) member: &'static str,
+    /// Engine index.
+    pub(crate) actuator: usize,
+}
+
+/// What a member could change, copied before its call. Empty in release
+/// builds.
+struct Before {
+    #[cfg(debug_assertions)]
+    values: Option<State<JOINTS>>,
+    #[cfg(debug_assertions)]
+    faults: Option<Faults>,
+}
+
+impl Audit {
+    /// The stray change noted, if any.
+    pub(crate) fn take(&mut self) -> Option<Stray> {
+        self.stray.take()
+    }
+
+    /// Copies what the next member call may change.
+    fn before(sample: Option<&Sample<'_>>, faults: Option<&Faults>) -> Before {
+        #[cfg(debug_assertions)]
+        return Before {
+            values: sample.map(|s| State {
+                q: *s.q,
+                qd: *s.qd,
+                tau: *s.tau,
+                kp: *s.kp,
+                kd: *s.kd,
+            }),
+            faults: faults.copied(),
+        };
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (sample, faults);
+            Before {}
+        }
+    }
+
+    /// Notes the first actuator outside `owned` that the member of type name
+    /// `member` changed since `before`. The first stray change of the walk
+    /// wins.
+    fn after(
+        &mut self,
+        member: &'static str,
+        before: Before,
+        sample: Option<&Sample<'_>>,
+        faults: Option<&Faults>,
+        owned: Mask,
+    ) {
+        #[cfg(debug_assertions)]
+        {
+            if self.stray.is_some() {
+                return;
+            }
+            let values = before.values.as_ref().zip(sample);
+            let fault_bits = before.faults.as_ref().zip(faults);
+            let moved = |actuator: usize| {
+                let value = values.is_some_and(|(was, now)| {
+                    row(&was.q, &was.qd, &was.tau, &was.kp, &was.kd, actuator)
+                        != row(&*now.q, &*now.qd, &*now.tau, &*now.kp, &*now.kd, actuator)
+                });
+                let fault = fault_bits
+                    .is_some_and(|(was, now)| fault_row(was, actuator) != fault_row(now, actuator));
+                value || fault
+            };
+            if let Some(actuator) = Mask::ALL.difference(owned).iter().find(|&a| moved(a)) {
+                self.stray = Some(Stray { member, actuator });
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = (self, member, before, sample, faults, owned);
+    }
+}
+
+/// The bits of every field of `actuator`, NaN included.
+#[cfg(debug_assertions)]
+fn row(
+    q: &[crate::state::Q; JOINTS],
+    qd: &[crate::state::Qd; JOINTS],
+    tau: &[crate::state::Tau; JOINTS],
+    kp: &[crate::state::Kp; JOINTS],
+    kd: &[crate::state::Kd; JOINTS],
+    actuator: usize,
+) -> Option<[u32; 5]> {
+    Some([
+        q.get(actuator)?.0.to_bits(),
+        qd.get(actuator)?.0.to_bits(),
+        tau.get(actuator)?.0.to_bits(),
+        kp.get(actuator)?.0.to_bits(),
+        kd.get(actuator)?.0.to_bits(),
+    ])
+}
+
+/// The fault bits of `actuator`.
+#[cfg(debug_assertions)]
+fn fault_row(faults: &Faults, actuator: usize) -> [bool; 4] {
+    [
+        faults.stale.get(actuator),
+        faults.bus_error.get(actuator),
+        faults.offline.get(actuator),
+        faults.rejected.get(actuator),
+    ]
+}
+
 /// The robot's hardware: a list of [`Hal`] members, `HCons<A, HCons<B,
 /// HNil>>`. Implemented by the engine only; the walk calls every member,
 /// head first, and cuts torque in reverse.
@@ -343,12 +461,23 @@ pub trait Drivers: seal::Drivers {
 
     /// [`Hal::read_all`] on every member, into the same slot.
     #[doc(hidden)]
-    fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Self::Error>;
+    fn read_all(
+        &mut self,
+        sample: Sample<'_>,
+        slots: Slots<'_>,
+        audit: &mut Audit,
+    ) -> Result<(), Self::Error>;
 
     /// [`Hal::read`] on every member; the refreshed masks, each cut to its
     /// member's actuators, unioned.
     #[doc(hidden)]
-    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults, slots: Slots<'_>) -> Mask;
+    fn read(
+        &mut self,
+        sample: Sample<'_>,
+        faults: &mut Faults,
+        slots: Slots<'_>,
+        audit: &mut Audit,
+    ) -> Mask;
 
     /// [`Hal::write`] on every member with a run in `batch`, each given its
     /// own runs and writes.
@@ -359,6 +488,7 @@ pub trait Drivers: seal::Drivers {
         batch: &mut Batch<'_>,
         faults: &mut Faults,
         slots: Slots<'_>,
+        audit: &mut Audit,
     );
 
     /// [`Hal::hold`] on every member, each given its own writes.
@@ -391,11 +521,22 @@ impl Drivers for HNil {
         Ok(())
     }
 
-    fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), Infallible> {
+    fn read_all(
+        &mut self,
+        _sample: Sample<'_>,
+        _slots: Slots<'_>,
+        _audit: &mut Audit,
+    ) -> Result<(), Infallible> {
         Ok(())
     }
 
-    fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults, _slots: Slots<'_>) -> Mask {
+    fn read(
+        &mut self,
+        _sample: Sample<'_>,
+        _faults: &mut Faults,
+        _slots: Slots<'_>,
+        _audit: &mut Audit,
+    ) -> Mask {
         Mask::NONE
     }
 
@@ -405,6 +546,7 @@ impl Drivers for HNil {
         _batch: &mut Batch<'_>,
         _faults: &mut Faults,
         _slots: Slots<'_>,
+        _audit: &mut Audit,
     ) {
     }
 
@@ -449,20 +591,38 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
         self.tail.step(step).map_err(MemberError::Tail)
     }
 
-    fn read_all(&mut self, mut sample: Sample<'_>) -> Result<(), Self::Error> {
+    fn read_all(
+        &mut self,
+        mut sample: Sample<'_>,
+        slots: Slots<'_>,
+        audit: &mut Audit,
+    ) -> Result<(), Self::Error> {
+        let (owned, _groups, rest) = slots.split();
+        let before = Audit::before(Some(&sample), None);
         self.head
             .read_all(sample.reborrow())
             .map_err(MemberError::head::<H>)?;
-        self.tail.read_all(sample).map_err(MemberError::Tail)
+        audit.after(type_name::<H>(), before, Some(&sample), None, owned);
+        self.tail
+            .read_all(sample, rest, audit)
+            .map_err(MemberError::Tail)
     }
 
-    fn read(&mut self, mut sample: Sample<'_>, faults: &mut Faults, slots: Slots<'_>) -> Mask {
+    fn read(
+        &mut self,
+        mut sample: Sample<'_>,
+        faults: &mut Faults,
+        slots: Slots<'_>,
+        audit: &mut Audit,
+    ) -> Mask {
         let (owned, _groups, rest) = slots.split();
+        let before = Audit::before(Some(&sample), Some(faults));
         let head = self
             .head
             .read(sample.reborrow(), faults)
             .intersection(owned);
-        head.union(self.tail.read(sample, faults, rest))
+        audit.after(type_name::<H>(), before, Some(&sample), Some(faults), owned);
+        head.union(self.tail.read(sample, faults, rest, audit))
     }
 
     fn write(
@@ -471,6 +631,7 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
         batch: &mut Batch<'_>,
         faults: &mut Faults,
         slots: Slots<'_>,
+        audit: &mut Audit,
     ) {
         let (owned, groups, rest) = slots.split();
         batch.select(groups);
@@ -480,9 +641,11 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
                 written: &written,
                 ..command
             };
+            let before = Audit::before(None, Some(faults));
             self.head.write(mine, batch, faults);
+            audit.after(type_name::<H>(), before, None, Some(faults), owned);
         }
-        self.tail.write(command, batch, faults, rest);
+        self.tail.write(command, batch, faults, rest, audit);
     }
 
     fn hold(&mut self, target: Command<'_>, slots: Slots<'_>) {
@@ -588,6 +751,8 @@ mod tests {
         owned: Mask,
         group: u8,
         fail_open: bool,
+        /// An actuator it changes without owning it, in `read` and `write`.
+        stray: Option<usize>,
         journal: &'a Journal,
         wrote: core::cell::Cell<Wrote>,
     }
@@ -599,6 +764,7 @@ mod tests {
                 owned,
                 group,
                 fail_open: false,
+                stray: None,
                 journal,
                 wrote: core::cell::Cell::default(),
             }
@@ -651,11 +817,17 @@ mod tests {
             Ok(())
         }
 
-        fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+        fn read(&mut self, sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+            if let Some(actuator) = self.stray {
+                sample.q[actuator] = crate::state::Q(99.0);
+            }
             self.owned
         }
 
-        fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+        fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults) {
+            if let Some(actuator) = self.stray {
+                faults.rejected.set(actuator);
+            }
             let mut wrote = Wrote {
                 written_q: command.written.q,
                 ..Wrote::default()
@@ -752,6 +924,7 @@ mod tests {
             &mut batch,
             &mut Faults::default(),
             layout.slots(),
+            &mut Audit::default(),
         );
 
         let dxl = hal.head.wrote.get();
@@ -782,6 +955,7 @@ mod tests {
             &mut batch,
             &mut Faults::default(),
             layout.slots(),
+            &mut Audit::default(),
         );
 
         assert_eq!(hal.head.wrote.get(), Wrote::default());
@@ -794,7 +968,13 @@ mod tests {
         let mut hal = two(&journal);
         let layout = layout_of(&mut hal);
         let mut values = zeroed();
-        let read = hal.read(sample(&mut values), &mut Faults::default(), layout.slots());
+        let mut audit = Audit::default();
+        let read = hal.read(
+            sample(&mut values),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
         assert_eq!(read, Mask::ALL);
     }
 
@@ -807,8 +987,83 @@ mod tests {
         hal.head.owned = Mask::ALL;
         hal.tail.head.owned = Mask::NONE;
         let mut values = zeroed();
-        let read = hal.read(sample(&mut values), &mut Faults::default(), layout.slots());
+        let mut audit = Audit::default();
+        let read = hal.read(
+            sample(&mut values),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
         assert_eq!(read, mask(0..2));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_read_into_another_member_s_slot_is_noted() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        hal.tail.head.stray = Some(0);
+        let mut values = zeroed();
+        let mut audit = Audit::default();
+
+        hal.read(
+            sample(&mut values),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
+
+        assert_eq!(
+            audit.take(),
+            Some(Stray {
+                member: type_name::<Fake<'_>>(),
+                actuator: 0
+            })
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_fault_on_another_member_s_actuator_is_noted() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        hal.head.stray = Some(JOINTS - 1);
+        let written = super::super::Written {
+            q: Mask::ALL,
+            ..Default::default()
+        };
+        let values = zeroed();
+        let mut batch = Batch::new(&layout, &written);
+        let mut audit = Audit::default();
+
+        hal.write(
+            command(&values, &written),
+            &mut batch,
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
+
+        let stray = audit.take().expect("a stray fault");
+        assert_eq!(stray.actuator, JOINTS - 1);
+    }
+
+    #[test]
+    fn members_that_stay_on_their_actuators_leave_the_audit_empty() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        let mut values = zeroed();
+        let mut audit = Audit::default();
+        hal.read(
+            sample(&mut values),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
+        assert_eq!(audit.take(), None);
     }
 
     #[test]

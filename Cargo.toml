@@ -37,8 +37,8 @@ cc = "1.10.0"
 pyo3 = { version = "0.30.1", features = ["auto-initialize"] }
 mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
 # Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
-# dev bench: dxl_rs branch agent/force-torque-off
-dxl_rs = { path = "../dxl_rs-agent" }
+# agent/integration: dxl_rs branch agent/model-number (worktree ../dxl_rs-agent-mn); dev stays on ../dxl_rs-agent
+dxl_rs = { path = "../dxl_rs-agent-mn" }
 
 # Stated, not left to the default: the engine's torque-off guard runs while a
 # controller panic unwinds; `abort` would leave the actuators powered (SRS NFR-2).

@@ -25,8 +25,9 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::controllers::Env;
-use crate::hal::{Batch, Drivers, Faults, HardwareError, Layout, Overrides, Plan, Step};
+use crate::hal::{Audit, Batch, Drivers, Faults, HardwareError, Layout, Overrides, Plan, Step};
 use crate::schedule::Drive;
+use crate::signal::SignalMeta;
 use crate::state::RobotState;
 use crate::{Robot, Sensors, Signal, SignalKind, shutdown};
 
@@ -97,6 +98,25 @@ fn hold_for<H: Host>(host: &mut H, duration: Duration, dt: Duration) -> Option<S
         host.sleep_until(deadline);
     }
     None
+}
+
+/// Debug builds: an emergency stop when a member changed an actuator it does
+/// not own, logged with both (SRS NFR-2: no panic, torque off on exit).
+fn stray_stop(audit: &mut Audit) -> Option<Signal> {
+    let stray = audit.take()?;
+    error!(
+        member = stray.member,
+        actuator = stray.actuator,
+        "a member changed an actuator it does not own"
+    );
+    Some(Signal {
+        kind: SignalKind::EmergencyStop,
+        meta: SignalMeta::new(
+            "a member changed an actuator it does not own",
+            file!(),
+            line!(),
+        ),
+    })
 }
 
 /// Keeps the signal only if it is an emergency stop: mid-tick checks let a
@@ -306,8 +326,12 @@ fn control_loop<CS: Drive, H: Host, D: Drivers>(
 
         // Dropped until the per-slot fault flags land (SRS FR-13.4).
         let mut faults = Faults::default();
+        let mut audit = Audit::default();
         if let Some(sample) = state.push_slot() {
-            hal.read(sample, &mut faults, layout.slots());
+            hal.read(sample, &mut faults, layout.slots(), &mut audit);
+        }
+        if let Some(signal) = stray_stop(&mut audit) {
+            break signal;
         }
 
         ctrl_phase::first(robot, state, sensors);
@@ -328,7 +352,16 @@ fn control_loop<CS: Drive, H: Host, D: Drivers>(
 
         let mut batch = Batch::new(layout, state.written());
         if !batch.is_empty() {
-            hal.write(state.command(), &mut batch, &mut faults, layout.slots());
+            hal.write(
+                state.command(),
+                &mut batch,
+                &mut faults,
+                layout.slots(),
+                &mut audit,
+            );
+        }
+        if let Some(signal) = stray_stop(&mut audit) {
+            break signal;
         }
 
         let wake = robot.config.time.end_tick(host.now());
@@ -382,7 +415,11 @@ fn run_phases<CS: Drive, H: Host, D: Drivers>(
     powered.0.step(Step::Configure)?;
     // The seed: `prev(1)` of tick 0.
     if let Some(sample) = state.push_slot() {
-        powered.0.read_all(sample)?;
+        let mut audit = Audit::default();
+        powered.0.read_all(sample, layout.slots(), &mut audit)?;
+        if let Some(signal) = stray_stop(&mut audit) {
+            return Ok(signal);
+        }
     }
     // A pending signal, a shutdown included, never powers the actuators
     // (SRS FR-4.2).
@@ -1624,12 +1661,23 @@ mod tests {
         struct Fake<'a> {
             owned: Mask,
             value: Q,
+            /// An actuator it reads into without owning it.
+            stray: Option<usize>,
             seen: &'a Seen,
         }
 
-        impl Fake<'_> {
+        impl<'a> Fake<'a> {
+            fn new(owned: Mask, value: Q, seen: &'a Seen) -> Self {
+                Self {
+                    owned,
+                    value,
+                    stray: None,
+                    seen,
+                }
+            }
+
             fn fill(&self, sample: Sample<'_>) {
-                for actuator in self.owned.iter() {
+                for actuator in self.owned.iter().chain(self.stray) {
                     sample.q[actuator] = self.value;
                 }
             }
@@ -1724,23 +1772,11 @@ mod tests {
                 (&ak60, owned(2..JOINTS)),
             ];
             let mut hal = HCons {
-                head: Fake {
-                    owned: members[0].1,
-                    value: Q(1.0),
-                    seen: &ax12,
-                },
+                head: Fake::new(members[0].1, Q(1.0), &ax12),
                 tail: HCons {
-                    head: Fake {
-                        owned: members[1].1,
-                        value: Q(2.0),
-                        seen: &mx64,
-                    },
+                    head: Fake::new(members[1].1, Q(2.0), &mx64),
                     tail: HCons {
-                        head: Fake {
-                            owned: members[2].1,
-                            value: Q(3.0),
-                            seen: &ak60,
-                        },
+                        head: Fake::new(members[2].1, Q(3.0), &ak60),
                         tail: HNil,
                     },
                 },
@@ -1777,6 +1813,32 @@ mod tests {
                 assert_eq!((seen.reads.get(), seen.writes.get()), (2, 2));
                 assert_eq!(seen.written.get(), mine);
                 assert_eq!((seen.holds.get(), seen.held.get()), (1, mine));
+                assert!(seen.torque_off.get() && seen.closed.get());
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        #[test]
+        fn a_member_reading_into_another_s_actuator_stops_the_run() {
+            let (ax12, ak60) = (Seen::default(), Seen::default());
+            let mut rogue = Fake::new(owned(1..JOINTS), Q(3.0), &ak60);
+            rogue.stray = Some(0);
+            let mut hal = HCons {
+                head: Fake::new(owned(0..1), Q(1.0), &ax12),
+                tail: HCons {
+                    head: rogue,
+                    tail: HNil,
+                },
+            };
+            let mut robot = Robot::new().set_dt(DT);
+            let mut host = Scripted::new(Instant::now());
+
+            let signal =
+                run_with(&mut robot, &mut host, &mut hal).expect("the claims cover the robot");
+
+            assert_eq!(signal.kind(), SignalKind::EmergencyStop);
+            for seen in [&ax12, &ak60] {
+                assert_eq!(seen.steps.get(), 6, "up to read_all, no torque_on");
                 assert!(seen.torque_off.get() && seen.closed.get());
             }
         }
