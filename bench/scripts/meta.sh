@@ -11,7 +11,7 @@
 # BENCH_SUPPLY_MV, BENCH_SUPPLY_METER, BENCH_AMBIENT_MC and BENCH_THERMOMETER. A missing
 # operator field prints "meta: missing <var>" on stderr and exits 2 before any output.
 # Optional: BENCH_HOST_ID replaces the derived host id; BENCH_CHAIN (e.g. u2d2-FT8ISZ6H) is
-# appended to it.
+# appended to it. Sourced, it defines its functions and runs nothing.
 
 set -euo pipefail
 
@@ -189,6 +189,9 @@ end() {
     txt throttled_end "$(throttled)"
     if soc=$(soc_mc) && [[ $soc =~ ^[0-9]+$ ]]; then int soc_mc_end "$soc"; fi
 }
+
+# Sourced (setup-check.sh): the functions only.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 case ${1:-} in
 start) start ;;
