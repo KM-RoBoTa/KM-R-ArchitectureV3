@@ -33,8 +33,18 @@ fn mask(indices: &[usize]) -> Mask {
 #[test]
 fn two_brands_give_two_members_in_declaration_order() {
     let _: Option<HCons<Fake, HCons<Fake, HNil>>> = None::<<__Spec as Spec>::Drivers>;
-    assert_eq!(__hardware::fake_arm::__PART.indices, [0, 2]);
-    assert_eq!(__hardware::fake_leg::__PART.indices, [3, 1]);
+    let Ok(HCons {
+        head: arm,
+        tail: HCons {
+            head: leg,
+            tail: HNil,
+        },
+    }) = __Spec::bind(&[])
+    else {
+        panic!("no plugin is no binding error");
+    };
+    assert_eq!(arm.owned, mask(&[0, 2]));
+    assert_eq!(leg.owned, mask(&[1, 3]));
 }
 
 #[test]
