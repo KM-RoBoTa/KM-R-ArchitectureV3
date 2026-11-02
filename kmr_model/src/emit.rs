@@ -21,12 +21,15 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
     });
     let names = robot.actuators.iter().map(|a| Literal::string(&a.name));
     let [lower, upper, speed, effort] = columns(robot).map(|c| c.into_iter().map(float));
+    let lookup = lookup(robot);
     quote! {
         /// Actuator count of this robot, from its descriptor.
         #[allow(dead_code)]
         pub const N: usize = #n;
 
         #track
+
+        #lookup
 
         /// This robot's model, read from its descriptor at compile time.
         #[allow(dead_code)]
@@ -52,6 +55,34 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
             /// (prismatic).
             pub const EFFORT: [#krate::Tau; super::N] = [#(#krate::Tau(#effort)),*];
         }
+    }
+}
+
+/// `actuator!("name")`, the index of that actuator as a `usize` literal
+/// (research R6; FR-015 (SRS FR-2.4)).
+///
+/// Not `#[macro_export]`: two calls in one crate would export two root
+/// macros. `pub(crate) use` lets a child module write `crate::actuator!`.
+fn lookup(robot: &Robot) -> TokenStream {
+    let arms = robot.actuators.iter().enumerate().map(|(i, a)| {
+        let name = Literal::string(&a.name);
+        let index = Literal::usize_suffixed(i);
+        quote! { (#name) => { #index }; }
+    });
+    quote! {
+        /// The index of the actuator named by a string literal; any other
+        /// name does not build.
+        #[allow(unused_macros)]
+        macro_rules! actuator {
+            #(#arms)*
+            ($name:literal) => {
+                ::core::compile_error!(::core::concat!("kmr: no actuator named ", $name))
+            };
+        }
+
+        /// [`actuator!`] for the whole crate.
+        #[allow(unused_imports)]
+        pub(crate) use actuator;
     }
 }
 
@@ -116,6 +147,21 @@ mod tests {
         assert!(file.contains("include_bytes ! (\"/x/r.urdf\")"), "{file}");
         let preset = emit(&robot(&["a"]), &quote!(k), None).to_string();
         assert!(!preset.contains("include_bytes"), "{preset}");
+    }
+
+    #[test]
+    fn one_lookup_arm_per_name_in_index_order() {
+        let out = lookup(&robot(&["a", "b"])).to_string();
+        assert!(
+            out.contains("(\"a\") => { 0usize } ; (\"b\") => { 1usize } ;"),
+            "{out}"
+        );
+        assert!(
+            out.contains("concat ! (\"kmr: no actuator named \" , $ name)"),
+            "{out}"
+        );
+        assert!(out.contains("pub (crate) use actuator ;"), "{out}");
+        assert!(!out.contains("macro_export"), "{out}");
     }
 
     #[test]

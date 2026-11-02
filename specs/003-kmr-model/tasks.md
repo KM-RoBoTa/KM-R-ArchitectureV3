@@ -180,7 +180,7 @@ FR-005 (SRS FR-6.2).
 **Independent Test**: `cargo test -p kmr_api --test robot_macro -- names` and the
 `unknown_actuator` ui case.
 
-- [ ] T040 [US5] In kmr_model/src/emit.rs emit the lookup of research R6: `macro_rules! actuator` with one arm per name expanding to its index as a `usize` literal, and a catch-all arm `compile_error!(concat!("kmr: no actuator named ", $n))`; then `pub(crate) use actuator;`, so `crate::actuator!` reaches it from a child module. Not `#[macro_export]`: two `robot!` or `__model!` calls in one test crate would export two root macros (assumption of this task, reported). No accessor method, no group (FR-005 (SRS FR-6.2), FR-015 (SRS FR-2.4))
+- [x] T040 [US5] In kmr_model/src/emit.rs emit the lookup of research R6: `macro_rules! actuator` with one arm per name expanding to its index as a `usize` literal, and a catch-all arm `compile_error!(concat!("kmr: no actuator named ", $n))`; then `pub(crate) use actuator;`, so `crate::actuator!` reaches it from a child module. Not `#[macro_export]`: two `robot!` or `__model!` calls in one test crate would export two root macros (assumption of this task, reported). No accessor method, no group (FR-005 (SRS FR-6.2), FR-015 (SRS FR-2.4))
 - [ ] T041 [US5] Blocked on T010. In kmr_api/tests/robot_macro.rs add `names` tests on four.urdf: `const J3: usize = actuator!("j3");` is 2 at the root, and through `crate::actuator!` from a child module; a const group `[actuator!("j1"), actuator!("j4")]` is `[0, 3]` (US5 AS1). ui case kmr_api/tests/ui/unknown_actuator.rs: `actuator!("wrist")` fails with `kmr: no actuator named wrist` (US5 AS2; R6: the span points at the `robot!` line, accepted)
 
 ---
