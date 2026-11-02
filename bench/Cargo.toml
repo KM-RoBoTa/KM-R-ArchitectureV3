@@ -1,0 +1,14 @@
+[package]
+name = "kmr_bench"
+description = "The reference benchmark of kmr: measures the engine through kmr_api only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+kmr_api.workspace = true
+
+[features]
+# The Dynamixel SDK, for `tick_hw` on the reference chain.
+hardware = ["kmr_api/dynamixel"]

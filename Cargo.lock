@@ -518,6 +518,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kmr_bench"
+version = "0.1.0"
+dependencies = [
+ "kmr_api",
+]
+
+[[package]]
 name = "kmr_core"
 version = "0.1.0"
 dependencies = [

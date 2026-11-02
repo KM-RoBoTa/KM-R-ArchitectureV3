@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "controllers"]
+members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "controllers", "bench"]
 
 [workspace.package]
 version = "0.1.0"
