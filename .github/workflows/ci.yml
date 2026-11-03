@@ -29,6 +29,8 @@ jobs:
       - run: cargo clippy --workspace
       # --all-targets also lints tests and examples.
       - run: cargo clippy --workspace --all-targets
+      # The controllers crate compiles clean: a warning there fails CI (controllers SC-004).
+      - run: cargo clippy -p controllers --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
 
   no-std:
