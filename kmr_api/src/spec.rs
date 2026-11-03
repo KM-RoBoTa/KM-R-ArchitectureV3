@@ -93,7 +93,7 @@ pub fn __bind_none(_plugins: &[Binding]) -> Result<HCons<__NoHardware, HNil>, Us
 #[doc(hidden)]
 #[cfg(feature = "dynamixel")]
 pub type __DxlAdapter<const NB: usize> =
-    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, NB>;
+    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs<JOINTS>, NB, JOINTS>;
 
 /// No Dynamixel driver: kmr_api is built without its `dynamixel` feature.
 #[doc(hidden)]

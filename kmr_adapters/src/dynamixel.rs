@@ -22,7 +22,7 @@ use core::time::Duration;
 use std::path::Path;
 
 use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
-use kmr_core::state::{JOINTS, Q};
+use kmr_core::state::Q;
 use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
@@ -63,6 +63,18 @@ const TORQUE_OFF_ATTEMPTS: usize = 3;
 /// or the actuator when there is one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DynamixelError {
+    /// A table row placed at an engine index the robot does not have.
+    #[error(
+        "actuator {actuator} of the table is placed at engine index {index}, past the robot's {actuators} actuators"
+    )]
+    PastTheRobot {
+        /// Row of the table.
+        actuator: usize,
+        /// Engine index it was placed at.
+        index: usize,
+        /// The robot's actuators.
+        actuators: usize,
+    },
     /// More buses than the backend can open.
     #[error("{buses} buses declared, the Dynamixel backend opens at most {max}")]
     TooManyBuses {
@@ -480,16 +492,16 @@ impl fmt::Display for Alarms {
 
 /// The Dynamixel adapter over `NB` buses, talking through backend `B`: one
 /// member of the robot's hardware, owning the engine indices of its
-/// [`Placement`] (SRS FR-5.1).
+/// [`Placement`] (SRS FR-5.1) out of the robot's `N` actuators.
 ///
 /// One per process: the C SDK keeps global port state (research R7).
-pub struct Dynamixel<B, const NB: usize> {
+pub struct Dynamixel<B, const NB: usize, const N: usize> {
     /// The SDK seam.
     backend: B,
     /// Buses, with the bus plugins' bauds.
     buses: [Bus; NB],
     /// The actuators the member owns, by engine index.
-    actuators: Placed,
+    actuators: Placed<N>,
     /// Port of each bus, from its bus plugin; `None` until bound.
     ports: [Option<Port>; NB],
     /// Where serial ids are resolved; `None` is [`port::BY_ID`].
@@ -497,19 +509,19 @@ pub struct Dynamixel<B, const NB: usize> {
     /// Where latency timers live; `None` is [`port::USB_SERIAL_SYSFS`].
     sysfs: Option<&'static Path>,
     /// Transaction groups, built by `check`.
-    groups: Groups,
+    groups: Groups<N>,
     /// Device of each bus, once resolved.
     devices: [Option<DevicePath>; NB],
     /// Raw goal range of each actuator: CW to CCW Angle Limit once
     /// `configure` read them on Protocol 1, else any.
-    limits: [(u32, u32); JOINTS],
+    limits: [(u32, u32); N],
     /// Whether the backend opened the ports.
     open: bool,
     /// `read` calls so far, for the cadence.
     reads: u64,
 }
 
-impl<B, const NB: usize> Dynamixel<B, NB> {
+impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     /// An adapter owning the actuators of `placement` and no other, with no
     /// bus bound yet: `open` fails until [`Dynamixel::bind`] binds them.
     pub const fn new<const M: usize>(backend: B, placement: Placement<NB, M>) -> Self {
@@ -522,7 +534,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
             sysfs: None,
             groups: Groups::EMPTY,
             devices: [None; NB],
-            limits: [(0, u32::MAX); JOINTS],
+            limits: [(0, u32::MAX); N],
             open: false,
             reads: 0,
         }
@@ -677,16 +689,23 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
     }
 }
 
-impl<B, const NB: usize> seal::Adapter for Dynamixel<B, NB> {}
+impl<B, const NB: usize, const N: usize> seal::Adapter for Dynamixel<B, NB, N> {}
 
-impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
+impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N> {
     type Error = DynamixelError;
 
     /// Claims the placement's indices, grouped per (bus, series) with local
     /// ids from 0; each bus is read every `read_every` ticks, else every
     /// [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no cadence: it is
     /// a table field (core K3.8).
-    fn check(&mut self, _overrides: Overrides) -> Result<Claim, DynamixelError> {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
+        if let Some((actuator, index)) = self.actuators.past() {
+            return Err(DynamixelError::PastTheRobot {
+                actuator,
+                index,
+                actuators: N,
+            });
+        }
         if NB > B::MAX_PORTS {
             return Err(DynamixelError::TooManyBuses {
                 buses: NB,
@@ -706,7 +725,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
             .map(|bus| bus.read_every.unwrap_or(DEFAULT_READ_EVERY));
         self.groups = Groups::build(&self.actuators, &every);
         let unread = io::unread_rates(&self.actuators);
-        for index in (0..JOINTS).filter(|&index| unread.get(index)) {
+        for index in unread.iter() {
             warn!(
                 actuator = index,
                 "Protocol 1: Qd and Tau are never read and keep their last value (research R12)"
@@ -1006,7 +1025,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// A seed position outside the register range is `PositionRange`: the
     /// check of the zeros SRS FR-5.2 asks for, since with a software zero
     /// every position inside it converts (research R7).
-    fn read_all(&mut self, mut sample: Sample<'_>) -> Result<(), DynamixelError> {
+    fn read_all(&mut self, mut sample: Sample<'_, N>) -> Result<(), DynamixelError> {
         let mut failed = None;
         for table in self.groups.tables() {
             io::read_table(
@@ -1048,17 +1067,17 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
         Ok(())
     }
 
-    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults) -> Mask {
+    fn read(&mut self, sample: Sample<'_, N>, faults: &mut Faults<N>) -> Mask<N> {
         io::read_due(self, sample, faults)
     }
 
-    fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults) {
+    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
         io::write_batch(self, &command, batch, faults);
     }
 
     /// Sends `last.q` to every powered position actuator, one transaction per
     /// group (FR-016).
-    fn hold(&mut self, last: Command<'_>) {
+    fn hold(&mut self, last: Command<'_, N>) {
         if !self.open {
             return;
         }

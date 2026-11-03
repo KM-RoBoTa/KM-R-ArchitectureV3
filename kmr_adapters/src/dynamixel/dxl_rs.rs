@@ -21,7 +21,6 @@ use ::dxl_rs::error::{
 };
 use ::dxl_rs::port::{PortBuilder, PortHandler, PortNumber};
 use ::dxl_rs::transport::group_sync_read;
-use kmr_core::state::JOINTS;
 use tracing::warn;
 
 use super::backend::{
@@ -132,9 +131,10 @@ struct Powered {
     actuator: ActuatorVariant<TorqueOn>,
 }
 
-/// The `dxl_rs` backend. One per process: the C SDK keeps global port state.
+/// The `dxl_rs` backend for a robot of `N` actuators, which sizes its table of
+/// powered actuators. One per process: the C SDK keeps global port state.
 #[derive(Debug)]
-pub struct DxlRs {
+pub struct DxlRs<const N: usize> {
     /// SDK number of each opened port.
     numbers: [PortNumber; MAX_PORTS],
     /// Ports opened.
@@ -142,21 +142,21 @@ pub struct DxlRs {
     /// Sync write lists of each port.
     lists: [Lists; MAX_PORTS],
     /// Actuators switched on, at most one entry each.
-    powered: [Option<Powered>; JOINTS],
+    powered: [Option<Powered>; N],
     /// Whether `(port, id)` is switched on.
     on: [[bool; IDS]; MAX_PORTS],
     /// Whether `(port, id)` got its start goal since it was last switched.
     started: [[bool; IDS]; MAX_PORTS],
 }
 
-impl DxlRs {
+impl<const N: usize> DxlRs<N> {
     /// A backend with no port open.
     pub fn new() -> Self {
         Self {
             numbers: [0; MAX_PORTS],
             opened: 0,
             lists: Default::default(),
-            powered: [const { None }; JOINTS],
+            powered: [const { None }; N],
             on: [[false; IDS]; MAX_PORTS],
             started: [[false; IDS]; MAX_PORTS],
         }
@@ -208,7 +208,7 @@ impl DxlRs {
     ) -> Result<(), BackendError> {
         let known = self.is_on(port, id);
         let free = self.powered.iter().position(Option::is_none);
-        let full = BackendError::HandlesFull { max: JOINTS };
+        let full = BackendError::HandlesFull { max: N };
         if !known && free.is_none() {
             return Err(full);
         }
@@ -309,7 +309,7 @@ impl DxlRs {
     }
 }
 
-impl Default for DxlRs {
+impl<const N: usize> Default for DxlRs<N> {
     fn default() -> Self {
         Self::new()
     }
@@ -472,7 +472,7 @@ fn on_port(port: usize, source: BackendError) -> OpenFailure {
     }
 }
 
-impl Backend for DxlRs {
+impl<const N: usize> Backend for DxlRs<N> {
     const MAX_PORTS: usize = MAX_PORTS;
     const STATE_READS: &'static [u16] = super::backend::STATE_READS;
 
@@ -610,12 +610,12 @@ impl Backend for DxlRs {
         goals: &[(u8, u32)],
     ) -> Result<(), BackendError> {
         self.number(port)?;
-        let mut narrow = [(0, 0); JOINTS];
+        let mut narrow = [(0, 0); N];
         let narrow = narrow
             .get_mut(..goals.len())
             .ok_or(BackendError::TooManyGoals {
                 goals: goals.len(),
-                max: JOINTS,
+                max: N,
             })?;
         for (slot, &(id, raw)) in narrow.iter_mut().zip(goals) {
             if !self.is_on(port, id) {

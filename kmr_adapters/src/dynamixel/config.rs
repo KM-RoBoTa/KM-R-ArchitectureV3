@@ -6,8 +6,7 @@
 
 use core::num::NonZeroU32;
 
-use kmr_core::hal::Mask;
-use kmr_core::state::JOINTS;
+use kmr_core::hal::{MASK_WORDS, Mask};
 
 use super::units;
 
@@ -680,7 +679,8 @@ const fn actuator_mut(actuators: &mut [Actuator], index: usize) -> &mut Actuator
 pub struct Placement<const NB: usize, const M: usize> {
     /// The table, checked.
     pub(crate) table: Table<NB, M>,
-    /// Engine index of each actuator of `table`, distinct, below `JOINTS`.
+    /// Engine index of each actuator of `table`, distinct, below the
+    /// write mask's `64 * MASK_WORDS`.
     pub(crate) at: [usize; M],
 }
 
@@ -700,8 +700,9 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
     /// The table checked by [`Table::check`], actuator `k` at engine index
     /// `at[k]`: the Dynamixel member of a robot that mixes brands.
     ///
-    /// Rejects an index past the robot's actuators and an index two
-    /// actuators share.
+    /// Rejects an index past the most actuators a robot can have, `64 *
+    /// MASK_WORDS`, and an index two actuators share. The robot's own count
+    /// is checked by `robot!`, and by the adapter's `check` at run().
     ///
     /// # Panics
     ///
@@ -756,14 +757,17 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
         let mut index = 0;
         let mut rest: &[usize] = &at;
         while let [engine, later @ ..] = rest {
-            if *engine >= JOINTS {
+            // DECISION: the table cannot know the robot's N; it checks the
+            // write mask's limit, the coverage check of `robot!` and the
+            // adapter's `check` check N.
+            if *engine >= 64 * MASK_WORDS {
                 fail(
                     Message::actuator(index)
                         .text("engine index ")
                         .number(*engine)
                         .text(" past the robot's ")
-                        .number(JOINTS)
-                        .text(" actuators"),
+                        .number(64 * MASK_WORDS)
+                        .text(" actuators at most"),
                 );
             }
             if let Some(offset) = position(later, *engine) {
@@ -800,41 +804,60 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
 }
 
 /// The actuators of a [`Placement`] by engine index, `None` at the indices
-/// the member does not own.
+/// the member does not own, out of the robot's `N`.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Placed([Option<Actuator>; JOINTS]);
+pub(crate) struct Placed<const N: usize> {
+    /// Actuator at each engine index.
+    slots: [Option<Actuator>; N],
+    /// The first table row placed at an index past `N`, and that index.
+    past: Option<(usize, usize)>,
+}
 
-impl Placed {
+impl<const N: usize> Placed<N> {
     /// The actuators of `placement`, each at its engine index.
     pub(crate) const fn new<const NB: usize, const M: usize>(placement: &Placement<NB, M>) -> Self {
-        let mut slots = [None; JOINTS];
+        let mut slots = [None; N];
+        let mut past = None;
+        let mut row = 0;
         let mut rest: &[Actuator] = &placement.table.actuators;
         let mut at: &[usize] = &placement.at;
         while let ([actuator, more @ ..], [index, later @ ..]) = (rest, at) {
-            if let Some((_, [slot, ..])) = slots.split_at_mut_checked(*index) {
-                *slot = Some(*actuator);
+            match slots.split_at_mut_checked(*index) {
+                Some((_, [slot, ..])) => *slot = Some(*actuator),
+                _ => {
+                    if past.is_none() {
+                        past = Some((row, *index));
+                    }
+                }
             }
+            row += 1;
             rest = more;
             at = later;
         }
-        Self(slots)
+        Self { slots, past }
+    }
+
+    /// The first table row placed past the robot's `N` actuators, and its
+    /// engine index.
+    pub(crate) fn past(&self) -> Option<(usize, usize)> {
+        self.past
     }
 
     /// The actuator at engine index `index`, if the member owns it.
     pub(crate) fn get(&self, index: usize) -> Option<&Actuator> {
-        self.0.get(index).and_then(Option::as_ref)
+        self.slots.get(index).and_then(Option::as_ref)
     }
 
     /// The owned actuators with their engine indices, ascending.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &Actuator)> {
-        self.0
+        self.slots
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| slot.as_ref().map(|actuator| (index, actuator)))
     }
 
     /// The engine indices the member owns.
-    pub(crate) fn owned(&self) -> Mask {
+    pub(crate) fn owned(&self) -> Mask<N> {
         let mut owned = Mask::NONE;
         self.iter().for_each(|(index, _)| owned.set(index));
         owned

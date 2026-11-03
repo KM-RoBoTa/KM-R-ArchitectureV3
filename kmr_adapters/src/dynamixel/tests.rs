@@ -23,7 +23,7 @@ use kmr_core::hal::{
     Batch, Claim, Command, Faults, Group, Hal, HardwareError, Layout, Mask, MemberError, Overrides,
     Sample, Written,
 };
-use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
+use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
@@ -36,16 +36,16 @@ use super::{
 use crate::binding::{Binding, Port};
 use crate::presets::{Rx28Chain, XmBench};
 
-// The scenarios name actuators 0 to 3.
-const _: () = assert!(JOINTS >= 4, "the adapter tests need four actuators");
+/// Actuators of the robot the scenarios drive: they name actuators 0 to 3.
+const N: usize = 4;
 
-/// Firmware id of actuator `index`: ids `1..=JOINTS`.
+/// Firmware id of actuator `index`: ids `1..=N`.
 const fn id(index: usize) -> u8 {
     index as u8 + 1
 }
 
-/// `JOINTS` actuators of `model` on bus 0, powered, in position mode.
-const fn chain(model: Model) -> [Actuator; JOINTS] {
+/// `N` actuators of `model` on bus 0, powered, in position mode.
+const fn chain(model: Model) -> [Actuator; N] {
     let mut actuators = [Actuator {
         bus: 0,
         id: 0,
@@ -53,9 +53,9 @@ const fn chain(model: Model) -> [Actuator; JOINTS] {
         mode: Mode::Position,
         torque: Torque::On,
         zero: Zero::DEFAULT,
-    }; JOINTS];
+    }; N];
     let mut index = 0;
-    while index < JOINTS {
+    while index < N {
         actuators[index].id = id(index);
         index += 1;
     }
@@ -81,7 +81,7 @@ const fn plugin(serial: &'static str, bus: Option<&'static str>) -> Binding {
 }
 
 /// Protocol 2 chain, read every tick.
-const X_TABLE: Table<1, JOINTS> = Table {
+const X_TABLE: Table<1, N> = Table {
     buses: one_bus("x", NonZeroU32::new(1)),
     actuators: chain(Model::Xm430W210),
 }
@@ -91,14 +91,14 @@ const X_SERIAL: &str = "XCHAIN01";
 const X_PLUGINS: [Binding; 1] = [plugin(X_SERIAL, None)];
 
 /// Protocol 1 chain of AX-12A, read every tick.
-const AX_TABLE: Table<1, JOINTS> = Table {
+const AX_TABLE: Table<1, N> = Table {
     buses: one_bus("ax", NonZeroU32::new(1)),
     actuators: chain(Model::Ax12a),
 }
 .check();
 
 /// Protocol 1 chain of RX-28, read every tick.
-const RX_TABLE: Table<1, JOINTS> = Table {
+const RX_TABLE: Table<1, N> = Table {
     buses: one_bus("rx", NonZeroU32::new(1)),
     actuators: chain(Model::Rx28),
 }
@@ -110,10 +110,10 @@ const WRIST: &str = "WRIST001";
 
 /// Even actuators: X on bus `arm`, read every tick. Odd ones: AX-12A on bus
 /// `wrist`, read every other tick.
-const MIX_TABLE: Table<2, JOINTS> = {
+const MIX_TABLE: Table<2, N> = {
     let mut actuators = chain(Model::Xm430W210);
     let mut index = 1;
-    while index < JOINTS {
+    while index < N {
         actuators[index].bus = 1;
         actuators[index].model = Model::Ax12a;
         index += 2;
@@ -138,23 +138,23 @@ const MIX_TABLE: Table<2, JOINTS> = {
 const MIX_PLUGINS: [Binding; 2] = [plugin(ARM, Some("arm")), plugin(WRIST, Some("wrist"))];
 
 /// The read-only actuator of `RO_TABLE`.
-const LAST: usize = JOINTS - 1;
+const LAST: usize = N - 1;
 /// The Protocol 2 chain with its last actuator read-only.
-const RO_TABLE: Table<1, JOINTS> = {
+const RO_TABLE: Table<1, N> = {
     let mut table = X_TABLE;
     table.actuators[LAST].torque = Torque::ReadOnly;
     table.check()
 };
 
 /// The Protocol 2 chain with no cadence on its bus.
-const SILENT_TABLE: Table<1, JOINTS> = Table {
+const SILENT_TABLE: Table<1, N> = Table {
     buses: one_bus("silent", None),
     ..X_TABLE
 }
 .check();
 
 /// Five buses, one more than the backends open.
-const FIVE_TABLE: Table<5, JOINTS> = {
+const FIVE_TABLE: Table<5, N> = {
     let bus = X_TABLE.buses[0];
     Table {
         buses: [
@@ -171,8 +171,8 @@ const FIVE_TABLE: Table<5, JOINTS> = {
 
 /// An adapter on a fresh scripted backend owning `0..M` in table order, no
 /// bus bound.
-fn rig<const NB: usize, const M: usize>(table: Table<NB, M>) -> Dynamixel<Scripted, NB> {
-    Dynamixel::new(Scripted::new(), table.in_order())
+fn rig<const NB: usize, const M: usize>(table: Table<NB, M>) -> Dynamixel<Scripted, NB, N> {
+    Dynamixel::<_, _, N>::new(Scripted::new(), table.in_order())
 }
 
 /// An adapter on a fresh scripted backend owning `0..M` in table order,
@@ -180,12 +180,12 @@ fn rig<const NB: usize, const M: usize>(table: Table<NB, M>) -> Dynamixel<Script
 fn bound<const NB: usize, const M: usize>(
     table: Table<NB, M>,
     plugins: &[Binding],
-) -> Dynamixel<Scripted, NB> {
-    Dynamixel::bind(Scripted::new(), table.in_order(), plugins).unwrap()
+) -> Dynamixel<Scripted, NB, N> {
+    Dynamixel::<_, _, N>::bind(Scripted::new(), table.in_order(), plugins).unwrap()
 }
 
 /// `table` with every bus read every `ticks` ticks.
-fn every<const NB: usize>(mut table: Table<NB, JOINTS>, ticks: u32) -> Table<NB, JOINTS> {
+fn every<const NB: usize>(mut table: Table<NB, N>, ticks: u32) -> Table<NB, N> {
     for bus in &mut table.buses {
         bus.read_every = NonZeroU32::new(ticks);
     }
@@ -194,22 +194,22 @@ fn every<const NB: usize>(mut table: Table<NB, JOINTS>, ticks: u32) -> Table<NB,
 
 /// The newest history slot, as the engine hands it to `read`.
 struct Slot {
-    q: [Q; JOINTS],
-    qd: [Qd; JOINTS],
-    tau: [Tau; JOINTS],
-    kp: [Kp; JOINTS],
-    kd: [Kd; JOINTS],
+    q: [Q; N],
+    qd: [Qd; N],
+    tau: [Tau; N],
+    kp: [Kp; N],
+    kd: [Kd; N],
 }
 
 impl Slot {
     /// Every field at `value`, so an untouched entry is recognizable.
     fn filled(value: f32) -> Self {
         Self {
-            q: [Q(value); JOINTS],
-            qd: [Qd(value); JOINTS],
-            tau: [Tau(value); JOINTS],
-            kp: [Kp(value); JOINTS],
-            kd: [Kd(value); JOINTS],
+            q: [Q(value); N],
+            qd: [Qd(value); N],
+            tau: [Tau(value); N],
+            kp: [Kp(value); N],
+            kd: [Kd(value); N],
         }
     }
 
@@ -227,11 +227,11 @@ impl Slot {
 
 /// This tick's desired state and its write masks.
 struct Desired {
-    q: [Q; JOINTS],
-    qd: [Qd; JOINTS],
-    tau: [Tau; JOINTS],
-    kp: [Kp; JOINTS],
-    kd: [Kd; JOINTS],
+    q: [Q; N],
+    qd: [Qd; N],
+    tau: [Tau; N],
+    kp: [Kp; N],
+    kd: [Kd; N],
     written: Written,
 }
 
@@ -239,11 +239,11 @@ impl Desired {
     /// Nothing written yet, every target at zero.
     fn new() -> Self {
         Self {
-            q: [Q(0.0); JOINTS],
-            qd: [Qd(0.0); JOINTS],
-            tau: [Tau(0.0); JOINTS],
-            kp: [Kp(0.0); JOINTS],
-            kd: [Kd(0.0); JOINTS],
+            q: [Q(0.0); N],
+            qd: [Qd(0.0); N],
+            tau: [Tau(0.0); N],
+            kp: [Kp(0.0); N],
+            kd: [Kd(0.0); N],
             written: Written::default(),
         }
     }
@@ -259,13 +259,13 @@ impl Desired {
 
     /// Writes `Q(0.0)` to every actuator.
     fn all_q() -> Self {
-        (0..JOINTS).fold(Self::new(), |desired, index| desired.q(index, Q(0.0)))
+        (0..N).fold(Self::new(), |desired, index| desired.q(index, Q(0.0)))
     }
 
     /// Writes [`ramp`] to every actuator.
     fn ramp() -> Self {
         let q = ramp();
-        (0..JOINTS).fold(Self::new(), |desired, index| desired.q(index, q[index]))
+        (0..N).fold(Self::new(), |desired, index| desired.q(index, q[index]))
     }
 
     /// The desired state as a `Command`.
@@ -294,7 +294,7 @@ pub(super) fn layout_of(claim: &Claim) -> Layout {
 /// One `write` of `desired` as the engine sends it to the member that made
 /// `claim`: its runs, local groups, its written masks only.
 fn write<const NB: usize>(
-    adapter: &mut Dynamixel<Scripted, NB>,
+    adapter: &mut Dynamixel<Scripted, NB, N>,
     claim: &Claim,
     desired: &Desired,
 ) -> Faults {
@@ -320,7 +320,10 @@ fn write<const NB: usize>(
 }
 
 /// One `read` into `slot`, with its faults.
-fn read<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>, slot: &mut Slot) -> (Mask, Faults) {
+fn read<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB, N>,
+    slot: &mut Slot,
+) -> (Mask<N>, Faults<N>) {
     let mut faults = Faults::default();
     let refreshed = adapter.read(slot.sample(), &mut faults);
     (refreshed, faults)
@@ -328,7 +331,7 @@ fn read<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>, slot: &mut Slot)
 
 /// Opens the scripted ports and marks the adapter open, as a successful
 /// `open` would; the backend log is cleared afterwards.
-fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>) {
+fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB, N>) {
     let specs = adapter.buses.map(|bus| PortSpec {
         path: Path::new(NULL),
         baud: bus.baud,
@@ -341,7 +344,7 @@ fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>) {
 /// `check`, then Init and PostInit in the engine's order on an adapter
 /// marked open; the backend log is cleared afterwards.
 fn powered<const NB: usize>(
-    adapter: &mut Dynamixel<Scripted, NB>,
+    adapter: &mut Dynamixel<Scripted, NB, N>,
 ) -> Result<Claim, DynamixelError> {
     let layout = adapter.check(Overrides::default())?;
     mark_open(adapter);
@@ -358,7 +361,7 @@ fn powered<const NB: usize>(
 /// Mask of the actuators `index` selects.
 fn mask(select: impl Fn(usize) -> bool) -> Mask {
     let mut mask = Mask::NONE;
-    (0..JOINTS)
+    (0..N)
         .filter(|&index| select(index))
         .for_each(|index| mask.set(index));
     mask
@@ -383,7 +386,7 @@ const fn centered(model: Model) -> Actuator {
 
 /// Every actuator of `adapter` torque-on before bring-up, as an earlier run
 /// can leave it.
-fn left_on<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>) {
+fn left_on<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB, N>) {
     for (_, actuator) in adapter.actuators.iter() {
         adapter.backend.already_on(actuator.bus, actuator.id);
     }
@@ -401,7 +404,7 @@ fn forced(backend: &Scripted) -> impl Iterator<Item = u8> + '_ {
 /// Ids `torque_off` sends `ForceTorqueOff` when actuator `index` takes
 /// `tries(index)` attempts, in call order.
 fn attempted(tries: impl Fn(usize) -> usize) -> impl Iterator<Item = u8> {
-    (0..JOINTS).flat_map(move |index| iter::repeat_n(id(index), tries(index)))
+    (0..N).flat_map(move |index| iter::repeat_n(id(index), tries(index)))
 }
 
 /// Message of the warning `torque_off` logs per actuator it could not cut.
@@ -505,7 +508,7 @@ fn torque_asked(backend: &Scripted, port: usize, id: u8, on: bool) -> bool {
 fn protocol_2_chain_is_one_read_and_one_write_per_tick() -> Result<(), DynamixelError> {
     let mut adapter = rig(X_TABLE);
     let layout = powered(&mut adapter)?;
-    assert_eq!(layout.group, [Group(0); JOINTS]);
+    assert_eq!(layout.group, [Group(0); N]);
 
     let desired = Desired::all_q();
     for tick in 1..=5 {
@@ -517,7 +520,7 @@ fn protocol_2_chain_is_one_read_and_one_write_per_tick() -> Result<(), Dynamixel
         assert_eq!(adapter.backend.count(Call::SyncWriteGoal), tick);
     }
     assert_eq!(adapter.backend.count(Call::ReadPosition), 0);
-    assert_eq!(adapter.backend.last_goals().len(), JOINTS);
+    assert_eq!(adapter.backend.last_goals().len(), N);
     Ok(())
 }
 
@@ -531,10 +534,10 @@ fn protocol_1_chain_is_one_sync_write_and_one_read_per_actuator() -> Result<(), 
 
     assert_eq!(refreshed, Mask::ALL);
     assert_eq!((faults, written), (Faults::default(), Faults::default()));
-    assert_eq!(adapter.backend.count(Call::ReadPosition), JOINTS);
+    assert_eq!(adapter.backend.count(Call::ReadPosition), N);
     assert_eq!(adapter.backend.count(Call::SyncReadState), 0);
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
-    let ids: [u8; JOINTS] = core::array::from_fn(id);
+    let ids: [u8; N] = core::array::from_fn(id);
     assert!(
         adapter
             .backend
@@ -558,9 +561,9 @@ fn two_bus_mix_is_one_transaction_per_group() -> Result<(), DynamixelError> {
     let mut adapter = rig(MIX_TABLE);
     let layout = powered(&mut adapter)?;
     let on_wrist = |index: usize| index % 2 == 1;
-    let wrist = (0..JOINTS).filter(|&index| on_wrist(index)).count();
+    let wrist = (0..N).filter(|&index| on_wrist(index)).count();
 
-    for index in 0..JOINTS {
+    for index in 0..N {
         assert_eq!(layout.group[index], Group(u8::from(on_wrist(index))));
         assert_eq!(
             layout.read_every[index].get(),
@@ -585,7 +588,7 @@ fn two_bus_mix_is_one_transaction_per_group() -> Result<(), DynamixelError> {
         .filter(|record| record.call == Call::SyncWriteGoal);
     let ports = writes.map(|record| (record.port, record.model, record.count));
     assert!(ports.eq([
-        (0, Some(Model::Xm430W210), JOINTS - wrist),
+        (0, Some(Model::Xm430W210), N - wrist),
         (1, Some(Model::Ax12a), wrist),
     ]));
 
@@ -599,7 +602,7 @@ fn two_bus_mix_is_one_transaction_per_group() -> Result<(), DynamixelError> {
 fn cadence_of_three_reads_on_calls_0_3_6_only() -> Result<(), DynamixelError> {
     let mut adapter = rig(every(X_TABLE, 3));
     let layout = powered(&mut adapter)?;
-    assert_eq!(layout.read_every.map(NonZeroU32::get), [3; JOINTS]);
+    assert_eq!(layout.read_every.map(NonZeroU32::get), [3; N]);
 
     let mut reads = [false; 9];
     for (call, read_now) in reads.iter_mut().enumerate() {
@@ -641,7 +644,7 @@ fn writing_two_of_four_sends_two() -> Result<(), DynamixelError> {
     let mut adapter = rig(X_TABLE);
     let layout = powered(&mut adapter)?;
     let chosen = |index: usize| index % 2 == 1;
-    let desired = (0..JOINTS)
+    let desired = (0..N)
         .filter(|&index| chosen(index))
         .fold(Desired::new(), |desired, index| desired.q(index, Q(0.0)));
 
@@ -649,7 +652,7 @@ fn writing_two_of_four_sends_two() -> Result<(), DynamixelError> {
 
     assert_eq!(faults, Faults::default());
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
-    let sent = (0..JOINTS)
+    let sent = (0..N)
         .filter(|&index| chosen(index))
         .map(|index| (id(index), 2048));
     assert!(adapter.backend.last_goals().iter().copied().eq(sent));
@@ -754,7 +757,10 @@ impl Roots {
     }
 
     /// `adapter`, resolving its ports here.
-    fn rig<const NB: usize>(&self, adapter: Dynamixel<Scripted, NB>) -> Dynamixel<Scripted, NB> {
+    fn rig<const NB: usize>(
+        &self,
+        adapter: Dynamixel<Scripted, NB, N>,
+    ) -> Dynamixel<Scripted, NB, N> {
         adapter.with_roots(self.by_id, self.sysfs)
     }
 }
@@ -877,7 +883,7 @@ fn open_on_terminals_opens_every_port_once_at_its_baud() -> io::Result<()> {
 
     adapter.torque_off();
     adapter.close();
-    assert_eq!(adapter.backend.count(Call::ForceTorqueOff), JOINTS);
+    assert_eq!(adapter.backend.count(Call::ForceTorqueOff), N);
     assert_eq!(adapter.backend.count(Call::ClosePorts), 1);
     assert!(!adapter.backend.is_open());
     Ok(())
@@ -895,12 +901,12 @@ fn no_torque_call_before_configure() -> Result<(), DynamixelError> {
     adapter.configure()?;
     adapter.read_all(Slot::filled(0.0).sample())?;
     assert_eq!(adapter.backend.count(Call::Torque), 0);
-    assert_eq!(adapter.backend.count(Call::Ping), JOINTS);
-    assert_eq!(adapter.backend.count(Call::ReadHealth), JOINTS);
+    assert_eq!(adapter.backend.count(Call::Ping), N);
+    assert_eq!(adapter.backend.count(Call::ReadHealth), N);
 
     adapter.torque_on()?;
-    assert_eq!(adapter.backend.count(Call::Torque), JOINTS);
-    assert!((0..JOINTS).all(|index| adapter.backend.torqued(0, id(index))));
+    assert_eq!(adapter.backend.count(Call::Torque), N);
+    assert!((0..N).all(|index| adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
@@ -987,7 +993,7 @@ fn hold_writes_last_q_whatever_was_written() -> Result<(), DynamixelError> {
             held += 1;
         }
     }
-    assert_eq!(held, JOINTS);
+    assert_eq!(held, N);
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 2);
     Ok(())
 }
@@ -1003,10 +1009,10 @@ fn shutdown_is_hold_then_torque_off_then_close() -> Result<(), DynamixelError> {
 
     let kinds = adapter.backend.calls().iter().map(|record| record.call);
     let expected = core::iter::once(Call::SyncWriteGoal)
-        .chain([Call::ForceTorqueOff; JOINTS])
+        .chain([Call::ForceTorqueOff; N])
         .chain([Call::ClosePorts]);
     assert!(kinds.eq(expected));
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
@@ -1020,7 +1026,7 @@ fn emergency_stop_is_torque_off_then_close() -> Result<(), DynamixelError> {
 
     let kinds = adapter.backend.calls().iter().map(|record| record.call);
     assert!(
-        kinds.eq([Call::ForceTorqueOff; JOINTS]
+        kinds.eq([Call::ForceTorqueOff; N]
             .into_iter()
             .chain([Call::ClosePorts]))
     );
@@ -1035,7 +1041,7 @@ fn torque_off_reaches_every_actuator_even_when_some_never_answer() -> Result<(),
     let mut adapter = rig(X_TABLE);
     powered(&mut adapter)?;
     let deaf = |index| index == 0 || index == 2;
-    for index in (0..JOINTS).filter(|&index| deaf(index)) {
+    for index in (0..N).filter(|&index| deaf(index)) {
         adapter
             .backend
             .fail(Call::ForceTorqueOff, 0, id(index), BackendError::Timeout);
@@ -1045,7 +1051,7 @@ fn torque_off_reaches_every_actuator_even_when_some_never_answer() -> Result<(),
 
     let tries = |index| if deaf(index) { TORQUE_OFF_ATTEMPTS } else { 1 };
     assert!(forced(&adapter.backend).eq(attempted(tries)));
-    assert!((0..JOINTS).all(|index| adapter.backend.torqued(0, id(index)) == deaf(index)));
+    assert!((0..N).all(|index| adapter.backend.torqued(0, id(index)) == deaf(index)));
     assert_eq!(warned, 2);
     Ok(())
 }
@@ -1061,7 +1067,7 @@ fn torque_off_retries_an_actuator_until_it_answers() -> Result<(), DynamixelErro
     let warned = warnings(OFF_FAILED, || adapter.torque_off());
 
     assert!(forced(&adapter.backend).eq(attempted(|index| if index == 1 { 3 } else { 1 })));
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
     assert_eq!(warned, 0);
     Ok(())
 }
@@ -1107,8 +1113,8 @@ fn every_actuator_ends_torque_off_read_only_included() -> Result<(), DynamixelEr
     adapter.torque_off();
     adapter.close();
 
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
-    assert!(forced(&adapter.backend).eq((0..JOINTS).map(id)));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!(forced(&adapter.backend).eq((0..N).map(id)));
     assert_eq!(last_call(&adapter.backend), Some(Call::ClosePorts));
     Ok(())
 }
@@ -1128,8 +1134,8 @@ fn a_bring_up_error_after_open_leaves_no_id_powered() -> Result<(), DynamixelErr
     adapter.torque_off();
     adapter.close();
 
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
-    assert!(forced(&adapter.backend).eq((0..JOINTS).map(id)));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!(forced(&adapter.backend).eq((0..N).map(id)));
     assert_eq!(last_call(&adapter.backend), Some(Call::ClosePorts));
     Ok(())
 }
@@ -1162,9 +1168,9 @@ fn torque_off_twice_is_harmless() -> Result<(), DynamixelError> {
     adapter.torque_off();
     adapter.close();
 
-    assert_eq!(adapter.backend.count(Call::ForceTorqueOff), 2 * JOINTS);
+    assert_eq!(adapter.backend.count(Call::ForceTorqueOff), 2 * N);
     assert_eq!(adapter.backend.count(Call::ClosePorts), 2);
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
@@ -1227,7 +1233,7 @@ fn started(backend: &Scripted) -> impl Iterator<Item = u8> + '_ {
 /// `check`, `configure` and `read_all` on an adapter marked open; the
 /// backend log is cleared afterwards, for `torque_on` alone.
 fn configured<const NB: usize>(
-    adapter: &mut Dynamixel<Scripted, NB>,
+    adapter: &mut Dynamixel<Scripted, NB, N>,
 ) -> Result<(), DynamixelError> {
     adapter.check(Overrides::default())?;
     mark_open(adapter);
@@ -1260,7 +1266,7 @@ fn torque_on_starts_each_position_actuator_at_its_present_position_read_then()
         assert_eq!(i32::try_from(goal), Ok(present(index)), "actuator {index}");
         assert!(adapter.backend.torqued(actuator.bus, id(index)));
     }
-    let wrist = (0..JOINTS).filter(|index| index % 2 == 1).count();
+    let wrist = (0..N).filter(|index| index % 2 == 1).count();
     assert_eq!(
         adapter.backend.count(Call::SyncReadState),
         Scripted::STATE_READS.len()
@@ -1278,7 +1284,7 @@ fn torque_on_reads_then_writes_the_goal_then_enables_the_torque() -> Result<(), 
     adapter.torque_on()?;
 
     let backend = &adapter.backend;
-    for index in 0..JOINTS {
+    for index in 0..N {
         let read = first(backend, Call::SyncReadState, 0, id(index));
         let goal = first(backend, Call::SyncWriteStartGoal, 0, id(index));
         let torque = first(backend, Call::Torque, 0, id(index));
@@ -1297,7 +1303,7 @@ fn torque_on_zeroes_goal_velocity_and_goal_current() -> Result<(), DynamixelErro
     table.actuators[1].mode = Mode::Velocity;
     table.actuators[2].mode = Mode::Current;
     let at = core::array::from_fn(|index| index);
-    let mut adapter = Dynamixel::new(Scripted::new(), Placement { table, at });
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), Placement { table, at });
     adapter
         .backend
         .left_goal(0, id(1), GoalRegister::Velocity, 120)
@@ -1311,7 +1317,7 @@ fn torque_on_zeroes_goal_velocity_and_goal_current() -> Result<(), DynamixelErro
     assert_eq!(backend.goal(0, id(1), GoalRegister::Velocity), 0);
     assert_eq!(backend.goal(0, id(2), GoalRegister::Current), 0);
     assert_eq!(backend.goal(0, id(1), GoalRegister::Position), 4000);
-    assert!((0..JOINTS).all(|index| backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| backend.torqued(0, id(index))));
     assert_eq!(backend.count(Call::SyncWriteStartGoal), 3);
     Ok(())
 }
@@ -1335,7 +1341,7 @@ fn a_failed_present_read_keeps_the_torque_off_and_names_the_actuator() -> Result
     );
     assert_eq!(adapter.backend.count(Call::SyncWriteStartGoal), 0);
     assert_eq!(adapter.backend.count(Call::Torque), 0);
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
@@ -1500,7 +1506,7 @@ fn a_failed_read_keeps_the_copied_value_and_sets_stale() -> Result<(), Dynamixel
         velocity: 10,
         current: 100,
     };
-    for index in 0..JOINTS {
+    for index in 0..N {
         adapter.backend.state(0, id(index), fresh);
     }
     adapter
@@ -1536,7 +1542,7 @@ fn a_failed_group_read_keeps_every_value_and_sets_bus_error() -> Result<(), Dyna
     assert_eq!(refreshed, Mask::NONE);
     assert_eq!((faults.stale, faults.bus_error), (Mask::ALL, Mask::ALL));
     assert_eq!(faults.offline, Mask::NONE);
-    assert_eq!(slot.q, [Q(9.0); JOINTS]);
+    assert_eq!(slot.q, [Q(9.0); N]);
     Ok(())
 }
 
@@ -1553,7 +1559,7 @@ fn a_failed_protocol_1_read_keeps_the_copied_value() -> Result<(), DynamixelErro
     assert_eq!(faults.stale, mask(|index| index == 0));
     assert_eq!(faults.offline, mask(|index| index == 0));
     assert_eq!(slot.q[0], Q(9.0));
-    assert_eq!(adapter.backend.count(Call::ReadPosition), JOINTS);
+    assert_eq!(adapter.backend.count(Call::ReadPosition), N);
     Ok(())
 }
 
@@ -1576,7 +1582,7 @@ fn a_failed_write_sets_bus_error_and_the_next_tick_still_writes() -> Result<(), 
     let faults = write(&mut adapter, &layout, &desired);
     assert_eq!(faults, Faults::default());
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 3);
-    assert_eq!(adapter.backend.last_goals().len(), JOINTS);
+    assert_eq!(adapter.backend.last_goals().len(), N);
     Ok(())
 }
 
@@ -1600,7 +1606,7 @@ fn an_out_of_range_target_is_rejected_and_the_rest_is_sent() -> Result<(), Dynam
         );
         assert_eq!(faults.bus_error, Mask::NONE);
         let sent = adapter.backend.last_goals().iter().map(|&(id, _)| id);
-        assert!(sent.eq((3..JOINTS).map(id)));
+        assert!(sent.eq((3..N).map(id)));
     }
     Ok(())
 }
@@ -1649,7 +1655,7 @@ fn an_infinite_target_is_rejected_never_sent() -> Result<(), DynamixelError> {
     assert_eq!(faults.rejected, mask(|index| index < 2));
     assert_eq!(faults.bus_error, Mask::NONE);
     let sent = adapter.backend.last_goals().iter().map(|&(id, _)| id);
-    assert!(sent.eq((2..JOINTS).map(id)));
+    assert!(sent.eq((2..N).map(id)));
     Ok(())
 }
 
@@ -1700,7 +1706,7 @@ fn check_warns_once_per_protocol_1_actuator_that_its_rates_are_unread() {
     });
 
     assert!(claim.is_some());
-    assert_eq!(warned, JOINTS / 2);
+    assert_eq!(warned, N / 2);
     assert!(adapter.backend.calls().is_empty());
 }
 
@@ -1826,7 +1832,7 @@ fn protocol_1_health_checks_the_actuators_own_limits() -> Result<(), DynamixelEr
         .iter()
         .filter(|record| record.call == Call::ReadHealth && record.port == 1)
         .count();
-    assert_eq!(wrist, JOINTS / 2);
+    assert_eq!(wrist, N / 2);
 
     let cases = [
         (
@@ -1957,14 +1963,14 @@ fn a_group_timeout_is_a_bus_error_and_never_blames_one_actuator() -> Result<(), 
 
 #[test]
 fn protocol_1_rates_are_declared_unread() {
-    let unread = tick::unread_rates(&Placed::new(&MIX_TABLE.in_order()));
+    let unread = tick::unread_rates(&Placed::<N>::new(&MIX_TABLE.in_order()));
     assert_eq!(unread, mask(|index| index % 2 == 1));
     assert_eq!(
-        tick::unread_rates(&Placed::new(&X_TABLE.in_order())),
+        tick::unread_rates(&Placed::<N>::new(&X_TABLE.in_order())),
         Mask::NONE
     );
     assert_eq!(
-        tick::unread_rates(&Placed::new(&AX_TABLE.in_order())),
+        tick::unread_rates(&Placed::<N>::new(&AX_TABLE.in_order())),
         Mask::ALL
     );
 }
@@ -1976,7 +1982,7 @@ fn read_cost_counts_every_sync_read_of_the_backend() -> Result<(), DynamixelErro
 
     // Current, velocity and position: one 14-byte instruction each, then per
     // member its id and a status of 11 bytes around the data.
-    let members = JOINTS as u64;
+    let members = N as u64;
     let bytes: u64 = [2, 4, 4]
         .iter()
         .map(|data| 14 + members * (1 + 11 + data))
@@ -2086,9 +2092,9 @@ fn protocol_1_reads_its_angle_limits_never_a_setting() -> Result<(), DynamixelEr
             .all(|record| record.port == port)
     };
     assert!(on(Call::ReadSetting, 0) && on(Call::ReadAngleLimits, 1));
-    let x = (0..JOINTS).filter(|index| index % 2 == 0).count();
+    let x = (0..N).filter(|index| index % 2 == 0).count();
     assert_eq!(adapter.backend.count(Call::ReadSetting), 2 * x);
-    assert_eq!(adapter.backend.count(Call::ReadAngleLimits), JOINTS - x);
+    assert_eq!(adapter.backend.count(Call::ReadAngleLimits), N - x);
     Ok(())
 }
 
@@ -2154,7 +2160,7 @@ fn a_failed_angle_limit_read_names_the_actuator() -> Result<(), DynamixelError> 
 }
 
 /// The RX-28 chain with actuator 1 limited to raw `300..=700`, at raw 500.
-fn limited() -> Dynamixel<Scripted, 1> {
+fn limited() -> Dynamixel<Scripted, 1, N> {
     let mut adapter = rig(RX_TABLE);
     adapter
         .backend
@@ -2191,12 +2197,12 @@ fn hold_skips_a_target_outside_the_angle_limits() -> Result<(), DynamixelError> 
     let mut adapter = limited();
     powered(&mut adapter)?;
     let mut last = Desired::new();
-    last.q = [si(Model::Rx28, 200); JOINTS];
+    last.q = [si(Model::Rx28, 200); N];
 
     adapter.hold(last.command());
 
     let held = adapter.backend.last_goals().iter().map(|&(id, _)| id);
-    assert!(held.eq((0..JOINTS).filter(|&index| index != 1).map(id)));
+    assert!(held.eq((0..N).filter(|&index| index != 1).map(id)));
     Ok(())
 }
 
@@ -2236,7 +2242,7 @@ fn a_present_position_outside_the_angle_limits_powers_nothing() -> Result<(), Dy
 #[test]
 fn rx28_chain_runs_every_step_on_protocol_1() -> Result<(), DynamixelError> {
     let mut adapter = rig(RX_TABLE);
-    for index in 0..JOINTS {
+    for index in 0..N {
         let raw = 400 + 10 * i32::try_from(index).unwrap_or(0);
         adapter.backend.position(0, id(index), raw);
     }
@@ -2264,16 +2270,16 @@ fn rx28_chain_runs_every_step_on_protocol_1() -> Result<(), DynamixelError> {
         assert_eq!(*q, si(Model::Rx28, raw));
     }
     let counts = [
-        (Call::Ping, JOINTS),
-        (Call::ReadHealth, JOINTS),
-        (Call::ReadAngleLimits, JOINTS),
+        (Call::Ping, N),
+        (Call::ReadHealth, N),
+        (Call::ReadAngleLimits, N),
         (Call::ReadSetting, 0),
-        (Call::ReadPosition, 3 * JOINTS),
+        (Call::ReadPosition, 3 * N),
         (Call::SyncReadState, 0),
         (Call::SyncWriteStartGoal, 1),
-        (Call::Torque, JOINTS),
+        (Call::Torque, N),
         (Call::SyncWriteGoal, 2),
-        (Call::ForceTorqueOff, JOINTS),
+        (Call::ForceTorqueOff, N),
         (Call::ClosePorts, 1),
     ];
     for (call, count) in counts {
@@ -2281,7 +2287,7 @@ fn rx28_chain_runs_every_step_on_protocol_1() -> Result<(), DynamixelError> {
     }
     let start = adapter.backend.last(Call::SyncWriteStartGoal);
     let start = start.map(|record| adapter.backend.goals(record));
-    let expected: [(u8, u32); JOINTS] =
+    let expected: [(u8, u32); N] =
         core::array::from_fn(|index| (id(index), 400 + 10 * index as u32));
     assert_eq!(start, Some(&expected[..]));
     assert!(
@@ -2291,7 +2297,7 @@ fn rx28_chain_runs_every_step_on_protocol_1() -> Result<(), DynamixelError> {
             .iter()
             .all(|&(_, raw)| raw == 512)
     );
-    assert!((0..JOINTS).all(|index| !adapter.backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| !adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
@@ -2321,7 +2327,7 @@ fn a_powered_actuator_left_on_still_comes_up() -> Result<(), DynamixelError> {
 
     adapter.configure()?;
     adapter.torque_on()?;
-    assert!((0..JOINTS).all(|index| adapter.backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| adapter.backend.torqued(0, id(index))));
     Ok(())
 }
 
@@ -2384,8 +2390,10 @@ fn table_of_rx28_chain_passes_check_with_ten_actuators() {
 
 #[test]
 fn table_preset_costs_are_the_ones_check_declares() -> Result<(), DynamixelError> {
-    let declared = |claim: Claim| (claim.read_cost, claim.write_cost);
-    let mut bench = Dynamixel::new(Scripted::new(), XmBench::HARDWARE.in_order());
+    fn declared<const M: usize>(claim: Claim<M>) -> (Duration, Duration) {
+        (claim.read_cost, claim.write_cost)
+    }
+    let mut bench = Dynamixel::<_, _, N>::new(Scripted::new(), XmBench::HARDWARE.in_order());
     assert_eq!(
         declared(bench.check(Overrides::default())?),
         (XmBench::READ_COST, XmBench::WRITE_COST)
@@ -2394,13 +2402,11 @@ fn table_preset_costs_are_the_ones_check_declares() -> Result<(), DynamixelError
     assert_eq!(XmBench::READ_COST, Duration::from_micros(2_260));
     assert_eq!(XmBench::WRITE_COST, Duration::from_micros(340));
 
-    if Rx28Chain::HARDWARE.actuators.len() <= JOINTS {
-        let mut chain = Dynamixel::new(Scripted::new(), Rx28Chain::HARDWARE.in_order());
-        assert_eq!(
-            declared(chain.check(Overrides::default())?),
-            (Rx28Chain::READ_COST, Rx28Chain::WRITE_COST)
-        );
-    }
+    let mut chain = Dynamixel::<_, _, 10>::new(Scripted::new(), Rx28Chain::HARDWARE.in_order());
+    assert_eq!(
+        declared(chain.check(Overrides::default())?),
+        (Rx28Chain::READ_COST, Rx28Chain::WRITE_COST)
+    );
     assert_eq!(
         declared(rig(MIX_TABLE).check(Overrides::default())?),
         declared_costs(&MIX_TABLE)
@@ -2413,7 +2419,7 @@ fn table_bus_without_a_cadence_reads_every_default_read_every_ticks() -> Result<
 {
     let mut adapter = rig(SILENT_TABLE);
     let layout = powered(&mut adapter)?;
-    assert_eq!(layout.read_every, [DEFAULT_READ_EVERY; JOINTS]);
+    assert_eq!(layout.read_every, [DEFAULT_READ_EVERY; N]);
 
     let every = u64::from(DEFAULT_READ_EVERY.get());
     for call in 0..3 * every {
@@ -2436,8 +2442,7 @@ fn table_bus_without_a_cadence_reads_every_default_read_every_ticks() -> Result<
 #[test]
 fn table_of_xm_bench_writes_once_per_bus_and_series() -> Result<(), DynamixelError> {
     // XmBench has four actuators: a core built for another count cannot rig it.
-    let Ok(actuators) = <[Actuator; JOINTS]>::try_from(XmBench::HARDWARE.actuators.as_slice())
-    else {
+    let Ok(actuators) = <[Actuator; N]>::try_from(XmBench::HARDWARE.actuators.as_slice()) else {
         return Ok(());
     };
     let mut adapter = rig(Table {
@@ -2445,7 +2450,7 @@ fn table_of_xm_bench_writes_once_per_bus_and_series() -> Result<(), DynamixelErr
         actuators,
     });
     let layout = powered(&mut adapter)?;
-    assert_eq!(layout.group, [Group(0); JOINTS]);
+    assert_eq!(layout.group, [Group(0); N]);
 
     let faults = write(&mut adapter, &layout, &Desired::all_q());
 
@@ -2456,7 +2461,7 @@ fn table_of_xm_bench_writes_once_per_bus_and_series() -> Result<(), DynamixelErr
         .iter()
         .filter(|record| record.call == Call::SyncWriteGoal);
     let sent = writes.map(|record| (record.port, record.model, record.count));
-    assert!(sent.eq([(0, Some(Model::Xm430W210), JOINTS)]));
+    assert!(sent.eq([(0, Some(Model::Xm430W210), N)]));
     Ok(())
 }
 
@@ -2464,13 +2469,13 @@ fn table_of_xm_bench_writes_once_per_bus_and_series() -> Result<(), DynamixelErr
 
 /// `table` refuses `plugins` with `error`, the backend untouched and no bus
 /// bound.
-fn refuses<const NB: usize>(table: Table<NB, JOINTS>, plugins: &[Binding], error: DynamixelError) {
+fn refuses<const NB: usize>(table: Table<NB, N>, plugins: &[Binding], error: DynamixelError) {
     let mut adapter = rig(table);
     assert_eq!(adapter.attach(plugins), Err(error));
     assert!(adapter.backend.calls().is_empty());
     assert_eq!(adapter.ports, [None; NB]);
     assert_eq!(
-        Dynamixel::bind(Scripted::new(), table.in_order(), plugins).err(),
+        Dynamixel::<_, _, N>::bind(Scripted::new(), table.in_order(), plugins).err(),
         Some(error)
     );
 }
@@ -2562,7 +2567,7 @@ fn binding_one_bus_needs_no_label_and_takes_the_plugin_baud() -> Result<(), Dyna
         baud: Some(3_000_000),
         ..X_PLUGINS[0]
     };
-    let adapter = Dynamixel::bind(Scripted::new(), X_TABLE.in_order(), &[fast])?;
+    let adapter = Dynamixel::<_, _, N>::bind(Scripted::new(), X_TABLE.in_order(), &[fast])?;
     assert_eq!(adapter.ports, [Some(fast.port)]);
     assert_eq!(adapter.buses[0].baud, 3_000_000);
     assert!(adapter.backend.calls().is_empty());
@@ -2571,14 +2576,14 @@ fn binding_one_bus_needs_no_label_and_takes_the_plugin_baud() -> Result<(), Dyna
         bus: Some("x"),
         ..X_PLUGINS[0]
     };
-    let adapter = Dynamixel::bind(Scripted::new(), X_TABLE.in_order(), &[labelled])?;
+    let adapter = Dynamixel::<_, _, N>::bind(Scripted::new(), X_TABLE.in_order(), &[labelled])?;
     assert_eq!(adapter.buses[0].baud, 1_000_000);
     Ok(())
 }
 
 #[test]
 fn binding_by_label_ignores_the_plugin_order() -> Result<(), DynamixelError> {
-    let adapter = Dynamixel::bind(
+    let adapter = Dynamixel::<_, _, N>::bind(
         Scripted::new(),
         MIX_TABLE.in_order(),
         &[MIX_PLUGINS[1], MIX_PLUGINS[0]],
@@ -2752,7 +2757,7 @@ fn subset() -> Mask {
 
 /// A distinct target for every engine index: `0.1 * index` rad, so a goal
 /// shows the index it came from.
-fn ramp() -> [Q; JOINTS] {
+fn ramp() -> [Q; N] {
     core::array::from_fn(|index| Q(0.1 * index as f32))
 }
 
@@ -2812,7 +2817,7 @@ fn only_subset_called_refuses_another_index() {
 
 #[test]
 fn placement_maps_each_actuator_to_its_engine_index() {
-    let placed = Placed::new(&SUBSET);
+    let placed = Placed::<N>::new(&SUBSET);
     assert_eq!(placed.owned(), subset());
     assert_eq!(placed.get(3).map(|a| a.model), Some(Model::Xm430W210));
     assert_eq!(placed.get(1).map(|a| a.model), Some(Model::Ax12a));
@@ -2836,8 +2841,8 @@ fn a_placed_member_claims_its_indices_with_local_groups() -> Result<(), Dynamixe
 }
 
 /// [`SUBSET`] on a fresh scripted backend, no bus bound.
-fn rig_placed() -> Dynamixel<Scripted, 2> {
-    Dynamixel::new(Scripted::new(), SUBSET)
+fn rig_placed() -> Dynamixel<Scripted, 2, N> {
+    Dynamixel::<_, _, N>::new(Scripted::new(), SUBSET)
 }
 
 #[test]
@@ -2857,7 +2862,7 @@ fn a_placed_member_brings_up_only_its_actuators() -> Result<(), DynamixelError> 
     assert!(only_subset_called(&adapter.backend));
     assert_eq!(adapter.backend.count(Call::Ping), 2);
     assert_eq!(adapter.backend.count(Call::Torque), 2);
-    for index in (0..JOINTS).filter(|&index| !subset().get(index)) {
+    for index in (0..N).filter(|&index| !subset().get(index)) {
         assert_eq!(
             (slot.q[index], slot.qd[index], slot.tau[index]),
             (Q(7.0), Qd(7.0), Tau(7.0)),
@@ -2876,7 +2881,7 @@ fn a_placed_member_reads_and_faults_only_its_slots() -> Result<(), DynamixelErro
 
     let (refreshed, faults) = read(&mut adapter, &mut slot);
     assert_eq!((refreshed, faults), (subset(), Faults::default()));
-    for index in (0..JOINTS).filter(|&index| !subset().get(index)) {
+    for index in (0..N).filter(|&index| !subset().get(index)) {
         assert_eq!(slot.q[index], Q(7.0), "slot {index} is another member's");
     }
 
@@ -2939,8 +2944,8 @@ impl Hal for Rest {
     fn check(&mut self, _overrides: Overrides) -> Result<Claim, Self::Error> {
         Ok(Claim {
             owned: Mask::ALL.difference(subset()),
-            group: [Group(0); JOINTS],
-            read_every: [NonZeroU32::MIN; JOINTS],
+            group: [Group(0); N],
+            read_every: [NonZeroU32::MIN; N],
             read_cost: Duration::ZERO,
             write_cost: Duration::ZERO,
         })
@@ -3007,7 +3012,7 @@ fn a_placed_member_runs_beside_another_one_on_its_own_actuators() -> io::Result<
     roots.link(ARM, &arm.slave)?;
     roots.link(WRIST, &wrist.slave)?;
     let plugins = [plugin(ARM, Some("arm")), plugin(WRIST, Some("wrist"))];
-    let Ok(adapter) = Dynamixel::bind(Scripted::new(), SUBSET, &plugins) else {
+    let Ok(adapter) = Dynamixel::<_, _, N>::bind(Scripted::new(), SUBSET, &plugins) else {
         panic!("both buses are bound");
     };
     let mut adapter = roots.rig(adapter);
@@ -3056,15 +3061,15 @@ fn engine() -> MutexGuard<'static, ()> {
 
 /// [`X_TABLE`] bound to the pseudo-terminal `pty` by its serial, resolved
 /// under `roots`.
-fn x_on(roots: &Roots, pty: &Pty) -> io::Result<Dynamixel<Scripted, 1>> {
+fn x_on(roots: &Roots, pty: &Pty) -> io::Result<Dynamixel<Scripted, 1, N>> {
     roots.link(X_SERIAL, &pty.slave)?;
     Ok(roots.rig(bound(X_TABLE, &X_PLUGINS)))
 }
 
 /// `adapter` as the robot's only member, kept after the run.
 fn alone(
-    adapter: &mut Dynamixel<Scripted, 1>,
-) -> kmr_core::HCons<&mut Dynamixel<Scripted, 1>, kmr_core::HNil> {
+    adapter: &mut Dynamixel<Scripted, 1, N>,
+) -> kmr_core::HCons<&mut Dynamixel<Scripted, 1, N>, kmr_core::HNil> {
     kmr_core::HCons {
         head: adapter,
         tail: kmr_core::HNil,
@@ -3074,7 +3079,7 @@ fn alone(
 /// A robot of 1 ms ticks that holds on a shutdown, running `control` each
 /// tick on `adapter` alone.
 fn run_alone(
-    adapter: &mut Dynamixel<Scripted, 1>,
+    adapter: &mut Dynamixel<Scripted, 1, N>,
     control: impl Fn(&kmr_core::Time, &mut kmr_core::RobotState, &kmr_core::Sensors),
 ) -> Result<(), HardwareError<MemberError<DynamixelError, core::convert::Infallible>>> {
     kmr_core::Robot::new()
@@ -3100,7 +3105,7 @@ fn ends_cut_and_closed(backend: &Scripted, forced_ids: impl Iterator<Item = u8>)
     assert!(tail(backend, off + 1).eq(expected));
     assert!(forced(backend).eq(forced_ids));
     assert_eq!(backend.count(Call::ClosePorts), 1);
-    assert!((0..JOINTS).all(|index| !backend.torqued(0, id(index))));
+    assert!((0..N).all(|index| !backend.torqued(0, id(index))));
 }
 
 #[test]
@@ -3122,9 +3127,9 @@ fn engine_shutdown_writes_three_ticks_holds_then_cuts_and_closes() -> io::Result
     assert!(run.is_ok(), "{run:?}");
     let backend = &adapter.backend;
     assert_eq!(backend.count(Call::SyncWriteGoal), 3 + 1);
-    let off = JOINTS + 1;
+    let off = N + 1;
     assert_eq!(tail(backend, off + 1).next(), Some(Call::SyncWriteGoal));
-    let held = (0..JOINTS).map(|index| {
+    let held = (0..N).map(|index| {
         let raw = tick::position_goal(&X_TABLE.actuators[index], ramp()[index]);
         (id(index), raw)
     });
@@ -3134,7 +3139,7 @@ fn engine_shutdown_writes_three_ticks_holds_then_cuts_and_closes() -> io::Result
         .iter()
         .map(|&(id, raw)| (id, Some(raw)));
     assert!(sent.eq(held));
-    ends_cut_and_closed(backend, (0..JOINTS).map(id));
+    ends_cut_and_closed(backend, (0..N).map(id));
     Ok(())
 }
 
@@ -3156,7 +3161,7 @@ fn engine_emergency_stop_skips_its_tick_write_and_the_hold() -> io::Result<()> {
 
     assert!(run.is_ok(), "{run:?}");
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 2);
-    ends_cut_and_closed(&adapter.backend, (0..JOINTS).map(id));
+    ends_cut_and_closed(&adapter.backend, (0..N).map(id));
     Ok(())
 }
 
@@ -3205,7 +3210,7 @@ fn engine_controller_panic_cuts_and_closes_then_goes_on() -> io::Result<()> {
 
     assert!(unwound.is_err(), "the panic goes on past the engine");
     assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
-    ends_cut_and_closed(&adapter.backend, (0..JOINTS).map(id));
+    ends_cut_and_closed(&adapter.backend, (0..N).map(id));
     Ok(())
 }
 
@@ -3218,10 +3223,10 @@ const fn on_mx(index: usize) -> bool {
 
 /// Even actuators: AX-12A on bus `ax`. Odd ones: `mx` on bus `mx`. Both at
 /// 1 Mbit/s, read every tick.
-const fn ax_beside_mx(mx: Model) -> Table<2, JOINTS> {
+const fn ax_beside_mx(mx: Model) -> Table<2, N> {
     let mut actuators = chain(Model::Ax12a);
     let mut index = 0;
-    while index < JOINTS {
+    while index < N {
         if on_mx(index) {
             actuators[index].bus = 1;
             actuators[index].model = mx;
@@ -3244,9 +3249,9 @@ const fn ax_beside_mx(mx: Model) -> Table<2, JOINTS> {
 }
 
 /// An AX-12 bus beside a Protocol 1 MX-64 bus.
-const AX_MX_TABLE: Table<2, JOINTS> = ax_beside_mx(Model::Mx64).check();
+const AX_MX_TABLE: Table<2, N> = ax_beside_mx(Model::Mx64).check();
 /// An AX-12 bus beside an MX-64(2.0) bus.
-const AX_MX2_TABLE: Table<2, JOINTS> = ax_beside_mx(Model::Mx64V2).check();
+const AX_MX2_TABLE: Table<2, N> = ax_beside_mx(Model::Mx64V2).check();
 
 /// Raw present position of actuator `index` in the MX-64 scenarios: past
 /// the AX range on the MX-64 bus.
@@ -3263,10 +3268,10 @@ fn mx_scenario_raw(index: usize) -> i32 {
 /// [`mx_scenario_raw`] with their whole angle range; the read slot is
 /// returned with the claim.
 fn run_ax_beside_mx(
-    table: Table<2, JOINTS>,
-) -> Result<(Dynamixel<Scripted, 2>, Claim, Slot), DynamixelError> {
+    table: Table<2, N>,
+) -> Result<(Dynamixel<Scripted, 2, N>, Claim, Slot), DynamixelError> {
     let mut adapter = rig(table);
-    for index in 0..JOINTS {
+    for index in 0..N {
         let bus = usize::from(on_mx(index));
         let state = RawState {
             position: mx_scenario_raw(index),
@@ -3325,7 +3330,7 @@ fn goals_are(
     select: impl Fn(usize) -> bool,
     raw: impl Fn(usize) -> u32,
 ) -> bool {
-    let expected = (0..JOINTS)
+    let expected = (0..N)
         .filter(|&index| select(index))
         .map(|index| (id(index), raw(index)));
     goals.is_some_and(|goals| goals.iter().copied().eq(expected))
@@ -3336,7 +3341,7 @@ fn an_ax12_bus_beside_an_mx64_bus_is_one_group_per_bus_on_either_firmware()
 -> Result<(), DynamixelError> {
     for table in [AX_MX_TABLE, AX_MX2_TABLE] {
         let claim = rig(table).check(Overrides::default())?;
-        for index in 0..JOINTS {
+        for index in 0..N {
             assert_eq!(claim.group[index], Group(u8::from(on_mx(index))));
         }
         assert_eq!(claim.owned, Mask::ALL);
@@ -3349,7 +3354,7 @@ fn an_ax12_bus_beside_an_mx64_bus_is_one_group_per_bus_on_either_firmware()
 fn an_ax12_bus_beside_a_protocol_1_mx64_bus_runs_every_step() -> Result<(), DynamixelError> {
     let (adapter, _, slot) = run_ax_beside_mx(AX_MX_TABLE)?;
     let backend = &adapter.backend;
-    let mx = (0..JOINTS).filter(|&index| on_mx(index)).count();
+    let mx = (0..N).filter(|&index| on_mx(index)).count();
 
     for (index, q) in slot.q.iter().enumerate() {
         let model = if on_mx(index) {
@@ -3361,21 +3366,22 @@ fn an_ax12_bus_beside_a_protocol_1_mx64_bus_runs_every_step() -> Result<(), Dyna
         assert_eq!(slot.qd[index], Qd(9.0), "Protocol 1 rates are unread");
     }
     let counts = [
-        (Call::ReadModelNumber, JOINTS),
-        (Call::ReadAngleLimits, JOINTS),
+        (Call::ReadModelNumber, N),
+        (Call::ReadAngleLimits, N),
         (Call::ReadSetting, mx),
         (Call::SyncReadState, 0),
-        (Call::ReadPosition, 3 * JOINTS),
-        (Call::Torque, JOINTS),
-        (Call::ForceTorqueOff, JOINTS),
+        (Call::ReadPosition, 3 * N),
+        (Call::Torque, N),
+        (Call::ForceTorqueOff, N),
     ];
     for (call, count) in counts {
         assert_eq!(backend.count(call), count, "{call:?}");
     }
-    assert!(sent(backend, Call::SyncWriteGoal).take(2).eq([
-        (0, Some(Model::Ax12a), JOINTS - mx),
-        (1, Some(Model::Mx64), mx),
-    ]));
+    assert!(
+        sent(backend, Call::SyncWriteGoal)
+            .take(2)
+            .eq([(0, Some(Model::Ax12a), N - mx), (1, Some(Model::Mx64), mx),])
+    );
     let start = |index| mx_scenario_raw(index).cast_unsigned();
     assert!(goals_are(
         goals_on(backend, Call::SyncWriteStartGoal, 1),
@@ -3399,7 +3405,7 @@ fn an_ax12_bus_beside_a_protocol_1_mx64_bus_runs_every_step() -> Result<(), Dyna
 fn an_ax12_bus_beside_an_mx64_v2_bus_runs_every_step() -> Result<(), DynamixelError> {
     let (adapter, _, slot) = run_ax_beside_mx(AX_MX2_TABLE)?;
     let backend = &adapter.backend;
-    let mx = (0..JOINTS).filter(|&index| on_mx(index)).count();
+    let mx = (0..N).filter(|&index| on_mx(index)).count();
 
     for (index, q) in slot.q.iter().enumerate() {
         let model = if on_mx(index) {
@@ -3419,19 +3425,19 @@ fn an_ax12_bus_beside_an_mx64_v2_bus_runs_every_step() -> Result<(), DynamixelEr
         }
     }
     let counts = [
-        (Call::ReadAngleLimits, JOINTS - mx),
+        (Call::ReadAngleLimits, N - mx),
         (Call::ReadSetting, 2 * mx),
         (Call::SyncReadState, 3 * Scripted::STATE_READS.len()),
-        (Call::ReadPosition, 3 * (JOINTS - mx)),
-        (Call::Torque, JOINTS),
-        (Call::ForceTorqueOff, JOINTS),
+        (Call::ReadPosition, 3 * (N - mx)),
+        (Call::Torque, N),
+        (Call::ForceTorqueOff, N),
     ];
     for (call, count) in counts {
         assert_eq!(backend.count(call), count, "{call:?}");
     }
     assert!(sent(backend, Call::SyncReadState).all(|read| read == (1, Some(Model::Mx64V2), mx)));
     assert!(sent(backend, Call::SyncWriteGoal).take(2).eq([
-        (0, Some(Model::Ax12a), JOINTS - mx),
+        (0, Some(Model::Ax12a), N - mx),
         (1, Some(Model::Mx64V2), mx),
     ]));
     assert!(goals_are(
@@ -3456,17 +3462,17 @@ fn a_protocol_1_mx64_shares_the_ax_sync_write_on_one_bus() -> Result<(), Dynamix
     }
     .check();
     let mut adapter = rig(table);
-    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+    for index in (0..N).filter(|&index| on_mx(index)) {
         adapter.backend.angle_limits(0, id(index), 0, 4095);
     }
     let claim = powered(&mut adapter)?;
-    assert_eq!(claim.group, [Group(0); JOINTS]);
+    assert_eq!(claim.group, [Group(0); N]);
     assert_eq!((claim.read_cost, claim.write_cost), declared_costs(&table));
 
     let faults = write(&mut adapter, &claim, &Desired::all_q());
 
     assert_eq!(faults, Faults::default());
-    assert!(sent(&adapter.backend, Call::SyncWriteGoal).eq([(0, Some(Model::Ax12a), JOINTS)]));
+    assert!(sent(&adapter.backend, Call::SyncWriteGoal).eq([(0, Some(Model::Ax12a), N)]));
     let centre = |index| if on_mx(index) { 2048 } else { 512 };
     assert!(goals_are(
         Some(adapter.backend.last_goals()),
@@ -3490,7 +3496,7 @@ fn an_mx64_v2_shares_the_x_sync_read_and_write_on_one_bus() -> Result<(), Dynami
     }
     .check());
     let claim = powered(&mut adapter)?;
-    assert_eq!(claim.group, [Group(0); JOINTS]);
+    assert_eq!(claim.group, [Group(0); N]);
 
     let (refreshed, _) = read(&mut adapter, &mut Slot::filled(0.0));
     let faults = write(&mut adapter, &claim, &Desired::all_q());
@@ -3500,7 +3506,7 @@ fn an_mx64_v2_shares_the_x_sync_read_and_write_on_one_bus() -> Result<(), Dynami
         adapter.backend.count(Call::SyncReadState),
         Scripted::STATE_READS.len()
     );
-    assert!(sent(&adapter.backend, Call::SyncWriteGoal).eq([(0, Some(Model::Xm430W210), JOINTS)]));
+    assert!(sent(&adapter.backend, Call::SyncWriteGoal).eq([(0, Some(Model::Xm430W210), N)]));
     Ok(())
 }
 
@@ -3537,7 +3543,7 @@ fn an_ax12_at_4095_angle_limits_is_no_multi_turn_mode() -> Result<(), DynamixelE
     let mut adapter = rig(AX_MX_TABLE);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
-    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+    for index in (0..N).filter(|&index| on_mx(index)) {
         adapter.backend.angle_limits(1, id(index), 0, 4095);
     }
     adapter.backend.angle_limits(0, id(0), 4095, 4095);
@@ -3550,9 +3556,9 @@ fn an_ax12_at_4095_angle_limits_is_no_multi_turn_mode() -> Result<(), DynamixelE
 /// over their whole range, after `script`.
 fn bring_up_ax_beside_mx(
     script: impl FnOnce(&mut Scripted),
-) -> (Dynamixel<Scripted, 2>, Result<Claim, DynamixelError>) {
+) -> (Dynamixel<Scripted, 2, N>, Result<Claim, DynamixelError>) {
     let mut adapter = rig(AX_MX_TABLE);
-    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+    for index in (0..N).filter(|&index| on_mx(index)) {
         adapter.backend.angle_limits(1, id(index), 0, 4095);
     }
     script(&mut adapter.backend);
@@ -3569,9 +3575,7 @@ fn nothing_powered(backend: &Scripted) -> bool {
 
 /// Pings `table` and checks one Model Number read per actuator, naming its
 /// declared model.
-fn pings_with_model_numbers<const NB: usize>(
-    table: Table<NB, JOINTS>,
-) -> Result<(), DynamixelError> {
+fn pings_with_model_numbers<const NB: usize>(table: Table<NB, N>) -> Result<(), DynamixelError> {
     let mut adapter = rig(table);
     adapter.check(Overrides::default())?;
     mark_open(&mut adapter);
@@ -3695,7 +3699,7 @@ fn an_mx64_in_torque_control_mode_fails_configure_before_any_torque() {
 #[test]
 fn only_the_protocol_1_mx64_reads_torque_ctrl_mode_enable() -> Result<(), DynamixelError> {
     let mut adapter = rig(AX_MX_TABLE);
-    for index in (0..JOINTS).filter(|&index| on_mx(index)) {
+    for index in (0..N).filter(|&index| on_mx(index)) {
         adapter.backend.angle_limits(1, id(index), 0, 4095);
     }
     adapter.check(Overrides::default())?;
@@ -3703,9 +3707,41 @@ fn only_the_protocol_1_mx64_reads_torque_ctrl_mode_enable() -> Result<(), Dynami
 
     adapter.configure()?;
 
-    let readers = (0..JOINTS)
+    let readers = (0..N)
         .filter(|&index| on_mx(index))
         .map(|_| (1, Some(Model::Mx64), 1));
     assert!(sent(&adapter.backend, Call::ReadSetting).eq(readers));
     Ok(())
+}
+
+#[test]
+fn a_placement_past_the_robot_is_refused_at_check() {
+    let placement = Table {
+        buses: [Bus {
+            label: "bus0",
+            baud: 1_000_000,
+            read_every: None,
+        }],
+        actuators: chain(Model::Xm430W210),
+    }
+    .at([0, 1, 2, 7]);
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+
+    assert_eq!(
+        adapter.check(Overrides::default()).err(),
+        Some(DynamixelError::PastTheRobot {
+            actuator: 3,
+            index: 7,
+            actuators: N,
+        })
+    );
+}
+
+#[test]
+fn one_adapter_type_serves_a_ten_actuator_robot() {
+    let mut chain = Dynamixel::<_, _, 10>::new(Scripted::new(), Rx28Chain::HARDWARE.in_order());
+    let claim = chain
+        .check(Overrides::default())
+        .expect("the preset is valid");
+    assert_eq!(claim.owned, Mask::<10>::ALL);
 }
