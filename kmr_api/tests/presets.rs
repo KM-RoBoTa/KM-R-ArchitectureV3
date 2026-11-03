@@ -21,3 +21,14 @@ fn xm_bench_by_name_equals_its_descriptor() {
     assert_eq!(by_name::model::LINK_MASS, by_path::model::LINK_MASS);
     assert_eq!(by_name::model::LINK_COM, by_path::model::LINK_COM);
 }
+
+/// The declared costs of a preset are reachable through `kmr_api` alone
+/// (FR-035 (SRS NFR-11, FR-5.3); plan C7).
+#[test]
+fn xm_bench_declared_costs_through_kmr_api() {
+    use core::time::Duration;
+    use kmr_api::presets::XmBench;
+
+    assert_eq!(XmBench::READ_COST, Duration::from_micros(2_260));
+    assert_eq!(XmBench::WRITE_COST, Duration::from_micros(340));
+}

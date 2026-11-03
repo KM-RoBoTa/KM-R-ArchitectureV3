@@ -6,6 +6,7 @@
 //! (research R15; assumed, pending human: D6, D7).
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use kmr_api::Bus;
 use kmr_bench::alloc::Counting;
@@ -26,6 +27,19 @@ static GLOBAL: Counting = Counting;
 
 /// The U2D2's serial id, from /dev/serial/by-id: the one line two benches differ in.
 const SERIAL: &str = "FT8ISZ6H";
+
+/// The declared read and write cost of the chain (kmr_adapters FR-035).
+#[cfg(not(feature = "two-bus"))]
+const DECLARED: Option<(Duration, Duration)> = Some((
+    kmr_api::presets::XmBench::READ_COST,
+    kmr_api::presets::XmBench::WRITE_COST,
+));
+
+/// The two-bus table declares no cost the bench can reach: kmr_api exposes the presets' costs only.
+// DECISION: `declared_*` are left out of a two-bus report ("when reachable", results-schema)
+// rather than widening kmr_api with the adapter's cost function for one optional bench run.
+#[cfg(feature = "two-bus")]
+const DECLARED: Option<(Duration, Duration)> = None;
 
 /// The second U2D2 of the two-bus chain.
 ///
@@ -93,5 +107,6 @@ fn main() -> ExitCode {
         robot_n: N,
         plugins: &plugins,
         buses: buses.as_str(),
+        declared: DECLARED,
     })
 }

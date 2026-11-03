@@ -14,6 +14,9 @@ kmr_api.workspace = true
 hardware = ["kmr_api/dynamixel"]
 # Optional: `tick_hw` over two U2D2, actuators alternating (research R15; D6, D7 A).
 two-bus = ["hardware"]
+# Batches keep declaration order: the baseline of presort.sh (assumed, pending human: D11 B, the
+# one place with presort.sh). Built into its own target dir, see bench/PROCEDURE.md.
+presort-off = ["kmr_api/presort-off"]
 
 [lints]
 workspace = true

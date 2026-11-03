@@ -1,19 +1,17 @@
 //
 // bench is the reference benchmark: a crate of small binaries that link
 // kmr_api like any user would (black-box, never kmr_core), plus the shell
-// scripts that run them on the bench host. Drawn as it is on this branch:
-// the tick binaries (tick, tick_hw), the counting allocator and the cell,
-// ceiling, budget, footprint and presort scripts are not written yet.
+// scripts that run them on the bench host. Drawn as it is on this branch.
 
 !element kmr.bench {
-    benchSetup = component "bench: setup" "base(dt): the robot every bench binary starts from, through kmr_api's builder only (SRS NFR-8, NFR-1)." "Rust"
+    benchSetup = component "bench: setup" "base(dt): the robot every bench binary starts from, through kmr_api's builder only, Warn on every limit (D2 B, the one place; SRS NFR-8, NFR-1)." "Rust"
     benchPlan = component "bench: run plan" "What one process measures, read once from KMR_BENCH_* before run(); a bad variable fails with bad plan: <var> (SRS NFR-2)." "Rust"
-    benchRecorder = component "bench: recorder" "The statics the probe controllers write each tick and main reads after run(): epoch, grid slot, last end and lateness, tick and overrun counts. All-zero, so in .bss; one writer, relaxed load and store. Its writers, the tick probes, are not written yet." "Rust statics, atomics"
+    benchRecorder = component "bench: recorder" "The statics the probe controllers write each tick and main reads after run(): epoch, grid slot, last end and lateness, tick and overrun counts, lateness and overruns split into read and write-only ticks by the actuators' age at First (SRS FR-3.4). All-zero, so in .bss; one writer, relaxed load and store." "Rust statics, atomics"
     benchMeasure = component "bench: measurement" "Fixed histograms of ns samples, the replay of the engine's tick grid from the bench's own stamps, and the calibrated workload of the budget method with its drift check." "Rust, no heap"
     benchReport = component "bench: report" "Writes a report's [run] and [figures] blocks to KMR_BENCH_OUT through a fixed buffer, and reads footprint and host facts from /proc/self." "Rust, no heap"
-    benchBins = component "bench: footprint binaries" "minimal (the engine with three no-op controllers and a stop counter) and baseline (a process that never builds a robot): peak RSS and stack for the footprint (SRS NFR-8 e)." "Rust binaries"
+    benchBins = component "bench: binaries" "tick (the probed 1 kHz run, simulated) and tick_hw (the same on the reference chain, feature hardware: read and write-only ticks apart, read cadence and declared costs), minimal (the engine with three no-op controllers and a stop counter) and baseline (a process that never builds a robot): peak RSS and stack for the footprint (SRS NFR-8 e)." "Rust binaries"
     benchResults = component "bench: results tool" "results compare <A> <B> and results summary <dir>: reads report sets into fixed arrays, integers only, never a verdict; refuses across hosts, robots or kernels (SRS NFR-11, NFR-1)." "Rust binary"
-    benchScripts = component "bench: scripts" "profile.env (every setting and bench_run), meta.sh (the [meta] block), setup-check.sh (the host against SRS NFR-1), compile-time.sh (clean and incremental builds, the registration sweep from gen/registrations.rs.in)." "Bash"
+    benchScripts = component "bench: scripts" "profile.env (every setting and bench_run), meta.sh (the [meta] block), setup-check.sh (the host against SRS NFR-1), cell.sh, ceiling.sh, budget.sh (--hw: the simulated search, then tick_hw on the reference chain, io_write_tick_ns and io_read_ns next to the engine overhead), footprint.sh, presort.sh (default build against the presort-off build: cost simulated, --gain on the chain through results compare), all.sh, compile-time.sh (clean and incremental builds, the registration sweep from gen/registrations.rs.in)." "Bash"
 
     benchBins -> benchSetup "Build their robot with"
     benchBins -> benchPlan "Read their plan with"

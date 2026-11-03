@@ -45,6 +45,17 @@ pub static LAST_LATE: AtomicU64 = AtomicU64::new(0);
 pub static TICK: AtomicU64 = AtomicU64::new(0);
 /// Overruns the bench judged over ticks W to K−2.
 pub static BENCH_OVERRUNS: AtomicU64 = AtomicU64::new(0);
+/// Overruns the bench judged on write-only ticks, ticks W to K−2: the hardware budget's count.
+pub static BENCH_OVERRUNS_WRITE_ONLY: AtomicU64 = AtomicU64::new(0);
+/// Overruns on read ticks, ticks W to K−2: reported apart, never judged (research R16).
+pub static BENCH_OVERRUNS_READ: AtomicU64 = AtomicU64::new(0);
+/// Whether the tick in progress read an actuator: any age `Some(0)` at `First` (FR-008 (SRS
+/// FR-3.4)). Never set on a run without hardware.
+pub static READ_TICK: AtomicBool = AtomicBool::new(false);
+/// Lowest read cadence over the actuators, in ticks, as the engine exposes it at tick 0.
+pub static CADENCE_MIN: AtomicU64 = AtomicU64::new(0);
+/// Highest read cadence over the actuators, in ticks, at tick 0.
+pub static CADENCE_MAX: AtomicU64 = AtomicU64::new(0);
 /// Ticks whose `Last` finished.
 pub static TICKS_DONE: AtomicU64 = AtomicU64::new(0);
 
@@ -77,6 +88,10 @@ pub static ENGINE_LAST_OVERRUN_NS_PLUS_ONE: AtomicU64 = AtomicU64::new(0);
 
 /// Start lateness against the replayed grid, ticks W and on.
 pub static LATENESS: Histogram = Histogram::new();
+/// [`LATENESS`] of read ticks only.
+pub static LATENESS_READ: Histogram = Histogram::new();
+/// [`LATENESS`] of write-only ticks only.
+pub static LATENESS_WRITE_ONLY: Histogram = Histogram::new();
 /// Gap from the previous `end` to this `start`, after an on-time tick.
 pub static GAP_ON_TIME: Histogram = Histogram::new();
 /// Gap from the previous `end` to this `start`, after a late tick.
@@ -97,14 +112,20 @@ pub fn configure(plan: &RunPlan, ps_per_iter: u64) {
 /// gap from tick W, opens the window at W.
 ///
 /// When the engine's overrun count grew by one, the previous tick was late by the growth of
-/// its accumulated overrun, and the slot follows from that (research R4 phase B).
-pub fn start<const N: usize>(time: &Time, _: &mut State<'_, N>, _: &Sensors) {
+/// its accumulated overrun, and the slot follows from that (research R4 phase B). A tick
+/// where any actuator's age is `Some(0)` is a read tick, the others write-only (research R16).
+pub fn start<const N: usize>(time: &Time, state: &mut State<'_, N>, _: &Sensors) {
     let now = now_ns();
     let tick = TICK.load(Relaxed);
+    let read = is_read_tick(state);
+    READ_TICK.store(read, Relaxed);
     let count = time.overrun_count();
     let acc = ns(time.accumulated_overrun());
     if tick == 0 {
         T0.store(now, Relaxed);
+        let (lo, hi) = cadence_range(state);
+        CADENCE_MIN.store(lo, Relaxed);
+        CADENCE_MAX.store(hi, Relaxed);
         ORIGIN.store(now.saturating_sub(ns(time.elapsed())), Relaxed);
     } else {
         let grew = count == ENGINE_COUNT_PREV.load(Relaxed).saturating_add(1);
@@ -144,6 +165,11 @@ pub fn start<const N: usize>(time: &Time, _: &mut State<'_, N>, _: &Sensors) {
             DT_NS.load(Relaxed),
         );
         LATENESS.record(late);
+        if read {
+            LATENESS_READ.record(late);
+        } else {
+            LATENESS_WRITE_ONLY.record(late);
+        }
         let gap = now.saturating_sub(LAST_END.load(Relaxed));
         if tick > 0 {
             if LAST_LATE.load(Relaxed) == 0 {
@@ -183,6 +209,12 @@ pub fn end<const N: usize>(_: &Time, _: &mut State<'_, N>, _: &Sensors) {
     let judged = tick >= WARMUP.load(Relaxed) && tick.saturating_add(2) <= planned;
     if judged && grid::overran(now, origin, slot, dt) {
         BENCH_OVERRUNS.store(BENCH_OVERRUNS.load(Relaxed).saturating_add(1), Relaxed);
+        let split = if READ_TICK.load(Relaxed) {
+            &BENCH_OVERRUNS_READ
+        } else {
+            &BENCH_OVERRUNS_WRITE_ONLY
+        };
+        split.store(split.load(Relaxed).saturating_add(1), Relaxed);
     }
     LAST_LATE.store(
         now.saturating_sub(grid::deadline(origin, slot, dt)),
@@ -210,6 +242,20 @@ pub fn noop<const N: usize>(_: &Time, _: &mut State<'_, N>, _: &Sensors) {}
 pub fn write_target<const N: usize>(state: &mut State<'_, N>) {
     let target = state.prev_q(0).unwrap_or([Q(0.0); N]);
     state.set_all_q(target);
+}
+
+/// Whether any actuator was read this tick: its age is `Some(0)` at `First`.
+fn is_read_tick<const N: usize>(state: &State<'_, N>) -> bool {
+    (0..N).any(|i| matches!(state.age_at(i), Ok(Some(0))))
+}
+
+/// The lowest and highest read cadence over the actuators, in ticks; the bench never sets it
+/// (assumed, pending human: D9 A).
+fn cadence_range<const N: usize>(state: &State<'_, N>) -> (u64, u64) {
+    (0..N)
+        .filter_map(|i| state.read_every(i).ok())
+        .map(|k| u64::from(k.get()))
+        .fold((u64::MAX, 0), |(lo, hi), k| (lo.min(k), hi.max(k)))
 }
 
 /// Nanoseconds since [`EPOCH`]; zero before it is set.
@@ -250,6 +296,10 @@ pub fn bench_storage_bytes() -> u64 {
         &LAST_LATE,
         &TICK,
         &BENCH_OVERRUNS,
+        &BENCH_OVERRUNS_WRITE_ONLY,
+        &BENCH_OVERRUNS_READ,
+        &CADENCE_MIN,
+        &CADENCE_MAX,
         &TICKS_DONE,
         &ORIGIN,
         &LAST_SLOT,
@@ -264,11 +314,18 @@ pub fn bench_storage_bytes() -> u64 {
     ];
     let total = size_of_val(&EPOCH)
         + size_of_val(&WRITE_ALL)
+        + size_of_val(&READ_TICK)
         + counters.iter().map(|c| size_of_val(*c)).sum::<usize>()
-        + [&LATENESS, &GAP_ON_TIME, &GAP_AFTER_LATE]
-            .iter()
-            .map(|h| size_of_val(*h))
-            .sum::<usize>();
+        + [
+            &LATENESS,
+            &LATENESS_READ,
+            &LATENESS_WRITE_ONLY,
+            &GAP_ON_TIME,
+            &GAP_AFTER_LATE,
+        ]
+        .iter()
+        .map(|h| size_of_val(*h))
+        .sum::<usize>();
     u64::try_from(total).unwrap_or(u64::MAX)
 }
 
@@ -277,9 +334,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn storage_is_dominated_by_the_three_histograms() {
+    fn storage_is_dominated_by_the_five_histograms() {
         let one = u64::try_from(size_of::<Histogram>()).unwrap_or(0);
-        assert!(bench_storage_bytes() > 3 * one);
-        assert!(bench_storage_bytes() < 3 * one + 256);
+        assert!(bench_storage_bytes() > 5 * one);
+        assert!(bench_storage_bytes() < 5 * one + 256);
     }
 }

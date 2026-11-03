@@ -4,12 +4,14 @@
 //! The binaries name the robot with `robot!` and the bus plugins; everything
 //! else lives here, so `SERIAL` is the only line two benches differ in.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use kmr_api::{Bus, EachTick, First, Last, Spec};
 
+use crate::buf::Buf;
 use crate::plan::{self, BadPlan, RunPlan};
 use crate::report::{self, Calibration, Flags, Outcome, ReportError, RunInfo};
 use crate::{alloc, calib, probe, procfs, setup};
@@ -26,6 +28,8 @@ pub struct Bench<'a> {
     pub plugins: &'a [Bus],
     /// The `buses` value of the report: `none`, or `by_id:<serial>` per plugin.
     pub buses: &'a str,
+    /// The adapter's declared read and write cost (kmr_adapters FR-035), when reachable.
+    pub declared: Option<(Duration, Duration)>,
 }
 
 /// The `controllers` value of the report.
@@ -87,6 +91,7 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
         )
         .with_if(Flags::ALLOC_SEEN, complete && allocs > 0);
 
+    let mut cadence = Buf::<48>::new();
     let written = report::write_file(plan.out_path(), |r| {
         r.run_block(&RunInfo {
             measurement: plan.measurement.as_str(),
@@ -114,12 +119,38 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
         r.text("buses", bench.buses)?;
         r.text("controllers", CONTROLLERS)?;
         r.int_opt("timer_slack_ns", timer_slack_ns)?;
+        if !simulated && probe::CADENCE_MAX.load(Relaxed) > 0 {
+            r.text("read_cadence", cadence_text(&mut cadence).as_str())?;
+        }
+        if let Some((read, write)) = bench.declared {
+            r.int("declared_read_ns", nanos(read))?;
+            r.int("declared_write_ns", nanos(write))?;
+        }
         if let Some(mut f) = r.figures(outcome, Some(allocs))? {
             f.int_opt("jitter_p50_ns", probe::LATENESS.p50())?;
             f.int_opt("jitter_p99_ns", probe::LATENESS.p99())?;
             f.int_opt("jitter_max_ns", probe::LATENESS.max())?;
             f.int("bench_overruns", bench_overruns)?;
             f.int("engine_overruns", engine_overruns)?;
+            if !simulated {
+                // Read ticks and write-only ticks apart (FR-008 (SRS FR-3.4); research R16).
+                f.int("read_ticks", probe::LATENESS_READ.count())?;
+                f.int_opt("read_jitter_p50_ns", probe::LATENESS_READ.p50())?;
+                f.int_opt("read_jitter_p99_ns", probe::LATENESS_READ.p99())?;
+                f.int_opt("read_jitter_max_ns", probe::LATENESS_READ.max())?;
+                f.int(
+                    "read_bench_overruns",
+                    probe::BENCH_OVERRUNS_READ.load(Relaxed),
+                )?;
+                f.int("write_only_ticks", probe::LATENESS_WRITE_ONLY.count())?;
+                f.int_opt("write_only_jitter_p50_ns", probe::LATENESS_WRITE_ONLY.p50())?;
+                f.int_opt("write_only_jitter_p99_ns", probe::LATENESS_WRITE_ONLY.p99())?;
+                f.int_opt("write_only_jitter_max_ns", probe::LATENESS_WRITE_ONLY.max())?;
+                f.int(
+                    "write_only_bench_overruns",
+                    probe::BENCH_OVERRUNS_WRITE_ONLY.load(Relaxed),
+                )?;
+            }
             f.int_opt("gap_on_time_min_ns", probe::GAP_ON_TIME.min())?;
             f.int_opt("gap_on_time_p50_ns", probe::GAP_ON_TIME.p50())?;
             f.int_opt("gap_after_late_min_ns", probe::GAP_AFTER_LATE.min())?;
@@ -133,6 +164,28 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
         Ok(())
     });
     exit(bench.binary, written, outcome)
+}
+
+/// The `read_cadence` value: `"<k>"` when every actuator is read every `k` ticks, else
+/// `"<min>-<max>"`. Absent when no tick ran.
+// DECISION: one text value even when buses differ; the schema shows one cadence (`"4"`) and
+// names no per-actuator form, so a mixed table gives its range.
+fn cadence_text(buf: &mut Buf<48>) -> &Buf<48> {
+    let (lo, hi) = (
+        probe::CADENCE_MIN.load(Relaxed),
+        probe::CADENCE_MAX.load(Relaxed),
+    );
+    let _ = if lo == hi {
+        write!(buf, "{lo}")
+    } else {
+        write!(buf, "{lo}-{hi}")
+    };
+    buf
+}
+
+/// A duration in ns, saturated.
+fn nanos(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Writes the `failed` report of a bad plan when its path is known.
@@ -155,5 +208,19 @@ fn exit(binary: &str, written: Result<(), ReportError>, outcome: Outcome<'_>) ->
         }
         Ok(()) if matches!(outcome, Outcome::Failed(_)) => ExitCode::FAILURE,
         Ok(()) => ExitCode::SUCCESS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_cadence_is_its_value_and_a_mix_its_range() {
+        probe::CADENCE_MIN.store(4, Relaxed);
+        probe::CADENCE_MAX.store(4, Relaxed);
+        assert_eq!(cadence_text(&mut Buf::new()).as_str(), "4");
+        probe::CADENCE_MAX.store(8, Relaxed);
+        assert_eq!(cadence_text(&mut Buf::new()).as_str(), "4-8");
     }
 }

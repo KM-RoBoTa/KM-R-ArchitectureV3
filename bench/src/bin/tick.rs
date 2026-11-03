@@ -18,5 +18,6 @@ fn main() -> ExitCode {
         robot_n: N,
         plugins: &[],
         buses: "none",
+        declared: None,
     })
 }

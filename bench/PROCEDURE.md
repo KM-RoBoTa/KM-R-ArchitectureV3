@@ -198,6 +198,7 @@ then carries that status and names the candidate.
 ```sh
 sudo -E bench/scripts/budget.sh                # the probe writes nothing
 sudo -E bench/scripts/budget.sh --write all    # the probe writes every actuator each tick
+sudo -E bench/scripts/budget.sh --hw           # on the reference chain, see "Reference chain"
 ```
 
 The engine's time per tick is never seen directly (black-box, FR-003). Instead an `EachTick`
@@ -218,6 +219,34 @@ The summary report, cell `<nonrt|rt>-<none|all>`, gives `budget_ns`, `overhead_n
 `[run]`, and `gap_floor_min_ns`. On a non-RT kernel the figure holds the worst wake-up of the
 window, so it is an upper bound. When workload 0 already overruns, `budget_ns` and `overhead_ns`
 are absent: the loop did not hold 1 kHz for `HOLD_S`.
+
+## Pre-sort
+
+The write batch is sorted by group before it goes out; the `presort-off` feature keeps
+declaration order instead (assumed, pending human: D11 B, the one place: this feature and
+`presort.sh`; FR-016 (SRS FR-5.3)). It is a second build, in its own target dir:
+
+```sh
+cargo build -p kmr_bench --release --bins --features presort-off --target-dir target/presort-off
+```
+
+```sh
+sudo -E bench/scripts/presort.sh           # cost, simulated: about 24 min
+sudo -E bench/scripts/presort.sh --gain    # gain, on the reference chain: about 45 min
+```
+
+- Cost: `budget.sh --write all` on the default build, then on the `presort-off` build. The
+  report `presort-<nonrt|rt>-cost-<n>.toml` gives `overhead_presort_ns`,
+  `overhead_presort_off_ns` and `presort_cost_ns`, their difference, to
+  `presort_cost_resolution_ns` (1 µs): a sort of a few actuators may read 0.
+- Gain: `budget.sh --hw` on both builds (the `presort-off` one also needs
+  `cargo build -p kmr_bench --release --bin tick_hw --features hardware,presort-off --target-dir
+  target/presort-off`). Each hardware summary is copied into `presort-gain-<n>/default` and
+  `presort-gain-<n>/presort-off`, and `results compare` of the two is kept as
+  `presort-gain-<n>/compare.txt`. Expected zero on XmBench (one bus, research R15).
+
+The `presort-off` searches report under `bench/reports/presort-off/<commit12>/<host_id>/`, so the
+main set never holds two budget summaries of one cell.
 
 ## Footprint (e)
 
@@ -248,16 +277,50 @@ Assumed, pending human: D10. The hardware runs (`tick_hw`, `budget.sh --hw`, `pr
 |---|---|
 | Robot | preset `XmBench`: 4 × Dynamixel XM430-W210, ids 1 to 4, one bus, 1 Mbaud |
 | Adapter | one ROBOTIS U2D2, serial id `FT8ISZ6H` (`/dev/serial/by-id`) |
-| Supply | not fixed yet: the human records model and voltage here (D10) |
+| Supply | not fixed yet: the human records model and voltage here (D10); each report also carries `supply_mv` and `supply_meter` |
 | Source line | `const SERIAL` in `bench/src/bin/tick_hw.rs`, the only line two benches differ in |
 
 ```sh
 cargo build -p kmr_bench --release --features hardware --bin tick_hw
 ```
 
-After every hardware run, every actuator must read `Torque_Enable = 0`. The read/write-only
-split and the I/O figures wait on the engine's age and read cadence (tasks T057 to T059); until
-then a `tick_hw` run measures the loop with the bus attached, nothing more.
+After every hardware run, every actuator must read `Torque_Enable = 0`.
+
+A `tick_hw` report splits the ticks: a read tick is one where any actuator's age is 0 at
+`First`, the others are write-only. `[figures]` holds `read_ticks`, `read_jitter_p50_ns`,
+`read_jitter_p99_ns`, `read_jitter_max_ns`, `read_bench_overruns` and the same five with
+`write_only_`. Read-tick overruns are reported apart and never judged (at 1 ms a read of four
+XM430 does not fit the tick, research R16). `engine_overruns` counts both; the bench count is a
+lower bound of it.
+
+`[meta]` of a `tick_hw` report carries `read_cadence` (the cadence the engine exposes; the bench
+never sets it, D9 A) and `declared_read_ns`, `declared_write_ns` (`XmBench::READ_COST` and
+`WRITE_COST`, through `kmr_api::presets`). A `two-bus` build has no declared costs: its table is
+not a preset.
+
+### Hardware budget
+
+```sh
+sudo -E bench/scripts/budget.sh --hw    # about 22 min: the simulated search, then the chain's
+```
+
+`--hw` always writes every actuator (`--write all`): first the simulated search on `tick`, then
+the same search on `tick_hw`, cells `<nonrt|rt>-hw-w<work_ns>`. On the chain a candidate is held
+when its write-only ticks never overran (`write_only_bench_overruns = 0`) and there was at least
+one; read ticks are reported, not judged. No 10 µs floor run on the chain. The summary, cell
+`<nonrt|rt>-hw-all`, puts the engine next to the I/O, with no verdict (research R16; FR-015,
+FR-017):
+
+| Key | Meaning |
+|---|---|
+| `budget_ns`, `overhead_ns` | the chain's budget at 1 ms and `dt − budget_ns` |
+| `engine_overhead_ns` | `dt − budget_ns` of the simulated search (`tick`), same commit and robot |
+| `io_write_tick_ns` | budget(simulated) − budget(hardware): the write tick's I/O |
+| `io_read_ns` | `read_jitter_p50_ns − write_only_jitter_p50_ns` of the held candidate |
+| `read_ticks`, `write_only_ticks`, `read_bench_overruns` | the held candidate's split |
+
+A figure whose search held nothing is absent. Hand `io_write_tick_ns` and `io_read_ns` to
+kmr_adapters T063 for `DEFAULT_READ_EVERY` (D9 A).
 
 ## Reports
 
