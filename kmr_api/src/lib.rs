@@ -91,6 +91,9 @@ pub use spec::{
 mod bus;
 pub use bus::Bus;
 
+mod plugin;
+pub use plugin::Plugin;
+
 mod robot_macro;
 
 /// The robots KM-RoBoTa ships, for [`robot!`].

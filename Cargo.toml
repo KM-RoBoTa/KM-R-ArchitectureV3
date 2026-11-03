@@ -35,6 +35,9 @@ frunk = "0.5.0"
 # DECISION: the latest-value slot of kmr_api (`Latest<T>`, research R15): its writer tells an
 # untaken value (`publish` returns it), so kmr_api carries no `unsafe` of its own.
 triple_buffer = "9.0.0"
+# DECISION (maintainer-approved 2026-11-03): kmr_api's gateway (feature `zenoh`, off by default).
+# Default features trimmed to what the gateway uses: TCP for loopback, TLS for mutual TLS.
+zenoh = { version = "1.10.2", default-features = false, features = ["transport_tcp", "transport_tls"] }
 roxmltree = "0.20"
 # kmr_model's and kmr_model_core's build-time plumbing: none of these reaches a binary.
 syn = { version = "2.0", default-features = false, features = ["parsing", "proc-macro"] }

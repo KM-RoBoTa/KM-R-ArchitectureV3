@@ -2,9 +2,10 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::fallback::Guarded;
+use crate::plugin::{Plugin, Plugins};
 use crate::spec::Lend;
 use crate::{
-    Binding, Bus, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
+    Binding, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
 };
 use kmr_core::hal::{Drivers, NoHardware};
 use kmr_core::{
@@ -119,7 +120,7 @@ where
 // core's "kmr: this robot has no controller" (SRS NFR-4).
 pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
     inner: kmr_core::Robot<N, C, E>,
-    plugins: Vec<Bus>,
+    plugins: Plugins,
     payloads: Vec<Payload>,
     guards: Guards<N>,
     spec: PhantomData<fn() -> H>,
@@ -160,7 +161,7 @@ impl<const N: usize, H: Spec<N>> Robot<N, H> {
     pub fn new() -> Self {
         Self {
             inner: kmr_core::Robot::new(),
-            plugins: Vec::new(),
+            plugins: Plugins::default(),
             payloads: Vec::new(),
             guards: Guards::new(),
             spec: PhantomData,
@@ -258,7 +259,8 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         }
     }
 
-    /// Plugs in hardware, Bevy-style: one call per bus (SRS FR-6.3).
+    /// Plugs in hardware, Bevy-style: one call per bus (SRS FR-6.3); with the `zenoh` feature,
+    /// also the Zenoh gateway (SRS FR-7.1).
     ///
     /// ```ignore
     /// Robot::new().add_plugins(Bus::by_id("FT8ISZ6H"))
@@ -266,8 +268,8 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     ///
     /// Without any bus, `run()` simulates. Binding one port twice is a
     /// `run()` error.
-    pub fn add_plugins(mut self, bus: Bus) -> Self {
-        self.plugins.push(bus);
+    pub fn add_plugins(mut self, plugin: impl Plugin) -> Self {
+        plugin.plug(&mut self.plugins);
         self
     }
 
@@ -437,8 +439,9 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     where
         H: Spec<N>,
     {
-        for (i, bus) in self.plugins.iter().enumerate() {
-            if self.plugins[..i].iter().any(|b| b.port() == bus.port()) {
+        let buses = &self.plugins.buses;
+        for (i, bus) in buses.iter().enumerate() {
+            if buses[..i].iter().any(|b| b.port() == bus.port()) {
                 return Err(UserError::DuplicateBus { port: bus.port() });
             }
         }
@@ -468,7 +471,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             .inner
             .set_limits(limits, self.guards.policy)
             .set_envelopes(self.guards.envelope);
-        Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
+        Ok((inner, buses.iter().map(|bus| bus.binding).collect()))
     }
 }
 
@@ -561,7 +564,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EachTick, Q};
+    use crate::{Bus, EachTick, Q};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
 
@@ -669,7 +672,7 @@ mod tests {
             .set_dt(Duration::from_millis(1))
             .add_controller(EachTick, bump_q)
             .add_plugins(Bus::by_dev("/dev/ttyACM0"));
-        assert_eq!(robot.plugins.len(), 2);
+        assert_eq!(robot.plugins.buses.len(), 2);
     }
 
     // Proves all THREE builders compile with api types AND that `run()` drives
