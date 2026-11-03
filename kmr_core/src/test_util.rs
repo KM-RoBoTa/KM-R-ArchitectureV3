@@ -5,7 +5,9 @@
 
 use core::cell::{Cell, Ref, RefCell};
 use core::num::NonZeroU32;
-use std::time::{Duration, Instant};
+use core::time::Duration;
+
+pub use crate::clock::Instant;
 
 use crate::error::RunError;
 use crate::hal::{
@@ -94,9 +96,9 @@ pub struct Scripted {
 
 impl Scripted {
     /// A host whose clock stays at `origin` and whose bus stays quiet.
-    pub fn new(origin: Instant) -> Self {
+    pub fn new(origin: impl Into<Instant>) -> Self {
         Self {
-            origin,
+            origin: origin.into(),
             now_tenths: [0; 32],
             now_calls: 0,
             sleeps: [None; 16],
@@ -134,6 +136,8 @@ impl Scripted {
         self.origin + DT * tenths / 10
     }
 }
+
+impl crate::runtime::seal::Host for Scripted {}
 
 impl Host for Scripted {
     fn now(&mut self) -> Instant {
@@ -190,15 +194,17 @@ pub struct Ticking {
 
 impl Ticking {
     /// A host that runs `ticks` ticks from `origin`.
-    pub fn new(origin: Instant, ticks: u64) -> Self {
+    pub fn new(origin: impl Into<Instant>, ticks: u64) -> Self {
         Self {
-            origin,
+            origin: origin.into(),
             ticks,
             now_calls: 0,
             slept: 0,
         }
     }
 }
+
+impl crate::runtime::seal::Host for Ticking {}
 
 impl Host for Ticking {
     fn now(&mut self) -> Instant {

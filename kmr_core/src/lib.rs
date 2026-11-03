@@ -74,6 +74,10 @@
 //!
 //! The direct field write is refused in [`state`] (`RobotState`).
 
+#![cfg_attr(not(feature = "std"), no_std)]
+// Without `std` the log macros expand to nothing: a value computed only for
+// a log line is then unread.
+#![cfg_attr(not(feature = "std"), allow(unused_variables))]
 #![forbid(clippy::disallowed_types)]
 // Test code may unwrap: a panic there IS the failure report. Everywhere else
 // an unwrap is a crash on the control path, so it stays forbidden.
@@ -91,6 +95,7 @@ pub(crate) mod controllers;
 pub mod error;
 pub mod hal;
 pub mod limits;
+pub(crate) mod logging;
 pub(crate) mod runtime;
 pub(crate) mod schedule;
 pub(crate) mod sealed;
@@ -109,9 +114,13 @@ mod robot;
 // module paths. Each item has ONE public path: what lives in the public `state`
 // module (`Q`, `HISTORY_DEPTH`, ...) is not repeated here. `RobotState` is the
 // exception, `kmr_api` names it from the root like the other two handles.
-pub use clock::Time;
+pub use clock::{Instant, Time};
 pub use controllers::{ControlFn, ControlFnWith, Inline, InlineWith, ThreadFn, Threaded};
 pub use robot::{Empty, Filled, HCons, HNil, HasController, Robot, Stages};
+pub use runtime::Host;
+/// Seal of [`Host`], for the platform crates that bring their own host.
+#[doc(hidden)]
+pub use runtime::seal as host_seal;
 pub use schedule::{
     Drive, EachTick, First, Init, Insert, Last, PostInit, PreInit, Schedule, Scheduled,
 };

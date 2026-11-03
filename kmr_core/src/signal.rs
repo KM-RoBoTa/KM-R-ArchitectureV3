@@ -41,8 +41,8 @@
 // are a debug affordance and never touch the release layout.
 // ===========================================================================
 
-use std::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
-use std::{fmt, ptr};
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use core::{fmt, ptr};
 
 // ── Priority levels ─────────────────────────────────────────────────────────
 pub(crate) const NONE: u8 = 0;

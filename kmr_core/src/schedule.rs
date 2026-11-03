@@ -14,7 +14,7 @@
 // idents (kept in lockstep by the `schedules!` macro), so allow the lint.
 #![allow(non_camel_case_types)]
 
-use frunk::{HCons, HNil};
+use frunk_core::hlist::{HCons, HNil};
 
 mod macros;
 use crate::controllers::Env;

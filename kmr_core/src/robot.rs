@@ -7,7 +7,7 @@
 //!
 //! ```no_run
 //! // `no_run`: `run()` enters the control loop and only returns on a signal.
-//! use std::time::Duration;
+//! use core::time::Duration;
 //!
 //! use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
 //!
@@ -26,9 +26,9 @@
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
-use std::time::Duration;
+use core::time::Duration;
 
-pub use frunk::{HCons, HNil};
+pub use frunk_core::hlist::{HCons, HNil};
 
 use crate::clock::Time;
 use crate::config::user_config::RobotConfig;
@@ -267,6 +267,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         self.insert_controller(schedule, InlineWith(controller, ctx))
     }
 
+    #[cfg(feature = "std")]
     /// Adds a new plain user defined threaded controller with a persistant
     /// context managed by the user.
     ///
@@ -288,6 +289,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         self.insert_controller(schedule, Threaded(f, ctx))
     }
 
+    #[cfg(feature = "std")]
     /// Pre-wrapped `add_controller_as_thread` — the entry `kmr_api` uses.
     pub fn add_control_fn_as_thread<S, T, C>(
         self,
@@ -313,6 +315,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         }
     }
 
+    #[cfg(feature = "std")]
     /// Runs the robot on `hal`, its hardware: a list of members,
     /// `HCons { head: dxl, tail: HCons { head: cubemars, tail: HNil } }`.
     /// Pass `&mut adapter` as a member to keep it after the run.
@@ -335,6 +338,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         self.run_on_staged(hal, ())
     }
 
+    #[cfg(feature = "std")]
     /// [`Robot::run_on`], with `stages` around the controllers of each tick.
     #[doc(hidden)]
     pub fn run_on_staged<D: Drivers<N>, S: Stages<N>>(
@@ -349,6 +353,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         runtime::runtime(self.filled(), hal, stages).map(|_signal| ())
     }
 
+    #[cfg(feature = "std")]
     /// Runs the robot on [`NoHardware`]: nothing is read or written. Only a
     /// [`RunError::Config`] can fail it. See [`Robot::run_on`].
     pub fn run(self) -> Result<(), RunError<Infallible>>

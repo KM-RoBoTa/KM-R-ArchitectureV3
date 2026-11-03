@@ -28,10 +28,117 @@
 //! time. After an overrun the missed slots are skipped and the next tick
 //! starts on the grid with a whole `delta`: no catch-up burst, no re-anchoring.
 
-use std::{
-    marker::PhantomData,
-    time::{Duration, Instant},
-};
+use core::marker::PhantomData;
+use core::ops::{Add, AddAssign, Sub};
+use core::time::Duration;
+
+/// A point on the monotonic clock of the host, as its distance from the
+/// host's epoch. The engine's own, so the core needs no `std` (SRS NFR-7):
+/// a host without `std` builds it from its timer with [`Instant::from_epoch`].
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Instant(Duration);
+
+impl Instant {
+    /// The host's epoch.
+    pub const EPOCH: Self = Self(Duration::ZERO);
+
+    /// The instant `since` after the host's epoch.
+    #[must_use]
+    pub const fn from_epoch(since: Duration) -> Self {
+        Self(since)
+    }
+
+    /// The distance from the host's epoch.
+    #[must_use]
+    pub const fn since_epoch(self) -> Duration {
+        self.0
+    }
+
+    /// The current instant of the system's monotonic clock, from an epoch
+    /// set on the first call.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn now() -> Self {
+        Self::from(std::time::Instant::now())
+    }
+
+    /// `self + duration`, `None` on overflow.
+    #[must_use]
+    pub const fn checked_add(self, duration: Duration) -> Option<Self> {
+        match self.0.checked_add(duration) {
+            Some(since) => Some(Self(since)),
+            None => None,
+        }
+    }
+
+    /// `self - duration`, `None` before the epoch.
+    #[must_use]
+    pub const fn checked_sub(self, duration: Duration) -> Option<Self> {
+        match self.0.checked_sub(duration) {
+            Some(since) => Some(Self(since)),
+            None => None,
+        }
+    }
+
+    /// The time from `earlier` to `self`, zero if `earlier` is later.
+    #[must_use]
+    pub const fn saturating_duration_since(self, earlier: Self) -> Duration {
+        self.0.saturating_sub(earlier.0)
+    }
+
+    /// The time from `earlier` to `self`, zero if `earlier` is later, as
+    /// `std::time::Instant::duration_since`.
+    #[must_use]
+    pub const fn duration_since(self, earlier: Self) -> Duration {
+        self.saturating_duration_since(earlier)
+    }
+}
+
+/// The system clock's instants on one epoch: the first one converted. An
+/// instant before it maps to the epoch.
+#[cfg(feature = "std")]
+impl From<std::time::Instant> for Instant {
+    fn from(instant: std::time::Instant) -> Self {
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let epoch = *EPOCH.get_or_init(|| instant);
+        Self(instant.saturating_duration_since(epoch))
+    }
+}
+
+impl Add<Duration> for Instant {
+    type Output = Self;
+
+    // DECISION: saturates where `std::time::Instant` panics: no panic path
+    // in the core (SRS NFR-2), and no instant is that far from the epoch.
+    /// Saturates at the last representable instant.
+    fn add(self, duration: Duration) -> Self {
+        Self(self.0.saturating_add(duration))
+    }
+}
+
+impl AddAssign<Duration> for Instant {
+    fn add_assign(&mut self, duration: Duration) {
+        *self = *self + duration;
+    }
+}
+
+impl Sub<Duration> for Instant {
+    type Output = Self;
+
+    /// Saturates at the epoch.
+    fn sub(self, duration: Duration) -> Self {
+        Self(self.0.saturating_sub(duration))
+    }
+}
+
+impl Sub for Instant {
+    type Output = Duration;
+
+    /// Zero if `earlier` is later, as `std::time::Instant`.
+    fn sub(self, earlier: Self) -> Duration {
+        self.saturating_duration_since(earlier)
+    }
+}
 
 /// Unit struct used as a flag for [`Time`].
 ///
@@ -455,5 +562,25 @@ mod tests {
         assert_eq!((time.tick(), time.overrun_count()), (3, 1));
         assert_eq!(time.last_overrun(), None);
         assert_eq!(time.accumulated_overrun(), DT / 4);
+    }
+
+    #[test]
+    fn instant_arithmetic_saturates_instead_of_panicking() {
+        let late = Instant::from_epoch(Duration::MAX);
+        assert_eq!(late + DT, late);
+        assert_eq!(Instant::EPOCH - DT, Instant::EPOCH);
+        assert_eq!(Instant::EPOCH - late, Duration::ZERO);
+        assert_eq!(late.checked_add(DT), None);
+        assert_eq!(Instant::EPOCH.checked_sub(DT), None);
+    }
+
+    #[test]
+    fn system_instants_keep_their_order_and_distance() {
+        // Ahead of now: another test may set the shared epoch meanwhile.
+        let first = std::time::Instant::now() + Duration::from_secs(60);
+        let second = first + DT;
+        let (a, b) = (Instant::from(first), Instant::from(second));
+        assert!(a < b);
+        assert_eq!(b - a, DT);
     }
 }

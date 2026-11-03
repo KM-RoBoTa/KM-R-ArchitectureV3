@@ -19,11 +19,12 @@
 //! From `open` on, the [`Powered`] guard ends every exit, unwind included,
 //! with `torque_off` then `close`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 
-use tracing::{error, info, trace, warn};
+use crate::logging::{error, info, trace, warn};
 
+use crate::clock::Instant;
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
 use crate::hal::{
@@ -60,11 +61,18 @@ fn tick_period(configured: Option<Duration>) -> Result<Duration, ConfigError> {
     }
 }
 
+/// Seal of [`Host`]: open to platform crates, closed to controllers, which
+/// cannot depend on `kmr_core`.
+#[doc(hidden)]
+pub mod seal {
+    /// Implemented next to [`super::Host`] by every host.
+    pub trait Host {}
+}
+
 /// The instant, the sleep and the signal bus: a seam so the loop tests run on
-/// scripted values instead of the wall clock and the global bus.
-///
-/// Public only through `test_util`, under the `test-util` feature.
-pub trait Host {
+/// scripted values instead of the wall clock and the global bus, and so a
+/// target without `std` brings its own timer (SRS NFR-7).
+pub trait Host: seal::Host {
     /// The current instant.
     fn now(&mut self) -> Instant;
     /// Blocks until `deadline`.
@@ -78,11 +86,13 @@ pub trait Host {
 }
 
 /// The real world: system clock, absolute sleep, global signal bus.
+#[cfg(feature = "std")]
 struct RealHost {
     /// Wakes this long before each deadline and spins the rest; zero: no spin.
     spin_tail: Duration,
 }
 
+#[cfg(feature = "std")]
 impl RealHost {
     /// The host of a run: no spin tail.
     // DECISION: no spin by default and no user knob yet; the NFR-1 bench
@@ -94,6 +104,10 @@ impl RealHost {
     }
 }
 
+#[cfg(feature = "std")]
+impl seal::Host for RealHost {}
+
+#[cfg(feature = "std")]
 impl Host for RealHost {
     fn now(&mut self) -> Instant {
         Instant::now()
@@ -119,9 +133,9 @@ impl Host for RealHost {
 /// Blocks until `deadline` with an absolute `clock_nanosleep` on the
 /// monotonic clock, so a late wake never shifts the next one (SRS FR-3.2).
 ///
-/// `Instant` has no public clock value: the deadline is carried over as its
-/// distance from now, added to the monotonic clock read right after.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// [`Instant`]'s epoch is not the kernel's: the deadline is carried over as
+/// its distance from now, added to the monotonic clock read right after.
+#[cfg(all(feature = "std", any(target_os = "linux", target_os = "android")))]
 fn sleep_until(deadline: Instant) {
     use rustix::thread::{ClockId, clock_nanosleep_absolute};
     use rustix::time::{Timespec, clock_gettime};
@@ -142,18 +156,20 @@ fn sleep_until(deadline: Instant) {
 }
 
 /// Blocks until `deadline` (no absolute monotonic sleep on this target).
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(all(feature = "std", not(any(target_os = "linux", target_os = "android"))))]
 fn sleep_until(deadline: Instant) {
     std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
 }
 
 /// Set once the Ctrl-C handler of the process is the one of the engine.
+#[cfg(feature = "std")]
 static CTRL_C_WIRED: AtomicBool = AtomicBool::new(false);
 
 /// Treats a failed Ctrl-C install as harmless when the handler in place is
 /// ours, from an earlier run of the process. Otherwise hands the error back.
 ///
 /// `wired` is a parameter so the tests do not share the process flag.
+#[cfg(feature = "std")]
 fn ctrl_c_wired(
     installed: Result<(), ctrlc::Error>,
     wired: &AtomicBool,
@@ -263,9 +279,7 @@ impl StartupWrites {
 /// runtime initialized structs, initialize the hardware and run some
 /// healthchecks.
 mod init_phase {
-    use std::env;
-
-    use tracing::trace;
+    use crate::logging::trace;
 
     use crate::controllers::Env;
     use crate::schedule::Drive;
@@ -277,13 +291,12 @@ mod init_phase {
     /// DEBUG level in debug mode and TRACE level only and only if the RUST_LOG
     /// environment variable is set.
     ///
-    /// # WIP
-    /// - [ ] Disable it completely in no_std.
+    #[cfg(feature = "std")]
     pub(super) fn install_tracing() {
         use tracing::Level;
         use tracing_subscriber::FmtSubscriber;
 
-        let level = if env::var("RUST_LOG").is_ok() {
+        let level = if std::env::var("RUST_LOG").is_ok() {
             Level::TRACE
         } else if cfg!(debug_assertions) {
             Level::DEBUG
@@ -602,6 +615,7 @@ pub(crate) fn run_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S
 ///
 /// Returns the signal that ended the run, a claim mismatch, or a member's
 /// error.
+#[cfg(feature = "std")]
 pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>, S: Stages<N>>(
     mut robot: Robot<N, CS, crate::Filled>,
     mut hal: D,
@@ -1878,6 +1892,8 @@ mod tests {
 
         /// The host: a clock moved by the controllers' work and by the sleeps.
         struct Clockwork<'a>(&'a World);
+
+        impl crate::runtime::seal::Host for Clockwork<'_> {}
 
         impl Host for Clockwork<'_> {
             fn now(&mut self) -> Instant {

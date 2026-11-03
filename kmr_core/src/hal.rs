@@ -10,7 +10,7 @@ use core::ops::Range;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
-use tracing::warn;
+use crate::logging::warn;
 
 use crate::state::{Kd, Kp, Q, Qd, Tau};
 

@@ -7,28 +7,45 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-thiserror.workspace = true
-rstest.workspace = true
-circular-buffer.workspace = true
+# No default features: the core builds with `--no-default-features` for a
+# `no_std` target without `alloc` (SRS NFR-7); `std` turns them back on.
+thiserror = { version = "2.0.18", default-features = false }
+circular-buffer = { version = "2.0.0", default-features = false }
+derive_more = { version = "2.1.1", default-features = false, features = ["add", "mul"] }
+frunk_core = { version = "0.5.0", default-features = false }
 # `termination`: SIGTERM and SIGHUP raise `shutdown!` like Ctrl-C.
-ctrlc = { workspace = true, features = ["termination"] }
-tracing.workspace = true
-tracing-subscriber.workspace = true
-derive_more.workspace = true
-frunk.workspace = true
+ctrlc = { workspace = true, features = ["termination"], optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 # The real-time sleep of the loop: absolute `clock_nanosleep` on the
 # monotonic clock (SRS FR-3.2). Safe API; already a workspace dependency.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 rustix = { workspace = true, features = ["thread", "time"] }
 
+[dev-dependencies]
+rstest.workspace = true
+
 [features]
+# The hosted engine: Ctrl-C, the system clock and sleep, logging, threaded
+# controllers. Without it the core is `no_std` and needs no `alloc`; the run
+# entry points that need a host stay out (SRS NFR-7).
+default = ["std"]
+std = [
+    "dep:ctrlc",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "thiserror/std",
+    "circular-buffer/std",
+    "derive_more/std",
+    "frunk_core/std",
+]
 # Test hooks for the crates built on top of the core: record a sensed sample,
 # read the desired buffer back, and drive the runtime with a scripted host and
 # a recording adapter (`kmr_core::test_util`). Off by default, and only ever enabled from
 # a `[dev-dependencies]` entry, so no release build carries a way to forge a
 # sample or to read the write-only staging area.
-test-util = []
+test-util = ["std"]
 # Batches keep declaration order instead of group order: the bench's
 # baseline for the presort (SRS FR-5.3). Off by default.
 presort-off = []

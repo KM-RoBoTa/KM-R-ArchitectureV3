@@ -6,7 +6,7 @@
 //! [`Policy`] decides. A non-finite value is a breach of both (research R16)
 //! and is never sent: its written bit is cleared.
 
-use tracing::{error, warn};
+use crate::logging::{error, warn};
 
 use crate::error::ConfigError;
 use crate::hal::{Faults, Mask, Written};

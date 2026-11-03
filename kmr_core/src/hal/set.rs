@@ -8,7 +8,7 @@ use core::fmt;
 use core::num::NonZeroU32;
 use core::time::Duration;
 
-use frunk::{HCons, HNil};
+use frunk_core::hlist::{HCons, HNil};
 
 use super::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Slots};
 use crate::state::State;
