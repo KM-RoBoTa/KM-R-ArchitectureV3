@@ -1004,7 +1004,7 @@ mod guards {
         recorder: Recorder<'_, 4>,
         ticks: usize,
     ) {
-        let mut inner = robot.finalize().expect("a valid builder").inner;
+        let mut inner = robot.finalized();
         let mut host =
             Scripted::new(Instant::now()).shutdown_from(TICK_END + (ticks - 1) * PER_TICK);
         let mut drivers = HCons {
