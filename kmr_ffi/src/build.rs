@@ -641,6 +641,16 @@ int main() {
     }
 
     #[test]
+    fn headers_compile_and_match_rust_n3() {
+        headers_compile::<3>();
+    }
+
+    #[test]
+    fn headers_compile_and_match_rust_n10() {
+        headers_compile::<10>();
+    }
+
+    #[test]
     fn headers_compile_and_match_rust_n64() {
         headers_compile::<64>();
     }
