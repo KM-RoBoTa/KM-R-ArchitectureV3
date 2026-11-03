@@ -19,7 +19,7 @@ in [`specs/007-bench/`](../../specs/007-bench/).
 
 ### Tests, red first
 
-- [ ] T017 [US1] bench/tests/tick_runs.rs: spawns `env!("CARGO_BIN_EXE_tick")` with `Command::env` (no `set_var`, unsafe in edition 2024), output to files read into fixed buffers (no heap type named; the root ban covers tests). Cases: (a) 6 000 ticks: exit 0, `complete`, `flags` holds `simulated`, the jitter keys present, `loop_thread_allocs = 0`, "no bus plugin: simulating" exactly once over stdout and stderr, no kmr log line in the report (quickstart §2); (b) `KMR_BENCH_TICKS=abc`: exit 1, `failed`, `reason = "bad plan: KMR_BENCH_TICKS"`, no `[figures]` (§4); (c) 600 000 ticks, `kill -INT` after 2 s: exit 0, `incomplete`, `ticks_done` < 600000, no `[figures]` (§4); (d) `KMR_BENCH_INJECT_AT=1010`: `loop_thread_allocs = 1`, `alloc_seen`, still `complete` (§3; blocked on T005). Red until T018, T019
+- [x] T017 [US1] bench/tests/tick_runs.rs: spawns `env!("CARGO_BIN_EXE_tick")` with `Command::env` (no `set_var`, unsafe in edition 2024), output to files read into fixed buffers (no heap type named; the root ban covers tests). Cases: (a) 6 000 ticks: exit 0, `complete`, `flags` holds `simulated`, the jitter keys present, `loop_thread_allocs = 0`, "no bus plugin: simulating" exactly once over stdout and stderr, no kmr log line in the report (quickstart §2); (b) `KMR_BENCH_TICKS=abc`: exit 1, `failed`, `reason = "bad plan: KMR_BENCH_TICKS"`, no `[figures]` (§4); (c) 600 000 ticks, `kill -INT` after 2 s: exit 0, `incomplete`, `ticks_done` < 600000, no `[figures]` (§4); (d) `KMR_BENCH_INJECT_AT=1010`: `loop_thread_allocs = 1`, `alloc_seen`, still `complete` (§3; blocked on T005). Red until T018, T019
 
 ### Implementation
 
