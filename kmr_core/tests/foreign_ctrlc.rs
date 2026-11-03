@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use kmr_core::{EachTick, Robot, RobotState, Sensors, Time, shutdown};
+
+/// Actuators of the test robot.
+const N: usize = 4;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata, Subscriber};
@@ -61,7 +64,7 @@ impl Subscriber for Warnings {
 fn a_run_that_cannot_wire_ctrl_c_says_so() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
 
-    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn stop(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
         assert!(n < 500, "the loop ignored the signal");
         if n >= 3 {
@@ -73,7 +76,7 @@ fn a_run_that_cannot_wire_ctrl_c_says_so() {
     ctrlc::set_handler(|| {}).expect("first handler of the process");
 
     for run in 1..=2 {
-        let result = Robot::new()
+        let result = Robot::<N>::new()
             .set_dt(Duration::from_micros(200))
             .add_control_fn(EachTick, stop)
             .run();

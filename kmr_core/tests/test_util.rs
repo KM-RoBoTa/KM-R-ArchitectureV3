@@ -10,16 +10,18 @@ use kmr_core::test_util::{
 };
 use kmr_core::{EachTick, HCons, HNil, Robot, RobotState, Sensors, Time};
 
+/// Actuators of the test robot.
+const N: usize = 4;
+
 #[test]
 fn three_scripted_ticks_with_one_overrun_keep_the_grid() {
     let ticks = Cell::new(0);
     let log = Log::new();
-    let mut robot = Robot::new().set_dt(kmr_core::test_util::DT).add_control_fn(
-        EachTick,
-        |_: &Time, _: &mut RobotState, _: &Sensors| {
+    let mut robot = Robot::<N>::new()
+        .set_dt(kmr_core::test_util::DT)
+        .add_control_fn(EachTick, |_: &Time, _: &mut RobotState<N>, _: &Sensors| {
             ticks.set(ticks.get() + 1);
-        },
-    );
+        });
     // `now` at arm, then at the start and end of each tick; tick 0 ends at
     // 1.5 dt, half a tick late.
     let mut host = Scripted::new(Instant::now())

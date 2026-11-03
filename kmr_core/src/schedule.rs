@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn built_schedule_is_drivable() {
-        let robot = Robot::new()
+        let robot = Robot::<4>::new()
             .add_controller(First, |_t, _s, _se| {})
             .add_controller_with(EachTick, 0u32, |_t, _s, _se, n: &mut u32| *n += 1);
         assert_drivable(&robot);

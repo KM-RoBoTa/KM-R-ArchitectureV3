@@ -34,7 +34,7 @@ use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
 use crate::error::ApiError;
-use crate::hal::{Drivers, HardwareError, MemberError, NoHardware};
+use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::{JOINTS, RobotState};
 use crate::{Scheduled, Sensors, runtime};
@@ -50,7 +50,7 @@ pub struct Robot<const N: usize = JOINTS, CS = Scheduled> {
     pub(crate) controllers: CS,
 }
 
-impl Robot<JOINTS, Scheduled> {
+impl<const N: usize> Robot<N, Scheduled> {
     /// Returns a default Robot.
     ///
     /// This is the main entry point for the API User.
@@ -72,7 +72,14 @@ impl Robot<JOINTS, Scheduled> {
     ///     .run()
     ///     .expect("the robot has a controller");
     /// ```
+    ///
+    /// More actuators than the write mask holds fail the build:
+    ///
+    /// ```compile_fail
+    /// let _ = kmr_core::Robot::<65>::new();
+    /// ```
     pub fn new() -> Self {
+        let () = Mask::<N>::CHECK;
         Robot {
             config: RobotConfig::default(),
             controllers: Scheduled::new(),
@@ -256,7 +263,7 @@ impl<const N: usize, CS> Robot<N, CS> {
     }
 }
 
-impl Default for Robot<JOINTS, Scheduled> {
+impl<const N: usize> Default for Robot<N, Scheduled> {
     fn default() -> Self {
         Self::new()
     }

@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 
 use kmr_core::{EachTick, Last, Robot, RobotState, Sensors, Time, emergency_stop, shutdown};
 
+/// Actuators of the test robot.
+const N: usize = 4;
+
 static BUS: Mutex<()> = Mutex::new(());
 
 /// Ignores poisoning: one failed test must not fail the others.
@@ -31,17 +34,17 @@ fn shutdown_ends_the_run_after_the_last_bucket() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
     static LASTS: AtomicU32 = AtomicU32::new(0);
 
-    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn stop(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         if tick(&TICKS) >= STOP_AT {
             shutdown!("test: enough ticks");
         }
     }
-    fn last(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn last(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         tick(&LASTS);
     }
 
     let _bus = bus();
-    let result = Robot::new()
+    let result = Robot::<N>::new()
         .set_dt(DT)
         .add_control_fn(EachTick, stop)
         .add_control_fn(Last, last)
@@ -57,17 +60,17 @@ fn emergency_stop_ends_the_run_before_the_last_bucket() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
     static LASTS: AtomicU32 = AtomicU32::new(0);
 
-    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn stop(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         if tick(&TICKS) >= STOP_AT {
             emergency_stop!("test: enough ticks");
         }
     }
-    fn last(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn last(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         tick(&LASTS);
     }
 
     let _bus = bus();
-    let result = Robot::new()
+    let result = Robot::<N>::new()
         .set_dt(DT)
         .add_control_fn(EachTick, stop)
         .add_control_fn(Last, last)
@@ -82,7 +85,7 @@ fn emergency_stop_ends_the_run_before_the_last_bucket() {
 fn a_signal_left_on_the_bus_does_not_end_the_next_run() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
 
-    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn stop(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         if tick(&TICKS) >= STOP_AT {
             shutdown!("test: enough ticks");
         }
@@ -90,7 +93,10 @@ fn a_signal_left_on_the_bus_does_not_end_the_next_run() {
 
     let _bus = bus();
     emergency_stop!("test: raised before the run");
-    let result = Robot::new().set_dt(DT).add_control_fn(EachTick, stop).run();
+    let result = Robot::<N>::new()
+        .set_dt(DT)
+        .add_control_fn(EachTick, stop)
+        .run();
 
     assert_eq!(result, Ok(()));
     assert_eq!(TICKS.load(Ordering::Relaxed), STOP_AT);
@@ -101,7 +107,7 @@ fn two_runs_in_a_row_both_run() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
 
     // Shared counter: the second run stops on its first tick.
-    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn stop(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         if tick(&TICKS) >= STOP_AT {
             shutdown!("test: enough ticks");
         }
@@ -109,7 +115,10 @@ fn two_runs_in_a_row_both_run() {
 
     let _bus = bus();
     for expected in [STOP_AT, STOP_AT + 1] {
-        let result = Robot::new().set_dt(DT).add_control_fn(EachTick, stop).run();
+        let result = Robot::<N>::new()
+            .set_dt(DT)
+            .add_control_fn(EachTick, stop)
+            .run();
 
         assert_eq!(result, Ok(()));
         assert_eq!(TICKS.load(Ordering::Relaxed), expected);
@@ -121,7 +130,7 @@ fn the_run_lasts_at_least_the_grid_points_it_slept_to() {
     static TICKS: AtomicU32 = AtomicU32::new(0);
     const SLOW_DT: Duration = Duration::from_millis(2);
 
-    fn stop(_t: &Time, _s: &mut RobotState, _se: &Sensors) {
+    fn stop(_t: &Time, _s: &mut RobotState<N>, _se: &Sensors) {
         if tick(&TICKS) >= STOP_AT {
             shutdown!("test: enough ticks");
         }
@@ -129,7 +138,7 @@ fn the_run_lasts_at_least_the_grid_points_it_slept_to() {
 
     let _bus = bus();
     let before = Instant::now();
-    let result = Robot::new()
+    let result = Robot::<N>::new()
         .set_dt(SLOW_DT)
         .add_control_fn(EachTick, stop)
         .run();

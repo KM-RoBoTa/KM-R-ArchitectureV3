@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use kmr_core::{EachTick, Last, Robot, RobotState, Sensors, Time};
 
+/// Actuators of the test robot.
+const N: usize = 4;
+
 const TICK_BUDGET: u32 = 5_000;
 
 #[test]
@@ -17,18 +20,21 @@ fn sigterm_then_sighup_each_end_a_run_as_a_shutdown() {
         let ticks = AtomicU32::new(0);
         let lasts = AtomicU32::new(0);
 
-        let result = Robot::new()
+        let result = Robot::<N>::new()
             .set_dt(Duration::from_millis(1))
-            .add_control_fn(EachTick, |_t: &Time, _s: &mut RobotState, _se: &Sensors| {
-                let n = ticks.fetch_add(1, Ordering::Relaxed) + 1;
-                assert!(n < TICK_BUDGET, "the loop ignored `{kill}`");
-                if n == 1 {
-                    // `$PPID` of the shell is this test process.
-                    let sent = Command::new("sh").args(["-c", kill]).status();
-                    assert!(sent.is_ok_and(|status| status.success()), "`{kill}` failed");
-                }
-            })
-            .add_control_fn(Last, |_t: &Time, _s: &mut RobotState, _se: &Sensors| {
+            .add_control_fn(
+                EachTick,
+                |_t: &Time, _s: &mut RobotState<N>, _se: &Sensors| {
+                    let n = ticks.fetch_add(1, Ordering::Relaxed) + 1;
+                    assert!(n < TICK_BUDGET, "the loop ignored `{kill}`");
+                    if n == 1 {
+                        // `$PPID` of the shell is this test process.
+                        let sent = Command::new("sh").args(["-c", kill]).status();
+                        assert!(sent.is_ok_and(|status| status.success()), "`{kill}` failed");
+                    }
+                },
+            )
+            .add_control_fn(Last, |_t: &Time, _s: &mut RobotState<N>, _se: &Sensors| {
                 lasts.fetch_add(1, Ordering::Relaxed);
             })
             .run();
