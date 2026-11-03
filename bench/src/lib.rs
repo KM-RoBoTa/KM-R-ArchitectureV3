@@ -5,6 +5,7 @@
 
 #![deny(clippy::unwrap_used)]
 
+pub mod alloc;
 pub mod buf;
 pub mod calib;
 pub mod grid;
@@ -15,3 +16,4 @@ pub mod procfs;
 pub mod report;
 pub mod results;
 pub mod setup;
+pub mod tick;

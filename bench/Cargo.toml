@@ -12,6 +12,13 @@ kmr_api.workspace = true
 [features]
 # The Dynamixel SDK, for `tick_hw` on the reference chain.
 hardware = ["kmr_api/dynamixel"]
+# Optional: `tick_hw` over two U2D2, actuators alternating (research R15; D6, D7 A).
+two-bus = ["hardware"]
 
 [lints]
 workspace = true
+
+# The hardware run on the reference chain; needs the Dynamixel SDK.
+[[bin]]
+name = "tick_hw"
+required-features = ["hardware"]
