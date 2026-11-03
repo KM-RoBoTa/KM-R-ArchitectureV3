@@ -6,7 +6,7 @@
 // ceiling, budget, footprint and presort scripts are not written yet.
 
 !element kmr.bench {
-    benchSetup = component "bench: setup" "base(dt): the robot every bench binary starts from, through kmr_api's builder only (SRS NFR-8, NFR-1)." "Rust"
+    benchSetup = component "bench: setup" "base(dt): the robot every bench binary starts from, through kmr_api's builder only, Warn on every limit (D2 B, the one place; SRS NFR-8, NFR-1)." "Rust"
     benchPlan = component "bench: run plan" "What one process measures, read once from KMR_BENCH_* before run(); a bad variable fails with bad plan: <var> (SRS NFR-2)." "Rust"
     benchRecorder = component "bench: recorder" "The statics the probe controllers write each tick and main reads after run(): epoch, grid slot, last end and lateness, tick and overrun counts. All-zero, so in .bss; one writer, relaxed load and store. Its writers, the tick probes, are not written yet." "Rust statics, atomics"
     benchMeasure = component "bench: measurement" "Fixed histograms of ns samples, the replay of the engine's tick grid from the bench's own stamps, and the calibrated workload of the budget method with its drift check." "Rust, no heap"
