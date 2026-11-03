@@ -1,10 +1,10 @@
 //
 // kmr_core is the engine, linked into the control process. It owns the loop,
 // the clock, the state, the schedules, the signal bus and the hardware
-// contract; users never name it, kmr_api wraps it. Drawn as it is on this
-// branch: the actuator count is still the JOINTS const (const-generic N,
-// core T021-T030, not landed), faults are not stored per slot yet, and there
-// are no limits, stages or RunError. The relations from kmr_api and
+// contract; users never name it, kmr_api wraps it. N is a const generic;
+// faults and tick flags are kept per History slot; the limit stage and the
+// hidden Stages hooks run around the controllers; run_on returns RunError.
+// The relations from kmr_api and
 // kmr_adapters into the core are drawn here, because this file is included
 // after theirs.
 
@@ -16,6 +16,7 @@
     coreClock = component "kmr_core: clock" "Time: tick, dt, elapsed and overrun accounting. Never reads the system time: the runtime injects every instant. Deadlines are origin + k * dt; after an overrun missed slots are skipped, no catch-up (SRS FR-3.2, FR-3.3)." "Rust"
     coreSignal = component "kmr_core: signal bus" "Process-global, lock-free AtomicU8 level and AtomicPtr meta, raised by shutdown! and emergency_stop! from any depth or thread. Monotonic: an emergency stop never drops to a shutdown (SRS FR-4)." "Rust atomics, macro_rules"
     coreState = component "kmr_core: state" "RobotState: a write-only Desired staging area and a read-only History ring of HISTORY_DEPTH samples. Typed getters and setters over the sealed field set Q, Qd, Tau, Kp, Kd; no raw field is reachable (SRS FR-2)." "Rust, circular-buffer"
+    coreLimits = component "kmr_core: limit stage" "Limit, Policy and Envelope per actuator, set on the builder. Each tick after Last, before the batch: an envelope breach clamps and sets envelope; a limit breach sets joint_limit, then Clamp, Warn or Abort (an emergency stop, no write); a non-finite value is never sent. A limit without a policy is refused at finalization (SRS FR-4.5, FR-13.5)." "Rust"
     coreHal = component "kmr_core: hardware contract" "The Hal trait an adapter implements: check, open, zero, ping, health, configure, read_all, torque_on, then read and write each tick, hold, torque_off, close. Speaks actuator indices, masks, opaque groups and a cadence; buses and protocols stay in the adapter. NoHardware simulates (SRS FR-5.1 to FR-5.10, FR-13.4)." "Rust traits"
     coreDriverSet = component "kmr_core: driver set" "The robot's hardware as an HList of Hal members. Each member claims its actuators; the plan rejects overlaps and gaps before any I/O. Steps walk head first, torque off in reverse. A debug-build audit catches a member touching an index it does not own (SRS FR-5.1, FR-6.4)." "Rust, frunk HList"
     coreErrors = component "kmr_core: errors" "StateError of the handles (NoSample before a first read), HardwareError naming the member and the step, RunError: Config (DtOutOfRange) or Hal (SRS FR-3.1, NFR-4)." "Rust, thiserror"
@@ -28,6 +29,8 @@
     coreRuntime -> coreSignal "Resets, then drains between phases"
     coreRuntime -> coreState "Records the sample into History, clears Desired after the write"
     coreRuntime -> coreDriverSet "Claims, brings up, reads, writes, holds and powers off through"
+    coreRuntime -> coreLimits "Runs on the written values before the batch"
+    coreBuilder -> coreLimits "Sets limits, policies and envelopes of"
     coreControllers -> coreState "Read and write through"
     coreControllers -> coreClock "Read"
     coreDriverSet -> coreHal "Calls each member through"

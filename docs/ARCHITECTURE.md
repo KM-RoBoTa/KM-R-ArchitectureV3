@@ -161,7 +161,7 @@ the internal type paths.
 ```
 finalization (claims, no I/O)
 pre_init → open, zero → init → ping, health, configure, read_all → torque_on → post_init
-loop { read → inbound → first → each_tick → last → write → clock bookkeeping → outbound → clear desired → sleep }
+loop { read → inbound → first → each_tick → last → limits → write → clock bookkeeping → outbound → clear desired → sleep }
 hold (shutdown with set_hold only) → torque_off → close
 ```
 
@@ -185,6 +185,7 @@ falls back to 1 ms with one warning.
 | 4 | `First`, then an emergency-stop check | |
 | 5 | `EachTick`, then an emergency-stop check | |
 | 6 | `Last`, then an emergency-stop check | |
+| 6b | limit stage: clamp to the envelopes, check the limits per `Policy`; an `Abort` breach is an emergency stop, no write | |
 | 7 | `Batch` from this tick's write masks; `write` if not empty | one transaction per group |
 | 8 | `end_tick(now)`: tick count, overrun; a late tick sets `OVERRUN` in its slot; then `Stages::outbound` | |
 | 9 | bus check, any signal | |
@@ -210,7 +211,7 @@ panic included, with `torque_off` then `close` on every member.
 
 | Exit | Tick write | Hold | Torque off, close | `run_on` returns |
 |---|---|---|---|---|
-| `dt` out of range | no | no | no, nothing opened | `Err(Config)` |
+| `dt` out of range, a limit without a policy | no | no | no, nothing opened | `Err(Config)` |
 | claim mismatch or `check` error | no | no | no, nothing opened | `Err(Hal)` |
 | emergency stop in `PreInit` | no | no | no, nothing opened | `Ok` |
 | `open` .. `torque_on` error | no | no | yes, at once | `Err(Hal)` |
@@ -219,6 +220,7 @@ panic included, with `torque_off` then `close` on every member.
 | emergency stop in a tick | no, if raised before the write | no | yes, at once | `Ok` |
 | emergency stop during the hold | | cut short | yes, at once | `Ok` |
 | a member touching an index it does not own (debug builds) | no | no | yes, as an emergency stop | `Ok` |
+| a limit breach under `Policy::Abort` | no | no | yes, as an emergency stop | `Ok` |
 
 The sleep is an absolute `clock_nanosleep` on the monotonic clock (Linux,
 through `rustix`), with an optional spin tail before the deadline, off by

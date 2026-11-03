@@ -10,6 +10,7 @@ use super::history::{Flags, History};
 use super::joint_state::{Q, Qd, Tau};
 use crate::error::StateError;
 use crate::hal::{Command, Faults, HoldTarget, Mask, Sample, TickFlags, Written};
+use crate::limits::Staged;
 
 /// The robot state abstraction.
 ///
@@ -265,6 +266,21 @@ impl<const N: usize> RobotState<N> {
             ),
             &mut flags.faults,
         ))
+    }
+
+    /// The written `Q`, `Qd` and `Tau` with their masks, and the newest
+    /// slot's faults: what the limit stage checks and marks.
+    pub(crate) fn guarded(&mut self) -> (Staged<'_, N>, Option<&mut Faults<N>>) {
+        let desired = &mut self.desired;
+        (
+            Staged {
+                q: &mut desired.q,
+                qd: &mut desired.qd,
+                tau: &mut desired.tau,
+                written: &mut desired.written,
+            },
+            self.history.flags.back_mut().map(|flags| &mut flags.faults),
+        )
     }
 
     /// The newest slot's faults, for the limit stage and `write`.

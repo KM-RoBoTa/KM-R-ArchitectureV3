@@ -90,6 +90,7 @@ pub(crate) mod controllers;
 #[doc(hidden)]
 pub mod error;
 pub mod hal;
+pub mod limits;
 pub(crate) mod runtime;
 pub(crate) mod schedule;
 pub(crate) mod sealed;

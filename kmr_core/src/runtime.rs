@@ -27,7 +27,8 @@ use tracing::{error, info, trace, warn};
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
 use crate::hal::{
-    Audit, Batch, Drivers, EXTERNAL_FLAGS, HardwareError, Layout, Overrides, Plan, Step, TickFlags,
+    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, Layout, Overrides, Plan, Step,
+    TickFlags,
 };
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
@@ -432,6 +433,13 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
         if let Some(signal) = estop(host.poll()) {
             break signal;
         }
+        // The limit stage, before the batch: an `Abort` breach skips the write.
+        let (staged, faults) = state.guarded();
+        let mut spare = Faults::default();
+        let faults = faults.unwrap_or(&mut spare);
+        if let Some(signal) = robot.config.limits.enforce(staged, faults) {
+            break signal;
+        }
 
         let mut batch = Batch::new(layout, state.written());
         if !batch.is_empty() {
@@ -564,6 +572,7 @@ pub(crate) fn run_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S
     // Flags raised before the run belong to no tick of it.
     let _ = host.take_flags();
     let dt = tick_period(robot.config.dt)?;
+    crate::limits::require_policies(&robot.config.limits)?;
     robot.config.time.set_delta(dt);
 
     let mut plan = Plan::new();
@@ -1523,6 +1532,73 @@ mod tests {
             );
             // The inbound write reaches the tick's command.
             assert_eq!(log.write.get().map(|w| w.q[2]), Some(Q(7.0)));
+        }
+
+        const LIMIT: crate::limits::Limit = crate::limits::Limit {
+            lower: Some(Q(-1.0)),
+            upper: Some(Q(1.0)),
+            speed: Qd(1.0),
+            effort: crate::state::Tau(1.0),
+        };
+
+        #[test]
+        fn a_limit_without_a_policy_is_refused_before_any_io() {
+            let log = Log::new();
+            let mut policies = [Some(crate::limits::Policy::Clamp); N];
+            policies[1] = None;
+            let mut robot = recording_robot!(log).set_limits([LIMIT; N], policies);
+            let mut host = Scripted::new(Instant::now());
+
+            let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+            assert!(matches!(
+                result,
+                Err(RunError::Config(ConfigError::NoPolicy { actuator: 1 }))
+            ));
+            assert!(log.calls().is_empty());
+        }
+
+        #[test]
+        fn clamp_sends_the_bound_and_flags_the_tick() {
+            let log = Log::new();
+            let seen = Cell::new(Mask::NONE);
+            let mut robot = recording_robot!(log)
+                .set_limits([LIMIT; N], [Some(crate::limits::Policy::Clamp); N])
+                .add_controller(crate::EachTick, |time, state, _se| {
+                    if time.tick() == 0 {
+                        state.set_at(Q(5.0), 1).expect("in range");
+                    } else if let Ok(faults) = state.faults(1) {
+                        seen.set(faults.joint_limit);
+                    }
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + PER_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            let write = log.write.get().expect("a write");
+            assert_eq!(write.q[1], Q(1.0));
+            assert_eq!(seen.get(), mask(&[1]));
+        }
+
+        #[test]
+        fn abort_writes_nothing_then_cuts_torque() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log)
+                .set_hold(Duration::ZERO)
+                .set_limits([LIMIT; N], [Some(crate::limits::Policy::Abort); N])
+                .add_controller(crate::EachTick, |_t, state, _se| {
+                    state.set_at(Q(5.0), 0).expect("in range");
+                });
+            let mut host = Scripted::new(Instant::now());
+
+            let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(
+                log.calls()[11..],
+                [Read, First, EachTick, Last, TorqueOff, Close]
+            );
         }
 
         #[test]

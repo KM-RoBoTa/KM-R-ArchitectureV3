@@ -156,6 +156,13 @@ pub enum UserError {
     /// The tick period is zero or outside [10 µs, 1 s] (SRS FR-3.1).
     #[error("dt of {dt:?} is out of range; give `.set_dt(..)` a value from 10 µs to 1 s")]
     DtOutOfRange { dt: Duration },
+
+    /// An actuator has a limit from the robot's model and no policy for its breach (SRS
+    /// FR-4.5, FR-6.4).
+    #[error(
+        "actuator {actuator} has a joint limit and no limit policy; set one with `.set_limit_policy_all(Policy::Clamp)` (or `set_limit_policy`, `set_limit_policy_group`)"
+    )]
+    NoPolicy { actuator: usize },
 }
 
 /// Prints the [`Display`](core::fmt::Display) text, so `fn main() -> Result<(), UserError>`
@@ -246,6 +253,7 @@ impl From<ConfigError> for UserError {
     fn from(e: ConfigError) -> Self {
         match e {
             ConfigError::DtOutOfRange { dt } => Self::DtOutOfRange { dt },
+            ConfigError::NoPolicy { actuator } => Self::NoPolicy { actuator },
         }
     }
 }
@@ -270,7 +278,7 @@ mod tests {
     #[error("port FT8ISZ6H not found under /dev/serial/by-id")]
     struct NotFound;
 
-    fn every_variant() -> [UserError; 9] {
+    fn every_variant() -> [UserError; 10] {
         [
             UserError::DuplicateBus { port: "FT8ISZ6H" },
             UserError::UnknownBus {
@@ -288,6 +296,7 @@ mod tests {
                 dt: Duration::from_micros(5),
             },
             UserError::UnknownLink { link: "nope" },
+            UserError::NoPolicy { actuator: 2 },
         ]
     }
 
@@ -309,7 +318,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn debug_shows_the_variant_and_its_fields() {
-        let [bus, _, _, _, _, _, bring_up, _, _] = every_variant();
+        let [bus, _, _, _, _, _, bring_up, _, _, _] = every_variant();
         assert_eq!(format!("{bus:?}"), r#"DuplicateBus { port: "FT8ISZ6H" }"#);
         assert_eq!(format!("{bring_up:?}"), "BringUp { source: NotFound }");
     }
@@ -425,7 +434,14 @@ mod tests {
             bring_up,
             dt,
             link,
+            policy,
         ] = every_variant();
+        assert!(policy.to_string().contains("actuator 2"));
+        assert!(
+            policy
+                .to_string()
+                .contains("`.set_limit_policy_all(Policy::Clamp)`")
+        );
         assert!(link.to_string().contains("`nope`"));
         assert!(shared.to_string().contains("its own label"));
         assert!(unknown.to_string().contains("`.bus(..)`"));

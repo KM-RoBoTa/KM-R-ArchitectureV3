@@ -58,6 +58,10 @@ pub enum ConfigError {
     /// The tick period is zero or outside [10 µs, 1 s].
     #[error("dt of {dt:?} is out of range: it must be from 10 µs to 1 s")]
     DtOutOfRange { dt: core::time::Duration },
+    /// Actuator `actuator` has a limit and no policy for its breach (SRS
+    /// FR-4.5).
+    #[error("actuator {actuator} has a limit and no policy for its breach")]
+    NoPolicy { actuator: usize },
 }
 
 /// Why a run failed: its configuration, found before any I/O, or its hardware (`E`).

@@ -44,8 +44,9 @@ Updated 2026-11-03.
 | Per-field write mask (`Written`, with `Kp`, `Kd`) | written |
 | `impl Hal for &mut A` (lend the adapter, SRS FR-5.9) | written |
 | `Overrides` | still carries `read_every`; empties with core T039 |
-| `Stages` (inbound and outbound hooks for `kmr_api`) | decided (core research R15), not built (core T049) |
-| Per-slot `Faults` and `TickFlags` | not built (core T044); `Faults` is a local per tick |
+| `Stages` (inbound and outbound hooks for `kmr_api`) | written (core T049) |
+| Per-slot `Faults` and `TickFlags`, `ExternalFlags` | written (core T044, T045, T047) |
+| Limit and envelope stage before the batch (`kmr_core/src/limits.rs`) | written (core T050, T051) |
 | N as a const generic on the contract | decided in [0007](0007-actuator-count-const-generic.md), not built (core T021 to T030) |
 | Dynamixel member (`kmr_adapters`), strict scripted backend, bus plugins by label | written; bench run of the first motor open |
 | `force_torque_off` in `dxl_rs` | on the unpushed SDK branch the adapter builds against |
@@ -137,9 +138,9 @@ stop skips the hold. The hold lasts the user's `set_hold` duration, in `dt`
 slices, and an emergency stop during it cuts torque at once; default: no
 hold wait.
 
-**`Stages` (decided, not built).** A public trait `Stages<N>` with
+**`Stages` (written).** A public trait `Stages<N>` with
 `inbound(&mut RobotState<N>, &Time)` after `read`, before `First`, and
-`outbound(&RobotState<N>, &Time)` after the write, `impl Stages<N> for ()`;
+`outbound(&RobotState<N>, &Time)` after the write and `end_tick`, `impl Stages<N> for ()`;
 `run_on` uses `()`, `run_on_staged` takes `kmr_api`'s. Static dispatch, no
 heap, no middleware named in the core (core research R15).
 
@@ -182,7 +183,7 @@ heap, no middleware named in the core (core research R15).
   round trips, which does not fit 1 kHz. A thread per bus is roadmap work;
   XmBench has one driver.
 - Every per-tick type is a fixed array. With `JOINTS = 4` a `Mask` is one
-  `u64`; `Written` is three, `Faults` four.
+  `u64`; `Written` is five, `Faults` six.
 - The pre-sort of SRS FR-5.3 is split: `Layout::new` sorts the actuators by
   group once, at `check`; per tick `Batch` filters that order by the write
   mask, one pass over `JOINTS`.
@@ -287,8 +288,11 @@ SRS FR-4.5 leaves the joint-limit policy undecided and asks for
 The adapter does not enforce joint limits. It checks the model's register
 range, which is a different limit: a target outside it cannot be encoded. It
 is not sent and gets `rejected`. An `unimplemented!` there would panic the
-loop with torque on; v2 clamped and dropped the flag. Joint limits stay an
-engine decision, still open.
+loop with torque on; v2 clamped and dropped the flag. Joint limits are the
+engine's limit stage (`kmr_core/src/limits.rs`), before the batch: a breach
+sets `joint_limit` and the actuator's `Policy` clamps, warns or aborts; an
+actuator with a limit and no policy is refused at finalization (D2 B,
+assumed). An envelope breach clamps and sets `envelope` (D3 A, assumed).
 
 ### Protocol 1 has a sync write (R12)
 

@@ -37,6 +37,7 @@ use crate::controllers::{
 };
 use crate::error::RunError;
 use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
+use crate::limits::{Envelope, Limit, Policy};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
 use crate::{Scheduled, Sensors, runtime};
@@ -57,7 +58,7 @@ use crate::{Scheduled, Sensors, runtime};
 /// kmr_core::Robot::<4>::new().run().ok();
 /// ```
 pub struct Robot<const N: usize, CS = Scheduled, E = Empty> {
-    pub(crate) config: RobotConfig,
+    pub(crate) config: RobotConfig<N>,
     pub(crate) controllers: CS,
     pub(crate) filled: PhantomData<E>,
 }
@@ -166,6 +167,23 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
     /// `Duration::ZERO`, the hold command is sent, then torque is cut.
     pub fn set_hold(mut self, duration: Duration) -> Self {
         self.config.hold = Some(duration);
+        self
+    }
+
+    /// Sets each actuator's limit and the policy of its breach (SRS FR-4.5).
+    /// An actuator whose limit bounds anything needs a policy, or `run` and
+    /// `run_on` refuse it before any I/O ([`ConfigError::NoPolicy`]).
+    ///
+    /// [`ConfigError::NoPolicy`]: crate::error::ConfigError::NoPolicy
+    pub fn set_limits(mut self, limits: [Limit; N], policies: [Option<Policy>; N]) -> Self {
+        self.config.limits.set_limits(limits, policies);
+        self
+    }
+
+    /// Sets each actuator's envelope: a written value outside it is clamped
+    /// and flagged (SRS FR-13.5).
+    pub fn set_envelopes(mut self, envelopes: [Envelope; N]) -> Self {
+        self.config.limits.set_envelopes(envelopes);
         self
     }
 
