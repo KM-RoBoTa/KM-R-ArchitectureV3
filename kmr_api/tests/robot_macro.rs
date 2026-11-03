@@ -40,26 +40,27 @@ fn model_constants_are_kmr_api_types() {
     let _: [Tau; N] = model::EFFORT;
 }
 
-/// Six actuators between two fixed joints. A direct call: the front door's `N == JOINTS`
-/// assert refused N = 6 before kmr_api B7 (kmr_model T048 moves it to `robot!`).
+/// Six actuators between two fixed joints, through the front door.
 mod six {
-    kmr_api::__model!(kmr_api; model = "tests/fixtures/six_plus_two.urdf");
+    kmr_api::robot!(model = "tests/fixtures/six_plus_two.urdf");
 
     #[test]
     fn six_actuators_in_file_order() {
         assert_eq!(N, 6);
         assert_eq!(model::NAMES, ["a1", "a2", "a3", "a4", "a5", "a6"]);
+        let _robot = Robot::new();
     }
 }
 
-/// One continuous actuator, by a direct call as `six`.
+/// One continuous actuator, through the front door as `six`.
 mod one {
-    kmr_api::__model!(kmr_api; model = "tests/fixtures/continuous.urdf");
+    kmr_api::robot!(model = "tests/fixtures/continuous.urdf");
 
     #[test]
     fn one_actuator() {
         assert_eq!(N, 1);
         assert_eq!(model::NAMES, ["spin"]);
+        let _robot = Robot::new();
     }
 }
 
