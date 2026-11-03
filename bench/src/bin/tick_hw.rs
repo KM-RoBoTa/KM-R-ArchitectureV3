@@ -87,7 +87,7 @@ fn main() -> ExitCode {
         let sep = if i == 0 { "" } else { "," };
         let _ = std::fmt::Write::write_fmt(&mut buses, format_args!("{sep}by_id:{serial}"));
     }
-    tick::main::<__Spec>(&Bench {
+    tick::main::<N, __Spec>(&Bench {
         binary: "tick_hw",
         robot: "XmBench",
         robot_n: N,

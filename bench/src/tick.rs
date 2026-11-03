@@ -32,7 +32,7 @@ pub struct Bench<'a> {
 const CONTROLLERS: &str = "probe+noop/first,each,last";
 
 /// Reads the plan, runs the probed robot of spec `H` and writes the report; 0 unless `failed`.
-pub fn main<H: Spec>(bench: &Bench<'_>) -> ExitCode {
+pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
     let plan = match RunPlan::from_env() {
         Ok(plan) => plan,
         Err(bad) => return failed_plan(bench.binary, bad),
@@ -42,7 +42,7 @@ pub fn main<H: Spec>(bench: &Bench<'_>) -> ExitCode {
     let probe_cost_ns = calib::probe_cost_ns(probe::now_ns);
     probe::configure(&plan, ps_before);
 
-    let mut robot = setup::base::<H>(Duration::from_nanos(plan.dt_ns));
+    let mut robot = setup::base::<N, H>(Duration::from_nanos(plan.dt_ns));
     for bus in bench.plugins {
         robot = robot.add_plugins(*bus);
     }

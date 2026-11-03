@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
-use kmr_api::{N, Q, Sensors, State, Time};
+use kmr_api::{Q, Sensors, State, Time};
 
 use crate::hist::Histogram;
 use crate::plan::{RunPlan, WriteMode};
@@ -98,7 +98,7 @@ pub fn configure(plan: &RunPlan, ps_per_iter: u64) {
 ///
 /// When the engine's overrun count grew by one, the previous tick was late by the growth of
 /// its accumulated overrun, and the slot follows from that (research R4 phase B).
-pub fn start(time: &Time, _: &mut State, _: &Sensors) {
+pub fn start<const N: usize>(time: &Time, _: &mut State<'_, N>, _: &Sensors) {
     let now = now_ns();
     let tick = TICK.load(Relaxed);
     let count = time.overrun_count();
@@ -159,7 +159,7 @@ pub fn start(time: &Time, _: &mut State, _: &Sensors) {
 }
 
 /// `EachTick`: spins the calibrated workload, then writes every actuator when the plan says `all`.
-pub fn work(_: &Time, state: &mut State, _: &Sensors) {
+pub fn work<const N: usize>(_: &Time, state: &mut State<'_, N>, _: &Sensors) {
     black_box(calib::spin(WORK_ITERS.load(Relaxed)));
     if WRITE_ALL.load(Relaxed) {
         write_target(state);
@@ -171,7 +171,7 @@ pub fn work(_: &Time, state: &mut State, _: &Sensors) {
 }
 
 /// `Last`, registered last: stamps the end, judges the overrun, replays the next slot; tick K−1 stops.
-pub fn end(_: &Time, _: &mut State, _: &Sensors) {
+pub fn end<const N: usize>(_: &Time, _: &mut State<'_, N>, _: &Sensors) {
     let now = now_ns();
     let tick = TICK.load(Relaxed);
     let (origin, slot, dt) = (
@@ -201,13 +201,13 @@ pub fn end(_: &Time, _: &mut State, _: &Sensors) {
 }
 
 /// Does nothing (spec "Empty controllers").
-pub fn noop(_: &Time, _: &mut State, _: &Sensors) {}
+pub fn noop<const N: usize>(_: &Time, _: &mut State<'_, N>, _: &Sensors) {}
 
 /// Writes the hold target to every actuator: the newest read position, else 0 rad.
 ///
 /// It calls `prev_q(0)` either way, so a simulated and a hardware run do the
 /// same work (assumed FR-6.3 meaning; research R15, R16).
-pub fn write_target(state: &mut State) {
+pub fn write_target<const N: usize>(state: &mut State<'_, N>) {
     let target = state.prev_q(0).unwrap_or([Q(0.0); N]);
     state.set_all_q(target);
 }

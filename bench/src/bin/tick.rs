@@ -12,7 +12,7 @@ kmr_api::robot!(XmBench);
 static GLOBAL: Counting = Counting;
 
 fn main() -> ExitCode {
-    tick::main::<__Spec>(&Bench {
+    tick::main::<N, __Spec>(&Bench {
         binary: "tick",
         robot: "XmBench",
         robot_n: N,
