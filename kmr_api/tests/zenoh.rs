@@ -13,13 +13,16 @@ use std::time::{Duration, Instant};
 use kmr_api::test_util::{EXTERNAL_FLAGS, Log, RealTime, Recorder, run_scripted};
 use kmr_api::zenoh::{DesiredMsg, SampleMsg, decode_ring, keys};
 use kmr_api::{EachTick, Gateway, GatewayConfig, HCons, HISTORY_DEPTH, HNil, Identity, Policy};
-use kmr_api::{Q, Sensors, Time};
+use kmr_api::{Q, Remote, Sensors, Time};
 use zenoh::Wait;
 
 kmr_api::robot!(XmBench);
 
 /// The tick period of every run here: 1 kHz.
 const DT: Duration = Duration::from_millis(1);
+
+/// The remote source of these runs: silent past 50 ms, it is timed out.
+const CTL: Remote = Remote::allow("ctl-2").timeout(Duration::from_millis(50));
 
 /// One run at a time: the external flags are process-global.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -259,7 +262,7 @@ fn us4_as2_a_remote_desired_reaches_the_adapter() {
         .set_dt(DT)
         .set_limit_policy_all(Policy::Clamp)
         .add_plugins(gateway)
-        .add_controller(EachTick, idle);
+        .add_remote_source(EachTick, CTL, idle);
     run(robot, 1_000, &log);
     stop.store(true, Ordering::Relaxed);
     sender.join().expect("the sender thread");

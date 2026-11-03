@@ -76,7 +76,7 @@ fn slots() -> (
     let (history_in, history_out) = Latest::new().split();
     (
         desired_in,
-        TickSide::new(desired_out, history_in),
+        TickSide::new(desired_out, history_in, Watchdog::none(&EXTERNAL_FLAGS)),
         history_out,
     )
 }
@@ -198,4 +198,142 @@ fn each_tick_puts_its_sample_with_its_index_age_and_faults() {
     assert!(last.faults.is_clear());
     assert_eq!(history.take(), None);
     assert_eq!(history.superseded(), 4, "nobody took ticks 0 to 3");
+}
+
+mod sources {
+    use core::cell::RefCell;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use kmr_core::hal::{ExternalFlags, TickFlags};
+
+    use super::*;
+    use crate::zenoh::gateway::{Counters, Inbox};
+    use crate::zenoh::security::Rule;
+    use crate::zenoh::watchdog::Watchdog;
+    use crate::zenoh::{Gateway, GatewayConfig, Identity, Remote};
+
+    /// The source of these tests.
+    const CTL: Remote = Remote::allow("ctl-2").timeout(Duration::from_millis(3));
+
+    /// The rule of instance `arm-1` with [`CTL`] as its one source, raising into `flags`.
+    fn rule(flags: &'static ExternalFlags) -> (Rule, Counters, Arc<AtomicU64>) {
+        let counters = Counters::default();
+        let heard = Arc::new(AtomicU64::new(0));
+        let rule = Rule::new(
+            "arm-1",
+            &[CTL],
+            vec![Arc::clone(&heard)],
+            counters.clone(),
+            flags,
+        );
+        (rule, counters, heard)
+    }
+
+    /// `msg` received on `key` by `rule`.
+    fn receive(rule: &mut Rule, key: &str, msg: &[u8], slot: &mut LatestWriter<DesiredMsg<4>>) {
+        Inbox::<4>::receive(rule, key, msg, slot);
+    }
+
+    #[test]
+    fn sc_011_a_thousand_desired_from_an_unknown_identity_none_applied_all_counted() {
+        static FLAGS: ExternalFlags = ExternalFlags::new();
+        let (mut rule, counters, heard) = rule(&FLAGS);
+        let (mut writer, mut reader) = Latest::new().split();
+        let key = keys::desired("arm-1", "intruder");
+        for seq in 1..=1000 {
+            receive(&mut rule, &key, &desired(seq, 0.5).encode(), &mut writer);
+        }
+        assert_eq!(reader.take(), None, "nothing reached the tick");
+        assert_eq!((counters.unauthorized(), counters.accepted()), (1000, 0));
+        assert_eq!(heard.load(Ordering::Relaxed), 0);
+        assert!(FLAGS.take().contains(TickFlags::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn us6_as1_a_desired_at_or_below_the_last_seq_is_dropped_and_counted() {
+        static FLAGS: ExternalFlags = ExternalFlags::new();
+        let (mut rule, counters, heard) = rule(&FLAGS);
+        let (mut writer, mut reader) = Latest::new().split();
+        let key = keys::desired("arm-1", "ctl-2");
+        for seq in [5, 5, 4, 6] {
+            receive(&mut rule, &key, &desired(seq, 0.5).encode(), &mut writer);
+        }
+        assert_eq!(reader.take().map(|m| m.seq), Some(6));
+        assert_eq!((counters.accepted(), counters.out_of_order()), (2, 2));
+        assert_eq!(heard.load(Ordering::Relaxed), 2);
+        assert!(FLAGS.take().is_empty());
+    }
+
+    #[test]
+    fn a_desired_of_another_length_or_instance_never_reaches_the_tick() {
+        static FLAGS: ExternalFlags = ExternalFlags::new();
+        let (mut rule, counters, _) = rule(&FLAGS);
+        let (mut writer, mut reader) = Latest::new().split();
+        receive(
+            &mut rule,
+            &keys::desired("arm-1", "ctl-2"),
+            &[0; 7],
+            &mut writer,
+        );
+        let other = keys::desired("arm-9", "ctl-2");
+        receive(&mut rule, &other, &desired(1, 0.5).encode(), &mut writer);
+        assert_eq!(reader.take(), None);
+        assert_eq!((counters.malformed(), counters.accepted()), (1, 0));
+    }
+
+    /// What the test controllers hold: the source's accepted count, and when it speaks.
+    struct Speaker {
+        heard: Arc<AtomicU64>,
+        on: &'static [u64],
+    }
+
+    /// Counts one accepted Desired in this tick's `Last` when the source speaks then.
+    fn speak(speaker: &mut Speaker, time: &Time, _state: &mut State<'_, 4>, _sensors: &Sensors) {
+        if speaker.on.contains(&time.tick()) {
+            speaker.heard.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn us6_as2_a_silent_source_raises_the_flag_within_timeout_plus_one_tick_and_its_fallback_runs()
+    {
+        static FLAGS: ExternalFlags = ExternalFlags::new();
+        let (watchdog, heard) = Watchdog::new(&[CTL], &FLAGS);
+        let (_writer, desired_out) = Latest::new().split();
+        let (history_in, _history_out) = Latest::new().split();
+        let mut stages = TickSide::new(desired_out, history_in, watchdog);
+        let ran = RefCell::new(Vec::new());
+        let fallback = |time: &Time, _: &mut State<'_, 4>, _: &Sensors| {
+            ran.borrow_mut().push(time.tick());
+        };
+        let gateway = Gateway::new(GatewayConfig {
+            instance: "arm-1",
+            identity: Identity::loopback(),
+            read_history: &[],
+        })
+        .flags(&FLAGS);
+        let speaker = Speaker {
+            heard: Arc::clone(&heard[0]),
+            on: &[4],
+        };
+        let robot = robot()
+            .add_plugins(gateway)
+            .add_remote_source(EachTick, CTL, fallback)
+            .add_controller_with(Last, speaker, speak);
+        let mut inner = robot.finalized();
+        let log = Log::new();
+        let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 7 * PER_TICK);
+        host.external = Some(&FLAGS);
+        let mut drivers = kmr_core::HCons {
+            head: Recorder::new(&log),
+            tail: kmr_core::HNil,
+        };
+        assert!(run_scripted_staged(&mut inner, &mut host, &mut drivers, &mut stages).is_ok());
+
+        // 3 ms at 1 ms a tick: silent through tick 2, flagged from tick 3; the Desired
+        // accepted in tick 4 clears it from tick 6 on.
+        assert_eq!(*ran.borrow(), [3, 4, 5]);
+    }
 }

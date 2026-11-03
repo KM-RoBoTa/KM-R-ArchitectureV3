@@ -1,9 +1,19 @@
 //! Who may talk to the gateway (SRS FR-13.2, NFR-12): the identity's transport (mutual TLS
 //! from files, or loopback), the transport ACL that denies every key by default, and the
-//! Desired rule the gateway thread applies again after the transport authenticated the peer.
+//! Desired rule the gateway thread applies again after the transport authenticated the peer
+//! (SRS FR-13.3, FR-13.4).
 
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use kmr_core::hal::{ExternalFlags, TickFlags};
+
+use crate::slot::LatestWriter;
+
+use super::gateway::{Counters, Inbox, bump};
+use super::msg::DesiredMsg;
+use super::watchdog::Remote;
 use super::{GatewayError, keys};
 
 /// How the gateway authenticates and is authenticated. Holds paths only: the certificate and
@@ -152,6 +162,84 @@ fn is_loopback(endpoint: &str) -> bool {
     ["tcp/127.0.0.1:", "tcp/[::1]:", "tcp/localhost:"]
         .iter()
         .any(|prefix| endpoint.starts_with(prefix))
+}
+
+/// One source on the gateway thread: the last `seq` it had accepted, and the count of its
+/// accepted Desired, shared with the tick's watchdog.
+struct Source {
+    identity: &'static str,
+    last_seq: Option<u64>,
+    heard: Arc<AtomicU64>,
+}
+
+/// The gateway thread's Desired rule (contracts/zenoh.md § Security behaviour), applied after
+/// the transport authenticated the peer and before a Desired reaches the slot.
+pub(crate) struct Rule {
+    instance: &'static str,
+    counters: Counters,
+    flags: &'static ExternalFlags,
+    sources: Vec<Source>,
+}
+
+impl Rule {
+    /// The rule for `sources` of `instance`; `heard[i]` counts source `i`'s accepted Desired.
+    pub(crate) fn new(
+        instance: &'static str,
+        sources: &[Remote],
+        heard: Vec<Arc<AtomicU64>>,
+        counters: Counters,
+        flags: &'static ExternalFlags,
+    ) -> Self {
+        let sources = sources
+            .iter()
+            .zip(heard)
+            .map(|(source, heard)| Source {
+                identity: source.identity,
+                last_seq: None,
+                heard,
+            })
+            .collect();
+        Self {
+            instance,
+            counters,
+            flags,
+            sources,
+        }
+    }
+}
+
+impl<const N: usize> Inbox<N> for Rule {
+    fn receive(&mut self, key: &str, payload: &[u8], desired: &mut LatestWriter<DesiredMsg<N>>) {
+        let Some(sender) = keys::sender(key, self.instance) else {
+            return;
+        };
+        let shared = &self.counters.0;
+        let Some(source) = self.sources.iter_mut().find(|s| s.identity == sender) else {
+            bump(&shared.unauthorized);
+            self.flags.raise(TickFlags::UNAUTHORIZED);
+            return;
+        };
+        let Some(msg) = DesiredMsg::<N>::decode(payload) else {
+            bump(&shared.malformed);
+            return;
+        };
+        if source.last_seq.is_some_and(|last| msg.seq <= last) {
+            bump(&shared.out_of_order);
+            return;
+        }
+        source.last_seq = Some(msg.seq);
+        // DECISION (deferred 2026-10-27): the sender's clock is carried and logged, never
+        // checked.
+        tracing::trace!(
+            source = sender,
+            seq = msg.seq,
+            sent_ns = msg.sent_ns,
+            "desired"
+        );
+        desired.put(msg);
+        source.heard.fetch_add(1, Ordering::Release);
+        bump(&shared.accepted);
+    }
 }
 
 #[cfg(test)]

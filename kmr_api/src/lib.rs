@@ -138,7 +138,7 @@ pub mod ffi;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
 #[cfg(feature = "zenoh")]
-pub use zenoh::{Gateway, GatewayConfig, GatewayError, Identity};
+pub use zenoh::{Gateway, GatewayConfig, GatewayError, Identity, Remote};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;

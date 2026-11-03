@@ -123,6 +123,9 @@ pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
     plugins: Plugins,
     payloads: Vec<Payload>,
     guards: Guards<N>,
+    /// The remote sources, handed to the gateway at finalization.
+    #[cfg(feature = "zenoh")]
+    remotes: Vec<crate::zenoh::Remote>,
     spec: PhantomData<fn() -> H>,
 }
 
@@ -164,6 +167,8 @@ impl<const N: usize, H: Spec<N>> Robot<N, H> {
             plugins: Plugins::default(),
             payloads: Vec::new(),
             guards: Guards::new(),
+            #[cfg(feature = "zenoh")]
+            remotes: Vec::new(),
             spec: PhantomData,
         }
     }
@@ -255,6 +260,8 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             plugins: self.plugins,
             payloads: self.payloads,
             guards: self.guards,
+            #[cfg(feature = "zenoh")]
+            remotes: self.remotes,
             spec: PhantomData,
         }
     }
@@ -320,6 +327,31 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             controller: f,
             fallback,
             when,
+        };
+        self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
+    }
+
+    /// Lets `remote` publish Desired through the gateway, with its `fallback`: each tick a
+    /// source has been silent for its timeout, the remote-timeout flag is raised and the
+    /// fallback runs in `schedule` (SRS FR-13.3, FR-13.5), until the source speaks again. The
+    /// fallback is required: a source without one cannot be written (FR-059). Needs a
+    /// [`Gateway`](crate::Gateway) plugged in, or [`run`](Self::run) refuses.
+    #[cfg(feature = "zenoh")]
+    pub fn add_remote_source<S: Schedule, G>(
+        mut self,
+        schedule: S,
+        remote: crate::zenoh::Remote,
+        fallback: G,
+    ) -> Robot<N, H, C::Output, Filled>
+    where
+        C: Insert<S, Inline<ApiInline<Guarded<Idle<N>, G, Silent<N>>>>>,
+        G: Fn(&Time, &mut State<'_, N>, &Sensors),
+    {
+        self.remotes.push(remote);
+        let guarded = Guarded {
+            controller: idle::<N> as Idle<N>,
+            fallback,
+            when: silent::<N> as Silent<N>,
         };
         self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
     }
@@ -495,7 +527,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             inner,
             bindings: buses.iter().map(|bus| bus.binding).collect(),
             #[cfg(feature = "zenoh")]
-            gateway: crate::zenoh::one(self.plugins.gateways)?,
+            gateway: crate::zenoh::Plugged::new(self.plugins.gateways, self.remotes)?,
         })
     }
 }
@@ -535,6 +567,27 @@ impl<const N: usize, H: Spec<N>, C, E> Robot<N, H, C, E> {
     }
 }
 
+/// The controller half of a remote source's guarded node: the remote's Desired is applied by
+/// the gateway's stage, so nothing runs while the source speaks.
+#[cfg(feature = "zenoh")]
+#[doc(hidden)]
+pub type Idle<const N: usize> = fn(&Time, &mut State<'_, N>, &Sensors);
+
+/// The predicate of a remote source's guarded node: the tick's remote-timeout flag.
+#[cfg(feature = "zenoh")]
+#[doc(hidden)]
+pub type Silent<const N: usize> = fn(&crate::Faults<N>) -> bool;
+
+/// Does nothing: [`Idle`].
+#[cfg(feature = "zenoh")]
+fn idle<const N: usize>(_time: &Time, _state: &mut State<'_, N>, _sensors: &Sensors) {}
+
+/// [`Silent`]: the remote-timeout flag of the tick.
+#[cfg(feature = "zenoh")]
+fn silent<const N: usize>(faults: &crate::Faults<N>) -> bool {
+    faults.remote_timeout()
+}
+
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
 /// before the run and after it, never inside a tick (SRS FR-5.9).
 pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
@@ -542,7 +595,7 @@ pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
     drivers: Option<H::Drivers>,
     /// The gateway plugged in, started by the run.
     #[cfg(feature = "zenoh")]
-    gateway: Option<crate::zenoh::Gateway>,
+    gateway: Option<crate::zenoh::Plugged>,
 }
 
 /// The builder's data checked and handed over: the core robot and the bus bindings.
@@ -551,13 +604,13 @@ struct Finalized<const N: usize, C, E> {
     bindings: Vec<Binding>,
     /// The one gateway plugged in, if any.
     #[cfg(feature = "zenoh")]
-    gateway: Option<crate::zenoh::Gateway>,
+    gateway: Option<crate::zenoh::Plugged>,
 }
 
 /// What a run starts next to the tick loop: the gateway, with the `zenoh` feature.
 struct Net<'a, const N: usize> {
     #[cfg(feature = "zenoh")]
-    gateway: Option<&'a crate::zenoh::Gateway>,
+    gateway: Option<&'a crate::zenoh::Plugged>,
     _robot: PhantomData<&'a [(); N]>,
 }
 

@@ -14,6 +14,7 @@ thiserror.workspace = true
 triple_buffer.workspace = true
 kmr_ffi = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
@@ -35,7 +36,7 @@ test-util = ["kmr_core/test-util"]
 cubemars = ["kmr_adapters/cubemars"]
 # The Zenoh gateway plugin, `kmr_api::Gateway` (SRS FR-7.1). Off by default: without it no
 # Zenoh crate is compiled (SC-004).
-zenoh = ["dep:zenoh"]
+zenoh = ["dep:zenoh", "dep:tracing"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated

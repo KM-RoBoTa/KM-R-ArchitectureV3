@@ -6,11 +6,12 @@ mod gateway;
 pub mod keys;
 mod msg;
 mod security;
+mod watchdog;
 
 use std::sync::Arc;
 
 use ::zenoh::Wait;
-use kmr_core::hal::TickFlags;
+use kmr_core::hal::{EXTERNAL_FLAGS, ExternalFlags, TickFlags};
 use kmr_core::state::{Q, Qd, Tau};
 use kmr_core::{RobotState, Stages};
 
@@ -21,8 +22,11 @@ use crate::{Faults, Time};
 pub use gateway::Counters;
 pub use msg::{DesiredMsg, SampleMsg, decode_ring, desired_len, sample_len};
 pub use security::Identity;
+pub use watchdog::{Allowed, Remote};
 
-use gateway::{Entities, Inbox, Running, bump};
+use gateway::{Entities, Running};
+use security::Rule;
+use watchdog::Watchdog;
 
 /// The gateway's settings (contracts/zenoh.md § Builder).
 #[derive(Clone, Debug)]
@@ -44,6 +48,8 @@ pub struct Gateway {
     listen: Vec<String>,
     connect: Vec<String>,
     counters: Counters,
+    /// Where the unauthorized and remote-timeout flags are raised: the loop's.
+    flags: &'static ExternalFlags,
 }
 
 impl Gateway {
@@ -54,7 +60,15 @@ impl Gateway {
             listen: Vec::new(),
             connect: Vec::new(),
             counters: Counters::default(),
+            flags: &EXTERNAL_FLAGS,
         }
+    }
+
+    /// Raises the gateway's flags in `flags` instead of the loop's: for scripted runs.
+    #[cfg(test)]
+    pub(crate) fn flags(mut self, flags: &'static ExternalFlags) -> Self {
+        self.flags = flags;
+        self
     }
 
     /// Listens on `endpoint`, e.g. `tcp/127.0.0.1:7447`.
@@ -111,11 +125,16 @@ impl Gateway {
         Ok(config)
     }
 
-    /// Opens the session, declares the keys, spawns the gateway thread; returns it with the
-    /// tick's side.
-    pub(crate) fn start<const N: usize>(&self) -> Result<(Running, TickSide<N>), GatewayError> {
+    /// Opens the session, declares the keys, spawns the gateway thread with `sources` as the
+    /// remote sources; returns it with the tick's side.
+    pub(crate) fn start<const N: usize>(
+        &self,
+        sources: &[Remote],
+    ) -> Result<(Running, TickSide<N>), GatewayError> {
         let instance = self.instance()?;
-        let session = ::zenoh::open(self.session_config(&[])?)
+        watchdog::checked(sources)?;
+        let names: Vec<&str> = sources.iter().map(Remote::identity).collect();
+        let session = ::zenoh::open(self.session_config(&names)?)
             .wait()
             .map_err(GatewayError::session)?;
         let entities = Entities::declare(session, instance)?;
@@ -125,18 +144,48 @@ impl Gateway {
             Latest::counting(Arc::clone(&shared.superseded_desired)).split();
         let (history_in, history_out) =
             Latest::counting(Arc::clone(&shared.missed_samples)).split();
-        let inbox = AnySender {
-            instance,
-            counters: self.counters.clone(),
-        };
+        let (watchdog, heard) = Watchdog::new(sources, self.flags);
+        let rule = Rule::new(instance, sources, heard, self.counters.clone(), self.flags);
         let running = gateway::spawn(
             entities,
-            inbox,
+            rule,
             desired_in,
             history_out,
             self.counters.clone(),
         )?;
-        Ok((running, TickSide::new(desired_out, history_in)))
+        Ok((running, TickSide::new(desired_out, history_in, watchdog)))
+    }
+}
+
+/// The gateway a builder plugged in, with the remote sources it registered.
+pub(crate) struct Plugged {
+    gateway: Gateway,
+    sources: Vec<Remote>,
+}
+
+impl Plugged {
+    /// The one gateway of `gateways` with `sources`; `None` without gateway or source.
+    pub(crate) fn new(
+        gateways: Vec<Gateway>,
+        sources: Vec<Remote>,
+    ) -> Result<Option<Self>, GatewayError> {
+        let mut gateways = gateways.into_iter();
+        let first = gateways.next();
+        if gateways.next().is_some() {
+            return Err(GatewayError::TwoGateways);
+        }
+        match (first, sources.first()) {
+            (Some(gateway), _) => Ok(Some(Self { gateway, sources })),
+            (None, Some(source)) => Err(GatewayError::NoGateway {
+                identity: source.identity,
+            }),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// [`Gateway::start`] with the registered sources.
+    pub(crate) fn start<const N: usize>(&self) -> Result<(Running, TickSide<N>), GatewayError> {
+        self.gateway.start(&self.sources)
     }
 }
 
@@ -147,16 +196,6 @@ impl Plug for Gateway {
 }
 
 impl Plugin for Gateway {}
-
-/// The one gateway of `gateways`, if any.
-pub(crate) fn one(gateways: Vec<Gateway>) -> Result<Option<Gateway>, GatewayError> {
-    let mut gateways = gateways.into_iter();
-    let first = gateways.next();
-    match gateways.next() {
-        Some(_) => Err(GatewayError::TwoGateways),
-        None => Ok(first),
-    }
-}
 
 /// Why the gateway could not start.
 #[derive(Debug, thiserror::Error)]
@@ -177,6 +216,14 @@ pub enum GatewayError {
     /// Two gateways were plugged in.
     #[error("two gateways are plugged in; plug in one")]
     TwoGateways,
+    /// A remote source was added without a gateway to receive it.
+    #[error(
+        "remote source `{identity}` is added, but no gateway is plugged in; add `.add_plugins(Gateway::new(..))`"
+    )]
+    NoGateway { identity: &'static str },
+    /// One identity was added as a remote source twice.
+    #[error("remote source `{identity}` is added twice; add each source once")]
+    TwoSources { identity: &'static str },
     /// The session configuration was refused.
     #[error("gateway configuration: {0}")]
     Config(String),
@@ -201,32 +248,12 @@ fn json_list(endpoints: &[String]) -> Result<String, GatewayError> {
     Ok(format!("[{}]", quoted.join(",")))
 }
 
-/// Hands every Desired of the instance that decodes to the tick.
-struct AnySender {
-    instance: &'static str,
-    counters: Counters,
-}
-
-impl<const N: usize> Inbox<N> for AnySender {
-    fn receive(&mut self, key: &str, payload: &[u8], desired: &mut LatestWriter<DesiredMsg<N>>) {
-        if keys::sender(key, self.instance).is_none() {
-            return;
-        }
-        match DesiredMsg::decode(payload) {
-            Some(msg) => {
-                desired.put(msg);
-                bump(&self.counters.0.accepted);
-            }
-            None => bump(&self.counters.0.malformed),
-        }
-    }
-}
-
 /// The tick's side of the gateway: the core's stage points (SRS FR-7.1). Fixed-size copies
 /// only: no heap, lock, wait, I/O or crypto.
 pub(crate) struct TickSide<const N: usize> {
     desired: LatestReader<DesiredMsg<N>>,
     history: LatestWriter<SampleMsg<N>>,
+    watchdog: Watchdog,
     /// The index of the running tick, taken at `inbound`.
     tick: u64,
 }
@@ -236,10 +263,12 @@ impl<const N: usize> TickSide<N> {
     pub(crate) fn new(
         desired: LatestReader<DesiredMsg<N>>,
         history: LatestWriter<SampleMsg<N>>,
+        watchdog: Watchdog,
     ) -> Self {
         Self {
             desired,
             history,
+            watchdog,
             tick: 0,
         }
     }
@@ -247,7 +276,9 @@ impl<const N: usize> TickSide<N> {
 
 impl<const N: usize> Stages<N> for TickSide<N> {
     fn inbound(&mut self, state: &mut RobotState<N>, time: &kmr_core::Time) {
-        self.tick = Time::new(time).tick();
+        let time = Time::new(time);
+        self.tick = time.tick();
+        self.watchdog.tick(time.dt());
         if let Some(msg) = self.desired.take() {
             apply(&msg, state);
         }

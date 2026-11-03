@@ -1373,6 +1373,7 @@ dependencies = [
  "kmr_ffi",
  "kmr_model",
  "thiserror",
+ "tracing",
  "triple_buffer",
  "trybuild",
  "zenoh",
