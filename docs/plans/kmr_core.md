@@ -17,7 +17,7 @@ in [`specs/002-kmr-core/`](../../specs/002-kmr-core/).
 
 ## Phase 4: M2 N from the robot line (US4), SRS delivery step 2, core half
 
-- [ ] T019 [P] [US4] HUMAN: Before T021, record a clean `cargo build --timings -p controllers` (design-const-generic-n §4: hal.rs and the adapter move their codegen into the user crate); repeat after T030 and keep both reports (target/cargo-timings/) with the PR. FR-061 (SRS NFR-11). Added by analysis: the design asks it, no plan row
+- [x] T019 [P] [US4] HUMAN: Before T021, record a clean `cargo build --timings -p controllers` (design-const-generic-n §4: hal.rs and the adapter move their codegen into the user crate); repeat after T030 and keep both reports (target/cargo-timings/) with the PR. FR-061 (SRS NFR-11). Added by analysis: the design asks it, no plan row
 - [x] T020 [P] [US4] HUMAN: K2.0 docs/decisions/NNNN-actuator-count-const-generic.md, NNNN the next free number in docs/decisions/ at commit time (0001 and 0002 exist): supersedes the N half of 0001; `HISTORY_DEPTH` stays a constant. No code. FR-011 (SRS FR-6.1, §8 decision 0001)
 - [x] T021 [US4] HUMAN: K2.1 `impl<const N: usize> State<N>` and its `Default` in kmr_core/src/state/history.rs; callers unchanged. FR-011 (SRS FR-6.1)
 - [x] T022 [US4] HUMAN: K2.2 `Desired<const N>` in kmr_core/src/state/desired.rs; **kmr_core/src/state/field.rs (invariant)**: `Slot` methods `slot`, `field`, `mask` generic over N, the trait itself not, `StateField` unchanged (design §2.4); `RobotState` holds `Desired<JOINTS>`. FR-011, FR-021 (SRS FR-6.1, Definitions "Write mask")
