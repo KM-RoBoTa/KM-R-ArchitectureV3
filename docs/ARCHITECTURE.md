@@ -15,6 +15,14 @@ user code:
   vendor, behind the core's contract. Dynamixel first.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
   that re-exposes what users need and nothing else.
+- **`kmr_ffi`** (`kmr_ffi/`) — the plain C types, generated C/C++ headers and
+  Python/Lua bridges that let a Rust controller hand one tick's math to
+  foreign code. No engine dependency; users reach it only through
+  `kmr_api::ffi` (features `ffi`, `ffi-build`), whose `call` copies the
+  state into the view, calls, and applies the flagged writes through the
+  `State` setters. Its example crates, `kmr_ffi/examples/<language>/`, are
+  workspace members: a build of the workspace needs a C and C++ compiler and
+  the Python headers.
 - **`controllers`** (`controllers/`) — where controllers are written. It
   depends on `kmr_api` only.
 

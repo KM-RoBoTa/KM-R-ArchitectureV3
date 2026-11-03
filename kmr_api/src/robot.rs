@@ -472,6 +472,24 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
+impl<const N: usize, H: Spec<N>, C: kmr_core::Drive<N>> Robot<N, H, C, Filled> {
+    /// Finalizes the builder like [`run`](Self::run), then runs it on `drivers` with `host`
+    /// as its clock, sleep and bus: no real sleep, no global signal bus.
+    pub(crate) fn run_scripted<P, D>(
+        self,
+        host: &mut P,
+        drivers: &mut D,
+    ) -> Result<kmr_core::Signal, UserError>
+    where
+        P: kmr_core::test_util::Host,
+        D: Drivers<N, Error: Send + Sync>,
+    {
+        let (mut inner, _plugins) = self.finalize()?;
+        kmr_core::test_util::run_scripted(&mut inner, host, drivers).map_err(UserError::from)
+    }
+}
+
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
 /// before the run and after it, never inside a tick (SRS FR-5.9).
 pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {

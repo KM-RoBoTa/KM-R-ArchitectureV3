@@ -109,3 +109,9 @@ pub mod dynamixel {
 pub use kmr_model::model as __model;
 
 pub use kmr_core::{emergency_stop, shutdown};
+
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;

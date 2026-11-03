@@ -21,6 +21,9 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # The FFI example crates are members: kmr_ffi_example_python embeds CPython (pyo3), the
+      # C and C++ examples need cc and c++, which the runner has.
+      - run: sudo apt-get update && sudo apt-get install -y python3-dev
       - run: cargo fmt --all --check
       - run: cargo build --workspace --all-targets
       - run: cargo clippy --workspace

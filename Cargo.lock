@@ -529,6 +529,7 @@ dependencies = [
  "color-eyre",
  "kmr_adapters",
  "kmr_core",
+ "kmr_ffi",
  "kmr_model",
  "thiserror",
  "trybuild",
@@ -565,6 +566,34 @@ dependencies = [
  "mlua",
  "pyo3",
  "thiserror",
+]
+
+[[package]]
+name = "kmr_ffi_example_c"
+version = "0.1.0"
+dependencies = [
+ "kmr_api",
+]
+
+[[package]]
+name = "kmr_ffi_example_cpp"
+version = "0.1.0"
+dependencies = [
+ "kmr_api",
+]
+
+[[package]]
+name = "kmr_ffi_example_lua"
+version = "0.1.0"
+dependencies = [
+ "kmr_api",
+]
+
+[[package]]
+name = "kmr_ffi_example_python"
+version = "0.1.0"
+dependencies = [
+ "kmr_api",
 ]
 
 [[package]]

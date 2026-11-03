@@ -288,11 +288,16 @@ impl<const N: usize> Log<N> {
         }
     }
 
-    /// Appends `call`. Panics past [`CAPACITY`].
+    /// Appends `call`; past [`CAPACITY`] calls it is dropped, so a long run keeps its first
+    /// calls.
+    // DECISION: drop instead of panic, so a recorder can drive a 1000-tick run (kmr_ffi T016);
+    // a test that looks past the first CAPACITY calls sees them missing, never a wrong order.
     pub fn push(&self, call: Call) {
         let (calls, len) = &mut *self.calls.borrow_mut();
-        *calls.get_mut(*len).expect("log capacity") = call;
-        *len += 1;
+        if let Some(slot) = calls.get_mut(*len) {
+            *slot = call;
+            *len += 1;
+        }
     }
 
     /// The calls so far, in order.

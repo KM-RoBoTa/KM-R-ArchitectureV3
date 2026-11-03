@@ -27,9 +27,9 @@ Six choices shape the boundary:
 | `ReadView`, `Slot`, `WriteBuf`, `Written`, `ActuatorFlags`, `TimeView`, layout tests | written |
 | Header and ABI-file generator, `Build::compile` over `cc` | written; N and depth are passed in |
 | `robot(..)`, `model(..)`: N from a preset or a descriptor | written over `kmr_model_core` (T011, [0009](0009-kmr-model-library-split.md)); the History depth is an argument kmr_api's `ffi-build` wrapper fills |
-| `call`, `Status`, `ForeignError`, `foreign!` | not written: `unsafe`, human (T007, T012) |
-| Glue in `kmr_api::ffi` | not written: kmr_api G1, after the core readers (core K1, K3.5, K4.1, K7.1) |
-| Python and Lua bridges | not written: wait on `ForeignError` (T007) |
+| `call`, `Status`, `ForeignError`, `foreign!` | written (T007, T012); `foreign!` binds each name as a `CFn` const, so `call(swing, ..)` needs no cast |
+| Glue in `kmr_api::ffi` | written (kmr_api G1, T056): fills every depth, the flags and the ages, applies through an exhaustive `match` on the core's `FieldId`; `foreign!` and `build::robot`, `build::model` with `HISTORY_DEPTH` filled in. The field list carries the gains `kp`, `kd` too |
+| Python and Lua bridges | written (T020, T021); reached as `kmr_api::ffi::python::Bridge`, `kmr_api::ffi::lua::Bridge` under the features `ffi-python`, `ffi-lua` (kmr_api T057) |
 
 ## Decision proposed
 

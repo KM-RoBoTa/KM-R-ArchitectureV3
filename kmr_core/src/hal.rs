@@ -119,6 +119,12 @@ impl<const N: usize> Mask<N> {
         Self(words)
     }
 
+    /// The words, bit `i % 64` of word `i / 64` = actuator `i`: the FFI view's masks.
+    #[doc(hidden)]
+    pub const fn words(self) -> [u64; MASK_WORDS] {
+        self.0
+    }
+
     /// Indices whose bit is set, ascending.
     pub fn iter(&self) -> impl Iterator<Item = usize> {
         let mask = *self;
@@ -843,6 +849,15 @@ mod tests {
         assert_eq!(Mask::<64>::ALL.iter().count(), 64);
         assert!(Mask::<64>::ALL.get(63));
         assert!(Mask::<0>::ALL.is_empty());
+    }
+
+    #[test]
+    fn words_hold_bit_i_for_actuator_i() {
+        let mut mask = Mask::<64>::NONE;
+        mask.set(0);
+        mask.set(63);
+        assert_eq!(mask.words(), [1 | 1 << 63]);
+        assert_eq!(Mask::<10>::ALL.words(), [0x3ff]);
     }
 
     #[test]

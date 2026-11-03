@@ -11,12 +11,25 @@ kmr_core.workspace = true
 kmr_adapters.workspace = true
 kmr_model.workspace = true
 thiserror.workspace = true
+kmr_ffi = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
 # Batches keep declaration order: the bench's baseline for the presort (SRS
 # FR-5.3; assumed, pending human: D11 B). Off by default.
 presort-off = ["kmr_core/presort-off"]
+# Foreign-language controller math (kmr_ffi), all off by default: without them no FFI code is
+# compiled (FR-072 (SRS FR-10)).
+ffi = ["dep:kmr_ffi"]
+# For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
+ffi-build = ["ffi", "kmr_ffi/build"]
+# A Python function as the foreign body: `kmr_api::ffi::python::Bridge` (needs the Python
+# headers and library).
+ffi-python = ["ffi", "kmr_ffi/python"]
+# A Lua 5.4 function as the foreign body, Lua vendored: `kmr_api::ffi::lua::Bridge`.
+ffi-lua = ["ffi", "kmr_ffi/lua"]
+# Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
+test-util = ["kmr_core/test-util"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated
