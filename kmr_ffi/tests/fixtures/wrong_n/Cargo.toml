@@ -1,0 +1,17 @@
+# A user crate whose build.rs builds C for one robot and whose robot! names another
+# (kmr_ffi T012, T017). Not a workspace member: kmr_ffi/tests/wrong_n.rs runs `cargo check` on it.
+[package]
+name = "kmr_ffi_fixture_wrong_n"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+kmr_api = { path = "../../../../kmr_api" }
+kmr_ffi = { path = "../../.." }
+
+[build-dependencies]
+kmr_api = { path = "../../../../kmr_api" }
+kmr_ffi = { path = "../../..", features = ["build"] }
