@@ -124,6 +124,29 @@ and writes one report plus its `.log`. Figures: `jitter_p50_ns`, `jitter_p99_ns`
 `vm_hwm_kb`, `stack_kb`, `loop_thread_allocs`. The prefix `nonrt` or `rt` comes from the running
 kernel. About 10 min each.
 
+## Ceiling (a)
+
+```sh
+sudo -E bench/scripts/ceiling.sh
+```
+
+The fastest `dt` the loop holds on the running kernel (FR-007 (SRS NFR-8 a, FR-3.1)). One `tick`
+process per candidate, each held `HOLD_S` (60 s) plus the warm-up, cell `<nonrt|rt>-dt<dt_ns>`:
+
+1. `dt` = 10 µs (`CEIL_DT_MIN_NS`). Held: the ceiling is at least 100 kHz, `floor_held = "yes"`,
+   stop. The search never goes below 10 µs, the SRS floor.
+2. `dt` = 1 ms (`CEIL_DT_MAX_NS`). Not held: `floor_held = "no"` and no `ceiling_dt_ns`. That is a
+   finding (the loop does not hold 1 kHz on this kernel), not a fault of the bench.
+3. Otherwise a bisection on a log scale between the two, until the bracket is within 1 % of `dt`
+   (`CEIL_STOP_PERMILLE`). About 9 candidates, 9 to 10 min.
+
+A candidate holds when it is `complete` and both `bench_overruns` and `engine_overruns` are 0.
+The summary report, cell `<nonrt|rt>-idle`, gives `ceiling_dt_ns`, `ceiling_hz`, `floor_held`, and
+the held candidate's gap from one tick's end to the next tick's start as `gap_ceiling_min_ns`
+and `gap_ceiling_p50_ns` (mostly sleep at that rate; the engine's own path is the budget's
+`gap_floor_min_ns`, research R9). A failed or interrupted candidate ends the search; the summary
+then carries that status and names the candidate.
+
 ## Reports
 
 Every script writes under `bench/reports/<commit12>/<host_id>/<measurement>-<cell>-<n>.toml`,
