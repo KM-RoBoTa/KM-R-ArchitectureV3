@@ -55,7 +55,7 @@ in [`specs/007-bench/`](../../specs/007-bench/).
 ## Phase 9: User Story 2, the reference set (a) to (e) (plan A-6 `all.sh`, A-7, A-10)
 
 - [x] T042 [US2] bench/scripts/all.sh: `setup-check.sh` (stop on failure), `footprint.sh`, `cell.sh idle`, `cell.sh load`, `ceiling.sh`, `budget.sh`, then `results summary` of the set, then a reboot prompt naming the other kernel; it never reboots and never runs compile time (research R18) (SC-001 (SRS NFR-8))
-- [ ] T043 [US2] Complete bench/PROCEDURE.md: every FR-021 item, timed per research R18 (about 40 min per kernel, about 80 min plus one reboot), a "Reference chain" section marked "assumed, pending human: D10" (filled by T059), and a checklist a person who did not write the bench follows alone (FR-021 (SRS NFR-8); SC-001)
+- [x] T043 [US2] Complete bench/PROCEDURE.md: every FR-021 item, timed per research R18 (about 40 min per kernel, about 80 min plus one reboot), a "Reference chain" section marked "assumed, pending human: D10" (filled by T059), and a checklist a person who did not write the bench follows alone (FR-021 (SRS NFR-8); SC-001)
 - [ ] T044 [US2] HUMAN (plan A-10): first reference set with `all.sh` on both kernels (quickstart §7, §8), by a person who did not write the bench, timed from a flashed board (SC-001, SC-004); commit the reports under bench/reports/; state whether the 10 µs floor held (SC-008 (SRS FR-3.1)). Blocked on T005; after T042, T043
 - [ ] T045 [US2] HUMAN: repeatability (quickstart §9): `cell.sh idle` and `budget.sh` three times each on one kernel; p50 and p99 within 10 %, overhead within 10 % or 2 µs (SC-002, SC-003 (SRS NFR-8 b, d)); `results compare` gives the spread, the bench gives no verdict (FR-023)
 

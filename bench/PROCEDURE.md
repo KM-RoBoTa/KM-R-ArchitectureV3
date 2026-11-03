@@ -1,11 +1,57 @@
 # Bench procedure
 
-How to produce every kmr reference figure from this file alone (FR-021 (SRS NFR-8)). Settings
+How to produce every kmr reference figure from this file alone (FR-021 (SRS NFR-8)): the OS
+setup, the kernel configuration of both kernels, governor, scheduling, load profile, instruments
+and run lengths are all below, one command per measurement. Settings
 live in `bench/scripts/profile.env`; commands run from the repository root. Reports land under
 `bench/reports/<commit12>/<host_id>/`; a human commits them.
 
 Figures count only from the reference bench (SRS NFR-1). A run anywhere else is labelled
 `not_reference` and proves the harness, not kmr.
+
+## Checklist
+
+For a person who did not write the bench, from a flashed board carrying both kernels. About
+80 min plus one reboot (research R18); SC-001 asks for it within 2 hours.
+
+1. [ ] Board, image and kernels as in [Host setup](#host-setup); `stress-ng`, `chrt`, `taskset`,
+   `size`, `strip` installed.
+2. [ ] The commit to measure checked out, clean (`git status --short` empty).
+3. [ ] [Build once](#build-once): `cargo build -p kmr_bench --release --bins`.
+4. [ ] Boot the non-RT kernel. As root: governor `performance` on every core, `RUST_LOG` unset
+   ([Per boot](#per-boot-as-root)).
+5. [ ] Power meter and thermometer in place; export the four
+   [operator fields](#operator-fields-and-instruments).
+6. [ ] `sudo -E bench/scripts/all.sh`. It checks the host, runs (e), (b), (c), (a), (d), prints
+   the summary and names the kernel to reboot into. About 40 min. A failed check stops it
+   before any run: fix the named field and start again.
+7. [ ] Reboot into the PREEMPT_RT kernel; repeat steps 4 to 6 with **the same binaries**.
+8. [ ] `target/release/results summary bench/reports/<commit12>/<host_id>`: four 1 kHz cells,
+   two ceilings, two budgets and the footprint, no `missing:` line.
+9. [ ] Note whether the 10 µs floor held on each kernel (`floor_held` in the ceiling summary,
+   SC-008).
+10. [ ] Commit `bench/reports/<commit12>/<host_id>/` (reports and logs), nothing else.
+
+### Timing per kernel (research R18)
+
+| Step | Script | Length |
+|---|---|---|
+| (e) footprint | `footprint.sh` | under 1 min |
+| (b) jitter, idle | `cell.sh idle` | 10 min |
+| (c) jitter, loaded | `cell.sh load` | 10 min plus 5 s lead |
+| (a) ceiling | `ceiling.sh` | about 9 candidates × 1 min |
+| (d) budget | `budget.sh` | about 11 candidates × 1 min, plus 1 min at 10 µs |
+| summary | `results summary` | seconds |
+
+About 40 min per kernel; two kernels about 80 min plus one reboot. Compile time is not part of
+the set (see [Compile time](#compile-time)).
+
+### Repeatability (SC-002, SC-003)
+
+On one kernel, run `cell.sh idle` and `budget.sh` three times each, then
+`target/release/results compare` on two sets or `results summary` on one: p50 and p99 within
+10 % of each other, overhead within 10 % or 2 µs. The bench prints the spread and gives no
+verdict (FR-023).
 
 ## Host setup
 
@@ -192,6 +238,26 @@ Peak RSS is `VmHWM`; the stack high-water mark is the `Rss` of the `[stack]` map
 4 KiB page. When `stack_kb` equals `stack_baseline_kb` the report says
 `stack_note = "below the first pages"`: the loop's stack fits in the pages the loader already
 touched. Each binary runs `FOOTPRINT_TICKS` (3 000) ticks at 1 ms; under a minute.
+
+## Reference chain
+
+Assumed, pending human: D10. The hardware runs (`tick_hw`, `budget.sh --hw`, `presort.sh
+--gain`) use this chain, and SRS NFR-1 does not name one yet:
+
+| Item | Value |
+|---|---|
+| Robot | preset `XmBench`: 4 × Dynamixel XM430-W210, ids 1 to 4, one bus, 1 Mbaud |
+| Adapter | one ROBOTIS U2D2, serial id `FT8ISZ6H` (`/dev/serial/by-id`) |
+| Supply | not fixed yet: the human records model and voltage here (D10) |
+| Source line | `const SERIAL` in `bench/src/bin/tick_hw.rs`, the only line two benches differ in |
+
+```sh
+cargo build -p kmr_bench --release --features hardware --bin tick_hw
+```
+
+After every hardware run, every actuator must read `Torque_Enable = 0`. The read/write-only
+split and the I/O figures wait on the engine's age and read cadence (tasks T057 to T059); until
+then a `tick_hw` run measures the loop with the bus attached, nothing more.
 
 ## Reports
 
