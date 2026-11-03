@@ -529,6 +529,7 @@ dependencies = [
  "color-eyre",
  "kmr_adapters",
  "kmr_core",
+ "kmr_ffi",
  "kmr_model",
  "thiserror",
  "trybuild",

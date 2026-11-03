@@ -17,6 +17,8 @@
     apiPayloads = component "kmr_api: payloads" "Medium and heavy payloads by mass and mount link; the mount is checked against the model's links at finalization, before any I/O (SRS FR-8.1, FR-8.4)." "Rust"
     apiErrors = component "kmr_api: errors" "UserError of run() and bind(), each saying how to fix it, the adapter's error typed inside BringUp; StateError of the handles (SRS FR-6.4, NFR-2, NFR-4)." "Rust, thiserror"
     apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, Mask, Limit, Policy, Envelope, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' presets and Dynamixel table types. Defined once, never copied." "Rust pub use"
+    apiFfi = component "kmr_api: ffi" "Features ffi, ffi-build: kmr_ffi's surface under kmr_api::ffi, foreign! and the build helper with HISTORY_DEPTH filled in, and call(f, time, state, ctx): fills the view from State and Time (every depth, faults, ages), runs the foreign body, applies each flagged entry through the field's setter, raises shutdown! or emergency_stop! for status 1 or 2 (SRS FR-10.1, FR-10.3, FR-2.5, FR-4.1, FR-4.2)." "Rust"
+    apiTestUtil = component "kmr_api: test util" "Feature test-util: the core's scripted host and recording adapter, and run_scripted over a kmr_api Robot, for crates that depend on kmr_api only." "Rust"
     apiFake = component "kmr_api: fake brands" "Two test-only brands of fake members, so robot! expands over two brands in kmr_api's tests. Test builds only." "Rust, cfg(test)"
 
     apiMacro -> apiSpec "Emits the __Spec that implements"
@@ -34,6 +36,8 @@
     apiBus -> adaptersBinding "Wraps a"
     apiHandles -> apiReexports "Speaks the value types of"
     apiHandles -> apiErrors "Fails with"
+    apiFfi -> apiHandles "Fills the views from, applies the writes through"
+    apiTestUtil -> apiBuilder "Finalizes and runs scripted"
     apiUnits -> apiReexports "Converts into Q and Qd of"
     apiFake -> apiBrands "Implements"
 

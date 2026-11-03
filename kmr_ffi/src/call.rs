@@ -145,8 +145,10 @@ where
 /// swing; fn other; }`. kmr_api's `ffi::foreign!` passes the core's `HISTORY_DEPTH` as `D`. It
 /// includes `OUT_DIR/kmr_ffi_abi.rs` from the build helper and fails `cargo check` with
 /// `error[E0080]` when the C sources were built for another N or depth (SC-005 (SRS FR-10.2,
-/// FR-6.1)). Each name is an `unsafe extern "C"` function of the [`CFn`] signature; it coerces
-/// to `CFn<N, D>` for [`call`].
+/// FR-6.1)). Each name becomes a `const` of type [`CFn<N, D>`](CFn), the C function itself,
+/// so it passes to [`call`] as is.
+// DECISION: a `const` per name over an extern block in a hidden module, so `call(swing, ..)`
+// needs no `as CFn<..>` cast at the call site.
 #[macro_export]
 macro_rules! foreign {
     (depth = $depth:expr; $(fn $name:ident;)+) => {
@@ -156,20 +158,30 @@ macro_rules! foreign {
             FFI_DEPTH == $depth,
             "kmr_ffi: C sources were built for another History depth"
         );
-        // SAFETY: the build helper compiled these bodies against `kmr_ffi.h` of the same build,
-        // whose prototypes are this signature; the asserts above pin its N and depth. Calling
-        // one stays `unsafe`: `call` does it once, over references of these exact types.
-        unsafe extern "C" {
-            $(
-                #[doc = ::core::concat!("The C or C++ controller body `", ::core::stringify!($name), "`.")]
-                fn $name(
-                    read: *const $crate::ReadView<N, { $depth }>,
-                    write: *mut $crate::WriteBuf<N>,
-                    time: *const $crate::TimeView,
-                    ctx: *mut ::core::ffi::c_void,
-                ) -> i32;
-            )+
+        #[doc(hidden)]
+        mod __kmr_ffi_c {
+            #[allow(unused_imports)]
+            use super::*;
+            // SAFETY: the build helper compiled these bodies against `kmr_ffi.h` of the same
+            // build, whose prototypes are this signature; the asserts above pin its N and depth.
+            // Calling one stays `unsafe`: `call` does it once, over references of these exact
+            // types.
+            unsafe extern "C" {
+                $(
+                    pub(super) fn $name(
+                        read: *const $crate::ReadView<N, { $depth }>,
+                        write: *mut $crate::WriteBuf<N>,
+                        time: *const $crate::TimeView,
+                        ctx: *mut ::core::ffi::c_void,
+                    ) -> i32;
+                )+
+            }
         }
+        $(
+            #[doc = ::core::concat!("The C or C++ controller body `", ::core::stringify!($name), "`.")]
+            #[allow(non_upper_case_globals)]
+            const $name: $crate::CFn<N, { $depth }> = __kmr_ffi_c::$name;
+        )+
     };
 }
 

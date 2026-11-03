@@ -4,9 +4,8 @@
 // C++. It has no engine dependency; its build helper runs in the user's
 // build.rs and reads N through kmr_model_core (decision 0009), its types, the
 // call and the script bridges end up in the control process.
-// Drawn as it exists: kmr_api::ffi (the glue that fills the views from State
-// and applies the writes) is not written yet, so it is named here and not
-// drawn.
+// kmr_api::ffi, the glue that fills the views from State and applies the
+// writes, is drawn in kmr_api.dsl.
 
 !element kmr.control {
     ffiFields = component "kmr_ffi: field list" "The one declaration of what crosses: the core's sealed fields and the per-actuator flags. Every per-field item, Rust type and header line, is generated from it, so a new field is one line (SRS FR-10.2)." "Rust macro_rules"
@@ -27,9 +26,12 @@
     ffiLua -> ffiScript "Builds its tables from"
     ffiBuild -> ffiFields "Generates the header lines from"
     ffiBuild -> ffiView "Writes C and C++ declarations matching the layout of"
+    apiFfi -> ffiCall "Runs a foreign body through"
+    apiFfi -> ffiBuild "Re-exports, the History depth filled in"
+    apiFfi -> ffiFields "Generates its apply match on FieldId from"
 
     group "kmr_ffi: field list" {
-        ffiForEachField = component "for_each_field!" "Calls a callback macro with q: Q, qd: Qd, tau: Tau." "Rust macro_rules" {
+        ffiForEachField = component "for_each_field!" "Calls a callback macro with q: Q, qd: Qd, tau: Tau, kp: Kp, kd: Kd; each Type names its core FieldId variant." "Rust macro_rules" {
             tags "Code"
         }
         ffiForEachFlag = component "for_each_flag!" "Calls a callback macro with stale, bus_error, offline, rejected, joint_limit, envelope." "Rust macro_rules" {
@@ -71,7 +73,7 @@
     }
 
     group "kmr_ffi: call" {
-        ffiForeignMacro = component "foreign!" "Includes the ABI file, const-asserts its N and depth against robot!'s, declares each C body in an unsafe extern C block of the CFn signature (SRS FR-10.2, FR-6.1)." "Rust macro_rules" {
+        ffiForeignMacro = component "foreign!" "Includes the ABI file, const-asserts its N and depth against robot!'s, declares each C body in an unsafe extern C block of the CFn signature and binds its name as a CFn const (SRS FR-10.2, FR-6.1)." "Rust macro_rules" {
             tags "Code"
         }
         ffiCFn = component "call::CFn<N, D>" "unsafe extern C fn(*const ReadView, *mut WriteBuf, *const TimeView, *mut c_void) -> i32." "Rust type alias" {

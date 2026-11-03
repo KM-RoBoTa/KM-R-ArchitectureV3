@@ -11,9 +11,17 @@ kmr_core.workspace = true
 kmr_adapters.workspace = true
 kmr_model.workspace = true
 thiserror.workspace = true
+kmr_ffi = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
+# Foreign-language controller math (kmr_ffi), all off by default: without them no FFI code is
+# compiled (FR-072 (SRS FR-10)).
+ffi = ["dep:kmr_ffi"]
+# For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
+ffi-build = ["ffi", "kmr_ffi/build"]
+# Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
+test-util = ["kmr_core/test-util"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated

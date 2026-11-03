@@ -5,15 +5,20 @@
 
 /// Calls `$cb!` with every field of the core's sealed set, as `name: Type` pairs.
 ///
-/// `for_each_field!(cb)` expands to `cb! { q: Q, qd: Qd, tau: Tau }`. Tokens after the callback
-/// come first, ended by `;`: `for_each_field!(cb, 4)` expands to `cb! { 4; q: Q, .. }`.
+/// `for_each_field!(cb)` expands to `cb! { q: Q, qd: Qd, tau: Tau, kp: Kp, kd: Kd }`. Tokens
+/// after the callback come first, ended by `;`: `for_each_field!(cb, 4)` expands to
+/// `cb! { 4; q: Q, .. }`. Each `Type` is the name of the core's `FieldId` variant, so kmr_api's
+/// apply step, an exhaustive `match` generated from this list, stops compiling when the list
+/// misses a field.
+// DECISION: the gains `kp`, `kd` cross too: they are in the core's sealed set (K3.6), and the
+// apply `match` on `FieldId` must cover every variant.
 #[macro_export]
 macro_rules! for_each_field {
     ($cb:ident) => {
-        $cb! { q: Q, qd: Qd, tau: Tau }
+        $cb! { q: Q, qd: Qd, tau: Tau, kp: Kp, kd: Kd }
     };
     ($cb:ident, $($pre:tt)*) => {
-        $cb! { $($pre)*; q: Q, qd: Qd, tau: Tau }
+        $cb! { $($pre)*; q: Q, qd: Qd, tau: Tau, kp: Kp, kd: Kd }
     };
 }
 

@@ -52,6 +52,22 @@ impl<'a, const N: usize> State<'a, N> {
         State { inner }
     }
 
+    /// Every value of field `T`, `depth` steps back, for the FFI view.
+    #[cfg(feature = "ffi")]
+    pub(crate) fn prev_field<T: Field>(&self, depth: usize) -> Result<[T; N], StateError> {
+        self.inner
+            .prev::<T>(depth)
+            .copied()
+            .map_err(StateError::from)
+    }
+
+    /// Stages one value the FFI apply step took from a `WriteBuf`; the index is below N.
+    #[cfg(feature = "ffi")]
+    #[doc(hidden)]
+    pub fn __ffi_set<T: Field>(&mut self, value: T, i: usize) {
+        let _ = self.inner.set_at(value, i);
+    }
+
     /// A shorter-lived `State` over the same core state.
     pub(crate) fn reborrow(&mut self) -> State<'_, N> {
         State { inner: self.inner }
