@@ -31,8 +31,9 @@ a runtime entity registry — keep the 1kHz hot path static.
       core ([decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md),
       core T034, T035). Settled: `run()` returns `Ok` for a shutdown and an
       emergency stop alike
-    - per-slot faults, tick flags and per-actuator age in the History (core
-      T036, T044); today the per-tick fault masks are dropped
+    - done: per-slot faults, tick flags and per-actuator age in the History
+      (core T036, T044, T045, T047); the limit and envelope stage and the
+      hidden `Stages` hooks (core T049 to T051)
     - the home state (`todo!()`, core T031)
     - `controllers/src/main.rs` still runs until Ctrl-C; the swing reference
       (controllers T006-T011) ends itself with `shutdown!` after 12 s of
