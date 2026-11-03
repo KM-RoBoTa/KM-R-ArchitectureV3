@@ -43,6 +43,7 @@
     apiReexports -> coreState "Re-exports Q, Qd, Tau, Kp, Kd and the Field bound from"
     apiReexports -> coreSignal "Re-exports shutdown! and emergency_stop! from"
     apiErrors -> coreErrors "Converts"
+    apiGateway -> coreRuntime "Runs the tick's stages through run_on_staged of" "zenoh feature"
     adaptersMember -> coreHal "Implements"
 
     group "kmr_core: builder" {
@@ -85,7 +86,7 @@
         coreRuntimeFn = component "runtime::runtime" "Entry: tracing, bus reset, Ctrl-C, then run_with on the real host; returns the Signal that ended the run." "Rust fn" {
             tags "Code"
         }
-        coreHost = component "runtime::Host" "now, sleep_until, poll: the seam a scripted test host replaces." "Rust trait, private" {
+        coreHost = component "runtime::Host" "now, sleep_until, poll, take_flags: the seam a scripted test host replaces. test-util's Scripted and Ticking never sleep; RealTime sleeps on the real clock, takes the external flags and opens a counting allocator's window, for runs next to real threads." "Rust trait, public under test-util" {
             tags "Code"
         }
         corePowered = component "runtime::Powered" "Drop guard from open on: torque off, then close." "Rust struct, private" {
@@ -194,4 +195,8 @@
     coreRuntimeFn -> coreStages "Calls around each tick's controllers"
     coreIo -> coreMask "Flags actuators with"
     coreNoHardware -> coreHalTrait "Implements"
+    apiTickSide -> coreStages "Implements"
+    apiZenohSecurity -> coreExternalFlags "Raises UNAUTHORIZED through"
+    apiZenohWatchdog -> coreExternalFlags "Raises REMOTE_TIMEOUT through"
+    apiTestUtil -> coreHost "Re-exports the scripted hosts (Scripted, Ticking, RealTime) of"
 }
