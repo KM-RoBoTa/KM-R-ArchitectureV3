@@ -7,5 +7,6 @@ fn main() -> Result<(), kmr_api::ffi::build::Error> {
         "tests/abi.c",
         "tests/twin.c",
         "tests/status.c",
+        "tests/history.c",
     ])
 }

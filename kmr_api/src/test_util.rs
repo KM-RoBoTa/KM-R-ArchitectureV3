@@ -2,11 +2,12 @@
 //! adapter, reached through kmr_api, so a crate that depends on kmr_api only can drive ticks,
 //! reads, faults and overruns without a real clock, a real sleep or the global signal bus.
 
-use kmr_core::hal::Drivers;
 use kmr_core::test_util::is_emergency_stop;
 
 use crate::{Filled, Robot, Spec, UserError};
 
+/// What [`run_scripted`] runs on: an `HCons` list of adapters.
+pub use kmr_core::hal::Drivers;
 /// The adapter-side fault bits a [`Recorder`] reports on `read` and adds on `write`.
 pub use kmr_core::hal::Faults;
 pub use kmr_core::test_util::{

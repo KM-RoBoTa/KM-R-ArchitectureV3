@@ -31,7 +31,9 @@ pub use kmr_ffi::{
 #[doc(hidden)]
 pub use kmr_core::state::{FieldId as __FieldId, field_id as __field_id};
 #[doc(hidden)]
-pub use kmr_ffi::{for_each_field as __for_each_field, foreign as __foreign};
+pub use kmr_ffi::{
+    for_each_field as __for_each_field, for_each_flag as __for_each_flag, foreign as __foreign,
+};
 
 /// The build-script helper: writes `kmr_ffi.h`, `kmr_ffi.hpp` and the ABI file into `OUT_DIR`
 /// and compiles the C and C++ sources (feature `ffi-build`, in `[build-dependencies]`).
