@@ -38,6 +38,10 @@ Every crate entered the cycle on 2026-11-03 from spec-kit, already being
 built, so all of them start at step 5 without a step-4 sign-off. Their
 open tasks are in `docs/plans/<module>.md`.
 
+Until `agent/integration` and `agent/replace-spec-kit` are merged into
+`dev`, cut module branches from `agent/replace-spec-kit`, not from `dev`:
+`dev` has neither the integration work nor this workflow.
+
 | module | owner | mode | step | branch | last oracle run |
 |---|---|---|---|---|---|
 | kmr_core | delegated | loop | 5 | — | `2026-11-03 red`: clippy, 6 errors |
