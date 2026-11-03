@@ -581,8 +581,10 @@ fn a_bus_label_two_brands_share_is_refused_before_any_bind() {
 
 /// Scenario `CASE` with a plugin per brand and a zero hold, bound but not run, from an empty
 /// log.
-fn bound<const CASE: u8>()
--> Result<kmr_api::Bound<TwoBrands<CASE>, impl kmr_api::Drive + use<CASE>>, UserError> {
+fn bound<const CASE: u8>() -> Result<
+    kmr_api::Bound<TwoBrands<CASE>, impl kmr_api::Drive<{ kmr_api::N }> + use<CASE>>,
+    UserError,
+> {
     take();
     kmr_api::Robot::<TwoBrands<CASE>>::new()
         .set_dt(Duration::from_millis(1))

@@ -80,16 +80,17 @@ schedules! {
 /// insertion order. `HNil` ends the walk; `HCons` runs its head then recurses on
 /// the tail. The per-node leaf impls (the actual call) live in
 /// [`crate::controllers`].
-pub(crate) trait RunPhase {
-    fn run_phase(&mut self, env: &mut Env<'_>);
+pub(crate) trait RunPhase<const N: usize> {
+    /// Runs every node of the bucket, in insertion order.
+    fn run_phase(&mut self, env: &mut Env<'_, N>);
 }
 
-impl RunPhase for HNil {
-    fn run_phase(&mut self, _env: &mut Env<'_>) {}
+impl<const N: usize> RunPhase<N> for HNil {
+    fn run_phase(&mut self, _env: &mut Env<'_, N>) {}
 }
 
-impl<H: RunPhase, T: RunPhase> RunPhase for HCons<H, T> {
-    fn run_phase(&mut self, env: &mut Env<'_>) {
+impl<const N: usize, H: RunPhase<N>, T: RunPhase<N>> RunPhase<N> for HCons<H, T> {
+    fn run_phase(&mut self, env: &mut Env<'_, N>) {
         self.head.run_phase(env);
         self.tail.run_phase(env);
     }
@@ -103,7 +104,7 @@ mod tests {
     // The macro-generated `Drive` impl must be satisfied by a real, builder-grown
     // schedule — i.e. every bucket's node HList resolves `RunPhase`. Compile-level
     // guard: it never runs the loop.
-    fn assert_drivable<CS: Drive>(_robot: &Robot<CS>) {}
+    fn assert_drivable<const N: usize, CS: Drive<N>>(_robot: &Robot<N, CS>) {}
 
     #[test]
     fn built_schedule_is_drivable() {

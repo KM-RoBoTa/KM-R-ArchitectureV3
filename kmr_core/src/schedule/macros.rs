@@ -48,17 +48,17 @@ macro_rules! schedules {
     // helper returns a built robot, but never call or implement it.
     /// A schedule the runtime can walk: every robot the builder returns has
     /// one. Name it as `impl Drive` to return a built robot from a function.
-    pub trait Drive {
+    pub trait Drive<const N: usize> {
         $(
             #[doc(hidden)]
-            fn $field(&mut self, env: &mut Env<'_>);
+            fn $field(&mut self, env: &mut Env<'_, N>);
         )+
     }
 
     #[doc(hidden)]
-    impl<$($field: RunPhase),+> Drive for Scheduled<$($field),+> {
+    impl<const N: usize, $($field: RunPhase<N>),+> Drive<N> for Scheduled<$($field),+> {
         $(
-            fn $field(&mut self, env: &mut Env<'_>) {
+            fn $field(&mut self, env: &mut Env<'_, N>) {
                 self.$field.run_phase(env);
             }
         )+

@@ -13,7 +13,7 @@ use crate::hal::{
 };
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
-use crate::state::{JOINTS, Q};
+use crate::state::Q;
 use crate::{Robot, Signal, SignalKind};
 
 pub use crate::runtime::Host;
@@ -43,8 +43,8 @@ pub const PER_TICK: usize = 5;
 
 /// Runs `robot` on `drivers` with `host` as its clock, sleep and bus.
 /// Returns the signal that ended the run, like the real runtime.
-pub fn run_scripted<CS: Drive, H: Host, D: Drivers>(
-    robot: &mut Robot<CS>,
+pub fn run_scripted<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
+    robot: &mut Robot<N, CS>,
     host: &mut H,
     drivers: &mut D,
 ) -> Result<Signal, HardwareError<D::Error>> {
@@ -183,13 +183,13 @@ pub enum Call {
 /// What `write` or `hold` was handed: the positions, the masks and the
 /// actuators of the batch (every one for `hold`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Sent {
+pub struct Sent<const N: usize> {
     /// The positions of the command.
-    pub q: [Q; JOINTS],
+    pub q: [Q; N],
     /// The written masks of the command.
-    pub written: Written,
+    pub written: Written<N>,
     /// The actuators of the batch.
-    pub batch: Mask,
+    pub batch: Mask<N>,
 }
 
 /// Calls a [`Log`] holds.
@@ -198,21 +198,21 @@ pub const CAPACITY: usize = 96;
 /// The log the recorder and the controllers share. Fixed capacity: no heap
 /// in the core, tests included.
 #[derive(Debug)]
-pub struct Log {
+pub struct Log<const N: usize> {
     calls: RefCell<([Call; CAPACITY], usize)>,
     /// The last command `write` was handed.
-    pub write: Cell<Option<Sent>>,
+    pub write: Cell<Option<Sent<N>>>,
     /// The command `hold` was handed.
-    pub hold: Cell<Option<Sent>>,
+    pub hold: Cell<Option<Sent<N>>>,
 }
 
-impl Default for Log {
+impl<const N: usize> Default for Log<N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Log {
+impl<const N: usize> Log<N> {
     /// An empty log.
     pub fn new() -> Self {
         Self {
@@ -243,22 +243,22 @@ pub const SEED: Q = Q(10.0);
 /// A fake adapter: logs every call, can fail one bring-up step. Each `read`
 /// moves actuator 0 by one and reports `faults`.
 #[derive(Debug)]
-pub struct Recorder<'a> {
+pub struct Recorder<'a, const N: usize> {
     /// Where the calls go.
-    pub log: &'a Log,
+    pub log: &'a Log<N>,
     /// The bring-up step that fails, if any.
     pub fail: Option<Call>,
     /// The actuators it claims.
-    pub owned: Mask,
+    pub owned: Mask<N>,
     /// The read cadence it claims for each of them.
     pub every: NonZeroU32,
     /// The fault bits each `read` reports.
-    pub faults: Faults,
+    pub faults: Faults<N>,
 }
 
-impl<'a> Recorder<'a> {
+impl<'a, const N: usize> Recorder<'a, N> {
     /// A recorder owning every actuator, reading every tick, never failing.
-    pub fn new(log: &'a Log) -> Self {
+    pub fn new(log: &'a Log<N>) -> Self {
         Self {
             log,
             fail: None,
@@ -269,7 +269,7 @@ impl<'a> Recorder<'a> {
     }
 
     /// A recorder failing at `call`.
-    pub fn failing(log: &'a Log, call: Call) -> Self {
+    pub fn failing(log: &'a Log<N>, call: Call) -> Self {
         Self {
             fail: Some(call),
             ..Self::new(log)
@@ -297,17 +297,17 @@ impl core::fmt::Display for Failed {
 
 impl core::error::Error for Failed {}
 
-impl seal::Adapter for Recorder<'_> {}
+impl<const N: usize> seal::Adapter for Recorder<'_, N> {}
 
-impl Hal for Recorder<'_> {
+impl<const N: usize> Hal<N> for Recorder<'_, N> {
     type Error = Failed;
 
-    fn check(&mut self, _overrides: Overrides) -> Result<Claim, Failed> {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Failed> {
         self.step(Call::Check)?;
         Ok(Claim {
             owned: self.owned,
-            group: [Group(0); JOINTS],
-            read_every: [self.every; JOINTS],
+            group: [Group(0); N],
+            read_every: [self.every; N],
             read_cost: Duration::ZERO,
             write_cost: Duration::ZERO,
         })
@@ -333,8 +333,8 @@ impl Hal for Recorder<'_> {
         self.step(Call::Configure)
     }
 
-    fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Failed> {
-        *sample.q = [SEED; JOINTS];
+    fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Failed> {
+        *sample.q = [SEED; N];
         self.step(Call::ReadAll)
     }
 
@@ -342,7 +342,7 @@ impl Hal for Recorder<'_> {
         self.step(Call::TorqueOn)
     }
 
-    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults) -> Mask {
+    fn read(&mut self, sample: Sample<'_, N>, faults: &mut Faults<N>) -> Mask<N> {
         self.log.push(Call::Read);
         if let Some(first) = sample.q.first_mut() {
             *first = *first + Q(1.0);
@@ -351,7 +351,7 @@ impl Hal for Recorder<'_> {
         Mask::ALL
     }
 
-    fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, _faults: &mut Faults<N>) {
         self.log.push(Call::Write);
         let mut actuators = Mask::NONE;
         for &actuator in batch.runs().flat_map(|(_group, run)| run) {
@@ -364,7 +364,7 @@ impl Hal for Recorder<'_> {
         }));
     }
 
-    fn hold(&mut self, target: Command<'_>) {
+    fn hold(&mut self, target: Command<'_, N>) {
         self.log.push(Call::Hold);
         self.log.hold.set(Some(Sent {
             q: *target.q,

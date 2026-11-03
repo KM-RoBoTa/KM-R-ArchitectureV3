@@ -32,7 +32,7 @@ use kmr_core::{
 #[doc(hidden)]
 pub struct ApiInline<F>(F);
 
-impl<F> ControlFn for ApiInline<F>
+impl<F> ControlFn<JOINTS> for ApiInline<F>
 where
     F: Fn(&Time, &mut State, &Sensors),
 {
@@ -57,7 +57,7 @@ where
 #[doc(hidden)]
 pub struct ApiInlineWith<F>(F);
 
-impl<F, T> ControlFnWith<T> for ApiInlineWith<F>
+impl<F, T> ControlFnWith<T, JOINTS> for ApiInlineWith<F>
 where
     F: Fn(&mut T, &Time, &mut State, &Sensors),
 {
@@ -95,7 +95,7 @@ where
 // The "App" struct. The main user interface, and the whole public re-exposure
 // of the `kmr_core` engine.
 //
-// `kmr_api::Robot<H, C>` is a thin wrapper around `kmr_core::Robot<C>`: the core
+// `kmr_api::Robot<H, C>` is a thin wrapper around `kmr_core::Robot<JOINTS, C>`: the core
 // owns the real HLists (`HCons`/`HNil`, one per schedule) and grows them
 // itself. This layer adds ONLY the api-facing bounds the core deliberately
 // stays ignorant of — the concrete `Time`/`State`/`Sensors` controller
@@ -112,7 +112,7 @@ where
 // invariants cannot be bypassed and its internals can change without breaking
 // this crate's API.
 pub struct Robot<H, C = Scheduled> {
-    inner: kmr_core::Robot<C>,
+    inner: kmr_core::Robot<JOINTS, C>,
     plugins: Vec<Bus>,
     payloads: Vec<Payload>,
     dt: Option<Duration>,
@@ -160,7 +160,10 @@ impl<H, C> Robot<H, C> {
     }
 
     /// Carries the builder data over to a robot whose controller set grew.
-    fn grown<D>(self, grow: impl FnOnce(kmr_core::Robot<C>) -> kmr_core::Robot<D>) -> Robot<H, D> {
+    fn grown<D>(
+        self,
+        grow: impl FnOnce(kmr_core::Robot<JOINTS, C>) -> kmr_core::Robot<JOINTS, D>,
+    ) -> Robot<H, D> {
         Robot {
             inner: grow(self.inner),
             plugins: self.plugins,
@@ -283,7 +286,7 @@ impl<H, C> Robot<H, C> {
     pub fn run(self) -> Result<(), UserError>
     where
         H: Spec,
-        C: kmr_core::Drive,
+        C: kmr_core::Drive<JOINTS>,
     {
         let Bound { inner, drivers } = self.bind()?;
         match drivers {
@@ -317,7 +320,7 @@ impl<H, C> Robot<H, C> {
     ///
     /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`], then
     /// [`UserError::UnknownLink`].
-    fn finalize(self) -> Result<(kmr_core::Robot<C>, Vec<Binding>), UserError>
+    fn finalize(self) -> Result<(kmr_core::Robot<JOINTS, C>, Vec<Binding>), UserError>
     where
         H: Spec,
     {
@@ -351,7 +354,7 @@ impl<H, C> Robot<H, C> {
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
 /// before the run and after it, never inside a tick (SRS FR-5.9).
 pub struct Bound<H: Spec, C> {
-    inner: kmr_core::Robot<C>,
+    inner: kmr_core::Robot<JOINTS, C>,
     drivers: Option<H::Drivers>,
 }
 
@@ -373,7 +376,7 @@ impl<H: Spec, C> Bound<H, C> {
     /// stop both return `Ok`.
     pub fn run(self) -> Result<Option<H::Drivers>, UserError>
     where
-        C: kmr_core::Drive,
+        C: kmr_core::Drive<JOINTS>,
     {
         let Self { inner, mut drivers } = self;
         match &mut drivers {
@@ -393,9 +396,9 @@ fn simulated() -> HCons<NoHardware, HNil> {
 }
 
 /// Runs `inner` on `drivers`, its error kept typed inside [`UserError::BringUp`].
-fn drive<C, D>(inner: kmr_core::Robot<C>, drivers: D) -> Result<(), UserError>
+fn drive<C, D>(inner: kmr_core::Robot<JOINTS, C>, drivers: D) -> Result<(), UserError>
 where
-    C: kmr_core::Drive,
+    C: kmr_core::Drive<JOINTS>,
     D: Drivers<JOINTS, Error: Send + Sync>,
 {
     inner.run_on(drivers).map_err(UserError::bring_up)

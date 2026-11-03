@@ -133,9 +133,9 @@ fn estop(signal: Option<Signal>) -> Option<Signal> {
 /// Owns the hardware from `open` on: every exit, unwind included, ends with
 /// `torque_off` on every member, then `close` on every member (SRS FR-5.6,
 /// NFR-2).
-struct Powered<'a, D: Drivers>(&'a mut D);
+struct Powered<'a, const N: usize, D: Drivers<N>>(&'a mut D);
 
-impl<D: Drivers> Drop for Powered<'_, D> {
+impl<const N: usize, D: Drivers<N>> Drop for Powered<'_, N, D> {
     fn drop(&mut self) {
         self.0.torque_off();
         self.0.close();
@@ -152,7 +152,7 @@ struct StartupWrites {
 
 impl StartupWrites {
     /// Drops what the walk of `phase` wrote, and notes the phase.
-    fn discard(&mut self, state: &mut RobotState, phase: &'static str) {
+    fn discard<const N: usize>(&mut self, state: &mut RobotState<N>, phase: &'static str) {
         if state.written().any().is_empty() {
             return;
         }
@@ -221,18 +221,18 @@ mod init_phase {
     /// Used for the initialization of optional/mandatory systems.
     ///
     /// Returns owned values for [`RobotState`] and [`Sensors`].
-    pub(super) fn pre_init() -> (RobotState, Sensors) {
+    pub(super) fn pre_init<const N: usize>() -> (RobotState<N>, Sensors) {
         trace!("Executing pre-init phase ...");
         // TODO: feature gated:
         // Color_eyre
 
-        (<RobotState>::default(), Sensors {})
+        (RobotState::default(), Sensors {})
     }
 
     /// Walks the user's `PreInit` controllers.
-    pub(super) fn pre_init_controllers<CS: Drive>(
-        robot: &mut Robot<CS>,
-        state: &mut RobotState,
+    pub(super) fn pre_init_controllers<const N: usize, CS: Drive<N>>(
+        robot: &mut Robot<N, CS>,
+        state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
         trace!("Executing user pre-init controllers ...");
@@ -242,9 +242,9 @@ mod init_phase {
 
     /// Walks the user's `Init` controllers, once the engine has opened and
     /// zeroed the hardware.
-    pub(super) fn init<CS: Drive>(
-        robot: &mut Robot<CS>,
-        state: &mut RobotState,
+    pub(super) fn init<const N: usize, CS: Drive<N>>(
+        robot: &mut Robot<N, CS>,
+        state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
         trace!("Executing user init controllers ...");
@@ -254,9 +254,9 @@ mod init_phase {
 
     /// Walks the user's `PostInit` controllers, once the engine has checked
     /// and configured the hardware, read it in full and turned torque on.
-    pub(super) fn post_init<CS: Drive>(
-        robot: &mut Robot<CS>,
-        state: &mut RobotState,
+    pub(super) fn post_init<const N: usize, CS: Drive<N>>(
+        robot: &mut Robot<N, CS>,
+        state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
         trace!("Executing post-init controllers ...");
@@ -277,9 +277,9 @@ mod ctrl_phase {
 
     /// User specified actions to undertake before calling the user defined
     /// controllers.
-    pub(super) fn first<CS: Drive>(
-        robot: &mut Robot<CS>,
-        state: &mut RobotState,
+    pub(super) fn first<const N: usize, CS: Drive<N>>(
+        robot: &mut Robot<N, CS>,
+        state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
         let mut env = Env::new(&robot.config.time, state, sensors);
@@ -287,9 +287,9 @@ mod ctrl_phase {
     }
 
     /// The actual run of all the user defined controllers.
-    pub(super) fn each_tick<CS: Drive>(
-        robot: &mut Robot<CS>,
-        state: &mut RobotState,
+    pub(super) fn each_tick<const N: usize, CS: Drive<N>>(
+        robot: &mut Robot<N, CS>,
+        state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
         // TODO: a tick rate per controller (a divider in the node).
@@ -298,9 +298,9 @@ mod ctrl_phase {
     }
 
     /// Actions to undertake after calling the user defined controllers.
-    pub(super) fn last<CS: Drive>(
-        robot: &mut Robot<CS>,
-        state: &mut RobotState,
+    pub(super) fn last<const N: usize, CS: Drive<N>>(
+        robot: &mut Robot<N, CS>,
+        state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
         let mut env = Env::new(&robot.config.time, state, sensors);
@@ -310,13 +310,13 @@ mod ctrl_phase {
 
 /// The tick loop: read, the three buckets, write. Returns the signal that
 /// ended it.
-fn control_loop<CS: Drive, H: Host, D: Drivers>(
-    robot: &mut Robot<CS>,
-    state: &mut RobotState,
+fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
+    robot: &mut Robot<N, CS>,
+    state: &mut RobotState<N>,
     sensors: &Sensors,
     host: &mut H,
     hal: &mut D,
-    layout: &Layout,
+    layout: &Layout<N>,
 ) -> Signal {
     loop {
         if let Some(signal) = host.poll() {
@@ -381,13 +381,13 @@ fn control_loop<CS: Drive, H: Host, D: Drivers>(
 
 /// Startup phases with the bring-up calls, the tick loop, then the hold of a
 /// shutdown. Every exit after `open` leaves through [`Powered`].
-fn run_phases<CS: Drive, H: Host, D: Drivers>(
-    robot: &mut Robot<CS>,
-    state: &mut RobotState,
+fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
+    robot: &mut Robot<N, CS>,
+    state: &mut RobotState<N>,
     sensors: &Sensors,
     host: &mut H,
     hal: &mut D,
-    layout: &Layout,
+    layout: &Layout<N>,
 ) -> Result<Signal, D::Error> {
     let mut writes = StartupWrites::default();
 
@@ -452,8 +452,8 @@ fn run_phases<CS: Drive, H: Host, D: Drivers>(
 
 /// Finalization, startup phases, then the tick loop. Returns the signal that
 /// ended the run, a claim mismatch, or a member's error.
-pub(crate) fn run_with<CS: Drive, H: Host, D: Drivers>(
-    robot: &mut Robot<CS>,
+pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
+    robot: &mut Robot<N, CS>,
     host: &mut H,
     hal: &mut D,
 ) -> Result<Signal, HardwareError<D::Error>> {
@@ -491,8 +491,8 @@ pub(crate) fn run_with<CS: Drive, H: Host, D: Drivers>(
 ///
 /// Returns the signal that ended the run, a claim mismatch, or a member's
 /// error.
-pub(crate) fn runtime<CS: Drive, D: Drivers>(
-    mut robot: Robot<CS>,
+pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>>(
+    mut robot: Robot<N, CS>,
     mut hal: D,
 ) -> Result<Signal, HardwareError<D::Error>> {
     Signal::reset();
@@ -565,7 +565,10 @@ mod tests {
     }
 
     /// A run on [`NoHardware`], which cannot fail.
-    fn simulated<CS: Drive, H: Host>(robot: &mut Robot<CS>, host: &mut H) -> Signal {
+    fn simulated<CS: Drive<JOINTS>, H: Host>(
+        robot: &mut Robot<JOINTS, CS>,
+        host: &mut H,
+    ) -> Signal {
         run_with(robot, host, &mut one(NoHardware)).expect("NoHardware owns every actuator")
     }
 
@@ -777,12 +780,12 @@ mod tests {
         /// The run error of a one-member list whose recorder failed `call`.
         fn failed(call: Call) -> HardwareError<MemberError<Failed, core::convert::Infallible>> {
             HardwareError::Member(MemberError::Head {
-                name: core::any::type_name::<Recorder<'static>>(),
+                name: core::any::type_name::<Recorder<'static, JOINTS>>(),
                 error: Failed(call),
             })
         }
 
-        fn walk(log: &Log, call: Call) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
+        fn walk(log: &Log<JOINTS>, call: Call) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
             move |_t, _s, _se| log.push(call)
         }
 

@@ -36,20 +36,21 @@ use crate::controllers::{
 use crate::error::ApiError;
 use crate::hal::{Drivers, HardwareError, MemberError, NoHardware};
 use crate::schedule::{Drive, Insert, Schedule};
-use crate::state::RobotState;
+use crate::state::{JOINTS, RobotState};
 use crate::{Scheduled, Sensors, runtime};
 
 /// The primary librairy API.
 ///
-/// CS means Core Scheduled. This is useful to differenciate between
+/// `N` is the actuator count, from the robot's descriptor (SRS FR-6.1). CS
+/// means Core Scheduled. This is useful to differenciate between
 /// the user specified schedule label (named `S` in the impl blocks) and the
 /// generic representation within the core.
-pub struct Robot<CS = Scheduled> {
+pub struct Robot<const N: usize = JOINTS, CS = Scheduled> {
     pub(crate) config: RobotConfig,
     pub(crate) controllers: CS,
 }
 
-impl Robot<Scheduled> {
+impl Robot<JOINTS, Scheduled> {
     /// Returns a default Robot.
     ///
     /// This is the main entry point for the API User.
@@ -86,7 +87,7 @@ impl Robot<Scheduled> {
 //
 // E.g: To set the elapsed time, an action disallowed to the user, call
 // directly `robot.config.time.set_elapsed(t)`.
-impl<CS> Robot<CS> {
+impl<const N: usize, CS> Robot<N, CS> {
     /// Allows the user to set the value of [`Time::delta`].
     pub fn set_dt(mut self, dt: Duration) -> Self {
         self.config.time.set_delta(dt);
@@ -102,7 +103,7 @@ impl<CS> Robot<CS> {
     }
 
     /// Private generic method to insert any state.
-    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<CS::Output>
+    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<N, CS::Output>
     where
         C: Controller,
         S: Schedule,
@@ -123,10 +124,10 @@ impl<CS> Robot<CS> {
     /// it can hide the core argument types behind api newtypes. Hence
     /// `pub(crate)`: outside the crate, `add_control_fn` is the single entry
     /// (it also takes a plain `fn`, through the blanket [`ControlFn`] impl).
-    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<CS::Output>
+    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<N, CS::Output>
     where
         CS: Insert<S, Inline<F>>,
-        F: Fn(&Time, &mut RobotState, &Sensors),
+        F: Fn(&Time, &mut RobotState<N>, &Sensors),
         S: Schedule,
     {
         self.insert_controller(schedule, Inline(f))
@@ -139,10 +140,10 @@ impl<CS> Robot<CS> {
     /// an unnameable closure), the builder's type-state still threads through
     /// the return type, yet the public signature never names the core argument
     /// types the api is hiding.
-    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<CS::Output>
+    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<N, CS::Output>
     where
         CS: Insert<S, Inline<C>>,
-        C: ControlFn,
+        C: ControlFn<N>,
         S: Schedule,
     {
         self.insert_controller(schedule, Inline(controller))
@@ -150,10 +151,15 @@ impl<CS> Robot<CS> {
 
     /// Adds a new plain user defined controller with a persistant context
     /// managed by the user. `pub(crate)`, see [`Robot::add_controller`].
-    pub(crate) fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
+    pub(crate) fn add_controller_with<S, T, F>(
+        self,
+        schedule: S,
+        ctx: T,
+        f: F,
+    ) -> Robot<N, CS::Output>
     where
         CS: Insert<S, InlineWith<F, T>>,
-        F: Fn(&Time, &mut RobotState, &Sensors, &mut T),
+        F: Fn(&Time, &mut RobotState<N>, &Sensors, &mut T),
         S: Schedule,
     {
         self.insert_controller(schedule, InlineWith(f, ctx))
@@ -166,10 +172,10 @@ impl<CS> Robot<CS> {
         schedule: S,
         ctx: T,
         controller: C,
-    ) -> Robot<CS::Output>
+    ) -> Robot<N, CS::Output>
     where
         CS: Insert<S, InlineWith<C, T>>,
-        C: ControlFnWith<T>,
+        C: ControlFnWith<T, N>,
         S: Schedule,
     {
         self.insert_controller(schedule, InlineWith(controller, ctx))
@@ -186,7 +192,7 @@ impl<CS> Robot<CS> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<CS::Output>
+    ) -> Robot<N, CS::Output>
     where
         CS: Insert<S, Threaded<F, T>>,
         T: Sync + Send,
@@ -202,7 +208,7 @@ impl<CS> Robot<CS> {
         schedule: S,
         ctx: T,
         controller: C,
-    ) -> Robot<CS::Output>
+    ) -> Robot<N, CS::Output>
     where
         CS: Insert<S, Threaded<C, T>>,
         T: Sync + Send,
@@ -224,9 +230,9 @@ impl<CS> Robot<CS> {
     /// Returns once a signal ends the loop: `Ok` for a shutdown and for an
     /// emergency stop alike. `Err` is a claim mismatch, found before any
     /// I/O, or a member's error from `check` or a bring-up call.
-    pub fn run_on<D: Drivers>(self, hal: D) -> Result<(), HardwareError<D::Error>>
+    pub fn run_on<D: Drivers<N>>(self, hal: D) -> Result<(), HardwareError<D::Error>>
     where
-        CS: Drive,
+        CS: Drive<N>,
     {
         runtime::runtime(self, hal).map(|_signal| ())
     }
@@ -235,7 +241,7 @@ impl<CS> Robot<CS> {
     /// [`Robot::run_on`].
     pub fn run(self) -> Result<(), ApiError>
     where
-        CS: Drive,
+        CS: Drive<N>,
     {
         let hal = HCons {
             head: NoHardware,
@@ -250,7 +256,7 @@ impl<CS> Robot<CS> {
     }
 }
 
-impl Default for Robot<Scheduled> {
+impl Default for Robot<JOINTS, Scheduled> {
     fn default() -> Self {
         Self::new()
     }
