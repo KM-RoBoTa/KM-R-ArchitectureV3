@@ -83,7 +83,7 @@ in [`specs/002-kmr-core/`](../../specs/002-kmr-core/).
 - [ ] T061 [P] HUMAN: docs/ARCHITECTURE.md and docs/ROADMAP.md: runtime, state and hardware-contract sections after M1 to M5 (one clock, five bus checks, exit table, const N, faults)
 - [ ] T062 HUMAN: FR-056 visibility review over kmr_core/src: every new `pub` item is one that contracts/engine-surface.md names for kmr_api, kmr_adapters or kmr_ffi; the rest is `pub(crate)`. FR-056 (SRS NFR-3)
 - [ ] T063 HUMAN: Run specs/002-kmr-core/quickstart.md in full ("Always", § M1 to § M6); 0 failed; record the counts in the PR
-- [ ] T064 HUMAN: `/speckit-ov-c4-code` for kmr_core: docs/c4/kmr_core.dsl (Constitution, Development Workflow). An agent may run it with the human
+- [x] T064 HUMAN: `/speckit-ov-c4-code` for kmr_core: docs/c4/kmr_core.dsl (Constitution, Development Workflow). An agent may run it with the human
 
 ## Added 2026-10-29 (D17, set of drivers)
 

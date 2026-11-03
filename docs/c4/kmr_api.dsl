@@ -3,8 +3,8 @@
 // the control process. It is a convenience layer over kmr_core: the value
 // types are re-exported, the handles wrapped thinly. robot! names the robot
 // once at build time; the builder binds the bus plugins and hands the run to
-// kmr_core's run_on. kmr_core has no C3 yet, so its parts are named in the
-// descriptions, not drawn.
+// kmr_core's run_on. The relations into kmr_core are drawn in kmr_core.dsl,
+// which is included after this file.
 
 !element kmr.control {
     apiMacro = component "kmr_api: robot!" "Names the robot once in the user's main.rs: a preset, or a descriptor with or without its hardware. Emits N, State, Robot, the model module, actuator! and a hidden __Spec; a bad table, a count other than N or parts that do not cover 0..N do not build (SRS FR-6.1, FR-6.4)." "Rust macro_rules, build time"
