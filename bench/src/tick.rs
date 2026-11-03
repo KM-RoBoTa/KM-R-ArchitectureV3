@@ -120,6 +120,25 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
             f.int_opt("jitter_max_ns", probe::LATENESS.max())?;
             f.int("bench_overruns", bench_overruns)?;
             f.int("engine_overruns", engine_overruns)?;
+            if !simulated {
+                // Read ticks and write-only ticks apart (FR-008 (SRS FR-3.4); research R16).
+                f.int("read_ticks", probe::LATENESS_READ.count())?;
+                f.int_opt("read_jitter_p50_ns", probe::LATENESS_READ.p50())?;
+                f.int_opt("read_jitter_p99_ns", probe::LATENESS_READ.p99())?;
+                f.int_opt("read_jitter_max_ns", probe::LATENESS_READ.max())?;
+                f.int(
+                    "read_bench_overruns",
+                    probe::BENCH_OVERRUNS_READ.load(Relaxed),
+                )?;
+                f.int("write_only_ticks", probe::LATENESS_WRITE_ONLY.count())?;
+                f.int_opt("write_only_jitter_p50_ns", probe::LATENESS_WRITE_ONLY.p50())?;
+                f.int_opt("write_only_jitter_p99_ns", probe::LATENESS_WRITE_ONLY.p99())?;
+                f.int_opt("write_only_jitter_max_ns", probe::LATENESS_WRITE_ONLY.max())?;
+                f.int(
+                    "write_only_bench_overruns",
+                    probe::BENCH_OVERRUNS_WRITE_ONLY.load(Relaxed),
+                )?;
+            }
             f.int_opt("gap_on_time_min_ns", probe::GAP_ON_TIME.min())?;
             f.int_opt("gap_on_time_p50_ns", probe::GAP_ON_TIME.p50())?;
             f.int_opt("gap_after_late_min_ns", probe::GAP_AFTER_LATE.min())?;

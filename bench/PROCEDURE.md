@@ -255,9 +255,14 @@ Assumed, pending human: D10. The hardware runs (`tick_hw`, `budget.sh --hw`, `pr
 cargo build -p kmr_bench --release --features hardware --bin tick_hw
 ```
 
-After every hardware run, every actuator must read `Torque_Enable = 0`. The read/write-only
-split and the I/O figures wait on the engine's age and read cadence (tasks T057 to T059); until
-then a `tick_hw` run measures the loop with the bus attached, nothing more.
+After every hardware run, every actuator must read `Torque_Enable = 0`.
+
+A `tick_hw` report splits the ticks: a read tick is one where any actuator's age is 0 at
+`First`, the others are write-only. `[figures]` holds `read_ticks`, `read_jitter_p50_ns`,
+`read_jitter_p99_ns`, `read_jitter_max_ns`, `read_bench_overruns` and the same five with
+`write_only_`. Read-tick overruns are reported apart and never judged (at 1 ms a read of four
+XM430 does not fit the tick, research R16). `engine_overruns` counts both; the bench count is a
+lower bound of it. The I/O figures wait on tasks T058 and T059.
 
 ## Reports
 

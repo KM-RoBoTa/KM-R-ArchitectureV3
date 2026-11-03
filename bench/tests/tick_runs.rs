@@ -129,6 +129,10 @@ fn six_thousand_ticks_complete_with_every_jitter_figure() {
         assert!(r.int(key).is_some(), "{key} missing:\n{text}");
     }
     assert_eq!(r.int("ticks_done"), Some(6000));
+    // No hardware, no read tick: the read and write-only split is a hardware figure (FR-008).
+    for key in ["read_ticks", "write_only_ticks", "read_jitter_p50_ns"] {
+        assert!(r.int(key).is_none(), "{key} on a simulated run:\n{text}");
+    }
     // DECISION: a debug build of kmr logs each late tick at DEBUG (kmr_core runtime.rs), and
     // that line allocates on the loop thread; the test binary is a debug build, so the zero is
     // asserted only when no such line was logged. Release runs log at INFO and never hit it.
