@@ -22,7 +22,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::controllers::Env;
 use crate::hal::{Audit, Batch, Drivers, Faults, HardwareError, Layout, Overrides, Plan, Step};
@@ -266,8 +266,6 @@ mod init_phase {
 /// defined controllers by their respective phases (as defined in
 /// [`crate::schedule`]).
 mod ctrl_phase {
-    use tracing::trace;
-
     use crate::controllers::Env;
     use crate::schedule::Drive;
     use crate::{Robot, RobotState, Sensors};
@@ -279,7 +277,6 @@ mod ctrl_phase {
         state: &mut RobotState,
         sensors: &Sensors,
     ) {
-        trace!("Executing first tick controllers ...");
         let mut env = Env::new(&robot.config.time, state, sensors);
         robot.controllers.first(&mut env);
     }
@@ -290,7 +287,6 @@ mod ctrl_phase {
         state: &mut RobotState,
         sensors: &Sensors,
     ) {
-        trace!("Executing main tick controllers ...");
         // TODO: a tick rate per controller (a divider in the node).
         let mut env = Env::new(&robot.config.time, state, sensors);
         robot.controllers.each_tick(&mut env);
@@ -302,7 +298,6 @@ mod ctrl_phase {
         state: &mut RobotState,
         sensors: &Sensors,
     ) {
-        trace!("Executing last tick controllers ...");
         let mut env = Env::new(&robot.config.time, state, sensors);
         robot.controllers.last(&mut env);
     }
@@ -364,11 +359,8 @@ fn control_loop<CS: Drive, H: Host, D: Drivers>(
             break signal;
         }
 
+        // No log per tick (SRS NFR-1): the overrun total is logged at exit.
         let wake = robot.config.time.end_tick(host.now());
-        if let Some(overrun) = robot.config.time.overrun() {
-            // `debug!`, not `warn!`: a log line per late tick makes the next one late.
-            debug!(?overrun, "tick finished after its deadline");
-        }
 
         // Before the sleep: a stop must not wait for it. Before the clear: the
         // hold of a shutdown keeps this tick's writes.
@@ -1539,6 +1531,56 @@ mod tests {
             tracing::subscriber::with_default(counter, || simulated(&mut robot, &mut host));
 
             assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
+        }
+
+        #[test]
+        fn the_tick_loop_logs_nothing_per_tick() {
+            static ONE_TICK: AtomicU32 = AtomicU32::new(0);
+            static FIVE_TICKS: AtomicU32 = AtomicU32::new(0);
+            for (ticks, events) in [(1, &ONE_TICK), (5, &FIVE_TICKS)] {
+                let log = Log::new();
+                let mut robot = recording_robot!(log);
+                let stop = TICK_END + (ticks - 1) * PER_TICK;
+                let mut host = Scripted::new(Instant::now()).shutdown_from(stop);
+                let every = Events::new(events);
+
+                tracing::subscriber::with_default(every, || simulated(&mut robot, &mut host));
+            }
+
+            assert_eq!(
+                ONE_TICK.load(Ordering::Relaxed),
+                FIVE_TICKS.load(Ordering::Relaxed)
+            );
+        }
+
+        /// Counts every event, at every level.
+        struct Events(&'static AtomicU32);
+
+        impl Events {
+            fn new(count: &'static AtomicU32) -> Self {
+                // Installs the silent global subscriber.
+                let _ = Counter::new("", count);
+                Self(count)
+            }
+        }
+
+        impl tracing::Subscriber for Events {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+
+            fn event(&self, _event: &tracing::Event<'_>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
         }
 
         /// Counts the warnings whose message holds `needle`, drops every
