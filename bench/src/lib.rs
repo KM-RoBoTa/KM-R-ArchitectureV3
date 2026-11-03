@@ -5,6 +5,7 @@
 
 #![deny(clippy::unwrap_used)]
 
+pub mod alloc;
 pub mod buf;
 pub mod calib;
 pub mod grid;
