@@ -141,4 +141,9 @@
     apiState -> apiGroupView "Creates"
     apiState -> apiHomeDecided "Bounds the home calls on"
     apiFakeTypes -> apiBrandTrait "Implements"
+
+    // The user's crate (controllers.dsl is included before this file).
+    ctrlMain -> apiMacro "Names the robot with"
+    ctrlMain -> apiBuilder "Builds and runs the robot with"
+    ctrlMain -> apiHandles "Reads and writes the state through"
 }
