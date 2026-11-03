@@ -262,7 +262,12 @@ A `tick_hw` report splits the ticks: a read tick is one where any actuator's age
 `read_jitter_p99_ns`, `read_jitter_max_ns`, `read_bench_overruns` and the same five with
 `write_only_`. Read-tick overruns are reported apart and never judged (at 1 ms a read of four
 XM430 does not fit the tick, research R16). `engine_overruns` counts both; the bench count is a
-lower bound of it. The I/O figures wait on tasks T058 and T059.
+lower bound of it.
+
+`[meta]` of a `tick_hw` report carries `read_cadence` (the cadence the engine exposes; the bench
+never sets it, D9 A) and `declared_read_ns`, `declared_write_ns` (`XmBench::READ_COST` and
+`WRITE_COST`, through `kmr_api::presets`). A `two-bus` build has no declared costs: its table is
+not a preset. The I/O figures wait on task T059.
 
 ## Reports
 

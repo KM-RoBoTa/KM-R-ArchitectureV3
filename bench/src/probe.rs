@@ -52,6 +52,10 @@ pub static BENCH_OVERRUNS_READ: AtomicU64 = AtomicU64::new(0);
 /// Whether the tick in progress read an actuator: any age `Some(0)` at `First` (FR-008 (SRS
 /// FR-3.4)). Never set on a run without hardware.
 pub static READ_TICK: AtomicBool = AtomicBool::new(false);
+/// Lowest read cadence over the actuators, in ticks, as the engine exposes it at tick 0.
+pub static CADENCE_MIN: AtomicU64 = AtomicU64::new(0);
+/// Highest read cadence over the actuators, in ticks, at tick 0.
+pub static CADENCE_MAX: AtomicU64 = AtomicU64::new(0);
 /// Ticks whose `Last` finished.
 pub static TICKS_DONE: AtomicU64 = AtomicU64::new(0);
 
@@ -119,6 +123,9 @@ pub fn start<const N: usize>(time: &Time, state: &mut State<'_, N>, _: &Sensors)
     let acc = ns(time.accumulated_overrun());
     if tick == 0 {
         T0.store(now, Relaxed);
+        let (lo, hi) = cadence_range(state);
+        CADENCE_MIN.store(lo, Relaxed);
+        CADENCE_MAX.store(hi, Relaxed);
         ORIGIN.store(now.saturating_sub(ns(time.elapsed())), Relaxed);
     } else {
         let grew = count == ENGINE_COUNT_PREV.load(Relaxed).saturating_add(1);
@@ -242,6 +249,15 @@ fn is_read_tick<const N: usize>(state: &State<'_, N>) -> bool {
     (0..N).any(|i| matches!(state.age_at(i), Ok(Some(0))))
 }
 
+/// The lowest and highest read cadence over the actuators, in ticks; the bench never sets it
+/// (assumed, pending human: D9 A).
+fn cadence_range<const N: usize>(state: &State<'_, N>) -> (u64, u64) {
+    (0..N)
+        .filter_map(|i| state.read_every(i).ok())
+        .map(|k| u64::from(k.get()))
+        .fold((u64::MAX, 0), |(lo, hi), k| (lo.min(k), hi.max(k)))
+}
+
 /// Nanoseconds since [`EPOCH`]; zero before it is set.
 #[inline]
 pub fn now_ns() -> u64 {
@@ -282,6 +298,8 @@ pub fn bench_storage_bytes() -> u64 {
         &BENCH_OVERRUNS,
         &BENCH_OVERRUNS_WRITE_ONLY,
         &BENCH_OVERRUNS_READ,
+        &CADENCE_MIN,
+        &CADENCE_MAX,
         &TICKS_DONE,
         &ORIGIN,
         &LAST_SLOT,
