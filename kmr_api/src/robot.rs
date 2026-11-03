@@ -114,7 +114,6 @@ pub struct Robot<const N: usize, H, C = Scheduled> {
     inner: kmr_core::Robot<N, C>,
     plugins: Vec<Bus>,
     payloads: Vec<Payload>,
-    dt: Option<Duration>,
     spec: PhantomData<fn() -> H>,
 }
 
@@ -125,7 +124,6 @@ impl<const N: usize, H: Spec<N>> Robot<N, H> {
             inner: kmr_core::Robot::new(),
             plugins: Vec::new(),
             payloads: Vec::new(),
-            dt: None,
             spec: PhantomData,
         }
     }
@@ -140,10 +138,12 @@ impl<const N: usize, H: Spec<N>> Default for Robot<N, H> {
 // Settings. These keep the SAME type-state `C`: tuning the config never adds or
 // removes a controller, so `Self` is returned unchanged.
 impl<const N: usize, H, C> Robot<N, H, C> {
-    /// Sets the tick period, handed to the engine by [`run`](Self::run).
+    /// Sets the tick period. Zero or outside [10 µs, 1 s], [`run`](Self::run) refuses it
+    /// with [`UserError::DtOutOfRange`] before any I/O; never set, the run uses 1 ms with one
+    /// warning (SRS FR-3.1).
     pub fn set_dt(self, dt: Duration) -> Self {
         Self {
-            dt: Some(dt),
+            inner: self.inner.set_dt(dt),
             ..self
         }
     }
@@ -167,7 +167,6 @@ impl<const N: usize, H, C> Robot<N, H, C> {
             inner: grow(self.inner),
             plugins: self.plugins,
             payloads: self.payloads,
-            dt: self.dt,
             spec: PhantomData,
         }
     }
@@ -299,8 +298,8 @@ impl<const N: usize, H, C> Robot<N, H, C> {
     ///
     /// # Errors
     ///
-    /// [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], [`UserError::UnknownLink`],
-    /// then the binding errors of [`Spec::bind`].
+    /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], then the binding errors of
+    /// [`Spec::bind`]. The tick period is checked by the run.
     pub fn bind(self) -> Result<Bound<N, H, C>, UserError>
     where
         H: Spec<N>,
@@ -313,21 +312,15 @@ impl<const N: usize, H, C> Robot<N, H, C> {
         Ok(Bound { inner, drivers })
     }
 
-    /// Checks the builder data, no I/O, and hands `dt` to the core.
+    /// Checks the builder data, no I/O.
     ///
     /// # Errors
     ///
-    /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`], then
-    /// [`UserError::UnknownLink`].
+    /// [`UserError::DuplicateBus`], then [`UserError::UnknownLink`].
     fn finalize(self) -> Result<(kmr_core::Robot<N, C>, Vec<Binding>), UserError>
     where
         H: Spec<N>,
     {
-        if let Some(dt) = self.dt
-            && !(DT_MIN..=DT_MAX).contains(&dt)
-        {
-            return Err(UserError::DtOutOfRange { dt });
-        }
         for (i, bus) in self.plugins.iter().enumerate() {
             if self.plugins[..i].iter().any(|b| b.port() == bus.port()) {
                 return Err(UserError::DuplicateBus { port: bus.port() });
@@ -342,11 +335,10 @@ impl<const N: usize, H, C> Robot<N, H, C> {
                 link: payload.mount(),
             });
         }
-        let inner = match self.dt {
-            Some(dt) => self.inner.set_dt(dt),
-            None => self.inner,
-        };
-        Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
+        Ok((
+            self.inner,
+            self.plugins.iter().map(|bus| bus.binding).collect(),
+        ))
     }
 }
 
@@ -370,7 +362,8 @@ impl<const N: usize, H: Spec<N>, C> Bound<N, H, C> {
     ///
     /// # Errors
     ///
-    /// Before any I/O: the claims that do not cover the actuators as [`UserError::BringUp`].
+    /// Before any I/O: [`UserError::DtOutOfRange`], then the claims that do not cover the
+    /// actuators as [`UserError::BringUp`].
     /// After: a member's bring-up error as [`UserError::BringUp`]. A shutdown and an emergency
     /// stop both return `Ok`.
     pub fn run(self) -> Result<Option<H::Drivers>, UserError>
@@ -394,20 +387,15 @@ fn simulated() -> HCons<NoHardware, HNil> {
     }
 }
 
-/// Runs `inner` on `drivers`, its error kept typed inside [`UserError::BringUp`].
+/// Runs `inner` on `drivers`: a refused configuration as its [`UserError`], a hardware error
+/// kept typed inside [`UserError::BringUp`].
 fn drive<const N: usize, C, D>(inner: kmr_core::Robot<N, C>, drivers: D) -> Result<(), UserError>
 where
     C: kmr_core::Drive<N>,
     D: Drivers<N, Error: Send + Sync>,
 {
-    inner.run_on(drivers).map_err(UserError::bring_up)
+    inner.run_on(drivers).map_err(UserError::from)
 }
-
-/// Shortest tick period `run()` accepts (SRS FR-3.1); interim until the core checks it (T040).
-const DT_MIN: Duration = Duration::from_micros(10);
-
-/// Longest tick period `run()` accepts (SRS FR-3.1).
-const DT_MAX: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
 mod tests {
@@ -479,7 +467,9 @@ mod tests {
     }
 
     #[test]
-    fn a_dt_outside_10_us_to_1_s_is_refused_before_the_plugins() {
+    fn a_dt_outside_10_us_to_1_s_is_refused_by_the_core() {
+        // DECISION: the builder's own errors (a bus bound twice, an unknown link, the binding)
+        // come first; the core refuses the dt next, still before any I/O.
         for dt in [
             Duration::ZERO,
             Duration::from_micros(5),
@@ -487,30 +477,12 @@ mod tests {
         ] {
             let res = TestRobot::new()
                 .set_dt(dt)
-                .add_plugins(Bus::by_id("FT8ISZ6H"))
-                .add_plugins(Bus::by_id("FT8ISZ6H"))
                 .add_controller(EachTick, bump_q)
                 .run();
             assert!(
                 matches!(res, Err(UserError::DtOutOfRange { dt: refused }) if refused == dt),
                 "{res:?}"
             );
-        }
-    }
-
-    #[test]
-    fn a_dt_of_10_us_or_1_s_or_unset_passes_the_check() {
-        for dt in [
-            Some(Duration::from_micros(10)),
-            Some(Duration::from_secs(1)),
-            None,
-        ] {
-            let robot = TestRobot::new().add_controller(EachTick, bump_q);
-            let robot = match dt {
-                Some(dt) => robot.set_dt(dt),
-                None => robot,
-            };
-            assert!(robot.finalize().is_ok());
         }
     }
 

@@ -273,8 +273,10 @@ field type means adding both a `Slot` impl and a `StateField` impl there.
 ### Time (`clock.rs`)
 
 `Time` is internal state; all methods `pub(crate)`. The only user knob is
-`Robot::set_dt(Duration)`, which forwards to `Time::set_delta`. A `dt` of zero
-(or never set) falls back to 1 ms with a warning.
+`Robot::set_dt(Duration)`, kept as an `Option` in the config. At
+finalization, before any I/O, a `dt` outside [10 µs, 1 s] (zero included) is
+`RunError::Config(DtOutOfRange)`; never set, it falls back to 1 ms with a
+warning. The runtime then hands it to `Time::set_delta`.
 
 The clock never reads the system time: the runtime injects every instant
 (`arm`, `begin_tick`, `end_tick`), which keeps the arithmetic testable without

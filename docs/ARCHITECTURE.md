@@ -167,8 +167,9 @@ between two controller walks; controllers get `&Time` through each phase's
 short-lived `Env`. The clock never reads the system time: the runtime injects
 every instant (`arm` after the bring-up, so tick 0 is not charged with it,
 then `begin_tick`, `end_tick`), through a private `Host` seam that tests
-replace with a scripted host. A `dt` of zero or never set falls back to 1 ms
-with one warning.
+replace with a scripted host. A `dt` outside [10 µs, 1 s], zero included, is
+refused at finalization (`RunError::Config`), before any I/O; never set, it
+falls back to 1 ms with one warning.
 
 **One tick**, in order:
 
@@ -205,9 +206,10 @@ panic included, with `torque_off` then `close` on every member.
 
 | Exit | Tick write | Hold | Torque off, close | `run_on` returns |
 |---|---|---|---|---|
-| claim mismatch or `check` error | no | no | no, nothing opened | `Err` |
+| `dt` out of range | no | no | no, nothing opened | `Err(Config)` |
+| claim mismatch or `check` error | no | no | no, nothing opened | `Err(Hal)` |
 | emergency stop in `PreInit` | no | no | no, nothing opened | `Ok` |
-| `open` .. `torque_on` error | no | no | yes, at once | `Err` |
+| `open` .. `torque_on` error | no | no | yes, at once | `Err(Hal)` |
 | any signal before `torque_on` | no | no | yes, torque never on | `Ok` |
 | shutdown in a tick | yes, the tick completes | with `set_hold` only | yes, after the hold | `Ok` |
 | emergency stop in a tick | no, if raised before the write | no | yes, at once | `Ok` |

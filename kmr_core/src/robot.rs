@@ -24,6 +24,7 @@
 //!     .expect("the robot has a controller");
 //! ```
 
+use core::convert::Infallible;
 use std::time::Duration;
 
 pub use frunk::{HCons, HNil};
@@ -33,7 +34,7 @@ use crate::config::user_config::RobotConfig;
 use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
-use crate::error::ApiError;
+use crate::error::RunError;
 use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
@@ -95,9 +96,11 @@ impl<const N: usize> Robot<N, Scheduled> {
 // E.g: To set the elapsed time, an action disallowed to the user, call
 // directly `robot.config.time.set_elapsed(t)`.
 impl<const N: usize, CS> Robot<N, CS> {
-    /// Allows the user to set the value of [`Time::delta`].
+    /// Sets the tick period. Outside [10 µs, 1 s], zero included, `run` and
+    /// `run_on` refuse it before any I/O; never set, the run uses 1 ms with
+    /// one warning (SRS FR-3.1).
     pub fn set_dt(mut self, dt: Duration) -> Self {
-        self.config.time.set_delta(dt);
+        self.config.dt = Some(dt);
         self
     }
 
@@ -235,18 +238,20 @@ impl<const N: usize, CS> Robot<N, CS> {
     /// own `run`.
     ///
     /// Returns once a signal ends the loop: `Ok` for a shutdown and for an
-    /// emergency stop alike. `Err` is a claim mismatch, found before any
-    /// I/O, or a member's error from `check` or a bring-up call.
-    pub fn run_on<D: Drivers<N>>(self, hal: D) -> Result<(), HardwareError<D::Error>>
+    /// emergency stop alike. Before any I/O: [`RunError::Config`] for a
+    /// refused configuration, then [`RunError::Hal`] for a claim mismatch.
+    /// After: [`RunError::Hal`] for a member's error from `check` or a
+    /// bring-up call.
+    pub fn run_on<D: Drivers<N>>(self, hal: D) -> Result<(), RunError<HardwareError<D::Error>>>
     where
         CS: Drive<N>,
     {
         runtime::runtime(self, hal).map(|_signal| ())
     }
 
-    /// Runs the robot on [`NoHardware`]: nothing is read or written. See
-    /// [`Robot::run_on`].
-    pub fn run(self) -> Result<(), ApiError>
+    /// Runs the robot on [`NoHardware`]: nothing is read or written. Only a
+    /// [`RunError::Config`] can fail it. See [`Robot::run_on`].
+    pub fn run(self) -> Result<(), RunError<Infallible>>
     where
         CS: Drive<N>,
     {
@@ -255,10 +260,13 @@ impl<const N: usize, CS> Robot<N, CS> {
             tail: HNil,
         };
         match self.run_on(hal) {
-            Ok(()) | Err(HardwareError::Coverage(_)) => Ok(()),
-            Err(HardwareError::Member(
+            Ok(()) => Ok(()),
+            Err(RunError::Config(config)) => Err(RunError::Config(config)),
+            // `NoHardware` claims every actuator: no coverage gap.
+            Err(RunError::Hal(HardwareError::Coverage(_))) => Ok(()),
+            Err(RunError::Hal(HardwareError::Member(
                 MemberError::Head { error: never, .. } | MemberError::Tail(never),
-            )) => match never {},
+            ))) => match never {},
         }
     }
 }

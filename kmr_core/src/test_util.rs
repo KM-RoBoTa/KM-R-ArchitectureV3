@@ -7,6 +7,7 @@ use core::cell::{Cell, Ref, RefCell};
 use core::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
+use crate::error::RunError;
 use crate::hal::{
     Batch, Claim, Command, Drivers, Faults, Group, Hal, HardwareError, Mask, Overrides, Sample,
     Written, seal,
@@ -47,7 +48,7 @@ pub fn run_scripted<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     robot: &mut Robot<N, CS>,
     host: &mut H,
     drivers: &mut D,
-) -> Result<Signal, HardwareError<D::Error>> {
+) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     crate::runtime::run_with(robot, host, drivers)
 }
 

@@ -3081,7 +3081,12 @@ fn alone(
 fn run_alone(
     adapter: &mut Dynamixel<Scripted, 1, N>,
     control: impl Fn(&kmr_core::Time, &mut kmr_core::RobotState<N>, &kmr_core::Sensors),
-) -> Result<(), HardwareError<MemberError<DynamixelError, core::convert::Infallible>>> {
+) -> Result<
+    (),
+    kmr_core::error::RunError<
+        HardwareError<MemberError<DynamixelError, core::convert::Infallible>>,
+    >,
+> {
     kmr_core::Robot::new()
         .set_dt(Duration::from_millis(1))
         .set_hold(Duration::ZERO)
@@ -3183,7 +3188,7 @@ fn engine_missing_actuator_is_returned_after_torque_off_and_close() -> io::Resul
         id: id(2),
     };
     assert!(
-        matches!(&run, Err(HardwareError::Member(MemberError::Head { error, .. })) if *error == missing),
+        matches!(&run, Err(kmr_core::error::RunError::Hal(HardwareError::Member(MemberError::Head { error, .. }))) if *error == missing),
         "{run:?}"
     );
     assert_eq!(adapter.backend.count(Call::Torque), 0);

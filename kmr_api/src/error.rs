@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::time::Duration;
 
-use kmr_core::error::{ApiError as CoreApiError, StateError as CoreStateError};
+use kmr_core::error::{ConfigError, RunError, StateError as CoreStateError};
 
 /// Public error returned by [`State`](crate::State) accessors.
 ///
@@ -239,10 +239,19 @@ fn closing(text: &str) -> Option<usize> {
     None
 }
 
-impl From<CoreApiError> for UserError {
-    fn from(e: CoreApiError) -> Self {
+impl From<ConfigError> for UserError {
+    fn from(e: ConfigError) -> Self {
         match e {
-            CoreApiError::NoControllers => Self::NoControllers,
+            ConfigError::DtOutOfRange { dt } => Self::DtOutOfRange { dt },
+        }
+    }
+}
+
+impl<E: Error + Send + Sync + 'static> From<RunError<E>> for UserError {
+    fn from(e: RunError<E>) -> Self {
+        match e {
+            RunError::Config(config) => config.into(),
+            RunError::Hal(hardware) => Self::bring_up(hardware),
         }
     }
 }

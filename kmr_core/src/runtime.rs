@@ -25,14 +25,37 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, trace, warn};
 
 use crate::controllers::Env;
+use crate::error::{ConfigError, RunError};
 use crate::hal::{Audit, Batch, Drivers, Faults, HardwareError, Layout, Overrides, Plan, Step};
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::RobotState;
 use crate::{Robot, Sensors, Signal, SignalKind, shutdown};
 
-/// Tick duration used when `Robot::set_dt` was never called, or with zero.
+/// Tick duration used when `Robot::set_dt` was never called.
 const FALLBACK_DT: Duration = Duration::from_millis(1);
+
+/// Shortest tick period a run accepts (SRS FR-3.1).
+pub(crate) const DT_MIN: Duration = Duration::from_micros(10);
+
+/// Longest tick period a run accepts (SRS FR-3.1).
+pub(crate) const DT_MAX: Duration = Duration::from_secs(1);
+
+/// The tick period of the run: the configured one if in range, else the
+/// fallback when none was configured.
+fn tick_period(configured: Option<Duration>) -> Result<Duration, ConfigError> {
+    match configured {
+        None => {
+            warn!(
+                fallback = ?FALLBACK_DT,
+                "no tick duration configured (`Robot::set_dt`), using the fallback"
+            );
+            Ok(FALLBACK_DT)
+        }
+        Some(dt) if (DT_MIN..=DT_MAX).contains(&dt) => Ok(dt),
+        Some(dt) => Err(ConfigError::DtOutOfRange { dt }),
+    }
+}
 
 /// The instant, the sleep and the signal bus: a seam so the loop tests run on
 /// scripted values instead of the wall clock and the global bus.
@@ -451,29 +474,26 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 }
 
 /// Finalization, startup phases, then the tick loop. Returns the signal that
-/// ended the run, a claim mismatch, or a member's error.
+/// ended the run, a configuration fault, a claim mismatch, or a member's
+/// error.
 pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     robot: &mut Robot<N, CS>,
     host: &mut H,
     hal: &mut D,
-) -> Result<Signal, HardwareError<D::Error>> {
+) -> Result<Signal, RunError<HardwareError<D::Error>>> {
+    let dt = tick_period(robot.config.dt)?;
+    robot.config.time.set_delta(dt);
+
     let mut plan = Plan::new();
-    hal.claim(Overrides::default(), &mut plan)?;
-    let layout = plan.finish()?;
+    hal.claim(Overrides::default(), &mut plan)
+        .map_err(RunError::Hal)?;
+    let layout = plan.finish().map_err(|c| RunError::Hal(c.into()))?;
     let (mut state, sensors) = init_phase::pre_init();
     state.set_cadence(layout.read_every);
 
-    if robot.config.time.delta().is_zero() {
-        warn!(
-            fallback = ?FALLBACK_DT,
-            "no tick duration configured (`Robot::set_dt`), using the fallback"
-        );
-        robot.config.time.set_delta(FALLBACK_DT);
-    }
-
     // The guard has dropped by now: torque is off before the log lines.
     let signal = run_phases(robot, &mut state, &sensors, host, hal, &layout)
-        .map_err(HardwareError::Member)?;
+        .map_err(|e| RunError::Hal(HardwareError::Member(e)))?;
 
     match signal.kind() {
         SignalKind::Shutdown => info!("control loop stopped, {signal}"),
@@ -494,7 +514,7 @@ pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>>(
     mut robot: Robot<N, CS>,
     mut hal: D,
-) -> Result<Signal, HardwareError<D::Error>> {
+) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     Signal::reset();
 
     // Before the Ctrl-C install, which may warn.
@@ -749,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_dt_falls_back_before_any_controller_runs() {
+    fn an_unset_dt_falls_back_before_any_controller_runs() {
         let seen_dt = Cell::new(Duration::ZERO);
 
         let mut robot = Robot::new().add_controller(PreInit, |time: &Time, _s, _se| {
@@ -775,11 +795,13 @@ mod tests {
         };
 
         /// The run error of a one-member list whose recorder failed `call`.
-        fn failed(call: Call) -> HardwareError<MemberError<Failed, core::convert::Infallible>> {
-            HardwareError::Member(MemberError::Head {
+        fn failed(
+            call: Call,
+        ) -> RunError<HardwareError<MemberError<Failed, core::convert::Infallible>>> {
+            RunError::Hal(HardwareError::Member(MemberError::Head {
                 name: core::any::type_name::<Recorder<'static, N>>(),
                 error: Failed(call),
-            })
+            }))
         }
 
         fn walk(log: &Log<N>, call: Call) -> impl Fn(&Time, &mut RobotState<N>, &Sensors) + '_ {
@@ -798,6 +820,41 @@ mod tests {
                     .add_controller(crate::EachTick, walk(&$log, EachTick))
                     .add_controller(crate::Last, walk(&$log, Last))
             };
+        }
+
+        #[test]
+        fn a_dt_out_of_range_is_refused_before_any_io() {
+            for dt in [
+                Duration::ZERO,
+                Duration::from_micros(5),
+                Duration::from_secs(2),
+            ] {
+                let log = Log::new();
+                let mut robot = recording_robot!(log).set_dt(dt);
+                let mut host = Scripted::new(Instant::now());
+
+                let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+                assert_eq!(
+                    result.err(),
+                    Some(RunError::Config(ConfigError::DtOutOfRange { dt }))
+                );
+                assert!(log.calls().is_empty(), "{dt:?}");
+                assert_eq!(host.poll_calls, 0);
+            }
+        }
+
+        #[test]
+        fn the_bounds_of_the_dt_range_are_accepted() {
+            for dt in [DT_MIN, DT_MAX] {
+                let log = Log::new();
+                let mut robot = recording_robot!(log).set_dt(dt);
+                let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+
+                let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+                assert!(result.is_ok(), "{dt:?}");
+            }
         }
 
         #[test]
@@ -833,7 +890,9 @@ mod tests {
 
             assert_eq!(
                 result.err(),
-                Some(HardwareError::Coverage(Coverage::Unowned { actuator: 1 }))
+                Some(RunError::Hal(HardwareError::Coverage(Coverage::Unowned {
+                    actuator: 1
+                })))
             );
             assert_eq!(*log.calls(), [Check]);
         }
