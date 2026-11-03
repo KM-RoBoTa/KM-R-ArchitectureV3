@@ -43,6 +43,14 @@ jobs:
       # The engine without `std` and without `alloc` (core SC-007, SRS NFR-7).
       - run: cargo build -p kmr_core --no-default-features --target thumbv7em-none-eabihf
 
+  srs-markers:
+    name: SRS markers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Counts the SRS markers and fails on an unwrap, expect or panic! outside
+      # them in kmr_core/src (core FR-055, SRS NFR-2 and § 5).
+      - run: .github/scripts/srs-markers.sh kmr_core/src
 
   cross:
     name: cross-build
