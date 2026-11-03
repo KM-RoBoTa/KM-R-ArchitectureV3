@@ -26,4 +26,6 @@ fn ui() {
     t.pass("tests/ui/pass/*.rs");
     #[cfg(feature = "ffi")]
     t.compile_fail("tests/ui/ffi/*.rs");
+    #[cfg(feature = "zenoh")]
+    t.compile_fail("tests/ui/zenoh/*.rs");
 }

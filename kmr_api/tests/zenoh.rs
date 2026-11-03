@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use kmr_api::test_util::{EXTERNAL_FLAGS, Log, RealTime, Recorder, run_scripted};
 use kmr_api::zenoh::{DesiredMsg, SampleMsg, decode_ring, keys};
 use kmr_api::{EachTick, Gateway, GatewayConfig, HCons, HISTORY_DEPTH, HNil, Identity, Policy};
-use kmr_api::{Q, Remote, Sensors, Time};
+use kmr_api::{First, Q, Remote, Sensors, Time};
 use zenoh::Wait;
 
 kmr_api::robot!(XmBench);
@@ -310,4 +310,379 @@ fn the_window_counts_an_allocation_of_the_tick_thread() {
     let before = ALLOCS.load(Ordering::Relaxed);
     run(robot, 20, &log);
     assert_eq!(ALLOCS.load(Ordering::Relaxed) - before, 1);
+}
+
+/// Publishes `msgs` on `key` from `peer` once the gateway's subscriber is matched; never drops.
+fn send(peer: &zenoh::Session, key: String, msgs: Vec<DesiredMsg<N>>) -> thread::JoinHandle<()> {
+    let publisher = peer
+        .declare_publisher(key)
+        .congestion_control(zenoh::qos::CongestionControl::Block)
+        .wait()
+        .expect("a Desired publisher");
+    thread::spawn(move || {
+        let start = Instant::now();
+        while !publisher
+            .matching_status()
+            .wait()
+            .is_ok_and(|status| status.matching())
+        {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the gateway never matched"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        for msg in msgs {
+            publisher.put(msg.encode()).wait().expect("a put");
+        }
+    })
+}
+
+/// A Desired of `seq` writing `q` to actuator `i`.
+fn desired(seq: u64, i: usize, q: f32) -> DesiredMsg<N> {
+    let mut msg = DesiredMsg::<N>::EMPTY;
+    msg.seq = seq;
+    msg.q[i] = q;
+    msg.written[0] = 1 << i;
+    msg
+}
+
+/// Waits until `done` holds, for at most 10 s.
+fn until(done: impl Fn() -> bool) {
+    let start = Instant::now();
+    while !done() {
+        assert!(start.elapsed() < Duration::from_secs(10), "timed out");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Set once a tick read the unauthorized flag.
+static UNAUTHORIZED_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// Records whether this tick's faults carry the unauthorized flag.
+fn watch_unauthorized(_time: &Time, state: &mut State, _sensors: &Sensors) {
+    if state.faults().is_some_and(|faults| faults.unauthorized()) {
+        UNAUTHORIZED_SEEN.store(true, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn sc_011_a_thousand_desired_from_an_unknown_identity_none_applied_all_counted_flag_set() {
+    let _serial = serial();
+    let port = free_port();
+    let peer = peer(port);
+    let gateway = gateway("z-sc11", port);
+    let counters = gateway.counters();
+    let msgs = (1..=1000).map(|seq| desired(seq, 2, 0.25)).collect();
+    let sender = send(&peer, keys::desired("z-sc11", "intruder"), msgs);
+    let watcher = thread::spawn({
+        let counters = counters.clone();
+        move || until(|| counters.unauthorized() == 1000)
+    });
+    UNAUTHORIZED_SEEN.store(false, Ordering::Relaxed);
+    let log = Log::new();
+    let robot = Robot::new()
+        .set_dt(DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .add_plugins(gateway)
+        .add_remote_source(EachTick, CTL, idle)
+        .add_controller(First, watch_unauthorized);
+    run(robot, 1_500, &log);
+    sender.join().expect("the sender");
+    watcher.join().expect("1000 counted during the run");
+
+    assert_eq!((counters.unauthorized(), counters.accepted()), (1000, 0));
+    assert!(log.write.get().is_none(), "nothing written");
+    assert!(
+        UNAUTHORIZED_SEEN.load(Ordering::Relaxed),
+        "the flag reached a tick"
+    );
+}
+
+#[test]
+fn sc_012_a_desired_with_an_old_seq_is_dropped_and_counted() {
+    let _serial = serial();
+    let port = free_port();
+    let peer = peer(port);
+    let gateway = gateway("z-sc12", port);
+    let counters = gateway.counters();
+    let msgs = [10, 10, 9, 11]
+        .into_iter()
+        .map(|seq| desired(seq, 1, 0.125))
+        .collect();
+    let sender = send(&peer, keys::desired("z-sc12", "ctl-2"), msgs);
+    let watcher = thread::spawn({
+        let counters = counters.clone();
+        move || until(|| counters.accepted() + counters.out_of_order() == 4)
+    });
+    let log = Log::new();
+    let robot = Robot::new()
+        .set_dt(DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .add_plugins(gateway)
+        .add_remote_source(EachTick, CTL, idle);
+    run(robot, 1_000, &log);
+    sender.join().expect("the sender");
+    watcher.join().expect("all four handled during the run");
+
+    assert_eq!((counters.accepted(), counters.out_of_order()), (2, 2));
+}
+
+/// The first tick a fallback ran, `u64::MAX` before one did.
+static FIRST_FALLBACK: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Records the first tick it runs in.
+fn hold_still(time: &Time, _state: &mut State, _sensors: &Sensors) {
+    FIRST_FALLBACK.fetch_min(time.tick(), Ordering::Relaxed);
+}
+
+#[test]
+fn sc_012_a_silent_source_raises_the_flag_within_timeout_plus_one_tick_and_its_fallback_runs() {
+    let _serial = serial();
+    let port = free_port();
+    let _peer = peer(port);
+    FIRST_FALLBACK.store(u64::MAX, Ordering::Relaxed);
+    let log = Log::new();
+    let quiet = Remote::allow("ctl-2").timeout(Duration::from_millis(20));
+    let robot = Robot::new()
+        .set_dt(DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .add_plugins(gateway("z-quiet", port))
+        .add_remote_source(EachTick, quiet, hold_still);
+    run(robot, 100, &log);
+
+    // Silent 20 ms at 1 ms a tick by tick 19: the flag is up from tick 20.
+    assert_eq!(FIRST_FALLBACK.load(Ordering::Relaxed), 20);
+}
+
+/// Throwaway certificates for one test run, minted with the openssl CLI: a CA, the gateway
+/// (`arm-1`, valid for 127.0.0.1), the peers `ctl-2` and `viz-1`, and `rogue` from another CA.
+mod tls {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Runs openssl with `args` in `dir`.
+    fn openssl(dir: &Path, args: &[&str]) {
+        let status = Command::new("openssl")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("the openssl CLI");
+        assert!(status.success(), "openssl {args:?}");
+    }
+
+    /// A self-signed CA `name` in `dir`.
+    fn ca(dir: &Path, name: &str) {
+        let (crt, key) = (format!("{name}.crt"), format!("{name}.key"));
+        let subject = format!("/CN={name}");
+        openssl(
+            dir,
+            &[
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                &subject,
+                "-keyout",
+                &key,
+                "-out",
+                &crt,
+            ],
+        );
+    }
+
+    /// A certificate with common name `name` signed by `ca`, in `dir`.
+    fn leaf(dir: &Path, ca: &str, name: &str) {
+        let (crt, key, csr) = (
+            format!("{name}.crt"),
+            format!("{name}.key"),
+            format!("{name}.csr"),
+        );
+        let subject = format!("/CN={name}");
+        openssl(
+            dir,
+            &[
+                "req",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-subj",
+                &subject,
+                "-keyout",
+                &key,
+                "-out",
+                &csr,
+            ],
+        );
+        let ext = format!("{name}.ext");
+        std::fs::write(
+            dir.join(&ext),
+            "subjectAltName=IP:127.0.0.1,DNS:localhost\nbasicConstraints=CA:FALSE\n",
+        )
+        .expect("the extension file");
+        let (ca_crt, ca_key) = (format!("{ca}.crt"), format!("{ca}.key"));
+        openssl(
+            dir,
+            &[
+                "x509",
+                "-req",
+                "-in",
+                &csr,
+                "-CA",
+                &ca_crt,
+                "-CAkey",
+                &ca_key,
+                "-CAcreateserial",
+                "-days",
+                "1",
+                "-extfile",
+                &ext,
+                "-out",
+                &crt,
+            ],
+        );
+    }
+
+    /// Mints every certificate into a fresh directory; returns it.
+    pub fn mint() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kmr-zenoh-tls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the certificate directory");
+        ca(&dir, "ca");
+        ca(&dir, "other-ca");
+        for name in ["arm-1", "ctl-2", "viz-1"] {
+            leaf(&dir, "ca", name);
+        }
+        leaf(&dir, "other-ca", "rogue");
+        dir
+    }
+
+    /// `dir/file` as a `'static` path string.
+    pub fn path(dir: &Path, file: &str) -> &'static str {
+        String::leak(dir.join(file).to_string_lossy().into_owned())
+    }
+}
+
+/// A peer session of identity `name` connecting over mutual TLS to `port`, its CA `ca`.
+fn tls_peer(dir: &std::path::Path, name: &str, ca: &str, port: u16) -> zenoh::Session {
+    let mut config = zenoh::Config::default();
+    let file = |ext: &str| format!("\"{}\"", tls::path(dir, &format!("{name}.{ext}")));
+    for (key, value) in [
+        ("mode", "\"peer\"".to_owned()),
+        ("scouting/multicast/enabled", "false".to_owned()),
+        ("listen/endpoints", "[]".to_owned()),
+        ("connect/endpoints", format!("[\"tls/127.0.0.1:{port}\"]")),
+        (
+            "transport/link/tls/root_ca_certificate",
+            format!("\"{}\"", tls::path(dir, &format!("{ca}.crt"))),
+        ),
+        ("transport/link/tls/connect_certificate", file("crt")),
+        ("transport/link/tls/connect_private_key", file("key")),
+        ("transport/link/tls/enable_mtls", "true".to_owned()),
+    ] {
+        config.insert_json5(key, &value).expect("a valid setting");
+    }
+    zenoh::open(config).wait().expect("the peer session")
+}
+
+#[test]
+#[ignore = "mints a throwaway CA with the openssl CLI; run with `--ignored` where openssl exists"]
+fn mutual_tls_admits_known_certificates_and_the_acl_and_rule_sort_them() {
+    let _serial = serial();
+    let dir = tls::mint();
+    let port = free_port();
+    let gateway = Gateway::new(GatewayConfig {
+        instance: "z-tls",
+        identity: Identity::files(
+            tls::path(&dir, "arm-1.crt"),
+            tls::path(&dir, "arm-1.key"),
+            tls::path(&dir, "ca.crt"),
+        ),
+        read_history: &["viz-1"],
+    })
+    .listen(format!("tls/127.0.0.1:{port}"));
+    let counters = gateway.counters();
+
+    let peers = thread::spawn({
+        let dir = dir.clone();
+        let counters = counters.clone();
+        move || {
+            // Waits for the gateway to listen.
+            thread::sleep(Duration::from_millis(300));
+            let viz = tls_peer(&dir, "viz-1", "ca", port);
+            let heard = Arc::new(AtomicU64::new(0));
+            let count = Arc::clone(&heard);
+            let _history = viz
+                .declare_subscriber(keys::history("z-tls"))
+                .callback(move |_| {
+                    count.fetch_add(1, Ordering::Relaxed);
+                })
+                .wait()
+                .expect("viz-1 subscribes");
+            let ctl = tls_peer(&dir, "ctl-2", "ca", port);
+            // ctl-2 is a source, not a History reader: the ACL never routes History to it.
+            let denied = Arc::new(AtomicU64::new(0));
+            let leak = Arc::clone(&denied);
+            let _denied = ctl
+                .declare_subscriber(keys::history("z-tls"))
+                .callback(move |_| {
+                    leak.fetch_add(1, Ordering::Relaxed);
+                })
+                .wait()
+                .expect("ctl-2 declares a subscriber locally");
+            send(
+                &ctl,
+                keys::desired("z-tls", "ctl-2"),
+                vec![desired(1, 1, 0.125)],
+            )
+            .join()
+            .expect("ctl-2 sends");
+            // viz-1 reaches its own Desired key, where the rule counts it.
+            send(
+                &viz,
+                keys::desired("z-tls", "viz-1"),
+                vec![desired(1, 1, 0.5)],
+            )
+            .join()
+            .expect("viz-1 sends");
+            until(|| counters.accepted() == 1 && counters.unauthorized() == 1);
+            // A certificate from another CA gets no session at all.
+            let rogue = std::panic::catch_unwind(|| tls_peer(&dir, "rogue", "other-ca", port));
+            if let Ok(rogue) = rogue {
+                let publisher = rogue
+                    .declare_publisher(keys::desired("z-tls", "ctl-2"))
+                    .wait()
+                    .expect("a local publisher");
+                assert!(
+                    !publisher
+                        .matching_status()
+                        .wait()
+                        .is_ok_and(|s| s.matching()),
+                    "the rogue peer reached the gateway"
+                );
+            }
+            until(|| heard.load(Ordering::Relaxed) > 100);
+            assert_eq!(denied.load(Ordering::Relaxed), 0, "History reached ctl-2");
+        }
+    });
+
+    let log = Log::new();
+    let robot = Robot::new()
+        .set_dt(DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .add_plugins(gateway)
+        .add_remote_source(EachTick, CTL, idle);
+    run(robot, 4_000, &log);
+    peers.join().expect("the peers");
+
+    assert_eq!((counters.accepted(), counters.unauthorized()), (1, 1));
+    let _ = std::fs::remove_dir_all(dir);
 }
