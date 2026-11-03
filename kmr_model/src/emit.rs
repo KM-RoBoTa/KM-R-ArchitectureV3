@@ -8,7 +8,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
-use crate::model::Robot;
+use crate::model::{Kind, Robot};
 
 /// `N`, the `model` module and, for a file, the rebuild tracking of `tracked`.
 ///
@@ -23,6 +23,8 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
     let [lower, upper, speed, effort] = columns(robot).map(|c| c.into_iter().map(float));
     let lookup = lookup(robot);
     let links = links(robot);
+    let prismatic = kinds(robot, Kind::Prismatic, krate);
+    let continuous = kinds(robot, Kind::Continuous, krate);
     quote! {
         /// Actuator count of this robot, from its descriptor.
         #[allow(dead_code)]
@@ -56,6 +58,15 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
             /// Top effort per actuator: N·m (revolute, continuous) or N
             /// (prismatic).
             pub const EFFORT: [#krate::Tau; super::N] = [#(#krate::Tau(#effort)),*];
+
+            /// Prismatic actuators: bit `i` (word `i / 64`, bit `i % 64`, the same
+            /// layout as `kmr_core::hal::Mask`) is set for actuator `i`.
+            pub const PRISMATIC: [u64; #krate::MASK_WORDS] = #prismatic;
+
+            /// Continuous actuators, laid out as `PRISMATIC`: no position limit,
+            /// so `LOWER` and `UPPER` hold no bound for them. Revolute is
+            /// neither.
+            pub const CONTINUOUS: [u64; #krate::MASK_WORDS] = #continuous;
 
             #links
         }
@@ -124,6 +135,41 @@ fn links(robot: &Robot) -> TokenStream {
 
         /// Mass center of each link, m, in the link frame.
         pub const LINK_COM: [[f32; 3]; #l] = [#(#coms),*];
+    }
+}
+
+/// The bit set of the actuators of `kind`, as a `[u64; MASK_WORDS]`
+/// expression: only the words that hold a set bit are written.
+fn kinds(robot: &Robot, kind: Kind, krate: &TokenStream) -> TokenStream {
+    let mut words: Vec<u64> = Vec::new();
+    for (i, _) in robot
+        .actuators
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.kind == kind)
+    {
+        let word = i / 64;
+        if words.len() <= word {
+            words.resize(word + 1, 0);
+        }
+        if let Some(w) = words.get_mut(word) {
+            *w |= 1 << (i % 64);
+        }
+    }
+    let set = words
+        .iter()
+        .enumerate()
+        .filter(|&(_, &bits)| bits != 0)
+        .map(|(w, &bits)| {
+            let w = Literal::usize_unsuffixed(w);
+            let bits = Literal::u64_suffixed(bits);
+            quote! { m[#w] = #bits; }
+        })
+        .collect::<Vec<_>>();
+    if set.is_empty() {
+        quote! { [0u64; #krate::MASK_WORDS] }
+    } else {
+        quote! { { let mut m = [0u64; #krate::MASK_WORDS]; #(#set)* m } }
     }
 }
 
@@ -411,6 +457,35 @@ mod tests {
         for word in banned {
             assert!(!all.iter().any(|i| i == word), "{word}");
         }
+    }
+
+    #[test]
+    fn continuous_and_prismatic_are_bit_sets_revolute_is_neither() {
+        let arm = four();
+        let names: Vec<_> = arm.actuators.iter().map(|a| a.kind).collect();
+        assert_eq!(
+            names,
+            [
+                Kind::Revolute,
+                Kind::Continuous,
+                Kind::Prismatic,
+                Kind::Revolute
+            ]
+        );
+        let continuous = kinds(&arm, Kind::Continuous, &quote!(k)).to_string();
+        assert_eq!(
+            continuous,
+            "{ let mut m = [0u64 ; k :: MASK_WORDS] ; m [0] = 2u64 ; m }"
+        );
+        let prismatic = kinds(&arm, Kind::Prismatic, &quote!(k)).to_string();
+        assert_eq!(
+            prismatic,
+            "{ let mut m = [0u64 ; k :: MASK_WORDS] ; m [0] = 4u64 ; m }"
+        );
+        let none = kinds(&arm, Kind::Revolute, &quote!(k)).to_string();
+        assert!(none.contains("m [0] = 9u64"), "{none}");
+        let empty = kinds(&robot(&["a"]), Kind::Prismatic, &quote!(k));
+        assert_eq!(empty.to_string(), "[0u64 ; k :: MASK_WORDS]");
     }
 
     #[test]
