@@ -72,7 +72,7 @@ mod robot;
 // reachable here: the HList shape, the controller node types (fields sealed, so
 // naming one is harmless), plus `Sensors`/`RobotState` and the `state`/`error`
 // module paths. Each item has ONE public path: what lives in the public `state`
-// module (`JOINTS`, `Q`, ...) is not repeated here. `RobotState` is the
+// module (`Q`, `HISTORY_DEPTH`, ...) is not repeated here. `RobotState` is the
 // exception, `kmr_api` names it from the root like the other two handles.
 pub use clock::Time;
 pub use controllers::{ControlFn, ControlFnWith, Inline, InlineWith, ThreadFn, Threaded};
@@ -87,6 +87,6 @@ pub use sensors::Sensors;
 pub use signal::{Signal, SignalMeta};
 pub use state::RobotState;
 
-// Crate-internal shorthands, so `crate::JOINTS` and friends keep resolving.
+// Crate-internal shorthands, so `crate::N` and friends keep resolving.
 pub(crate) use signal::SignalKind;
-pub(crate) use state::{HISTORY_DEPTH, JOINTS, State};
+pub(crate) use state::{HISTORY_DEPTH, State};

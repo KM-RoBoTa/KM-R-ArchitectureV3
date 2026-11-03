@@ -253,11 +253,13 @@ each). `drain()` loads and never clears: the bus stays raised until the next
 
 ### State (`state/`) — private, sealed, typed
 
-`RobotState<DEPTH>` holds a write-only `Desired` staging area + a read-only
-`History` ring buffer (`circular-buffer`). `DEPTH` defaults to `HISTORY_DEPTH`:
-write a bare `RobotState`, never `RobotState<JOINTS>`. `JOINTS`/`HISTORY_DEPTH`
-are fixed consts, defined once (`state.rs`) and public under one path,
-`kmr_core::state` — a build-time-from-model value is a TODO. Users never touch raw fields
+`RobotState<N>` holds a write-only `Desired` staging area + a read-only
+`History` ring buffer (`circular-buffer`). `N`, the actuator count, is a const
+generic set by `robot!` from the descriptor (decision 0007): every type that
+holds a per-actuator array carries it, nothing else does, and it has no
+default. `HISTORY_DEPTH` stays a fixed const, public as
+`kmr_core::state::HISTORY_DEPTH`. The write mask is `Mask<N>([u64;
+MASK_WORDS])`, `MASK_WORDS = 1`: N above 64 fails the build. Users never touch raw fields
 (`robot.desired.q[0] = ..` is a compile error). Access is setters/getters
 only, all speaking typed newtypes `Q`/`Qd`/`Tau` — never bare `f32`.
 

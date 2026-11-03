@@ -268,10 +268,10 @@ The field set is sealed: `Q`, `Qd`, `Tau`, `Kp`, `Kd`, routed to their
 storage by the private `Slot` trait. The shutdown hold target is the latest
 sample overlaid with this tick's writes.
 
-As on this branch: the actuator count is the `JOINTS` constant (4, or 10
-under the `joints-10` dev feature);
-[decision 0007](decisions/0007-actuator-count-const-generic.md) makes it a
-const generic N set by `robot!` (core T021 to T030). The per-tick fault
+The actuator count is a const generic N set by `robot!`
+([decision 0007](decisions/0007-actuator-count-const-generic.md)): `RobotState<N>`,
+`Robot<N, CS>`, `Hal<N>`, `Mask<N>`, one word of mask, `MASK_WORDS = 1`, so
+N runs from 1 to 64. The per-tick fault
 masks are computed and dropped; storing them per History slot, with tick
 flags and the per-actuator age, is core T036 and T044. The home state is
 still a `todo!()` (core T031).
@@ -300,9 +300,9 @@ preset's model half ships in `kmr_model/presets/`, its hardware half in
 
 `robot!` calls `model!` through the hidden `kmr_api::__model!`: a preset by
 name, a descriptor by path, the `hardware = ..` argument split off first.
-The front door adds the `State` and `Robot` aliases and two checks: N ≤ 64,
-and, until the core takes N as a const generic, N equal to the core's
-`JOINTS`. The kind bit sets `model::PRISMATIC` and `CONTINUOUS` wait for the
+The front door adds the `State` and `Robot` aliases, bound to the model's N,
+and one check: N ≤ 64, under `cargo check` at the `robot!` line (the core's
+`Mask::<N>::CHECK` is the backstop under `cargo build`). The kind bit sets `model::PRISMATIC` and `CONTINUOUS` wait for the
 core's public mask width.
 
 ## Hardware layer

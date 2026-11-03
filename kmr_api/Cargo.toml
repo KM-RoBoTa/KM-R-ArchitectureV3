@@ -14,8 +14,6 @@ thiserror.workspace = true
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
-# Dev bench stopgap until N is a const generic (core M2): JOINTS = 10.
-joints-10 = ["kmr_core/joints-10"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated

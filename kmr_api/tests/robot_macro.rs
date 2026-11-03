@@ -28,7 +28,7 @@ fn model_constants_are_kmr_api_types() {
 }
 
 /// Six actuators between two fixed joints. A direct call: the front door's `N == JOINTS`
-/// assert refuses N = 6 until kmr_api B7 (kmr_model T048 moves it to `robot!`).
+/// assert refused N = 6 before kmr_api B7 (kmr_model T048 moves it to `robot!`).
 mod six {
     kmr_api::__model!(kmr_api; model = "tests/fixtures/six_plus_two.urdf");
 

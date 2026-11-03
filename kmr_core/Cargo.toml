@@ -27,8 +27,6 @@ test-util = []
 # Batches keep declaration order instead of group order: the bench's
 # baseline for the presort (SRS FR-5.3). Off by default.
 presort-off = []
-# Dev bench stopgap until N is a const generic (core M2): JOINTS = 10, not 4.
-joints-10 = []
 
 [lints]
 workspace = true

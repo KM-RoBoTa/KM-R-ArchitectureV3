@@ -1,5 +1,5 @@
 //! Rx28Chain: its model half counts the actuators of its hardware half, and
-//! under `joints-10` the front door builds it.
+//! the front door builds it, N = 10.
 
 mod model_half {
     use kmr_api::presets::Rx28Chain;
@@ -13,7 +13,6 @@ mod model_half {
     }
 }
 
-#[cfg(feature = "joints-10")]
 mod front_door {
     kmr_api::robot!(Rx28Chain);
 

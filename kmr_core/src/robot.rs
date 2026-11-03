@@ -11,7 +11,7 @@
 //!
 //! use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
 //!
-//! fn foo(_time: &Time, _state: &mut RobotState, _sensors: &Sensors) {
+//! fn foo(_time: &Time, _state: &mut RobotState<4>, _sensors: &Sensors) {
 //!     println!("hello world");
 //! }
 //!
@@ -36,7 +36,7 @@ use crate::controllers::{
 use crate::error::ApiError;
 use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
 use crate::schedule::{Drive, Insert, Schedule};
-use crate::state::{JOINTS, RobotState};
+use crate::state::RobotState;
 use crate::{Scheduled, Sensors, runtime};
 
 /// The primary librairy API.
@@ -45,7 +45,7 @@ use crate::{Scheduled, Sensors, runtime};
 /// means Core Scheduled. This is useful to differenciate between
 /// the user specified schedule label (named `S` in the impl blocks) and the
 /// generic representation within the core.
-pub struct Robot<const N: usize = JOINTS, CS = Scheduled> {
+pub struct Robot<const N: usize, CS = Scheduled> {
     pub(crate) config: RobotConfig,
     pub(crate) controllers: CS,
 }
@@ -63,7 +63,7 @@ impl<const N: usize> Robot<N, Scheduled> {
     /// // `no_run`: `run()` enters the control loop and only returns on a signal.
     /// use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
     ///
-    /// fn hello_world(_time: &Time, _robot: &mut RobotState, _sensors: &Sensors) {
+    /// fn hello_world(_time: &Time, _robot: &mut RobotState<4>, _sensors: &Sensors) {
     ///     println!("Hello World !");
     /// }
     ///

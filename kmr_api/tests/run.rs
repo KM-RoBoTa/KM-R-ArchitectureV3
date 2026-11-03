@@ -335,7 +335,7 @@ mod recording {
             Ok(())
         }
 
-        fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask {
+        fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
             log("read");
             Mask::NONE
         }

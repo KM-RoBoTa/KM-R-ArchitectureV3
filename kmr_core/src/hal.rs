@@ -11,7 +11,7 @@ use core::time::Duration;
 
 use tracing::warn;
 
-use crate::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
+use crate::state::{Kd, Kp, Q, Qd, Tau};
 
 mod set;
 
@@ -33,7 +33,7 @@ pub const MASK_WORDS: usize = 1;
 /// One bit per actuator, `N` actuators. N above `64 * MASK_WORDS` is refused
 /// by [`Mask::CHECK`].
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Mask<const N: usize = JOINTS>([u64; MASK_WORDS]);
+pub struct Mask<const N: usize>([u64; MASK_WORDS]);
 
 impl<const N: usize> Mask<N> {
     /// Fails the build when `N` does not fit the mask. Post-monomorphization:
@@ -132,7 +132,7 @@ pub struct Group(pub u8);
 /// The whole robot's hardware, merged once at run() finalization from the
 /// members' claims.
 #[derive(Debug)]
-pub struct Layout<const N: usize = JOINTS> {
+pub struct Layout<const N: usize> {
     /// Pre-sort key of each actuator, robot-wide (SRS FR-5.3).
     pub group: [Group; N],
     /// Read cadence in force for each actuator, in ticks.
@@ -214,7 +214,7 @@ impl<const N: usize> Layout<N> {
 /// A cursor over the members' actuators and groups, as the walk takes them.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
-pub struct Slots<'a, const N: usize = JOINTS> {
+pub struct Slots<'a, const N: usize> {
     owned: &'a [Mask<N>],
     ends: &'a [u16],
     /// First group of the next member.
@@ -253,7 +253,7 @@ pub struct Overrides {}
 /// Which desired fields were written this tick, one mask per field.
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Written<const N: usize = JOINTS> {
+pub struct Written<const N: usize> {
     /// Actuators whose `Q` was written.
     pub q: Mask<N>,
     /// Actuators whose `Qd` was written.
@@ -300,7 +300,7 @@ impl<const N: usize> Written<N> {
 /// Values the adapter sends: this tick's desired state, or the hold target.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
-pub struct Command<'a, const N: usize = JOINTS> {
+pub struct Command<'a, const N: usize> {
     /// Desired positions.
     pub q: &'a [Q; N],
     /// Desired velocities.
@@ -339,7 +339,7 @@ impl<'a, const N: usize> Command<'a, N> {
 /// Owned values of the shutdown hold: the latest sample overlaid with the
 /// tick's writes, which `written` marks (SRS FR-4.1).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct HoldTarget<const N: usize = JOINTS> {
+pub(crate) struct HoldTarget<const N: usize> {
     pub(crate) q: [Q; N],
     pub(crate) qd: [Qd; N],
     pub(crate) tau: [Tau; N],
@@ -366,7 +366,7 @@ impl<const N: usize> HoldTarget<N> {
 /// overwrites what it reads.
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct Sample<'a, const N: usize = JOINTS> {
+pub struct Sample<'a, const N: usize> {
     /// Read positions.
     pub q: &'a mut [Q; N],
     /// Read velocities.
@@ -401,7 +401,7 @@ impl<'a, const N: usize> Sample<'a, N> {
 /// once the walk selected it. With the `presort-off` feature, in declaration
 /// order inside each member (SRS FR-5.3, for the bench's comparison).
 #[derive(Debug)]
-pub struct Batch<'a, const N: usize = JOINTS> {
+pub struct Batch<'a, const N: usize> {
     layout: &'a Layout<N>,
     index: [usize; N],
     len: usize,
@@ -472,7 +472,7 @@ impl<'a, const N: usize> Batch<'a, N> {
 
 /// Iterator over the runs of a [`Batch`].
 #[derive(Debug)]
-pub struct Runs<'a, const N: usize = JOINTS> {
+pub struct Runs<'a, const N: usize> {
     group: &'a [Group; N],
     rest: &'a [usize],
     base: u8,
@@ -500,7 +500,7 @@ impl<'a, const N: usize> Iterator for Runs<'a, N> {
 /// Per-tick fault bits set by the adapter (SRS FR-13.4).
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Faults<const N: usize = JOINTS> {
+pub struct Faults<const N: usize> {
     /// Read failed: the previous value was kept (SRS FR-2.6).
     pub stale: Mask<N>,
     /// Transaction error on the actuator's bus.
@@ -522,7 +522,7 @@ pub struct Faults<const N: usize = JOINTS> {
 /// The engine restricts `write` to the member's runs, with local group ids,
 /// and the `written` masks of `write` and `hold` to its actuators. `Sample`
 /// and `Faults` stay whole-robot: a member touches only its own slots.
-pub trait Hal<const N: usize = JOINTS>: seal::Adapter {
+pub trait Hal<const N: usize>: seal::Adapter {
     /// Bring-up and finalization failures. Names the actuator and the port
     /// when there is one.
     type Error: core::error::Error + 'static;

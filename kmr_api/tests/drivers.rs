@@ -197,7 +197,7 @@ impl<K: Kind> Hal<N> for Fake<K> {
         Ok(())
     }
 
-    fn read(&mut self, mut sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask {
+    fn read(&mut self, mut sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
         self.fill(&mut sample);
         self.owned
     }
@@ -270,7 +270,7 @@ fn port(plugin: &Binding) -> &'static str {
 }
 
 /// The actuators `select` picks.
-fn mask(select: impl Fn(usize) -> bool) -> Mask {
+fn mask(select: impl Fn(usize) -> bool) -> Mask<N> {
     let mut mask = Mask::NONE;
     (0..N)
         .filter(|&index| select(index))
@@ -278,11 +278,11 @@ fn mask(select: impl Fn(usize) -> bool) -> Mask {
     mask
 }
 
-fn evens() -> Mask {
+fn evens() -> Mask<N> {
     mask(|index| index % 2 == 0)
 }
 
-fn odds() -> Mask {
+fn odds() -> Mask<N> {
     mask(|index| index % 2 == 1)
 }
 
@@ -304,7 +304,7 @@ struct TwoBrands<const CASE: u8>;
 type Members = HCons<Fake<Arm>, HCons<Fake<Leg>, HNil>>;
 
 /// The error of `Members`.
-type MembersError = <Members as Drivers>::Error;
+type MembersError = <Members as Drivers<N>>::Error;
 
 impl<const CASE: u8> Spec<N> for TwoBrands<CASE> {
     type Drivers = Members;

@@ -31,9 +31,6 @@ a runtime entity registry — keep the 1kHz hot path static.
       core ([decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md),
       core T034, T035). Settled: `run()` returns `Ok` for a shutdown and an
       emergency stop alike
-    - N as a const generic set by `robot!`, `JOINTS` removed
-      ([decision 0007](decisions/0007-actuator-count-const-generic.md), core
-      T021 to T030)
     - per-slot faults, tick flags and per-actuator age in the History (core
       T036, T044); today the per-tick fault masks are dropped
     - the home state (`todo!()`, core T031)

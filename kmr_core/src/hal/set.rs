@@ -11,7 +11,7 @@ use core::time::Duration;
 use frunk::{HCons, HNil};
 
 use super::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Slots};
-use crate::state::{JOINTS, State};
+use crate::state::State;
 
 /// Transaction groups the whole robot may have, `Group` being a `u8`.
 const MAX_GROUPS: u16 = 256;
@@ -19,7 +19,7 @@ const MAX_GROUPS: u16 = 256;
 /// What one member declares at run() finalization, no I/O. Entries outside
 /// `owned` are ignored.
 #[derive(Clone, Debug)]
-pub struct Claim<const N: usize = JOINTS> {
+pub struct Claim<const N: usize> {
     /// Actuators the member drives.
     pub owned: Mask<N>,
     /// Member-local group of each owned actuator; the engine renumbers them
@@ -86,7 +86,7 @@ pub enum Coverage {
 /// The claims merged so far, in declaration order.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct Plan<const N: usize = JOINTS> {
+pub struct Plan<const N: usize> {
     /// Actuators of each member, by position. Each owns one at least, so
     /// there are at most `N` members.
     owned: [Mask<N>; N],
@@ -449,7 +449,7 @@ fn fault_row<const N: usize>(faults: &Faults<N>, actuator: usize) -> [bool; 4] {
 /// The robot's hardware: a list of [`Hal`] members, `HCons<A, HCons<B,
 /// HNil>>`. Implemented by the engine only; the walk calls every member,
 /// head first, and cuts torque in reverse.
-pub trait Drivers<const N: usize = JOINTS>: seal::Drivers {
+pub trait Drivers<const N: usize>: seal::Drivers {
     /// One variant per member, nested.
     type Error: seal::Nested;
 
@@ -678,6 +678,7 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::N;
 
     struct Dxl;
     struct CubeMars;
@@ -693,7 +694,7 @@ mod tests {
         owned: impl IntoIterator<Item = usize>,
         group: impl Fn(usize) -> u8,
         every: u32,
-    ) -> Claim {
+    ) -> Claim<N> {
         let mut mask = Mask::NONE;
         for actuator in owned {
             mask.set(actuator);
@@ -701,7 +702,7 @@ mod tests {
         Claim {
             owned: mask,
             group: core::array::from_fn(|index| Group(group(index))),
-            read_every: [NonZeroU32::new(every).unwrap(); JOINTS],
+            read_every: [NonZeroU32::new(every).unwrap(); N],
             read_cost: Duration::from_micros(100),
             write_cost: Duration::from_micros(50),
         }
@@ -721,8 +722,8 @@ mod tests {
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     struct Wrote {
         groups: [Option<Group>; 2],
-        actuators: Mask,
-        written_q: Mask,
+        actuators: Mask<N>,
+        written_q: Mask<N>,
     }
 
     /// One call: the member's id and what it saw.
@@ -754,7 +755,7 @@ mod tests {
     /// A member owning `owned`, every actuator in local group `group`.
     struct Fake<'a> {
         id: u8,
-        owned: Mask,
+        owned: Mask<N>,
         group: u8,
         fail_open: bool,
         /// An actuator it changes without owning it, in `read` and `write`.
@@ -764,7 +765,7 @@ mod tests {
     }
 
     impl<'a> Fake<'a> {
-        fn new(id: u8, owned: Mask, group: u8, journal: &'a Journal) -> Self {
+        fn new(id: u8, owned: Mask<N>, group: u8, journal: &'a Journal) -> Self {
             Self {
                 id,
                 owned,
@@ -779,13 +780,13 @@ mod tests {
 
     impl super::super::seal::Adapter for Fake<'_> {}
 
-    impl Hal for Fake<'_> {
+    impl Hal<N> for Fake<'_> {
         type Error = Unplugged;
 
-        fn check(&mut self, _overrides: Overrides) -> Result<Claim, Unplugged> {
+        fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Unplugged> {
             Ok(Claim {
                 owned: self.owned,
-                group: [Group(self.group); JOINTS],
+                group: [Group(self.group); N],
                 ..claim([], |_| 0, 1)
             })
         }
@@ -815,7 +816,7 @@ mod tests {
             Ok(())
         }
 
-        fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), Unplugged> {
+        fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), Unplugged> {
             Ok(())
         }
 
@@ -823,14 +824,14 @@ mod tests {
             Ok(())
         }
 
-        fn read(&mut self, sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+        fn read(&mut self, sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
             if let Some(actuator) = self.stray {
                 sample.q[actuator] = crate::state::Q(99.0);
             }
             self.owned
         }
 
-        fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults) {
+        fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
             if let Some(actuator) = self.stray {
                 faults.rejected.set(actuator);
             }
@@ -846,7 +847,7 @@ mod tests {
             self.wrote.set(wrote);
         }
 
-        fn hold(&mut self, _target: Command<'_>) {}
+        fn hold(&mut self, _target: Command<'_, N>) {}
 
         fn torque_off(&mut self) {
             self.journal.push(self.id, Seen::TorqueOff);
@@ -857,7 +858,7 @@ mod tests {
         }
     }
 
-    fn mask(actuators: impl IntoIterator<Item = usize>) -> Mask {
+    fn mask(actuators: impl IntoIterator<Item = usize>) -> Mask<N> {
         let mut mask = Mask::NONE;
         actuators
             .into_iter()
@@ -871,7 +872,7 @@ mod tests {
         HCons {
             head: Fake::new(0, mask(0..2), 1, journal),
             tail: HCons {
-                head: Fake::new(1, mask(2..JOINTS), 0, journal),
+                head: Fake::new(1, mask(2..N), 0, journal),
                 tail: HNil,
             },
         }
@@ -879,14 +880,14 @@ mod tests {
 
     /// Every field of every actuator at zero, to lend as a command or a
     /// sample.
-    fn zeroed() -> crate::state::State<JOINTS> {
+    fn zeroed() -> crate::state::State<N> {
         crate::state::State::default()
     }
 
     fn command<'a>(
-        values: &'a crate::state::State<JOINTS>,
-        written: &'a super::super::Written,
-    ) -> Command<'a> {
+        values: &'a crate::state::State<N>,
+        written: &'a super::super::Written<N>,
+    ) -> Command<'a, N> {
         Command::new(
             &values.q,
             &values.qd,
@@ -897,7 +898,7 @@ mod tests {
         )
     }
 
-    fn sample(values: &mut crate::state::State<JOINTS>) -> Sample<'_> {
+    fn sample(values: &mut crate::state::State<N>) -> Sample<'_, N> {
         Sample::new(
             &mut values.q,
             &mut values.qd,
@@ -907,7 +908,7 @@ mod tests {
         )
     }
 
-    fn layout_of(hal: &mut impl Drivers) -> Layout {
+    fn layout_of(hal: &mut impl Drivers<N>) -> Layout<N> {
         let mut plan = Plan::new();
         hal.claim(Overrides::default(), &mut plan).unwrap();
         plan.finish().unwrap()
@@ -1035,7 +1036,7 @@ mod tests {
         let journal = Journal::new();
         let mut hal = two(&journal);
         let layout = layout_of(&mut hal);
-        hal.head.stray = Some(JOINTS - 1);
+        hal.head.stray = Some(N - 1);
         let written = super::super::Written {
             q: Mask::ALL,
             ..Default::default()
@@ -1053,7 +1054,7 @@ mod tests {
         );
 
         let stray = audit.take().expect("a stray fault");
-        assert_eq!(stray.actuator, JOINTS - 1);
+        assert_eq!(stray.actuator, N - 1);
     }
 
     #[test]
@@ -1140,7 +1141,7 @@ mod tests {
         let mut plan = Plan::new();
         plan.add(type_name::<Dxl>(), &claim([0, 1], |i| i as u8, 4))
             .unwrap();
-        plan.add(type_name::<CubeMars>(), &claim(2..JOINTS, |_| 0, 1))
+        plan.add(type_name::<CubeMars>(), &claim(2..N, |_| 0, 1))
             .unwrap();
         let layout = plan.finish().unwrap();
 
@@ -1159,7 +1160,7 @@ mod tests {
     #[test]
     fn a_gap_names_the_first_unowned_actuator() {
         let mut plan = Plan::new();
-        let all_but_2 = (0..JOINTS).filter(|&i| i != 2);
+        let all_but_2 = (0..N).filter(|&i| i != 2);
         plan.add(type_name::<Dxl>(), &claim(all_but_2, |_| 0, 1))
             .unwrap();
         assert_eq!(
@@ -1198,9 +1199,9 @@ mod tests {
         let mut plan = Plan::new();
         plan.add(type_name::<Dxl>(), &claim([0, 1], |_| 0, 4))
             .unwrap();
-        let overlapping = claim(1..JOINTS, |_| 0, 1);
+        let overlapping = claim(1..N, |_| 0, 1);
         assert!(plan.add(type_name::<CubeMars>(), &overlapping).is_err());
-        plan.add(type_name::<CubeMars>(), &claim(2..JOINTS, |_| 0, 1))
+        plan.add(type_name::<CubeMars>(), &claim(2..N, |_| 0, 1))
             .unwrap();
 
         let layout = plan.finish().unwrap();

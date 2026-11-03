@@ -214,7 +214,7 @@ impl Slot {
     }
 
     /// The slot as a `Sample`.
-    fn sample(&mut self) -> Sample<'_> {
+    fn sample(&mut self) -> Sample<'_, N> {
         Sample::new(
             &mut self.q,
             &mut self.qd,
@@ -232,7 +232,7 @@ struct Desired {
     tau: [Tau; N],
     kp: [Kp; N],
     kd: [Kd; N],
-    written: Written,
+    written: Written<N>,
 }
 
 impl Desired {
@@ -269,7 +269,7 @@ impl Desired {
     }
 
     /// The desired state as a `Command`.
-    fn command(&self) -> Command<'_> {
+    fn command(&self) -> Command<'_, N> {
         Command::new(
             &self.q,
             &self.qd,
@@ -282,7 +282,7 @@ impl Desired {
 }
 
 /// The layout the engine builds for a robot whose only member made `claim`.
-pub(super) fn layout_of(claim: &Claim) -> Layout {
+pub(super) fn layout_of(claim: &Claim<N>) -> Layout<N> {
     Layout::new(
         claim.group,
         claim.read_every,
@@ -295,9 +295,9 @@ pub(super) fn layout_of(claim: &Claim) -> Layout {
 /// `claim`: its runs, local groups, its written masks only.
 fn write<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB, N>,
-    claim: &Claim,
+    claim: &Claim<N>,
     desired: &Desired,
-) -> Faults {
+) -> Faults<N> {
     let mut faults = Faults::default();
     let mut written = desired.written;
     written.q = written.q.intersection(claim.owned);
@@ -345,7 +345,7 @@ fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB, N>) {
 /// marked open; the backend log is cleared afterwards.
 fn powered<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB, N>,
-) -> Result<Claim, DynamixelError> {
+) -> Result<Claim<N>, DynamixelError> {
     let layout = adapter.check(Overrides::default())?;
     mark_open(adapter);
     adapter.zero()?;
@@ -359,7 +359,7 @@ fn powered<const NB: usize>(
 }
 
 /// Mask of the actuators `index` selects.
-fn mask(select: impl Fn(usize) -> bool) -> Mask {
+fn mask(select: impl Fn(usize) -> bool) -> Mask<N> {
     let mut mask = Mask::NONE;
     (0..N)
         .filter(|&index| select(index))
@@ -2751,7 +2751,7 @@ const SUBSET: Placement<2, 2> = {
 };
 
 /// The engine indices of [`SUBSET`].
-fn subset() -> Mask {
+fn subset() -> Mask<N> {
     mask(|index| SUBSET_AT.contains(&index))
 }
 
@@ -2932,16 +2932,16 @@ fn a_placed_member_writes_holds_and_cuts_only_its_actuators() -> Result<(), Dyna
 /// the engine handed its `write` and the calls it got last.
 #[derive(Default)]
 struct Rest {
-    wrote: Mask,
+    wrote: Mask<N>,
     calls: [Option<&'static str>; 2],
 }
 
 impl super::seal::Adapter for Rest {}
 
-impl Hal for Rest {
+impl Hal<N> for Rest {
     type Error = core::convert::Infallible;
 
-    fn check(&mut self, _overrides: Overrides) -> Result<Claim, Self::Error> {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Self::Error> {
         Ok(Claim {
             owned: Mask::ALL.difference(subset()),
             group: [Group(0); N],
@@ -2971,7 +2971,7 @@ impl Hal for Rest {
         Ok(())
     }
 
-    fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), Self::Error> {
+    fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -2979,17 +2979,17 @@ impl Hal for Rest {
         Ok(())
     }
 
-    fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+    fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
         Mask::NONE
     }
 
-    fn write(&mut self, _command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+    fn write(&mut self, _command: Command<'_, N>, batch: &Batch<'_, N>, _faults: &mut Faults<N>) {
         for (_, run) in batch.runs() {
             run.iter().for_each(|&index| self.wrote.set(index));
         }
     }
 
-    fn hold(&mut self, _target: Command<'_>) {}
+    fn hold(&mut self, _target: Command<'_, N>) {}
 
     fn torque_off(&mut self) {
         self.calls = [Some("torque_off"), None];
@@ -3018,7 +3018,7 @@ fn a_placed_member_runs_beside_another_one_on_its_own_actuators() -> io::Result<
     let mut adapter = roots.rig(adapter);
     let mut rest = Rest::default();
 
-    let control = |time: &Time, state: &mut RobotState, _: &Sensors| {
+    let control = |time: &Time, state: &mut RobotState<N>, _: &Sensors| {
         state.set_all(ramp());
         if time.tick() == 2 {
             kmr_core::shutdown!("test: tick 2");
@@ -3080,7 +3080,7 @@ fn alone(
 /// tick on `adapter` alone.
 fn run_alone(
     adapter: &mut Dynamixel<Scripted, 1, N>,
-    control: impl Fn(&kmr_core::Time, &mut kmr_core::RobotState, &kmr_core::Sensors),
+    control: impl Fn(&kmr_core::Time, &mut kmr_core::RobotState<N>, &kmr_core::Sensors),
 ) -> Result<(), HardwareError<MemberError<DynamixelError, core::convert::Infallible>>> {
     kmr_core::Robot::new()
         .set_dt(Duration::from_millis(1))
@@ -3269,7 +3269,7 @@ fn mx_scenario_raw(index: usize) -> i32 {
 /// returned with the claim.
 fn run_ax_beside_mx(
     table: Table<2, N>,
-) -> Result<(Dynamixel<Scripted, 2, N>, Claim, Slot), DynamixelError> {
+) -> Result<(Dynamixel<Scripted, 2, N>, Claim<N>, Slot), DynamixelError> {
     let mut adapter = rig(table);
     for index in 0..N {
         let bus = usize::from(on_mx(index));
@@ -3556,7 +3556,7 @@ fn an_ax12_at_4095_angle_limits_is_no_multi_turn_mode() -> Result<(), DynamixelE
 /// over their whole range, after `script`.
 fn bring_up_ax_beside_mx(
     script: impl FnOnce(&mut Scripted),
-) -> (Dynamixel<Scripted, 2, N>, Result<Claim, DynamixelError>) {
+) -> (Dynamixel<Scripted, 2, N>, Result<Claim<N>, DynamixelError>) {
     let mut adapter = rig(AX_MX_TABLE);
     for index in (0..N).filter(|&index| on_mx(index)) {
         adapter.backend.angle_limits(1, id(index), 0, 4095);

@@ -530,7 +530,7 @@ mod tests {
         Sample, Written, seal,
     };
     use crate::signal::SignalMeta;
-    use crate::state::{JOINTS, Q, Qd};
+    use crate::state::{N, Q, Qd};
     use crate::test_util::*;
     use crate::{EachTick, First, Init, Last, PostInit, PreInit};
     use crate::{HCons, HNil};
@@ -565,14 +565,11 @@ mod tests {
     }
 
     /// A run on [`NoHardware`], which cannot fail.
-    fn simulated<CS: Drive<JOINTS>, H: Host>(
-        robot: &mut Robot<JOINTS, CS>,
-        host: &mut H,
-    ) -> Signal {
+    fn simulated<CS: Drive<N>, H: Host>(robot: &mut Robot<N, CS>, host: &mut H) -> Signal {
         run_with(robot, host, &mut one(NoHardware)).expect("NoHardware owns every actuator")
     }
 
-    fn bump(cell: &Cell<u32>) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
+    fn bump(cell: &Cell<u32>) -> impl Fn(&Time, &mut RobotState<N>, &Sensors) + '_ {
         move |_t, _s, _se| cell.set(cell.get() + 1)
     }
 
@@ -780,12 +777,12 @@ mod tests {
         /// The run error of a one-member list whose recorder failed `call`.
         fn failed(call: Call) -> HardwareError<MemberError<Failed, core::convert::Infallible>> {
             HardwareError::Member(MemberError::Head {
-                name: core::any::type_name::<Recorder<'static, JOINTS>>(),
+                name: core::any::type_name::<Recorder<'static, N>>(),
                 error: Failed(call),
             })
         }
 
-        fn walk(log: &Log<JOINTS>, call: Call) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
+        fn walk(log: &Log<N>, call: Call) -> impl Fn(&Time, &mut RobotState<N>, &Sensors) + '_ {
             move |_t, _s, _se| log.push(call)
         }
 
@@ -964,7 +961,7 @@ mod tests {
             assert_eq!(log.calls()[..11], STARTUP);
             assert_eq!(log.calls()[11..], [Hold, TorqueOff, Close]);
             let hold = log.hold.get().expect("a hold");
-            assert_eq!(hold.q, [SEED; JOINTS]);
+            assert_eq!(hold.q, [SEED; N]);
             assert_eq!(hold.written, Written::default());
         }
 
@@ -1021,7 +1018,7 @@ mod tests {
             let mut robot = recording_robot!(log)
                 .set_hold(Duration::ZERO)
                 .add_controller(crate::PreInit, |_t, state, _se| {
-                    state.set_all([Q(99.0); JOINTS]);
+                    state.set_all([Q(99.0); N]);
                 })
                 .add_controller(crate::PostInit, |_t, state, _se| {
                     state.set_at(Q(98.0), 1).expect("in range");
@@ -1036,7 +1033,7 @@ mod tests {
             assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
             assert!(!log.calls().contains(&Write));
             let hold = log.hold.get().expect("a hold");
-            assert_eq!(hold.q, [SEED; JOINTS]);
+            assert_eq!(hold.q, [SEED; N]);
             assert_eq!(hold.written, Written::default());
             // One warning for the two phases that wrote (SC-011).
             assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
@@ -1060,7 +1057,7 @@ mod tests {
         }
 
         /// The mask of `indices`.
-        fn mask(indices: &[usize]) -> Mask {
+        fn mask(indices: &[usize]) -> Mask<N> {
             let mut mask = Mask::NONE;
             for &index in indices {
                 mask.set(index);
@@ -1068,7 +1065,6 @@ mod tests {
             mask
         }
 
-        #[cfg(not(feature = "joints-10"))]
         #[test]
         fn shutdown_reads_before_first_writes_after_last_then_holds_and_cuts_torque() {
             let log = Log::new();
@@ -1096,7 +1092,6 @@ mod tests {
             assert_eq!(hold.written.q, mask(&[1]));
         }
 
-        #[cfg(not(feature = "joints-10"))]
         #[test]
         fn every_tick_runs_read_first_each_last_write_and_desired_clears() {
             let log = Log::new();
@@ -1244,7 +1239,7 @@ mod tests {
             let seen = Cell::new(None);
             let mut robot = Robot::new().set_dt(DT).add_controller(
                 crate::PreInit,
-                |_: &Time, state: &mut RobotState, _: &Sensors| {
+                |_: &Time, state: &mut RobotState<N>, _: &Sensors| {
                     seen.set(state.cadence(0).ok());
                 },
             );
@@ -1533,14 +1528,14 @@ mod tests {
 
         impl seal::Adapter for Steps<'_> {}
 
-        impl Hal for Steps<'_> {
+        impl Hal<N> for Steps<'_> {
             type Error = Infallible;
 
-            fn check(&mut self, _overrides: Overrides) -> Result<Claim, Infallible> {
+            fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Infallible> {
                 Ok(Claim {
                     owned: Mask::ALL,
-                    group: [Group(0); JOINTS],
-                    read_every: [NonZeroU32::MIN; JOINTS],
+                    group: [Group(0); N],
+                    read_every: [NonZeroU32::MIN; N],
                     read_cost: Duration::ZERO,
                     write_cost: Duration::ZERO,
                 })
@@ -1560,20 +1555,25 @@ mod tests {
             fn configure(&mut self) -> Result<(), Infallible> {
                 Ok(())
             }
-            fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), Infallible> {
+            fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), Infallible> {
                 Ok(())
             }
             fn torque_on(&mut self) -> Result<(), Infallible> {
                 Ok(())
             }
-            fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+            fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
                 self.0.saw(Event::Read);
                 Mask::ALL
             }
-            fn write(&mut self, _command: Command<'_>, _batch: &Batch<'_>, _faults: &mut Faults) {
+            fn write(
+                &mut self,
+                _command: Command<'_, N>,
+                _batch: &Batch<'_, N>,
+                _faults: &mut Faults<N>,
+            ) {
                 self.0.saw(Event::Write);
             }
-            fn hold(&mut self, _target: Command<'_>) {}
+            fn hold(&mut self, _target: Command<'_, N>) {}
             fn torque_off(&mut self) {}
             fn close(&mut self) {}
         }
@@ -1581,17 +1581,20 @@ mod tests {
         /// Runs `TICKS` ticks; `work(k)` is how long the controllers of tick
         /// `k` take.
         fn run(world: &World, work: impl Fn(u32) -> Duration) {
-            let step = |event| move |_: &Time, _: &mut RobotState, _: &Sensors| world.saw(event);
+            let step = |event| move |_: &Time, _: &mut RobotState<N>, _: &Sensors| world.saw(event);
             let mut robot = Robot::new()
                 .set_dt(DT)
-                .add_controller(First, move |_: &Time, _: &mut RobotState, _: &Sensors| {
-                    world.tick_starts();
-                    world.saw(Event::FirstA);
-                })
+                .add_controller(
+                    First,
+                    move |_: &Time, _: &mut RobotState<N>, _: &Sensors| {
+                        world.tick_starts();
+                        world.saw(Event::FirstA);
+                    },
+                )
                 .add_controller(First, step(Event::FirstB))
                 .add_controller(
                     EachTick,
-                    move |_: &Time, state: &mut RobotState, _: &Sensors| {
+                    move |_: &Time, state: &mut RobotState<N>, _: &Sensors| {
                         world.saw(Event::EachA);
                         world.work(work(world.ticks.get()));
                         state.set_at(Q(1.0), 0).expect("actuator 0 exists");
@@ -1599,7 +1602,7 @@ mod tests {
                 )
                 .add_controller(EachTick, step(Event::EachB))
                 .add_controller(Last, step(Event::LastA))
-                .add_controller(Last, move |_: &Time, _: &mut RobotState, _: &Sensors| {
+                .add_controller(Last, move |_: &Time, _: &mut RobotState<N>, _: &Sensors| {
                     world.saw(Event::LastB);
                     world.ticks.set(world.ticks.get() + 1);
                 });
@@ -1650,9 +1653,9 @@ mod tests {
             reads: Cell<u32>,
             writes: Cell<u32>,
             /// Actuators of its runs and of its write masks, every tick.
-            written: Cell<Mask>,
+            written: Cell<Mask<N>>,
             holds: Cell<u32>,
-            held: Cell<Mask>,
+            held: Cell<Mask<N>>,
             torque_off: Cell<bool>,
             closed: Cell<bool>,
         }
@@ -1666,7 +1669,7 @@ mod tests {
 
         /// A member on `owned` that reads `value` on each of them.
         struct Fake<'a> {
-            owned: Mask,
+            owned: Mask<N>,
             value: Q,
             /// An actuator it reads into without owning it.
             stray: Option<usize>,
@@ -1674,7 +1677,7 @@ mod tests {
         }
 
         impl<'a> Fake<'a> {
-            fn new(owned: Mask, value: Q, seen: &'a Seen) -> Self {
+            fn new(owned: Mask<N>, value: Q, seen: &'a Seen) -> Self {
                 Self {
                     owned,
                     value,
@@ -1683,7 +1686,7 @@ mod tests {
                 }
             }
 
-            fn fill(&self, sample: Sample<'_>) {
+            fn fill(&self, sample: Sample<'_, N>) {
                 for actuator in self.owned.iter().chain(self.stray) {
                     sample.q[actuator] = self.value;
                 }
@@ -1692,14 +1695,14 @@ mod tests {
 
         impl seal::Adapter for Fake<'_> {}
 
-        impl Hal for Fake<'_> {
+        impl Hal<N> for Fake<'_> {
             type Error = Infallible;
 
-            fn check(&mut self, _overrides: Overrides) -> Result<Claim, Infallible> {
+            fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Infallible> {
                 Ok(Claim {
                     owned: self.owned,
-                    group: [Group(0); JOINTS],
-                    read_every: [NonZeroU32::MIN; JOINTS],
+                    group: [Group(0); N],
+                    read_every: [NonZeroU32::MIN; N],
                     read_cost: Duration::ZERO,
                     write_cost: Duration::ZERO,
                 })
@@ -1725,7 +1728,7 @@ mod tests {
                 self.seen.step()
             }
 
-            fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Infallible> {
+            fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Infallible> {
                 self.fill(sample);
                 self.seen.step()
             }
@@ -1734,13 +1737,18 @@ mod tests {
                 self.seen.step()
             }
 
-            fn read(&mut self, sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+            fn read(&mut self, sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
                 self.fill(sample);
                 self.seen.reads.set(self.seen.reads.get() + 1);
                 self.owned
             }
 
-            fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+            fn write(
+                &mut self,
+                command: Command<'_, N>,
+                batch: &Batch<'_, N>,
+                _faults: &mut Faults<N>,
+            ) {
                 self.seen.writes.set(self.seen.writes.get() + 1);
                 let mut written = self.seen.written.get().union(command.written.any());
                 for &actuator in batch.runs().flat_map(|(_group, run)| run) {
@@ -1749,7 +1757,7 @@ mod tests {
                 self.seen.written.set(written);
             }
 
-            fn hold(&mut self, target: Command<'_>) {
+            fn hold(&mut self, target: Command<'_, N>) {
                 self.seen.holds.set(self.seen.holds.get() + 1);
                 let held = self.seen.held.get().union(target.written.any());
                 self.seen.held.set(held);
@@ -1764,7 +1772,7 @@ mod tests {
             }
         }
 
-        fn owned(actuators: Range<usize>) -> Mask {
+        fn owned(actuators: Range<usize>) -> Mask<N> {
             let mut mask = Mask::NONE;
             actuators.for_each(|actuator| mask.set(actuator));
             mask
@@ -1776,7 +1784,7 @@ mod tests {
             let members = [
                 (&ax12, owned(0..1)),
                 (&mx64, owned(1..2)),
-                (&ak60, owned(2..JOINTS)),
+                (&ak60, owned(2..N)),
             ];
             let mut hal = HCons {
                 head: Fake::new(members[0].1, Q(1.0), &ax12),
@@ -1788,17 +1796,17 @@ mod tests {
                     },
                 },
             };
-            let sampled = Cell::new([Q(0.0); JOINTS]);
+            let sampled = Cell::new([Q(0.0); N]);
             let mut robot = Robot::new()
                 .set_dt(DT)
                 .set_hold(Duration::ZERO)
-                .add_controller(crate::First, |_t, state: &mut RobotState, _se| {
+                .add_controller(crate::First, |_t, state: &mut RobotState<N>, _se| {
                     if let Some(q) = state.current::<Q>() {
                         sampled.set(*q);
                     }
                 })
-                .add_controller(crate::EachTick, |_t, state: &mut RobotState, _se| {
-                    for actuator in 0..JOINTS {
+                .add_controller(crate::EachTick, |_t, state: &mut RobotState<N>, _se| {
+                    for actuator in 0..N {
                         state.set_at(Q(0.5), actuator).expect("in range");
                     }
                 });
@@ -1809,7 +1817,7 @@ mod tests {
                 run_with(&mut robot, &mut host, &mut hal).expect("the claims cover the robot");
 
             assert_eq!(signal.kind(), SignalKind::Shutdown);
-            let expected: [Q; JOINTS] = core::array::from_fn(|actuator| match actuator {
+            let expected: [Q; N] = core::array::from_fn(|actuator| match actuator {
                 0 => Q(1.0),
                 1 => Q(2.0),
                 _ => Q(3.0),
@@ -1828,7 +1836,7 @@ mod tests {
         #[test]
         fn a_member_reading_into_another_s_actuator_stops_the_run() {
             let (ax12, ak60) = (Seen::default(), Seen::default());
-            let mut rogue = Fake::new(owned(1..JOINTS), Q(3.0), &ak60);
+            let mut rogue = Fake::new(owned(1..N), Q(3.0), &ak60);
             rogue.stray = Some(0);
             let mut hal = HCons {
                 head: Fake::new(owned(0..1), Q(1.0), &ax12),

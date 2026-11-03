@@ -1,5 +1,6 @@
 use core::num::NonZeroU32;
 
+use super::HISTORY_DEPTH;
 use super::desired::Desired;
 use super::field::{StateField, sealed};
 use super::history::History;
@@ -7,7 +8,6 @@ use super::history::History;
 use super::history::State;
 #[cfg(feature = "test-util")]
 use super::joint_state::{Q, Qd, Tau};
-use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
 use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 
@@ -16,7 +16,7 @@ use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 /// It holds both the desired values, and the history of states. The history
 /// keeps [`HISTORY_DEPTH`] ticks, a fixed capacity (SRS section 8, decision
 /// 0001). `N` is the actuator count.
-pub struct RobotState<const N: usize = JOINTS> {
+pub struct RobotState<const N: usize> {
     pub(in crate::state) desired: Desired<N>,
     pub(in crate::state) history: History<N, HISTORY_DEPTH>,
     /// Read cadence of each actuator in ticks, from the layout; 1 until set.
@@ -36,7 +36,7 @@ impl<const N: usize> Default for RobotState<N> {
 /// Direct writes to desired state are not allowed:
 /// ```compile_fail
 /// # use kmr_core::RobotState;
-/// let mut robot = <RobotState>::default();
+/// let mut robot = RobotState::<4>::default();
 /// robot.desired.q[0] = 1.0;
 /// ```
 impl<const N: usize> RobotState<N> {
