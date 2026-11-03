@@ -12,6 +12,7 @@
 /// kmr_api::robot!(model = "models/arm.urdf");
 /// kmr_api::robot!(model = "models/arm.urdf", hardware = ARM);
 /// kmr_api::robot!(model = "models/arm.urdf", hardware = { dynamixel: ARM.at([0, 1, 2]) });
+/// kmr_api::robot!(model = "models/gecko.urdf", hardware = { cubemars: LEG.in_order() });
 /// ```
 ///
 /// `|hw| ..` changes a preset's table through its `const fn` overrides; an
@@ -22,7 +23,8 @@
 ///
 /// `hardware = { brand: part, .. }` names one part per brand, each the
 /// member that drives the engine indices the part gives: `dynamixel`, a
-/// placed [`dynamixel::Table`](crate::dynamixel::Table). A brand named
+/// placed [`dynamixel::Table`](crate::dynamixel::Table), or `cubemars`, a
+/// placed [`cubemars::Table`](crate::cubemars::Table). A brand named
 /// twice does not build, nor do parts that do not cover `0..N` exactly
 /// once. The syntax is assumed, pending human (kmr_api T069).
 ///

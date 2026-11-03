@@ -14,6 +14,7 @@ thiserror.workspace = true
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
+cubemars = ["kmr_adapters/cubemars"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated

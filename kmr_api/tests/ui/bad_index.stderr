@@ -4,7 +4,7 @@ error[E0080]: evaluation panicked: actuator 7: past the table's 4 actuators
 3 | kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(7));
   |                                          ^^^^^^^^^^^^^^^ evaluation of `__TABLE` failed inside this call
   |
-note: inside `Table::<1, 4>::read_only`
+note: inside `kmr_api::dynamixel::Table::<1, 4>::read_only`
  --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
   |
   |         actuator_mut(&mut self.actuators, actuator).torque = Torque::ReadOnly;

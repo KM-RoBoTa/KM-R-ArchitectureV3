@@ -149,6 +149,49 @@ impl<const NB: usize, const M: usize, const N: usize> Brand<N> for Placement<NB,
     }
 }
 
+/// The CubeMars driver of a robot of `N` actuators on `NB` CAN interfaces.
+#[doc(hidden)]
+#[cfg(feature = "cubemars")]
+pub type __CubeMarsAdapter<const NB: usize, const N: usize> =
+    kmr_adapters::cubemars::CubeMars<kmr_adapters::cubemars::SocketCan<NB>, NB, N>;
+
+/// No CubeMars driver: kmr_api is built without its `cubemars` feature.
+#[doc(hidden)]
+#[cfg(not(feature = "cubemars"))]
+pub type __CubeMarsAdapter<const NB: usize, const N: usize> = kmr_core::hal::NoHardware;
+
+/// The CubeMars part of a robot: its buses bind to SocketCAN interfaces.
+impl<const NB: usize, const M: usize, const N: usize> Brand<N>
+    for kmr_adapters::cubemars::Placement<NB, M>
+{
+    type Member = __CubeMarsAdapter<NB, N>;
+
+    fn labels(&self) -> Vec<&'static str> {
+        self.table().buses.iter().map(|bus| bus.label).collect()
+    }
+
+    /// Binds `plugins` to the CAN interfaces of the table; without kmr_api's `cubemars`
+    /// feature, refuses them.
+    #[cfg(feature = "cubemars")]
+    fn bind(
+        self,
+        plugins: &[Binding],
+    ) -> Result<Self::Member, Refused<kmr_adapters::cubemars::CubeMarsError>> {
+        use kmr_adapters::cubemars::{CubeMars, SocketCan};
+        CubeMars::bind(SocketCan::new(), self, plugins).map_err(Refused::Member)
+    }
+
+    /// Binds `plugins` to the CAN interfaces of the table; without kmr_api's `cubemars`
+    /// feature, refuses them.
+    #[cfg(not(feature = "cubemars"))]
+    fn bind(
+        self,
+        _plugins: &[Binding],
+    ) -> Result<Self::Member, Refused<core::convert::Infallible>> {
+        Err(Refused::FeatureOff("cubemars"))
+    }
+}
+
 /// The brands `robot!` knows, by the name its `hardware = { brand: .. }` argument gives them.
 ///
 /// Each module gives the type of the brand's part, `Hardware<NB, M>`, and `shape`, its bus and
@@ -177,6 +220,37 @@ pub mod __brand {
         }
 
         /// Fails the build when the model marks prismatic an index `hardware` drives.
+        pub const fn check_kinds<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+            prismatic: &[u64; crate::MASK_WORDS],
+        ) {
+            let _ = hardware.check_kinds(*prismatic);
+        }
+    }
+
+    /// The CubeMars part: a placed hardware table, `Table { .. }.at([..])`.
+    pub mod cubemars {
+        use kmr_adapters::cubemars::Placement;
+
+        /// The type of the CubeMars part.
+        pub type Hardware<const NB: usize, const M: usize> = Placement<NB, M>;
+
+        /// Bus and actuator counts of `hardware`.
+        pub const fn shape<const NB: usize, const M: usize>(
+            _hardware: &Placement<NB, M>,
+        ) -> (usize, usize) {
+            (NB, M)
+        }
+
+        /// Engine indices `hardware` drives.
+        pub const fn indices<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+        ) -> &[usize] {
+            hardware.indices()
+        }
+
+        /// Fails the build when the model marks prismatic an index `hardware` drives: an
+        /// AK60-6 is rotary.
         pub const fn check_kinds<const NB: usize, const M: usize>(
             hardware: &Placement<NB, M>,
             prismatic: &[u64; crate::MASK_WORDS],
@@ -371,5 +445,58 @@ mod tests {
     #[test]
     fn a_matching_plugin_binds() {
         assert!(__bind::<4, _>(xm_bench(), &[PLUGIN]).is_ok());
+    }
+
+    /// A GeckoLeg on one CAN interface, as the one member of its robot.
+    fn gecko_leg() -> HCons<kmr_adapters::cubemars::Placement<1, 3>, HNil> {
+        use kmr_adapters::cubemars::{Actuator, Bus, Table};
+        HCons {
+            head: Table {
+                buses: [Bus { label: "leg" }],
+                actuators: [
+                    Actuator::ak60_6(0, 1),
+                    Actuator::ak60_6(0, 2),
+                    Actuator::ak60_6(0, 3),
+                ],
+            }
+            .in_order(),
+            tail: HNil,
+        }
+    }
+
+    /// The bus plugin of a CAN interface no machine has: binding does no I/O.
+    const CAN: Binding = Binding {
+        port: Port::ByDev("kmr-test-can"),
+        baud: None,
+        bus: None,
+    };
+
+    #[test]
+    fn a_cubemars_table_names_its_bus_labels() {
+        assert_eq!(Brand::<3>::labels(&gecko_leg().head), ["leg"]);
+    }
+
+    #[cfg(not(feature = "cubemars"))]
+    #[test]
+    fn without_the_cubemars_feature_plugins_are_refused() {
+        let res = __bind::<3, _>(gecko_leg(), &[CAN]);
+        assert!(matches!(
+            res,
+            Err(UserError::FeatureOff {
+                feature: "cubemars"
+            })
+        ));
+    }
+
+    #[cfg(feature = "cubemars")]
+    #[test]
+    fn a_can_plugin_binds_and_a_serial_one_is_refused() {
+        assert!(__bind::<3, _>(gecko_leg(), &[CAN]).is_ok());
+        let res = __bind::<3, _>(gecko_leg(), &[PLUGIN]);
+        assert!(
+            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("Bus::by_dev")),
+            "{:?}",
+            res.err()
+        );
     }
 }
