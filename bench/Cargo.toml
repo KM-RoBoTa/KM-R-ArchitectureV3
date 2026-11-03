@@ -15,3 +15,8 @@ hardware = ["kmr_api/dynamixel"]
 
 [lints]
 workspace = true
+
+# The hardware run on the reference chain; needs the Dynamixel SDK.
+[[bin]]
+name = "tick_hw"
+required-features = ["hardware"]
