@@ -1,0 +1,4 @@
+# kmr_ffi holds the build helper and the script bridges: heap types are allowed
+# here, never in kmr's own per-call work (SRS FR-10.3). This file overrides the
+# workspace-wide ban in ../clippy.toml.
+disallowed-types = []

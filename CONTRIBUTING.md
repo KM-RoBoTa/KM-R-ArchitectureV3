@@ -60,7 +60,9 @@ where not.
 
 1. **No heap, except in the API.** `Box`, `Vec`, `String`, `Rc`, `Arc`,
    `HashMap` are banned workspace-wide by the root `clippy.toml`, and
-   forbidden in `kmr_core`. Only `kmr_api` opts out (`kmr_api/clippy.toml`).
+   forbidden in `kmr_core`. Only `kmr_api` opts out (`kmr_api/clippy.toml`),
+   plus `kmr_model` (build time) and `kmr_ffi` (build helper, script bridges;
+   never in kmr's own per-call work).
    Use fixed arrays, const generics and `'static`s.
 2. **No `unwrap()` in the engine.** Propagate or handle errors.
 3. **No `dyn`.** Controllers are dispatched statically through the HList. If
