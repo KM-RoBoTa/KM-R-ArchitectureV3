@@ -140,6 +140,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::Written;
 
     /// A C body that writes nothing and returns 0.
     extern "C" fn noop(
@@ -160,6 +161,58 @@ mod tests {
         assert_eq!(Status::from_code(-1), None);
     }
 
+    /// A C body that sets `q[1]` = 5 and returns the code in `ctx` (an `i32`).
+    unsafe extern "C" fn write_then(
+        _: *const ReadView<4, 4>,
+        w: *mut WriteBuf<4>,
+        _: *const TimeView,
+        ctx: *mut c_void,
+    ) -> i32 {
+        // SAFETY: `call` passes a live exclusive buffer and, in these tests, an `i32` context.
+        let (w, rc) = unsafe { (&mut *w, *ctx.cast::<i32>()) };
+        w.q[1] = 5.0;
+        w.written.q |= 1 << 1;
+        rc
+    }
+
+    /// A C body that counts its calls in a `u32` context.
+    unsafe extern "C" fn count(
+        _: *const ReadView<4, 4>,
+        _: *mut WriteBuf<4>,
+        _: *const TimeView,
+        ctx: *mut c_void,
+    ) -> i32 {
+        // SAFETY: the test passes an exclusive `u32` context.
+        unsafe { *ctx.cast::<u32>() += 1 };
+        0
+    }
+
+    /// A C body that returns 0 for a null context and -1 otherwise.
+    extern "C" fn null_ctx(
+        _: *const ReadView<4, 4>,
+        _: *mut WriteBuf<4>,
+        _: *const TimeView,
+        ctx: *mut c_void,
+    ) -> i32 {
+        if ctx.is_null() { 0 } else { -1 }
+    }
+
+    /// One call of [`write_then`] returning `rc`, on a dirty buffer.
+    fn run(rc: i32) -> (Result<Status, ForeignError>, WriteBuf<4>) {
+        let mut buf = WriteBuf::default();
+        buf.qd[3] = 9.0;
+        buf.written.qd = 1 << 3;
+        let mut rc = rc;
+        let out = call(
+            write_then as CFn<4, 4>,
+            &ReadView::default(),
+            &mut buf,
+            &TimeView::default(),
+            Some(&mut rc),
+        );
+        (out, buf)
+    }
+
     #[test]
     fn a_c_body_is_called_through_the_one_unsafe_block() {
         let mut buf = WriteBuf::default();
@@ -172,5 +225,69 @@ mod tests {
         );
         assert_eq!(out, Ok(Status::Continue));
         assert_eq!(buf, WriteBuf::default());
+    }
+
+    #[test]
+    fn an_error_code_clears_the_writes() {
+        let (out, buf) = run(-7);
+        assert_eq!(out, Err(ForeignError::Code(-7)));
+        assert_eq!(buf, WriteBuf::default());
+        assert_eq!(buf.written, Written::default());
+    }
+
+    #[test]
+    fn statuses_keep_the_writes_of_the_call_only() {
+        for (rc, status) in [
+            (0, Status::Continue),
+            (1, Status::Shutdown),
+            (2, Status::EmergencyStop),
+        ] {
+            let (out, buf) = run(rc);
+            assert_eq!(out, Ok(status));
+            assert_eq!(buf.q[1], 5.0);
+            assert_eq!(buf.written.q, 1 << 1);
+            assert_eq!(buf.written.qd, 0, "the buffer is cleared before the call");
+        }
+    }
+
+    #[test]
+    fn an_unknown_code_is_an_error() {
+        let (out, buf) = run(3);
+        assert_eq!(out, Err(ForeignError::Code(3)));
+        assert_eq!(buf, WriteBuf::default());
+    }
+
+    #[test]
+    fn the_context_reaches_the_body() {
+        let mut n = 0u32;
+        let mut buf = WriteBuf::default();
+        for _ in 0..1000 {
+            let out = call(
+                count as CFn<4, 4>,
+                &ReadView::default(),
+                &mut buf,
+                &TimeView::default(),
+                Some(&mut n),
+            );
+            assert_eq!(out, Ok(Status::Continue));
+        }
+        assert_eq!(n, 1000);
+    }
+
+    #[test]
+    fn no_context_passes_null() {
+        let mut buf = WriteBuf::default();
+        let mut x = 0u8;
+        let f = null_ctx as CFn<4, 4>;
+        let read = ReadView::default();
+        let time = TimeView::default();
+        assert_eq!(
+            call(f, &read, &mut buf, &time, None::<&mut u8>),
+            Ok(Status::Continue)
+        );
+        assert_eq!(
+            call(f, &read, &mut buf, &time, Some(&mut x)),
+            Err(ForeignError::Code(-1))
+        );
     }
 }
