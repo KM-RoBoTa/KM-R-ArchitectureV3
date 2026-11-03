@@ -116,7 +116,7 @@
     }
 
     group "kmr_api: errors" {
-        apiUserError = component "kmr_api::UserError" "NoControllers, DuplicateBus, UnknownBus, SharedBusLabel, LabelRequired, FeatureOff, NoHardwareDeclared, BringUp, UnknownLink, DtOutOfRange." "Rust enum" {
+        apiUserError = component "kmr_api::UserError" "DuplicateBus, UnknownBus, SharedBusLabel, LabelRequired, FeatureOff, NoHardwareDeclared, BringUp, UnknownLink, DtOutOfRange." "Rust enum" {
             tags "Code"
         }
         apiStateError = component "kmr_api::StateError, StateErrorKind" "A handle's failed read or write, from the core's state error." "Rust enums" {

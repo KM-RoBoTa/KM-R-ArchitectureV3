@@ -18,7 +18,7 @@
     coreState = component "kmr_core: state" "RobotState: a write-only Desired staging area and a read-only History ring of HISTORY_DEPTH samples. Typed getters and setters over the sealed field set Q, Qd, Tau, Kp, Kd; no raw field is reachable (SRS FR-2)." "Rust, circular-buffer"
     coreHal = component "kmr_core: hardware contract" "The Hal trait an adapter implements: check, open, zero, ping, health, configure, read_all, torque_on, then read and write each tick, hold, torque_off, close. Speaks actuator indices, masks, opaque groups and a cadence; buses and protocols stay in the adapter. NoHardware simulates (SRS FR-5.1 to FR-5.10, FR-13.4)." "Rust traits"
     coreDriverSet = component "kmr_core: driver set" "The robot's hardware as an HList of Hal members. Each member claims its actuators; the plan rejects overlaps and gaps before any I/O. Steps walk head first, torque off in reverse. A debug-build audit catches a member touching an index it does not own (SRS FR-5.1, FR-6.4)." "Rust, frunk HList"
-    coreErrors = component "kmr_core: errors" "StateError of the handles, HardwareError naming the member and the step, ApiError (SRS NFR-4)." "Rust, thiserror"
+    coreErrors = component "kmr_core: errors" "StateError of the handles (NoSample before a first read), HardwareError naming the member and the step, RunError: Config (DtOutOfRange) or Hal (SRS FR-3.1, NFR-4)." "Rust, thiserror"
 
     coreBuilder -> coreSchedules "Inserts each controller into the bucket its label picks"
     coreSchedules -> coreControllers "Holds and walks"
