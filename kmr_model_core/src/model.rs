@@ -1,10 +1,9 @@
 //! The build-time robot model and its checks (data-model.md).
 //!
 //! A [`Reader`] turns a descriptor into a [`Model`], as written; [`validate`]
-//! checks it and gives the [`Robot`] that `emit` writes out.
+//! checks it and gives the [`Robot`] kmr_model emits.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// A descriptor syntax, picked by the file extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,22 +16,12 @@ pub(crate) enum Format {
     Json,
 }
 
-/// One robot descriptor: where it is, its syntax and its text.
-pub(crate) struct Descriptor {
-    /// The file, absolute, or the shown path of a preset.
-    pub(crate) path: PathBuf,
-    /// The syntax of `text`.
-    pub(crate) format: Format,
-    /// The whole file.
-    pub(crate) text: String,
-}
-
 /// A place in a descriptor: line and column, both from 1.
 pub(crate) type Pos = (u32, u32);
 
 /// The joint kinds that drive one actuator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub enum Kind {
     /// Bounded rotation, in rad.
     Revolute,
     /// Unbounded rotation, in rad: no position limit.
@@ -107,41 +96,41 @@ pub(crate) struct Model {
 /// One actuator after the checks, in SRS FR-2.2 units: rad, rad/s, N·m,
 /// or mm, mm/s, N for a prismatic joint.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CheckedActuator {
+pub struct CheckedActuator {
     /// The joint's name.
-    pub(crate) name: String,
+    pub name: String,
     /// What the joint does.
-    pub(crate) kind: Kind,
+    pub kind: Kind,
     /// Lowest position; `0.0` for a continuous joint.
-    pub(crate) lower: f32,
+    pub lower: f32,
     /// Highest position; `0.0` for a continuous joint.
-    pub(crate) upper: f32,
+    pub upper: f32,
     /// Top speed.
-    pub(crate) speed: f32,
+    pub speed: f32,
     /// Top effort.
-    pub(crate) effort: f32,
+    pub effort: f32,
 }
 
 /// One link after the checks.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CheckedLink {
+pub struct CheckedLink {
     /// The link's name.
-    pub(crate) name: String,
+    pub name: String,
     /// Index of the parent link; `None` for the root.
-    pub(crate) parent: Option<u16>,
+    pub parent: Option<u16>,
     /// Mass, kg.
-    pub(crate) mass: f32,
+    pub mass: f32,
     /// Mass center in the link frame, m.
-    pub(crate) com: [f32; 3],
+    pub com: [f32; 3],
 }
 
-/// A checked robot: what `emit` writes out.
+/// A checked robot: what kmr_model emits and what a build script reads N from.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Robot {
+pub struct Robot {
     /// In index order.
-    pub(crate) actuators: Vec<CheckedActuator>,
+    pub actuators: Vec<CheckedActuator>,
     /// In file order.
-    pub(crate) links: Vec<CheckedLink>,
+    pub links: Vec<CheckedLink>,
 }
 
 /// Why a descriptor does not build (contracts/robot-macro.md § Errors).

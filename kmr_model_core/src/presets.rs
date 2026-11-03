@@ -1,7 +1,7 @@
 //! The model halves of the presets KM-RoBoTa ships (research R7).
 //!
 //! The hardware halves live in `kmr_adapters::presets`, under the same names.
-//! The text is embedded here, so editing a preset rebuilds kmr_model and its
+//! The text is embedded here, so editing a preset rebuilds kmr_model_core and its
 //! callers; the expansion needs no `include_bytes!` tracking.
 
 /// One preset's model half.
@@ -18,12 +18,12 @@ pub(crate) struct Preset {
 const PRESETS: &[Preset] = &[
     Preset {
         name: "XmBench",
-        shown: "kmr_model/presets/xm_bench.urdf",
+        shown: "kmr_model_core/presets/xm_bench.urdf",
         text: include_str!("../presets/xm_bench.urdf"),
     },
     Preset {
         name: "Rx28Chain",
-        shown: "kmr_model/presets/rx28_chain.urdf",
+        shown: "kmr_model_core/presets/rx28_chain.urdf",
         text: include_str!("../presets/rx28_chain.urdf"),
     },
 ];

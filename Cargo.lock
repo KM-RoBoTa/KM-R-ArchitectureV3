@@ -569,13 +569,20 @@ dependencies = [
 name = "kmr_model"
 version = "0.1.0"
 dependencies = [
+ "kmr_model_core",
  "proc-macro2",
  "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "kmr_model_core"
+version = "0.1.0"
+dependencies = [
  "ron",
  "roxmltree",
  "serde",
  "serde_json",
- "syn 2.0.117",
 ]
 
 [[package]]

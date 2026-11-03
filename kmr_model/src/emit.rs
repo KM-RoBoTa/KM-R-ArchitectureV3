@@ -8,7 +8,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
-use crate::model::{Kind, Robot};
+use kmr_model_core::{Kind, Robot};
 
 /// `N`, the `model` module and, for a file, the rebuild tracking of `tracked`.
 ///
@@ -177,7 +177,7 @@ fn kinds(robot: &Robot, kind: Kind, krate: &TokenStream) -> TokenStream {
 /// actuator, in index order and SRS FR-2.2 units.
 fn columns(robot: &Robot) -> [Vec<f32>; 4] {
     let column =
-        |f: fn(&crate::model::CheckedActuator) -> f32| robot.actuators.iter().map(f).collect();
+        |f: fn(&kmr_model_core::CheckedActuator) -> f32| robot.actuators.iter().map(f).collect();
     [
         column(|a| a.lower),
         column(|a| a.upper),
@@ -198,9 +198,18 @@ mod tests {
 
     use proc_macro2::{Delimiter, TokenTree, token_stream};
 
+    use kmr_model_core::CheckedActuator;
+
     use super::*;
-    use crate::model::{CheckedActuator, Kind};
-    use crate::urdf::tests::four;
+
+    /// The checked reference robot, kmr_api/tests/fixtures/four.urdf.
+    fn four() -> Robot {
+        let text = include_str!("../../kmr_api/tests/fixtures/four.urdf");
+        match kmr_model_core::parse(text, "four.urdf") {
+            Ok(robot) => robot,
+            Err(e) => panic!("{e}"),
+        }
+    }
 
     fn robot(names: &[&str]) -> Robot {
         let actuators = names

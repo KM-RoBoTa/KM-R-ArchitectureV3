@@ -5,9 +5,12 @@ user code:
 
 - **`kmr_core`** (`kmr_core/`) — the engine. Owns state, schedules,
   the control loop, timing, the signal bus and the hardware contract.
-- **`kmr_model`** (`kmr_model/`) — the robot model. A proc macro that reads
-  the robot descriptor at compile time; users reach it only through
-  `kmr_api::robot!`.
+- **`kmr_model`** (`kmr_model/`) — the robot model. A thin proc macro that
+  emits the robot descriptor's constants at compile time; users reach it
+  only through `kmr_api::robot!`.
+- **`kmr_model_core`** (`kmr_model_core/`) — the library under `kmr_model`:
+  reads and checks a descriptor or a preset. A build script can call it
+  (kmr_ffi's build helper does), so it gets the same N as `robot!`.
 - **`kmr_adapters`** (`kmr_adapters/`) — the hardware adapters, one per
   vendor, behind the core's contract. Dynamixel first.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
@@ -294,9 +297,9 @@ checks it, and emits constants at the call site:
 
 The binary gets constants only: no parser, no heap, no run-time code. A bad
 descriptor is a compile error naming the file, the element and the reason. A
-preset's model half ships in `kmr_model/presets/`, its hardware half in
-`kmr_adapters::presets`. `kmr_model` uses the heap at build time, which
-`kmr_model/clippy.toml` allows.
+preset's model half ships in `kmr_model_core/presets/`, its hardware half in
+`kmr_adapters::presets`. `kmr_model` and `kmr_model_core` use the heap at
+build time, which their `clippy.toml` allows.
 
 `robot!` calls `model!` through the hidden `kmr_api::__model!`: a preset by
 name, a descriptor by path, the `hardware = ..` argument split off first.

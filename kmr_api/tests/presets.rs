@@ -5,7 +5,7 @@ mod by_name {
 }
 
 mod by_path {
-    kmr_api::robot!(model = "../kmr_model/presets/xm_bench.urdf");
+    kmr_api::robot!(model = "../kmr_model_core/presets/xm_bench.urdf");
 }
 
 #[test]

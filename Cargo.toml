@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "kmr_ffi", "controllers", "bench"]
+members = ["kmr_core", "kmr_adapters", "kmr_model_core", "kmr_model", "kmr_api", "kmr_ffi", "controllers", "bench"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,7 @@ kmr_core = { path = "kmr_core" }
 kmr_adapters = { path = "kmr_adapters" }
 kmr_api = { path = "kmr_api" }
 kmr_model = { path = "kmr_model" }
+kmr_model_core = { path = "kmr_model_core" }
 kmr_ffi = { path = "kmr_ffi" }
 
 thiserror = "2.0.18"
@@ -32,7 +33,7 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 frunk = "0.5.0"
 roxmltree = "0.20"
-# kmr_model's build-time plumbing: none of these reaches a binary.
+# kmr_model's and kmr_model_core's build-time plumbing: none of these reaches a binary.
 syn = { version = "2.0", default-features = false, features = ["parsing", "proc-macro"] }
 quote = "1.0"
 proc-macro2 = "1.0"
