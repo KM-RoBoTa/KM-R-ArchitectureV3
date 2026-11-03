@@ -694,6 +694,100 @@ impl<const NB: usize, const M: usize> Placement<NB, M> {
     pub const fn indices(&self) -> &[usize; M] {
         &self.at
     }
+
+    /// The placement, refused when the model marks prismatic an engine index
+    /// it places: bit `i` of `prismatic` (word `i / 64`, bit `i % 64`, as
+    /// [`Mask`]) is engine index `i`. A Dynamixel actuator has no mm
+    /// conversion (SRS FR-2.2).
+    ///
+    /// # Panics
+    ///
+    /// On a prismatic index; in const evaluation, that is the compile error.
+    pub const fn check_kinds(self, prismatic: [u64; MASK_WORDS]) -> Self {
+        let mut row = 0;
+        while row < M {
+            refuse_prismatic(self.at[row], &prismatic);
+            row += 1;
+        }
+        self
+    }
+}
+
+/// Fails, naming `index`, when bit `index` of `prismatic` is set.
+const fn refuse_prismatic(index: usize, prismatic: &[u64; MASK_WORDS]) {
+    let word = match prismatic.split_at_checked(index / 64) {
+        Some((_, [word, ..])) => *word,
+        _ => 0,
+    };
+    if word >> (index % 64) & 1 == 1 {
+        fail(
+            Message::actuator(index)
+                .text("SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"),
+        );
+    }
+}
+
+impl<const NB: usize, const N: usize> Table<NB, N> {
+    /// The table, refused when the model marks prismatic one of its rows: bit
+    /// `i` of `prismatic` (word `i / 64`, bit `i % 64`, as [`Mask`]) is row
+    /// `i`, the table being in model order. A Dynamixel actuator has no mm
+    /// conversion (SRS FR-2.2).
+    ///
+    /// # Panics
+    ///
+    /// On a prismatic row; in const evaluation, that is the compile error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+    ///
+    /// const fn xm430(id: u8) -> Actuator {
+    ///     Actuator {
+    ///         bus: 0,
+    ///         id,
+    ///         model: Model::Xm430W210,
+    ///         mode: Mode::Position,
+    ///         torque: Torque::On,
+    ///         zero: Zero::DEFAULT,
+    ///     }
+    /// }
+    ///
+    /// const ARM: Table<1, 2> = Table {
+    ///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+    ///     actuators: [xm430(1), xm430(2)],
+    /// }
+    /// .check_kinds([0b100]);
+    /// ```
+    ///
+    /// A prismatic row does not build:
+    ///
+    /// ```compile_fail,E0080
+    /// # use kmr_adapters::dynamixel::{Actuator, Bus, Mode, Model, Table, Torque, Zero};
+    /// # const fn xm430(id: u8) -> Actuator {
+    /// #     Actuator {
+    /// #         bus: 0,
+    /// #         id,
+    /// #         model: Model::Xm430W210,
+    /// #         mode: Mode::Position,
+    /// #         torque: Torque::On,
+    /// #         zero: Zero::DEFAULT,
+    /// #     }
+    /// # }
+    /// const _: Table<1, 2> = Table {
+    ///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+    ///     actuators: [xm430(1), xm430(2)],
+    /// }
+    /// .check_kinds([0b10]);
+    /// ```
+    pub const fn check_kinds(self, prismatic: [u64; MASK_WORDS]) -> Self {
+        let mut row = 0;
+        while row < N {
+            refuse_prismatic(row, &prismatic);
+            row += 1;
+        }
+        self
+    }
 }
 
 impl<const NB: usize, const M: usize> Table<NB, M> {
@@ -1349,6 +1443,24 @@ mod tests {
             table(chain(Model::Ax12a)).in_order().indices(),
             &[0, 1, 2, 3]
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "actuator 2: SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"
+    )]
+    fn a_prismatic_row_is_refused() {
+        table(chain(Model::Xm430W210)).check_kinds([0b100]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "actuator 3: SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"
+    )]
+    fn a_placement_refuses_the_prismatic_engine_index_it_places() {
+        let placed = table(chain(Model::Xm430W210)).at([0, 1, 2, 3]);
+        let _ = placed.check_kinds([0b1_0000]);
+        placed.check_kinds([0b1000]);
     }
 
     #[test]
