@@ -21,6 +21,13 @@ impl<const N: usize> Faults<N> {
         Self { actuators, tick }
     }
 
+    /// The whole-tick flags as bits, the core's `TickFlags` layout (the FFI view's
+    /// `tick_flags`).
+    #[allow(dead_code, reason = "read by the ffi glue (G1)")]
+    pub(crate) fn tick_bits(&self) -> u32 {
+        self.tick.bits()
+    }
+
     /// Actuators whose read failed; their previous value was kept (SRS FR-2.6).
     pub fn stale(&self) -> Mask<N> {
         self.actuators.stale
@@ -102,5 +109,6 @@ mod tests {
         assert_eq!(faults.any_actuator().iter().collect::<Vec<_>>(), [0, 3]);
         assert!(!faults.is_clear());
         assert!(Faults::<4>::default().is_clear());
+        assert_eq!(faults.tick_bits(), 0b1001);
     }
 }
