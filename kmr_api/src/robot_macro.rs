@@ -27,13 +27,10 @@
 /// once. The syntax is assumed, pending human (kmr_api T069).
 ///
 /// The model gives `N`, the `model` module of constants (names, limits, links)
-/// and `actuator!("name")`, the index of an actuator. Use the generated items
-/// instead of importing `kmr_api::{N, State, Robot}`.
-///
-/// Until `kmr_core` takes N as a const generic, N must equal the core's
-/// actuator count: anything else is a compile error (kmr_api/tests/ui/n_differs_from_core.rs).
-/// `Rx28Chain`, ten RX-28, builds with the `joints-10` feature only. More than 64
-/// actuators never build (SRS write mask; D4 A, assumed, pending human).
+/// and `actuator!("name")`, the index of an actuator. `State` and `Robot` are
+/// `kmr_api`'s, bound to that `N`: a controller stays `fn(&Time, &mut State,
+/// &Sensors)`. Any N from 1 to 64 builds; more than 64 actuators never build
+/// (SRS write mask; D4 A, assumed, pending human).
 ///
 /// A brand named twice does not build:
 ///
@@ -241,10 +238,6 @@ macro_rules! __robot_items {
         /// This robot, as the type parameter of its builder.
         #[doc(hidden)]
         pub struct __Spec;
-        const _: () = assert!(
-            N == $crate::N,
-            "kmr: this robot's actuator count differs from kmr_core's; N as a const generic is pending in kmr_core"
-        );
         const _: () = assert!(N >= 1 && N <= 64, "SRS write mask: more than 64 actuators");
     };
 }
