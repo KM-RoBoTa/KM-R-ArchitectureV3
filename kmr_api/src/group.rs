@@ -135,6 +135,17 @@ impl<'a, const N: usize, const K: usize> GroupView<'a, N, K> {
         }
     }
 
+    // ---- Sample age ----
+
+    /// Age of the oldest sample over the group's actuators, in ticks. `None` while one of
+    /// them was never read, or for an index out of range.
+    #[inline]
+    pub fn sample_age(&self) -> Option<u32> {
+        self.indices.into_iter().try_fold(0, |oldest, index| {
+            Some(oldest.max(self.robot.age_at(index).ok()??))
+        })
+    }
+
     // ---- Q (position) ----
 
     /// Newest sensed `Q` for each group actuator. `None` if a value is

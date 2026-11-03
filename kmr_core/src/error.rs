@@ -45,6 +45,11 @@ pub enum StateError {
     /// The behaviour is not decided yet; the text names the open SRS item.
     #[error("not decided yet: {0}")]
     Undecided(&'static str),
+
+    /// No sample of the actuator exists `depth` ticks back: it was not read
+    /// yet then, or never (a run without hardware).
+    #[error("no sample {depth} ticks back: the actuator had not been read yet")]
+    NoSample { depth: usize },
 }
 
 /// A configuration fault found at finalization, before any I/O (SRS FR-3.1, FR-6.4).

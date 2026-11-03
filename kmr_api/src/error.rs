@@ -30,6 +30,11 @@ pub enum StateError {
     /// The behaviour is not decided yet; the text names the open SRS item.
     #[error("not decided yet: {0}")]
     Undecided(&'static str),
+
+    /// The actuator had not been read yet `depth` ticks back, or never was (a run without
+    /// hardware): there is no value to give, not even a zero.
+    #[error("no sample {depth} ticks back: the actuator had not been read yet")]
+    NoSample { depth: usize },
 }
 
 /// Payload-free cause of a [`PrivateStateError`].
@@ -48,6 +53,8 @@ pub enum StateErrorKind {
     CriticalValueMissing,
     /// The behaviour is not decided yet.
     Undecided,
+    /// The actuator had not been read yet at that depth.
+    NoSample,
 }
 
 impl StateError {
@@ -59,6 +66,7 @@ impl StateError {
             Self::HistoryValueOutOfRange { .. } => StateErrorKind::HistoryValueOutOfRange,
             Self::CriticalValueMissing => StateErrorKind::CriticalValueMissing,
             Self::Undecided(_) => StateErrorKind::Undecided,
+            Self::NoSample { .. } => StateErrorKind::NoSample,
         }
     }
 }
@@ -76,6 +84,7 @@ impl From<CoreStateError> for StateError {
             },
             CoreStateError::CriticalValueMissing => Self::CriticalValueMissing,
             CoreStateError::Undecided(item) => Self::Undecided(item),
+            CoreStateError::NoSample { depth } => Self::NoSample { depth },
         }
     }
 }

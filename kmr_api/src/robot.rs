@@ -418,7 +418,7 @@ mod tests {
     static BUS: Mutex<()> = Mutex::new(());
 
     /// Stands for the `__Spec` that `robot!` emits.
-    struct TestSpec;
+    pub(super) struct TestSpec;
 
     impl Spec<4> for TestSpec {
         type Drivers = HCons<crate::__NoHardware, HNil>;
@@ -558,5 +558,111 @@ mod tests {
 
         // Graceful shutdown: the raising tick completes, no other starts.
         assert_eq!(*ticks.lock().expect("counter lock"), 1);
+    }
+}
+
+/// The state and clock getters on the core's scripted host and recording adapter: no real
+/// sleep, no global bus (core `test-util`).
+#[cfg(test)]
+mod scripted {
+    use core::cell::{Cell, RefCell};
+    use core::num::NonZeroU32;
+    use std::time::Instant;
+
+    use kmr_core::test_util::{DT, Log, PER_TICK, Recorder, Scripted, TICK_END, run_scripted};
+
+    use super::tests::TestSpec;
+    use super::*;
+    use crate::{First, StateError};
+
+    /// What a `First` controller saw on each of the first ticks.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct Seen {
+        age: Option<u32>,
+        sample_age: Option<u32>,
+        overruns: u64,
+        last_overrun: Option<Duration>,
+        elapsed: Duration,
+        dt: Duration,
+    }
+
+    /// Runs a robot whose one `First` controller records [`Seen`] per tick, on `recorder`, for
+    /// `ticks` ticks of the scripted `host`.
+    fn record<const T: usize>(
+        host: Scripted,
+        recorder: Option<Recorder<'_, 4>>,
+    ) -> ([Seen; T], Result<NonZeroU32, StateError>) {
+        let seen = RefCell::new([Seen::default(); T]);
+        let tick = Cell::new(0_usize);
+        let every = Cell::new(Err(StateError::CriticalValueMissing));
+        let mut robot = Robot::<4, TestSpec>::new().set_dt(DT).add_controller(
+            First,
+            |time: &Time, state: &mut State<'_, 4>, _: &Sensors| {
+                if let Some(slot) = seen.borrow_mut().get_mut(tick.get()) {
+                    *slot = Seen {
+                        age: state.age_at(0).ok().flatten(),
+                        sample_age: state.sample_age(),
+                        overruns: time.overrun_count(),
+                        last_overrun: time.last_overrun(),
+                        elapsed: time.elapsed(),
+                        dt: time.dt(),
+                    };
+                }
+                every.set(state.read_every(0));
+                tick.set(tick.get() + 1);
+            },
+        );
+        let mut host = host.shutdown_from(TICK_END + (T - 1) * PER_TICK);
+        let signal = match recorder {
+            Some(recorder) => run_scripted(
+                &mut robot.inner,
+                &mut host,
+                &mut HCons {
+                    head: recorder,
+                    tail: HNil,
+                },
+            )
+            .map_err(|_| ()),
+            None => run_scripted(&mut robot.inner, &mut host, &mut simulated()).map_err(|_| ()),
+        };
+        assert!(signal.is_ok());
+        (seen.into_inner(), every.into_inner())
+    }
+
+    #[test]
+    fn a_tick_without_a_read_ages_the_sample_by_one() {
+        let log = Log::new();
+        let recorder = Recorder {
+            every: NonZeroU32::new(3).expect("3 is not zero"),
+            ..Recorder::new(&log)
+        };
+
+        let (seen, every) = record::<5>(Scripted::new(Instant::now()), Some(recorder));
+
+        assert_eq!(seen.map(|s| s.sample_age), [0, 1, 2, 0, 1].map(Some));
+        assert_eq!(seen.map(|s| s.age), [0, 1, 2, 0, 1].map(Some));
+        assert_eq!(every, Ok(NonZeroU32::new(3).expect("3 is not zero")));
+    }
+
+    #[test]
+    fn a_run_without_hardware_has_no_age_and_no_sample() {
+        let (seen, every) = record::<2>(Scripted::new(Instant::now()), None);
+
+        assert_eq!(seen.map(|s| (s.age, s.sample_age)), [(None, None); 2]);
+        assert_eq!(every, Ok(NonZeroU32::MIN));
+    }
+
+    #[test]
+    fn an_overrun_tick_counts_once_and_reports_its_lateness() {
+        // `now` at arm, then at the start and the end of each tick: tick 0 ends at 1.5 dt.
+        let host = Scripted::new(Instant::now()).script(&[0, 0, 15, 20, 25, 30, 35]);
+
+        let (seen, _) = record::<3>(host, Some(Recorder::new(&Log::new())));
+
+        assert_eq!(seen.map(|s| s.overruns), [0, 1, 1]);
+        assert_eq!(seen[1].last_overrun, Some(DT / 2));
+        assert_eq!(seen.map(|s| s.dt), [DT; 3]);
+        assert_eq!(seen[0].elapsed, Duration::ZERO);
+        assert_eq!(seen[1].elapsed, DT * 2);
     }
 }

@@ -264,7 +264,11 @@ not stop the loop.
   newest first. Each tick pushes a slot that starts as a copy of the
   previous one; the adapter overwrites what it reads, so an actuator not
   read this tick (cadence, or a failed read) keeps its last value.
-  `prev_*(0)` is this tick's sample.
+  `prev_*(0)` is this tick's sample. A slot from before an actuator's first
+  read is `StateError::NoSample`, never zeros: on a run without hardware,
+  every History read is. `age(i)` counts the ticks since actuator `i` was
+  last read (`None` before its first read), `sample_age()` is the oldest,
+  and `cadence(i)` is the read cadence the hardware table set.
 
 The field set is sealed: `Q`, `Qd`, `Tau`, `Kp`, `Kd`, routed to their
 storage by the private `Slot` trait. The shutdown hold target is the latest
@@ -272,11 +276,10 @@ sample overlaid with this tick's writes.
 
 The actuator count is a const generic N set by `robot!`
 ([decision 0007](decisions/0007-actuator-count-const-generic.md)): `RobotState<N>`,
-`Robot<N, CS>`, `Hal<N>`, `Mask<N>`, one word of mask, `MASK_WORDS = 1`, so
+`Robot<N, CS, E>`, `Hal<N>`, `Mask<N>`, one word of mask, `MASK_WORDS = 1`, so
 N runs from 1 to 64. The per-tick fault
 masks are computed and dropped; storing them per History slot, with tick
-flags and the per-actuator age, is core T036 and T044. The home state is
-still a `todo!()` (core T031).
+flags, is core T044. The home state is `StateError::Undecided` (core T031).
 
 ## Robot model
 

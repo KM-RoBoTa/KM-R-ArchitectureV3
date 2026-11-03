@@ -249,7 +249,9 @@ fn main() -> color_eyre::Result<()> {
                     Err(_) => return,
                 },
                 // Nothing to control from this tick: skip it.
-                StateError::CriticalValueMissing | StateError::Undecided => return,
+                StateError::CriticalValueMissing | StateError::Undecided | StateError::NoSample => {
+                    return;
+                }
             },
         };
 

@@ -1,3 +1,5 @@
+use core::num::NonZeroU32;
+
 use crate::StateError;
 
 /// Ticks of history kept: every `prev_*` depth is below it.
@@ -337,5 +339,29 @@ impl<'a, const N: usize> State<'a, N> {
     #[inline]
     pub fn set_kd_at(&mut self, value: Kd, i: usize) -> Result<(), StateError> {
         self.inner.set_at(value, i).map_err(StateError::from)
+    }
+
+    // ---- Sample age and read cadence ----
+
+    /// Ticks since actuator `i` was last read: `0` on the tick it was read. `Ok(None)` until
+    /// its first read, and always on a run without hardware. `Err` if `i` is out of range.
+    #[inline]
+    pub fn age_at(&self, i: usize) -> Result<Option<u32>, StateError> {
+        self.inner.age(i).map_err(StateError::from)
+    }
+
+    /// Age of the oldest sample over every actuator, in ticks. `None` while one of them was
+    /// never read.
+    #[inline]
+    pub fn sample_age(&self) -> Option<u32> {
+        self.inner.sample_age()
+    }
+
+    /// How often actuator `i` is read, in ticks: the hardware table sets it, read-only here.
+    /// `Err` if `i` is out of range.
+    // DECISION: a `Result`, like every `_at` reader, for an index past N (U2 open).
+    #[inline]
+    pub fn read_every(&self, i: usize) -> Result<NonZeroU32, StateError> {
+        self.inner.cadence(i).map_err(StateError::from)
     }
 }

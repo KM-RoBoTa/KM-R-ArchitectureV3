@@ -351,7 +351,8 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
         let mut faults = Faults::default();
         let mut audit = Audit::default();
         if let Some(sample) = state.push_slot() {
-            hal.read(sample, &mut faults, layout.slots(), &mut audit);
+            let read = hal.read(sample, &mut faults, layout.slots(), &mut audit);
+            state.refreshed(read);
         }
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
@@ -436,7 +437,8 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     // The seed: `prev(1)` of tick 0.
     if let Some(sample) = state.push_slot() {
         let mut audit = Audit::default();
-        powered.0.read_all(sample, layout.slots(), &mut audit)?;
+        let read = powered.0.read_all(sample, layout.slots(), &mut audit)?;
+        state.refreshed(read);
         if let Some(signal) = stray_stop(&mut audit) {
             return Ok(signal);
         }
@@ -858,6 +860,57 @@ mod tests {
 
                 assert!(result.is_ok(), "{dt:?}");
             }
+        }
+
+        #[test]
+        fn a_run_without_hardware_has_no_sample_and_no_age() {
+            let seen = Cell::new(None);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::EachTick,
+                |_t, s: &mut RobotState<N>, _se| {
+                    seen.set(Some((s.prev::<Q>(0).err(), s.age(0), s.sample_age())));
+                },
+            );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + PER_TICK);
+
+            simulated(&mut robot, &mut host);
+
+            assert_eq!(
+                seen.take(),
+                Some((
+                    Some(crate::error::StateError::NoSample { depth: 0 }),
+                    Ok(None),
+                    None
+                ))
+            );
+        }
+
+        #[test]
+        fn an_actuator_read_every_third_tick_ages_between_reads() {
+            let log = Log::new();
+            let ages = RefCell::new([None; 6]);
+            let tick = Cell::new(0_usize);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::First,
+                |_t, s: &mut RobotState<N>, _se| {
+                    if let Some(age) = ages.borrow_mut().get_mut(tick.get()) {
+                        *age = s.age(0).ok().flatten();
+                    }
+                    tick.set(tick.get() + 1);
+                },
+            );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 5 * PER_TICK);
+            let mut recorder = Recorder {
+                every: NonZeroU32::new(3).expect("3 is not zero"),
+                ..Recorder::new(&log)
+            };
+
+            run_with(&mut robot, &mut host, &mut one(&mut recorder)).expect("recorder");
+
+            assert_eq!(
+                *ages.borrow(),
+                [Some(0), Some(1), Some(2), Some(0), Some(1), Some(2)]
+            );
         }
 
         #[test]

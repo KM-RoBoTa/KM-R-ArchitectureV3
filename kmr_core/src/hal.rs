@@ -550,6 +550,15 @@ pub trait Hal<const N: usize>: seal::Adapter {
     /// PostInit: one full read of every actuator, whatever the cadence.
     fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error>;
 
+    /// Whether this member only simulates: its `read_all` senses nothing, so
+    /// its actuators stay without a sample (SRS FR-6.3). [`NoHardware`] only.
+    // DECISION: a provided method, not a `Claim` field or a mask from
+    // `read_all`, so no adapter changes for it.
+    #[doc(hidden)]
+    fn simulates(&self) -> bool {
+        false
+    }
+
     /// PostInit: torque on where the adapter configuration says so.
     fn torque_on(&mut self) -> Result<(), Self::Error>;
 
@@ -608,6 +617,10 @@ impl<const N: usize, A: Hal<N>> Hal<N> for &mut A {
 
     fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error> {
         (**self).read_all(sample)
+    }
+
+    fn simulates(&self) -> bool {
+        (**self).simulates()
     }
 
     fn torque_on(&mut self) -> Result<(), Self::Error> {
@@ -678,6 +691,10 @@ impl<const N: usize> Hal<N> for NoHardware {
 
     fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), Infallible> {
         Ok(())
+    }
+
+    fn simulates(&self) -> bool {
+        true
     }
 
     fn torque_on(&mut self) -> Result<(), Infallible> {

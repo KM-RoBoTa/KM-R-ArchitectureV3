@@ -242,7 +242,8 @@ impl<const N: usize> Log<N> {
 pub const SEED: Q = Q(10.0);
 
 /// A fake adapter: logs every call, can fail one bring-up step. Each `read`
-/// moves actuator 0 by one and reports `faults`.
+/// moves actuator 0 by one, reports `faults` and refreshes the owned
+/// actuators every `every` reads.
 #[derive(Debug)]
 pub struct Recorder<'a, const N: usize> {
     /// Where the calls go.
@@ -255,6 +256,9 @@ pub struct Recorder<'a, const N: usize> {
     pub every: NonZeroU32,
     /// The fault bits each `read` reports.
     pub faults: Faults<N>,
+    /// Calls to `read` so far: call `k` refreshes the owned actuators when
+    /// `k` is a multiple of `every`, none otherwise.
+    pub reads: u32,
 }
 
 impl<'a, const N: usize> Recorder<'a, N> {
@@ -266,6 +270,7 @@ impl<'a, const N: usize> Recorder<'a, N> {
             owned: Mask::ALL,
             every: NonZeroU32::MIN,
             faults: Faults::default(),
+            reads: 0,
         }
     }
 
@@ -349,7 +354,9 @@ impl<const N: usize> Hal<N> for Recorder<'_, N> {
             *first = *first + Q(1.0);
         }
         *faults = self.faults;
-        Mask::ALL
+        let due = self.reads.is_multiple_of(self.every.get());
+        self.reads = self.reads.wrapping_add(1);
+        if due { self.owned } else { Mask::NONE }
     }
 
     fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, _faults: &mut Faults<N>) {

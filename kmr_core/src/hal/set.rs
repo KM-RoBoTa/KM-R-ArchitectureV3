@@ -465,14 +465,15 @@ pub trait Drivers<const N: usize>: seal::Drivers {
     #[doc(hidden)]
     fn step(&mut self, step: Step) -> Result<(), Self::Error>;
 
-    /// [`Hal::read_all`] on every member, into the same slot.
+    /// [`Hal::read_all`] on every member, into the same slot; the actuators
+    /// of every member that does not only simulate.
     #[doc(hidden)]
     fn read_all(
         &mut self,
         sample: Sample<'_, N>,
         slots: Slots<'_, N>,
         audit: &mut Audit,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<Mask<N>, Self::Error>;
 
     /// [`Hal::read`] on every member; the refreshed masks, each cut to its
     /// member's actuators, unioned.
@@ -532,8 +533,8 @@ impl<const N: usize> Drivers<N> for HNil {
         _sample: Sample<'_, N>,
         _slots: Slots<'_, N>,
         _audit: &mut Audit,
-    ) -> Result<(), Infallible> {
-        Ok(())
+    ) -> Result<Mask<N>, Infallible> {
+        Ok(Mask::NONE)
     }
 
     fn read(
@@ -602,16 +603,23 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
         mut sample: Sample<'_, N>,
         slots: Slots<'_, N>,
         audit: &mut Audit,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<Mask<N>, Self::Error> {
         let (owned, _groups, rest) = slots.split();
         let before = Audit::before(Some(&sample), None);
         self.head
             .read_all(sample.reborrow())
             .map_err(MemberError::head::<H>)?;
         audit.after(type_name::<H>(), before, Some(&sample), None, owned);
-        self.tail
+        let head = if self.head.simulates() {
+            Mask::NONE
+        } else {
+            owned
+        };
+        let tail = self
+            .tail
             .read_all(sample, rest, audit)
-            .map_err(MemberError::Tail)
+            .map_err(MemberError::Tail)?;
+        Ok(head.union(tail))
     }
 
     fn read(

@@ -14,9 +14,13 @@ use rstest::rstest;
 // build the test fixtures directly from zeroed fields instead. The plumbing under
 // test (slot routing, history reads, desired writes) is independent of the home
 // state, so a zeroed start is a valid, panic-free baseline.
+//
+// Every actuator counts as read for the whole history, so the reads under test
+// see the slots pushed straight into the buffer.
 fn create_test_robot() -> RobotState<N> {
     RobotState {
         desired: zeroed_desired(),
+        sampled: [u32::try_from(HISTORY_DEPTH).unwrap_or(u32::MAX); N],
         ..RobotState::default()
     }
 }
@@ -686,4 +690,84 @@ fn a_state_of_any_actuator_count_bounds_its_own_indices() {
         robot.cadence(7),
         Err(StateError::OutOfRange { index: 7, len: 7 })
     );
+}
+
+/// Actuator 0 alone, as a read mask.
+fn first_only() -> Mask<N> {
+    let mut mask = Mask::NONE;
+    mask.set(0);
+    mask
+}
+
+#[test]
+fn an_actuator_read_every_third_tick_ages_0_1_2_0() {
+    let mut robot = RobotState::<N>::default();
+    let mut ages = [None; 4];
+    for (tick, age) in ages.iter_mut().enumerate() {
+        let _ = robot.push_slot();
+        if tick % 3 == 0 {
+            robot.refreshed(first_only());
+        }
+        *age = robot.age(0).ok().flatten();
+    }
+    assert_eq!(ages, [Some(0), Some(1), Some(2), Some(0)]);
+}
+
+#[test]
+fn an_actuator_never_read_has_no_age_and_no_sample() {
+    let mut robot = RobotState::<N>::default();
+    for _ in 0..3 {
+        let _ = robot.push_slot();
+        robot.refreshed(Mask::NONE);
+    }
+    assert_eq!(robot.age(0), Ok(None));
+    assert_eq!(robot.sample_age(), None);
+    assert_eq!(robot.current::<Q>(), None);
+    for depth in 0..3 {
+        assert_eq!(robot.prev::<Q>(depth), Err(StateError::NoSample { depth }));
+        assert_eq!(
+            robot.prev_at::<Q>(depth, 0),
+            Err(StateError::NoSample { depth })
+        );
+    }
+    assert_eq!(
+        robot.age(N),
+        Err(StateError::OutOfRange { index: N, len: N })
+    );
+}
+
+#[test]
+fn a_slot_before_the_first_read_holds_no_sample() {
+    let mut robot = RobotState::<N>::default();
+    let _ = robot.push_slot();
+    robot.refreshed(Mask::NONE);
+    let _ = robot.push_slot();
+    robot.refreshed(first_only());
+
+    assert_eq!(robot.prev_at::<Q>(0, 0), Ok(&Q(0.0)));
+    assert_eq!(
+        robot.prev_at::<Q>(1, 0),
+        Err(StateError::NoSample { depth: 1 })
+    );
+    assert_eq!(
+        robot.prev_at::<Q>(0, 1),
+        Err(StateError::NoSample { depth: 0 })
+    );
+    assert_eq!(robot.prev::<Q>(0), Err(StateError::NoSample { depth: 0 }));
+}
+
+#[test]
+fn the_sample_age_is_the_oldest_actuator_s() {
+    let mut robot = RobotState::<N>::default();
+    let _ = robot.push_slot();
+    robot.refreshed(Mask::ALL);
+    let _ = robot.push_slot();
+    robot.refreshed(first_only());
+    let _ = robot.push_slot();
+    robot.refreshed(first_only());
+
+    assert_eq!(robot.age(0), Ok(Some(0)));
+    assert_eq!(robot.age(1), Ok(Some(2)));
+    assert_eq!(robot.sample_age(), Some(2));
+    assert!(robot.prev::<Q>(2).is_ok());
 }
