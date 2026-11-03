@@ -4,7 +4,7 @@ error[E0616]: field `inner` of struct `State` is private
 4 |     let _core = state.inner;
   |                       ^^^^^ private field
 
-error[E0609]: no field `0` on type `State<'_>`
+error[E0609]: no field `0` on type `State<'_, 4>`
  --> tests/ui/state_inner.rs:8:23
   |
 8 |     let _core = state.0;

@@ -37,7 +37,7 @@ fn main() -> ExitCode {
         Err(bad) => return failed_plan(bad),
     };
     PLANNED.store(plan.ticks, Relaxed);
-    let result = setup::base::<__Spec>(Duration::from_nanos(plan.dt_ns))
+    let result = setup::base::<N, __Spec>(Duration::from_nanos(plan.dt_ns))
         .add_controller(First, noop)
         .add_controller(EachTick, noop)
         .add_controller(Last, noop)

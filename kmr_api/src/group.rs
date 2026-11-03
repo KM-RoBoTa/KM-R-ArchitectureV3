@@ -52,7 +52,7 @@
 
 use crate::{Kd, Kp, Q, Qd, State, StateError, Tau};
 
-impl State<'_> {
+impl<const N: usize> State<'_, N> {
     /// View a fixed set of actuator `indices` as a [`GroupView`]. Indices may be
     /// non-contiguous and in any order; reads and writes preserve that order.
     ///
@@ -64,7 +64,7 @@ impl State<'_> {
     /// arm.set_all_q(desired).unwrap(); // touches only actuators 3, 4, 5
     /// ```
     #[inline]
-    pub fn group<const K: usize>(&mut self, indices: [usize; K]) -> GroupView<'_, K> {
+    pub fn group<const K: usize>(&mut self, indices: [usize; K]) -> GroupView<'_, N, K> {
         GroupView {
             robot: self.reborrow(),
             indices,
@@ -76,13 +76,13 @@ impl State<'_> {
 /// [`RobotState::group`].
 ///
 /// Mirrors the whole-robot accessors, but every array is sized to the group
-/// (`K`) instead of the whole robot ([`crate::N`]), and each operation gathers
+/// (`K`) instead of the whole robot (`N`), and each operation gathers
 /// or scatters per index — so a group write never disturbs actuators outside the
 /// group.
-pub struct GroupView<'a, const K: usize> {
+pub struct GroupView<'a, const N: usize, const K: usize> {
     // Owns a reborrowed `State` rather than `&'a mut State<'a>`: that form is
     // invariant in `'a` and would lock the state for its whole tick.
-    robot: State<'a>,
+    robot: State<'a, N>,
     indices: [usize; K],
 }
 
@@ -116,25 +116,21 @@ fn try_gather<T, const K: usize>(
     Ok(staged.map(|slot| slot.expect("todo; proper error handling")))
 }
 
-impl<'a, const K: usize> GroupView<'a, K> {
-    /// Validate every group index against the actuator count ([`crate::N`], which
-    /// equals `kmr_core`'s `JOINTS`), returning the first that is out of range.
+impl<'a, const N: usize, const K: usize> GroupView<'a, N, K> {
+    /// Validate every group index against the actuator count `N`, returning the
+    /// first that is out of range.
     ///
     /// This is the *sole* reason the `set_all_*` scatter is atomic — and it is
     /// only sufficient because `kmr_core::RobotState::set_at` fails
     /// **exclusively** on out-of-range (verified: its one `Err` is `OutOfRange`
-    /// when `index >= JOINTS`; there is no other failure path). If a future
+    /// when `index >= N`; there is no other failure path). If a future
     /// core change lets `set_at` fail for another reason, this up-front pass no
     /// longer covers it and the "atomic" guarantee on `set_all_*` silently
-    /// breaks — revisit here, and the `N == JOINTS` assumption, if the core
-    /// gains a runtime actuator length.
+    /// breaks — revisit here.
     #[inline]
     fn check_indices(&self) -> Result<(), StateError> {
-        match self.indices.into_iter().find(|&index| index >= crate::N) {
-            Some(index) => Err(StateError::OutOfRange {
-                index,
-                len: crate::N,
-            }),
+        match self.indices.into_iter().find(|&index| index >= N) {
+            Some(index) => Err(StateError::OutOfRange { index, len: N }),
             None => Ok(()),
         }
     }

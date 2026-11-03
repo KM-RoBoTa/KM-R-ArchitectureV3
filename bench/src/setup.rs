@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use kmr_api::{Robot, Spec};
 
-/// A robot of spec `H` with tick period `dt` and no controller yet.
-pub fn base<H: Spec>(dt: Duration) -> Robot<H> {
+/// A robot of `N` actuators and spec `H` with tick period `dt` and no controller yet.
+pub fn base<const N: usize, H: Spec<N>>(dt: Duration) -> Robot<N, H> {
     Robot::new().set_dt(dt)
 }
 
@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn the_bench_robot_builds_from_base() {
-        let _robot: Robot = base::<__Spec>(Duration::from_millis(1));
+        let _robot: Robot = base::<N, __Spec>(Duration::from_millis(1));
         assert_eq!(N, 4);
     }
 }

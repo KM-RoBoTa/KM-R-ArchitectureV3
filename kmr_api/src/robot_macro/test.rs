@@ -24,7 +24,7 @@ const fn plugin(port: &'static str, label: &'static str) -> Binding {
 }
 
 /// The actuators of `indices`.
-fn mask(indices: &[usize]) -> Mask {
+fn mask(indices: &[usize]) -> Mask<N> {
     let mut mask = Mask::NONE;
     indices.iter().for_each(|&index| mask.set(index));
     mask
@@ -32,7 +32,7 @@ fn mask(indices: &[usize]) -> Mask {
 
 #[test]
 fn two_brands_give_two_members_in_declaration_order() {
-    let _: Option<HCons<Fake, HCons<Fake, HNil>>> = None::<<__Spec as Spec>::Drivers>;
+    let _: Option<HCons<Fake<N>, HCons<Fake<N>, HNil>>> = None::<<__Spec as Spec<N>>::Drivers>;
     let Ok(HCons {
         head: arm,
         tail: HCons {
@@ -66,7 +66,7 @@ fn each_brand_binds_the_plugins_of_its_buses_and_claims_its_part() {
     };
     assert_eq!(arm.ports, ["ARM00001"]);
     assert_eq!(leg.ports, ["FOOT0001", "LEG00001"]);
-    let owned = |member: &mut Fake| member.check(Overrides::default()).map(|claim| claim.owned);
+    let owned = |member: &mut Fake<N>| member.check(Overrides::default()).map(|claim| claim.owned);
     assert_eq!(owned(&mut arm), Ok(mask(&[0, 2])));
     assert_eq!(owned(&mut leg), Ok(mask(&[1, 3])));
 }

@@ -117,7 +117,7 @@ macro_rules! robot {
     (model = $path:literal) => {
         $crate::__model!($crate; model = $path);
         $crate::__robot_items!();
-        impl $crate::Spec for __Spec {
+        impl $crate::Spec<{ N }> for __Spec {
             type Drivers = $crate::HCons<$crate::__NoHardware, $crate::HNil>;
 
             const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
@@ -157,16 +157,16 @@ macro_rules! robot {
             &[$($crate::__brand::$brand::indices(&__hardware::$brand::__PART)),+],
             N,
         );
-        impl $crate::Spec for __Spec {
+        impl $crate::Spec<{ N }> for __Spec {
             type Drivers =
-                <$crate::robot!(@parts $($brand),+) as $crate::Brands>::Drivers;
+                <$crate::robot!(@parts $($brand),+) as $crate::Brands<{ N }>>::Drivers;
 
             const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
 
             fn bind(
                 plugins: &[$crate::Binding],
             ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
-                $crate::__bind($crate::robot!(@list $($brand),+), plugins)
+                $crate::__bind::<{ N }, _>($crate::robot!(@list $($brand),+), plugins)
             }
         }
     };
@@ -215,8 +215,8 @@ macro_rules! __robot_items {
     (@table) => {
         // The count check: one table row per actuator, in model order (FR-007 (SRS FR-6.4)).
         const _: [$crate::dynamixel::Actuator; N] = __TABLE.actuators;
-        impl $crate::Spec for __Spec {
-            type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB>, $crate::HNil>;
+        impl $crate::Spec<{ N }> for __Spec {
+            type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB, { N }>, $crate::HNil>;
 
             const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
 
@@ -227,17 +227,17 @@ macro_rules! __robot_items {
                     head: __TABLE.in_order(),
                     tail: $crate::HNil,
                 };
-                $crate::__bind(hardware, plugins)
+                $crate::__bind::<{ N }, _>(hardware, plugins)
             }
         }
     };
     () => {
         /// The state handle of this robot.
         #[allow(dead_code)]
-        pub type State<'a> = $crate::State<'a>;
+        pub type State<'a> = $crate::State<'a, { N }>;
         /// The builder of this robot.
         #[allow(dead_code)]
-        pub type Robot = $crate::Robot<__Spec>;
+        pub type Robot = $crate::Robot<{ N }, __Spec>;
         /// This robot, as the type parameter of its builder.
         #[doc(hidden)]
         pub struct __Spec;

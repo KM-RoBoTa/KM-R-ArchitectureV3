@@ -33,25 +33,27 @@ pub use kmr_core::state::StateField as Field;
 /// field). If a refactor ever exposes the inner type, this doc-test breaks.
 ///
 /// ```compile_fail,E0616
-/// fn leak(robot: kmr_api::State) {
+/// fn leak(robot: kmr_api::State<'_, 4>) {
 ///     // error[E0616]: field `inner` of struct `State` is private
 ///     let _core = robot.inner;
 /// }
 /// ```
-pub struct State<'a> {
+///
+/// `N` is the robot's actuator count: name `State` through the alias `robot!` emits.
+pub struct State<'a, const N: usize> {
     /// The core state the runtime lends for one tick.
-    inner: &'a mut kmr_core::RobotState,
+    inner: &'a mut kmr_core::RobotState<N>,
 }
 
-impl<'a> State<'a> {
+impl<'a, const N: usize> State<'a, N> {
     /// Wrap the borrowed core state the runtime lends for one tick. Called only
     /// at the api→core boundary (`ApiInline::call`); never by users.
-    pub(crate) fn new(inner: &'a mut kmr_core::RobotState) -> Self {
+    pub(crate) fn new(inner: &'a mut kmr_core::RobotState<N>) -> Self {
         State { inner }
     }
 
     /// A shorter-lived `State` over the same core state.
-    pub(crate) fn reborrow(&mut self) -> State<'_> {
+    pub(crate) fn reborrow(&mut self) -> State<'_, N> {
         State { inner: self.inner }
     }
 

@@ -201,8 +201,8 @@ mod two_buses {
     }
     .check();
 
-    impl kmr_api::Spec for TwoBuses {
-        type Drivers = kmr_api::HCons<kmr_api::__DxlAdapter<2>, kmr_api::HNil>;
+    impl kmr_api::Spec<N> for TwoBuses {
+        type Drivers = kmr_api::HCons<kmr_api::__DxlAdapter<2, N>, kmr_api::HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base"];
 
@@ -211,14 +211,14 @@ mod two_buses {
                 head: TABLE.in_order(),
                 tail: kmr_api::HNil,
             };
-            kmr_api::__bind(hardware, plugins)
+            kmr_api::__bind::<N, _>(hardware, plugins)
         }
     }
 
     #[test]
     fn one_plugin_on_two_buses_is_the_adapters_binding_error() {
         let record = seen();
-        let res = kmr_api::Robot::<TwoBuses>::new()
+        let res = kmr_api::Robot::<N, TwoBuses>::new()
             .add_plugins(Bus::by_id("kmr-test-no-such-serial").bus("left"))
             .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
             .run();
@@ -249,7 +249,6 @@ mod recording {
     use core::fmt;
     use kmr_api::{Q, Spec};
     use kmr_core::hal::{Batch, Claim, Command, Faults, Group, Hal, Mask, Overrides, Sample, seal};
-    use kmr_core::state::JOINTS;
     use std::num::NonZeroU32;
 
     static LOG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
@@ -283,15 +282,15 @@ mod recording {
 
     impl seal::Adapter for Recorder {}
 
-    impl Hal for Recorder {
+    impl Hal<N> for Recorder {
         type Error = NoAnswer;
 
-        fn check(&mut self, _overrides: Overrides) -> Result<Claim, NoAnswer> {
+        fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, NoAnswer> {
             log("check");
             Ok(Claim {
                 owned: Mask::ALL,
-                group: [Group(0); JOINTS],
-                read_every: [NonZeroU32::MIN; JOINTS],
+                group: [Group(0); N],
+                read_every: [NonZeroU32::MIN; N],
                 read_cost: Duration::ZERO,
                 write_cost: Duration::ZERO,
             })
@@ -326,7 +325,7 @@ mod recording {
             Ok(())
         }
 
-        fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), NoAnswer> {
+        fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), NoAnswer> {
             log("read_all");
             Ok(())
         }
@@ -336,16 +335,21 @@ mod recording {
             Ok(())
         }
 
-        fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+        fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask {
             log("read");
             Mask::NONE
         }
 
-        fn write(&mut self, _command: Command<'_>, _batch: &Batch<'_>, _faults: &mut Faults) {
+        fn write(
+            &mut self,
+            _command: Command<'_, N>,
+            _batch: &Batch<'_, N>,
+            _faults: &mut Faults<N>,
+        ) {
             log("write");
         }
 
-        fn hold(&mut self, _last: Command<'_>) {
+        fn hold(&mut self, _last: Command<'_, N>) {
             log("hold");
         }
 
@@ -361,7 +365,7 @@ mod recording {
     /// Binds every plugin to a recorder.
     struct Records;
 
-    impl Spec for Records {
+    impl Spec<N> for Records {
         type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base"];
@@ -377,7 +381,7 @@ mod recording {
     /// Binds every plugin to a recorder whose `open` fails.
     struct FailsOpen;
 
-    impl Spec for FailsOpen {
+    impl Spec<N> for FailsOpen {
         type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base"];
@@ -402,7 +406,7 @@ mod recording {
     fn a_plugin_runs_on_the_bound_driver() {
         let _bus = bus();
         take();
-        let res = kmr_api::Robot::<Records>::new()
+        let res = kmr_api::Robot::<N, Records>::new()
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .set_hold(Duration::ZERO)
             .add_controller(EachTick, write_then_stop)
@@ -436,7 +440,7 @@ mod recording {
     fn a_bring_up_error_is_returned_after_torque_off_and_close() {
         let _bus = bus();
         take();
-        let res = kmr_api::Robot::<FailsOpen>::new()
+        let res = kmr_api::Robot::<N, FailsOpen>::new()
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .add_controller(EachTick, write_then_stop)
             .run();
@@ -460,7 +464,7 @@ mod recording {
     fn without_a_plugin_the_bound_driver_is_never_called() {
         let _bus = bus();
         take();
-        let res = kmr_api::Robot::<Records>::new()
+        let res = kmr_api::Robot::<N, Records>::new()
             .add_controller(EachTick, write_then_stop)
             .run();
         assert!(res.is_ok(), "{res:?}");

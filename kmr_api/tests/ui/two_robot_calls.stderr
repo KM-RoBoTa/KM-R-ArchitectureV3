@@ -69,7 +69,7 @@ help: you can use `as` to change the binding name of the import
   |         $crate::__model!($crate; model = $path) as other_actuator;
   |                                                 +++++++++++++++++
 
-error[E0119]: conflicting implementations of trait `kmr_api::Spec` for type `__Spec`
+error[E0119]: conflicting implementations of trait `kmr_api::Spec<4>` for type `__Spec`
  --> tests/ui/two_robot_calls.rs:4:1
   |
 3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/four.urdf");

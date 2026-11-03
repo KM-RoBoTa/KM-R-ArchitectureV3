@@ -7,7 +7,7 @@
 
 use core::convert::Infallible;
 
-use crate::{Field, N, State};
+use crate::{Field, State};
 
 /// The seal of [`HomeDecided`].
 mod sealed {
@@ -25,7 +25,7 @@ pub trait HomeDecided: sealed::Sealed {
     const OPEN: Infallible;
 }
 
-impl State<'_> {
+impl<const N: usize> State<'_, N> {
     /// The home state of field `T`, per actuator (SRS FR-2.7, open).
     pub fn initial_state<T: Field + HomeDecided>(&self) -> [T; N] {
         match T::OPEN {}

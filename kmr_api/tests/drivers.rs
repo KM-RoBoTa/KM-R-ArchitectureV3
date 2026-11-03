@@ -10,7 +10,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use kmr_api::{Binding, Brand, Bus, EachTick, HCons, HNil, Q, Refused, Sensors, Spec, State};
-use kmr_api::{HardwareError, MemberError, N as JOINTS, Time, UserError};
+use kmr_api::{HardwareError, MemberError, Time, UserError};
 // The HAL contract: what a driver implements, not user API.
 use kmr_core::hal::{
     Batch, Claim, Command, Coverage, Drivers, Faults, Group, Hal, Mask, Member, Overrides, Sample,
@@ -18,7 +18,8 @@ use kmr_core::hal::{
 };
 
 // The scenarios name actuators 0 to 3.
-const _: () = assert!(JOINTS >= 4, "the driver tests need four actuators");
+/// Actuators of the test robot: the driver tests need four.
+const N: usize = 4;
 
 /// The signal bus and the log are process-global: every test takes this first.
 static BUS: Mutex<()> = Mutex::new(());
@@ -35,9 +36,9 @@ enum Event {
     /// A call without data.
     Call(&'static str, &'static str),
     /// `write`: the indices of its runs and the `written` masks it got.
-    Wrote(&'static str, Vec<usize>, Mask),
+    Wrote(&'static str, Vec<usize>, Mask<N>),
     /// `hold`: the `written` masks it got.
-    Held(&'static str, Mask),
+    Held(&'static str, Mask<N>),
 }
 
 static LOG: Mutex<Vec<Event>> = Mutex::new(Vec::new());
@@ -117,7 +118,7 @@ impl Error for Unplugged {}
 
 /// A fake member of brand `K`: owns `owned`, reads `Q(index)` into its own slots.
 struct Fake<K> {
-    owned: Mask,
+    owned: Mask<N>,
     port: &'static str,
     fail_open: bool,
     kind: PhantomData<K>,
@@ -129,7 +130,7 @@ impl<K: Kind> Fake<K> {
     }
 
     /// Writes `Q(index)` into each owned slot of `sample`.
-    fn fill(&self, sample: &mut Sample<'_>) {
+    fn fill(&self, sample: &mut Sample<'_, N>) {
         for index in self.owned.iter() {
             if let Some(q) = sample.q.get_mut(index) {
                 *q = Q(index as f32);
@@ -140,15 +141,15 @@ impl<K: Kind> Fake<K> {
 
 impl<K> seal::Adapter for Fake<K> {}
 
-impl<K: Kind> Hal for Fake<K> {
+impl<K: Kind> Hal<N> for Fake<K> {
     type Error = Unplugged;
 
-    fn check(&mut self, _overrides: Overrides) -> Result<Claim, Unplugged> {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Unplugged> {
         self.call("check");
         Ok(Claim {
             owned: self.owned,
-            group: [Group(0); JOINTS],
-            read_every: [NonZeroU32::MIN; JOINTS],
+            group: [Group(0); N],
+            read_every: [NonZeroU32::MIN; N],
             read_cost: Duration::ZERO,
             write_cost: Duration::ZERO,
         })
@@ -185,7 +186,7 @@ impl<K: Kind> Hal for Fake<K> {
         Ok(())
     }
 
-    fn read_all(&mut self, mut sample: Sample<'_>) -> Result<(), Unplugged> {
+    fn read_all(&mut self, mut sample: Sample<'_, N>) -> Result<(), Unplugged> {
         self.call("read_all");
         self.fill(&mut sample);
         Ok(())
@@ -196,17 +197,17 @@ impl<K: Kind> Hal for Fake<K> {
         Ok(())
     }
 
-    fn read(&mut self, mut sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+    fn read(&mut self, mut sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask {
         self.fill(&mut sample);
         self.owned
     }
 
-    fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
+    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, _faults: &mut Faults<N>) {
         let runs = batch.runs().flat_map(|(_, run)| run.iter().copied());
         log(Event::Wrote(K::NAME, runs.collect(), command.written.any()));
     }
 
-    fn hold(&mut self, target: Command<'_>) {
+    fn hold(&mut self, target: Command<'_, N>) {
         log(Event::Held(K::NAME, target.written.any()));
     }
 
@@ -221,14 +222,14 @@ impl<K: Kind> Hal for Fake<K> {
 
 /// The part of brand `K` of the robot's hardware, as `robot!` would hold it.
 struct Part<K> {
-    owned: Mask,
+    owned: Mask<N>,
     fail_open: bool,
     fail_bind: bool,
     kind: PhantomData<K>,
 }
 
 impl<K: Kind> Part<K> {
-    fn new(owned: Mask) -> Self {
+    fn new(owned: Mask<N>) -> Self {
         Self {
             owned,
             fail_open: false,
@@ -238,7 +239,7 @@ impl<K: Kind> Part<K> {
     }
 }
 
-impl<K: Kind> Brand for Part<K> {
+impl<K: Kind> Brand<N> for Part<K> {
     type Member = Fake<K>;
 
     fn labels(&self) -> Vec<&'static str> {
@@ -271,7 +272,7 @@ fn port(plugin: &Binding) -> &'static str {
 /// The actuators `select` picks.
 fn mask(select: impl Fn(usize) -> bool) -> Mask {
     let mut mask = Mask::NONE;
-    (0..JOINTS)
+    (0..N)
         .filter(|&index| select(index))
         .for_each(|index| mask.set(index));
     mask
@@ -305,7 +306,7 @@ type Members = HCons<Fake<Arm>, HCons<Fake<Leg>, HNil>>;
 /// The error of `Members`.
 type MembersError = <Members as Drivers>::Error;
 
-impl<const CASE: u8> Spec for TwoBrands<CASE> {
+impl<const CASE: u8> Spec<N> for TwoBrands<CASE> {
     type Drivers = Members;
 
     const LINK_NAMES: &'static [&'static str] = &["base"];
@@ -332,14 +333,14 @@ impl<const CASE: u8> Spec for TwoBrands<CASE> {
 }
 
 /// Positions the controller read at tick 0.
-static SEEN: Mutex<Option<[Q; JOINTS]>> = Mutex::new(None);
+static SEEN: Mutex<Option<[Q; N]>> = Mutex::new(None);
 
 /// Keeps the positions of tick 0, writes every position, shuts down at tick 2.
-fn write_all(time: &Time, robot: &mut State, _s: &Sensors) {
+fn write_all(time: &Time, robot: &mut State<'_, N>, _s: &Sensors) {
     if time.tick() == 0 {
         *SEEN.lock().unwrap_or_else(PoisonError::into_inner) = robot.q();
     }
-    robot.set_all_q([Q(0.0); JOINTS]);
+    robot.set_all_q([Q(0.0); N]);
     assert!(time.tick() <= 2, "the loop ignored the shutdown");
     if time.tick() == 2 {
         kmr_api::shutdown!("test: tick 2");
@@ -350,7 +351,7 @@ fn write_all(time: &Time, robot: &mut State, _s: &Sensors) {
 fn run<const CASE: u8>() -> Result<(), UserError> {
     take();
     *SEEN.lock().unwrap_or_else(PoisonError::into_inner) = None;
-    kmr_api::Robot::<TwoBrands<CASE>>::new()
+    kmr_api::Robot::<N, TwoBrands<CASE>>::new()
         .set_dt(Duration::from_millis(1))
         .set_hold(Duration::ZERO)
         .add_plugins(Bus::by_dev("/dev/leg").bus("leg"))
@@ -393,7 +394,7 @@ fn two_brands_each_drive_only_their_own_actuators() {
         assert_eq!(held, Some(owned), "{member}");
     }
     let seen = *SEEN.lock().unwrap_or_else(PoisonError::into_inner);
-    let each_own: [Q; JOINTS] = core::array::from_fn(|index| Q(index as f32));
+    let each_own: [Q; N] = core::array::from_fn(|index| Q(index as f32));
     assert_eq!(seen, Some(each_own), "each member filled its own slots");
 
     let calls = calls(&events);
@@ -526,7 +527,7 @@ fn a_binding_error_names_the_member_like_a_bring_up_error() {
 fn a_plugin_no_brand_takes_is_refused_before_any_bind() {
     let _bus = bus();
     take();
-    let unknown = kmr_api::Robot::<TwoBrands<COVERED>>::new()
+    let unknown = kmr_api::Robot::<N, TwoBrands<COVERED>>::new()
         .add_plugins(Bus::by_id("ARM00001").bus("elbow"))
         .add_controller(EachTick, write_all)
         .run();
@@ -540,7 +541,7 @@ fn a_plugin_no_brand_takes_is_refused_before_any_bind() {
         ),
         "{unknown:?}"
     );
-    let unlabelled = kmr_api::Robot::<TwoBrands<COVERED>>::new()
+    let unlabelled = kmr_api::Robot::<N, TwoBrands<COVERED>>::new()
         .add_plugins(Bus::by_id("ARM00001"))
         .add_controller(EachTick, write_all)
         .run();
@@ -581,12 +582,10 @@ fn a_bus_label_two_brands_share_is_refused_before_any_bind() {
 
 /// Scenario `CASE` with a plugin per brand and a zero hold, bound but not run, from an empty
 /// log.
-fn bound<const CASE: u8>() -> Result<
-    kmr_api::Bound<TwoBrands<CASE>, impl kmr_api::Drive<{ kmr_api::N }> + use<CASE>>,
-    UserError,
-> {
+fn bound<const CASE: u8>()
+-> Result<kmr_api::Bound<N, TwoBrands<CASE>, impl kmr_api::Drive<N> + use<CASE>>, UserError> {
     take();
-    kmr_api::Robot::<TwoBrands<CASE>>::new()
+    kmr_api::Robot::<N, TwoBrands<CASE>>::new()
         .set_dt(Duration::from_millis(1))
         .set_hold(Duration::ZERO)
         .add_plugins(Bus::by_dev("/dev/leg").bus("leg"))
@@ -656,7 +655,7 @@ fn a_member_changed_before_the_run_is_the_one_the_run_drives() {
 fn without_a_plugin_bind_gives_no_drivers_and_the_run_simulates() {
     let _bus = bus();
     take();
-    let mut bound = kmr_api::Robot::<TwoBrands<COVERED>>::new()
+    let mut bound = kmr_api::Robot::<N, TwoBrands<COVERED>>::new()
         .set_dt(Duration::from_millis(1))
         .add_controller(EachTick, write_all)
         .bind()

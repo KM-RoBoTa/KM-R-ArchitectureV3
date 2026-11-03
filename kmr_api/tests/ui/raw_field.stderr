@@ -1,4 +1,4 @@
-error[E0609]: no field `desired` on type `&mut State<'_>`
+error[E0609]: no field `desired` on type `&mut State<'_, 4>`
  --> tests/ui/raw_field.rs:4:11
   |
 4 |     robot.desired.q[0] = kmr_api::Q(0.0);

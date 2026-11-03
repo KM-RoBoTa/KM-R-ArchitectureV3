@@ -6,7 +6,6 @@
 use kmr_adapters::binding::Binding;
 use kmr_adapters::dynamixel::Placement;
 use kmr_core::hal::{Drivers, Hal, NoHardware};
-use kmr_core::state::JOINTS;
 use kmr_core::{HCons, HNil};
 
 use crate::UserError;
@@ -15,14 +14,16 @@ use crate::brand::{Brand, Refused};
 #[cfg(test)]
 pub(crate) mod fake;
 
-/// The robot this binary drives, as the type parameter of [`Robot`](crate::Robot).
+/// The robot this binary drives, of `N` actuators, as the type parameter of
+/// [`Robot`](crate::Robot). `N` is a parameter, not an associated const: an associated const
+/// cannot size an array.
 ///
 /// `robot!` implements it on the `__Spec` it emits; users never implement it.
 #[doc(hidden)]
-pub trait Spec {
+pub trait Spec<const N: usize> {
     /// The robot's hardware: the list of its drivers, one member per brand,
     /// `HCons<A, HCons<B, HNil>>`. Its error crosses threads inside [`UserError::BringUp`].
-    type Drivers: Lend<JOINTS>;
+    type Drivers: Lend<N>;
 
     /// The model's link names, in file order: the mounts a payload may name (SRS FR-8.1).
     const LINK_NAMES: &'static [&'static str];
@@ -89,20 +90,20 @@ pub fn __bind_none(_plugins: &[Binding]) -> Result<HCons<__NoHardware, HNil>, Us
     Err(UserError::NoHardwareDeclared)
 }
 
-/// The Dynamixel driver of a robot with `NB` Dynamixel buses.
+/// The Dynamixel driver of a robot of `N` actuators with `NB` Dynamixel buses.
 #[doc(hidden)]
 #[cfg(feature = "dynamixel")]
-pub type __DxlAdapter<const NB: usize> =
-    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs<JOINTS>, NB, JOINTS>;
+pub type __DxlAdapter<const NB: usize, const N: usize> =
+    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs<N>, NB, N>;
 
 /// No Dynamixel driver: kmr_api is built without its `dynamixel` feature.
 #[doc(hidden)]
 #[cfg(not(feature = "dynamixel"))]
-pub type __DxlAdapter<const NB: usize> = kmr_core::hal::NoHardware;
+pub type __DxlAdapter<const NB: usize, const N: usize> = kmr_core::hal::NoHardware;
 
 /// The Dynamixel part of a robot: its buses bind to the Dynamixel SDK.
-impl<const NB: usize, const M: usize> Brand for Placement<NB, M> {
-    type Member = __DxlAdapter<NB>;
+impl<const NB: usize, const M: usize, const N: usize> Brand<N> for Placement<NB, M> {
+    type Member = __DxlAdapter<NB, N>;
 
     fn labels(&self) -> Vec<&'static str> {
         self.table().buses.iter().map(|bus| bus.label).collect()
@@ -310,13 +311,13 @@ mod tests {
 
     #[test]
     fn a_table_names_its_bus_labels() {
-        assert_eq!(XmBench::HARDWARE.in_order().labels(), ["bus0"]);
+        assert_eq!(Brand::<4>::labels(&XmBench::HARDWARE.in_order()), ["bus0"]);
     }
 
     #[cfg(not(feature = "dynamixel"))]
     #[test]
     fn without_the_feature_plugins_are_refused() {
-        let res = __bind(xm_bench(), &[PLUGIN]);
+        let res = __bind::<4, _>(xm_bench(), &[PLUGIN]);
         assert!(matches!(
             res,
             Err(UserError::FeatureOff {
@@ -332,7 +333,7 @@ mod tests {
             bus: Some("nope"),
             ..PLUGIN
         };
-        let res = __bind(xm_bench(), &[wrong]);
+        let res = __bind::<4, _>(xm_bench(), &[wrong]);
         assert!(
             matches!(&res, Err(UserError::BringUp { source }) if source.to_string().starts_with("member 0 (kmr_adapters::dynamixel::Dynamixel<") && source.to_string().contains("nope")),
             "{:?}",
@@ -343,6 +344,6 @@ mod tests {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn a_matching_plugin_binds() {
-        assert!(__bind(xm_bench(), &[PLUGIN]).is_ok());
+        assert!(__bind::<4, _>(xm_bench(), &[PLUGIN]).is_ok());
     }
 }

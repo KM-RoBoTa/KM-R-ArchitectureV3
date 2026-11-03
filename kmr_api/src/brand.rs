@@ -21,9 +21,9 @@ pub enum Refused<E> {
 ///
 /// `robot!` holds one per brand; users never implement it.
 #[doc(hidden)]
-pub trait Brand {
+pub trait Brand<const N: usize> {
     /// The member it binds to. Its error crosses threads inside [`UserError::BringUp`].
-    type Member: Hal<Error: Send + Sync>;
+    type Member: Hal<N, Error: Send + Sync>;
 
     /// Labels of its buses.
     fn labels(&self) -> Vec<&'static str>;
@@ -36,7 +36,7 @@ pub trait Brand {
     fn bind(
         self,
         plugins: &[Binding],
-    ) -> Result<Self::Member, Refused<<Self::Member as Hal>::Error>>;
+    ) -> Result<Self::Member, Refused<<Self::Member as Hal<N>>::Error>>;
 }
 
 mod seal {
@@ -47,9 +47,9 @@ mod seal {
 /// The robot's hardware description, `HCons<A, HCons<B, HNil>>` of [`Brand`]s, in the order
 /// the members are walked.
 #[doc(hidden)]
-pub trait Brands: seal::Brands {
+pub trait Brands<const N: usize>: seal::Brands {
     /// The members it binds to, in the same order.
-    type Drivers: Drivers;
+    type Drivers: Drivers<N>;
 
     /// Brands in the list.
     const LEN: usize;
@@ -66,12 +66,12 @@ pub trait Brands: seal::Brands {
         self,
         plugins: &[Binding],
         route: &Route,
-    ) -> Result<Self::Drivers, Refused<<Self::Drivers as Drivers>::Error>>;
+    ) -> Result<Self::Drivers, Refused<<Self::Drivers as Drivers<N>>::Error>>;
 }
 
 impl seal::Brands for HNil {}
 
-impl Brands for HNil {
+impl<const N: usize> Brands<N> for HNil {
     type Drivers = HNil;
 
     const LEN: usize = 0;
@@ -89,9 +89,9 @@ impl Brands for HNil {
     }
 }
 
-impl<B: Brand, T: Brands> seal::Brands for HCons<B, T> {}
+impl<B, T: seal::Brands> seal::Brands for HCons<B, T> {}
 
-impl<B: Brand, T: Brands> Brands for HCons<B, T> {
+impl<const N: usize, B: Brand<N>, T: Brands<N>> Brands<N> for HCons<B, T> {
     type Drivers = HCons<B::Member, T::Drivers>;
 
     const LEN: usize = 1 + T::LEN;
@@ -106,7 +106,7 @@ impl<B: Brand, T: Brands> Brands for HCons<B, T> {
         self,
         plugins: &[Binding],
         route: &Route,
-    ) -> Result<Self::Drivers, Refused<<Self::Drivers as Drivers>::Error>> {
+    ) -> Result<Self::Drivers, Refused<<Self::Drivers as Drivers<N>>::Error>> {
         let labels = self.head.labels();
         let mine: Vec<Binding> = plugins
             .iter()
@@ -167,10 +167,10 @@ fn port(plugin: &Binding) -> &'static str {
 /// [`UserError::FeatureOff`], or a member's binding error as [`UserError::BringUp`], named by
 /// its position and short type name, as a bring-up error would be.
 #[doc(hidden)]
-pub fn __bind<H>(hardware: H, plugins: &[Binding]) -> Result<H::Drivers, UserError>
+pub fn __bind<const N: usize, H>(hardware: H, plugins: &[Binding]) -> Result<H::Drivers, UserError>
 where
-    H: Brands,
-    <H::Drivers as Drivers>::Error: Send + Sync,
+    H: Brands<N>,
+    <H::Drivers as Drivers<N>>::Error: Send + Sync,
 {
     let labels = hardware.labels();
     let route = Route {
@@ -205,7 +205,7 @@ where
         .map_err(|refused| match refused {
             Refused::FeatureOff(feature) => UserError::FeatureOff { feature },
             Refused::Member(error) => UserError::bring_up(HardwareError::<
-                <H::Drivers as Drivers>::Error,
+                <H::Drivers as Drivers<N>>::Error,
             >::Member(error)),
         })
 }

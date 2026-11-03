@@ -4,7 +4,6 @@ use std::time::Duration;
 use crate::spec::Lend;
 use crate::{Binding, Bus, Payload, Schedule, Sensors, Spec, State, Time, UserError};
 use kmr_core::hal::{Drivers, NoHardware};
-use kmr_core::state::JOINTS;
 use kmr_core::{
     ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
     Threaded,
@@ -32,14 +31,14 @@ use kmr_core::{
 #[doc(hidden)]
 pub struct ApiInline<F>(F);
 
-impl<F> ControlFn<JOINTS> for ApiInline<F>
+impl<const N: usize, F> ControlFn<N> for ApiInline<F>
 where
-    F: Fn(&Time, &mut State, &Sensors),
+    F: Fn(&Time, &mut State<'_, N>, &Sensors),
 {
     fn call(
         &self,
         time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState,
+        state: &mut kmr_core::RobotState<N>,
         sensors: &kmr_core::Sensors,
     ) {
         (self.0)(
@@ -57,14 +56,14 @@ where
 #[doc(hidden)]
 pub struct ApiInlineWith<F>(F);
 
-impl<F, T> ControlFnWith<T, JOINTS> for ApiInlineWith<F>
+impl<const N: usize, F, T> ControlFnWith<T, N> for ApiInlineWith<F>
 where
-    F: Fn(&mut T, &Time, &mut State, &Sensors),
+    F: Fn(&mut T, &Time, &mut State<'_, N>, &Sensors),
 {
     fn call(
         &self,
         time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState,
+        state: &mut kmr_core::RobotState<N>,
         sensors: &kmr_core::Sensors,
         ctx: &mut T,
     ) {
@@ -95,14 +94,14 @@ where
 // The "App" struct. The main user interface, and the whole public re-exposure
 // of the `kmr_core` engine.
 //
-// `kmr_api::Robot<H, C>` is a thin wrapper around `kmr_core::Robot<JOINTS, C>`: the core
+// `kmr_api::Robot<N, H, C>` is a thin wrapper around `kmr_core::Robot<N, C>`: the core
 // owns the real HLists (`HCons`/`HNil`, one per schedule) and grows them
 // itself. This layer adds ONLY the api-facing bounds the core deliberately
 // stays ignorant of — the concrete `Time`/`State`/`Sensors` controller
 // signature, and `Send` for threaded controllers.
 //
-// `H` is the robot `robot!` names (its hidden `__Spec`): users write the
-// `Robot` alias and never see it.
+// `N` is the robot's actuator count and `H` the robot `robot!` names (its hidden
+// `__Spec`): users write the `Robot` alias and never see either.
 //
 // `C` is the *type-state* of the controller set: it starts as `Scheduled`
 // (every schedule empty) and one schedule grows by one `kmr_core` node per
@@ -111,15 +110,15 @@ where
 // can neither forge a node nor drive a schedule themselves: the engine's
 // invariants cannot be bypassed and its internals can change without breaking
 // this crate's API.
-pub struct Robot<H, C = Scheduled> {
-    inner: kmr_core::Robot<JOINTS, C>,
+pub struct Robot<const N: usize, H, C = Scheduled> {
+    inner: kmr_core::Robot<N, C>,
     plugins: Vec<Bus>,
     payloads: Vec<Payload>,
     dt: Option<Duration>,
     spec: PhantomData<fn() -> H>,
 }
 
-impl<H: Spec> Robot<H> {
+impl<const N: usize, H: Spec<N>> Robot<N, H> {
     /// A robot with no controller, no plugin, no payload and no `dt` yet.
     pub fn new() -> Self {
         Self {
@@ -132,7 +131,7 @@ impl<H: Spec> Robot<H> {
     }
 }
 
-impl<H: Spec> Default for Robot<H> {
+impl<const N: usize, H: Spec<N>> Default for Robot<N, H> {
     fn default() -> Self {
         Self::new()
     }
@@ -140,7 +139,7 @@ impl<H: Spec> Default for Robot<H> {
 
 // Settings. These keep the SAME type-state `C`: tuning the config never adds or
 // removes a controller, so `Self` is returned unchanged.
-impl<H, C> Robot<H, C> {
+impl<const N: usize, H, C> Robot<N, H, C> {
     /// Sets the tick period, handed to the engine by [`run`](Self::run).
     pub fn set_dt(self, dt: Duration) -> Self {
         Self {
@@ -162,8 +161,8 @@ impl<H, C> Robot<H, C> {
     /// Carries the builder data over to a robot whose controller set grew.
     fn grown<D>(
         self,
-        grow: impl FnOnce(kmr_core::Robot<JOINTS, C>) -> kmr_core::Robot<JOINTS, D>,
-    ) -> Robot<H, D> {
+        grow: impl FnOnce(kmr_core::Robot<N, C>) -> kmr_core::Robot<N, D>,
+    ) -> Robot<N, H, D> {
         Robot {
             inner: grow(self.inner),
             plugins: self.plugins,
@@ -200,10 +199,10 @@ impl<H, C> Robot<H, C> {
     // Controllers. Each of these GROWS the type-state: the returned `Robot`
     // carries `C::Output`, where the chosen schedule holds one more node, so
     // the builder must stay one chained expression. That is the price of the zero-cost, cap-free design.
-    pub fn add_controller<S: Schedule, F>(self, schedule: S, f: F) -> Robot<H, C::Output>
+    pub fn add_controller<S: Schedule, F>(self, schedule: S, f: F) -> Robot<N, H, C::Output>
     where
         C: Insert<S, Inline<ApiInline<F>>>,
-        F: Fn(&Time, &mut State, &Sensors),
+        F: Fn(&Time, &mut State<'_, N>, &Sensors),
     {
         // Wrap the user's api-typed closure in `ApiInline`, then hand it to
         // the core's `ControlFn` entry. The core stores `Inline<ApiInline<F>>`
@@ -237,10 +236,10 @@ impl<H, C> Robot<H, C> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<H, C::Output>
+    ) -> Robot<N, H, C::Output>
     where
         C: Insert<S, InlineWith<ApiInlineWith<F>, T>>,
-        F: Fn(&mut T, &Time, &mut State, &Sensors),
+        F: Fn(&mut T, &Time, &mut State<'_, N>, &Sensors),
     {
         self.grown(|inner| inner.add_control_fn_with(schedule, ctx, ApiInlineWith(f)))
     }
@@ -264,7 +263,7 @@ impl<H, C> Robot<H, C> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<H, C::Output>
+    ) -> Robot<N, H, C::Output>
     where
         C: Insert<S, Threaded<ApiThreaded<F>, T>>,
         T: Sync + Send,
@@ -285,8 +284,8 @@ impl<H, C> Robot<H, C> {
     /// stop both return `Ok(())`.
     pub fn run(self) -> Result<(), UserError>
     where
-        H: Spec,
-        C: kmr_core::Drive<JOINTS>,
+        H: Spec<N>,
+        C: kmr_core::Drive<N>,
     {
         let Bound { inner, drivers } = self.bind()?;
         match drivers {
@@ -302,9 +301,9 @@ impl<H, C> Robot<H, C> {
     ///
     /// [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], [`UserError::UnknownLink`],
     /// then the binding errors of [`Spec::bind`].
-    pub fn bind(self) -> Result<Bound<H, C>, UserError>
+    pub fn bind(self) -> Result<Bound<N, H, C>, UserError>
     where
-        H: Spec,
+        H: Spec<N>,
     {
         let (inner, plugins) = self.finalize()?;
         let drivers = match plugins.as_slice() {
@@ -320,9 +319,9 @@ impl<H, C> Robot<H, C> {
     ///
     /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`], then
     /// [`UserError::UnknownLink`].
-    fn finalize(self) -> Result<(kmr_core::Robot<JOINTS, C>, Vec<Binding>), UserError>
+    fn finalize(self) -> Result<(kmr_core::Robot<N, C>, Vec<Binding>), UserError>
     where
-        H: Spec,
+        H: Spec<N>,
     {
         if let Some(dt) = self.dt
             && !(DT_MIN..=DT_MAX).contains(&dt)
@@ -353,12 +352,12 @@ impl<H, C> Robot<H, C> {
 
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
 /// before the run and after it, never inside a tick (SRS FR-5.9).
-pub struct Bound<H: Spec, C> {
-    inner: kmr_core::Robot<JOINTS, C>,
+pub struct Bound<const N: usize, H: Spec<N>, C> {
+    inner: kmr_core::Robot<N, C>,
     drivers: Option<H::Drivers>,
 }
 
-impl<H: Spec, C> Bound<H, C> {
+impl<const N: usize, H: Spec<N>, C> Bound<N, H, C> {
     /// The robot's drivers, `HCons<A, HCons<B, HNil>>`; `None` without a bus plugin, where the
     /// run simulates.
     pub fn drivers(&mut self) -> Option<&mut H::Drivers> {
@@ -376,7 +375,7 @@ impl<H: Spec, C> Bound<H, C> {
     /// stop both return `Ok`.
     pub fn run(self) -> Result<Option<H::Drivers>, UserError>
     where
-        C: kmr_core::Drive<JOINTS>,
+        C: kmr_core::Drive<N>,
     {
         let Self { inner, mut drivers } = self;
         match &mut drivers {
@@ -396,10 +395,10 @@ fn simulated() -> HCons<NoHardware, HNil> {
 }
 
 /// Runs `inner` on `drivers`, its error kept typed inside [`UserError::BringUp`].
-fn drive<C, D>(inner: kmr_core::Robot<JOINTS, C>, drivers: D) -> Result<(), UserError>
+fn drive<const N: usize, C, D>(inner: kmr_core::Robot<N, C>, drivers: D) -> Result<(), UserError>
 where
-    C: kmr_core::Drive<JOINTS>,
-    D: Drivers<JOINTS, Error: Send + Sync>,
+    C: kmr_core::Drive<N>,
+    D: Drivers<N, Error: Send + Sync>,
 {
     inner.run_on(drivers).map_err(UserError::bring_up)
 }
@@ -423,7 +422,7 @@ mod tests {
     /// Stands for the `__Spec` that `robot!` emits.
     struct TestSpec;
 
-    impl Spec for TestSpec {
+    impl Spec<4> for TestSpec {
         type Drivers = HCons<crate::__NoHardware, HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base", "tool"];
@@ -433,12 +432,12 @@ mod tests {
         }
     }
 
-    type TestRobot = Robot<TestSpec>;
+    type TestRobot = Robot<4, TestSpec>;
 
     // A controller written ENTIRELY in api types — no `kmr_core` anywhere in
     // sight. Reads current `Q`, adds one, writes it back. If the boundary is
     // wired, this compiles and every method resolves against the api `State`.
-    fn bump_q(_t: &Time, robot: &mut State, _s: &Sensors) {
+    fn bump_q(_t: &Time, robot: &mut State<'_, 4>, _s: &Sensors) {
         if let Some(q) = robot.q() {
             let desired = q.map(|x| x + Q(1.0));
             robot.set_all_q(desired);
@@ -452,9 +451,12 @@ mod tests {
         let _robot = TestRobot::new()
             .set_dt(Duration::from_millis(1))
             .add_controller(EachTick, bump_q)
-            .add_controller(EachTick, |_t: &Time, robot: &mut State, _s: &Sensors| {
-                let _ = robot.q();
-            });
+            .add_controller(
+                EachTick,
+                |_t: &Time, robot: &mut State<'_, 4>, _s: &Sensors| {
+                    let _ = robot.q();
+                },
+            );
     }
 
     #[test]
@@ -553,7 +555,7 @@ mod tests {
             .add_controller_with(
                 EachTick,
                 ticks_ctx,
-                |c: &mut Arc<Mutex<u32>>, _t: &Time, _r: &mut State, _s: &Sensors| {
+                |c: &mut Arc<Mutex<u32>>, _t: &Time, _r: &mut State<'_, 4>, _s: &Sensors| {
                     if let Ok(mut n) = c.lock() {
                         *n += 1;
                         assert!(*n < 500, "the loop ignored the shutdown");
