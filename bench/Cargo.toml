@@ -12,3 +12,6 @@ kmr_api.workspace = true
 [features]
 # The Dynamixel SDK, for `tick_hw` on the reference chain.
 hardware = ["kmr_api/dynamixel"]
+
+[lints]
+workspace = true

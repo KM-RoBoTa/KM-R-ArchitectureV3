@@ -15,3 +15,6 @@ hardware = ["kmr_api/dynamixel"]
 # The RX-28 chain, `robot!(Rx28Chain)`: ten actuators. Dev bench stopgap until
 # N is a const generic (core M2).
 rx28 = ["kmr_api/joints-10"]
+
+[lints]
+workspace = true

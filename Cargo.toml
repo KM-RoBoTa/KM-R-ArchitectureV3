@@ -8,6 +8,14 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/KM-RoBoTa/KM-R-ArchitectureV3"
 
+[workspace.lints.clippy]
+# No mod.rs: a module is `foo.rs` with its children in `foo/`.
+mod_module_files = "deny"
+# A step-4 stub left behind fails the oracle (workflows/cycle/QA.md).
+# `unimplemented!` stays allowed: it is the SRS § 5 marker (NFR-2).
+todo = "warn"
+dbg_macro = "warn"
+
 [workspace.dependencies]
 kmr_core = { path = "kmr_core" }
 kmr_adapters = { path = "kmr_adapters" }

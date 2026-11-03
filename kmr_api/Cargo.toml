@@ -27,3 +27,6 @@ trybuild.workspace = true
 
 [[example]]
 name = "complete_api_example"
+
+[lints]
+workspace = true

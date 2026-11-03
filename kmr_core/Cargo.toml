@@ -25,3 +25,6 @@ frunk.workspace = true
 test-util = []
 # Dev bench stopgap until N is a const generic (core M2): JOINTS = 10, not 4.
 joints-10 = []
+
+[lints]
+workspace = true

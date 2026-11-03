@@ -24,3 +24,6 @@ tracing-subscriber.workspace = true
 [[example]]
 name = "xm_bench_smoke"
 required-features = ["dynamixel"]
+
+[lints]
+workspace = true
