@@ -62,6 +62,9 @@ pub(crate) mod sealed;
 pub(crate) mod sensors;
 pub(crate) mod signal;
 pub mod state;
+#[cfg(any(test, feature = "test-util"))]
+#[doc(hidden)]
+pub mod test_util;
 
 mod robot;
 

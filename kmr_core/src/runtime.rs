@@ -36,9 +36,14 @@ const FALLBACK_DT: Duration = Duration::from_millis(1);
 
 /// The instant, the sleep and the signal bus: a seam so the loop tests run on
 /// scripted values instead of the wall clock and the global bus.
-trait Host {
+///
+/// Public only through `test_util`, under the `test-util` feature.
+pub trait Host {
+    /// The current instant.
     fn now(&mut self) -> Instant;
+    /// Blocks until `deadline`.
     fn sleep_until(&mut self, deadline: Instant);
+    /// The signal on the bus, if any.
     fn poll(&mut self) -> Option<Signal>;
 }
 
@@ -447,7 +452,7 @@ fn run_phases<CS: Drive, H: Host, D: Drivers>(
 
 /// Finalization, startup phases, then the tick loop. Returns the signal that
 /// ended the run, a claim mismatch, or a member's error.
-fn run_with<CS: Drive, H: Host, D: Drivers>(
+pub(crate) fn run_with<CS: Drive, H: Host, D: Drivers>(
     robot: &mut Robot<CS>,
     host: &mut H,
     hal: &mut D,
@@ -526,108 +531,9 @@ mod tests {
     };
     use crate::signal::SignalMeta;
     use crate::state::{JOINTS, Q, Qd};
+    use crate::test_util::*;
     use crate::{EachTick, First, Init, Last, PostInit, PreInit};
     use crate::{HCons, HNil};
-
-    const DT: Duration = Duration::from_millis(1);
-
-    // Index of each bus check: three at startup, then five per tick.
-    const AFTER_PRE_INIT: usize = 0;
-    const AFTER_INIT: usize = 1;
-    const BEFORE_TORQUE_ON: usize = 2;
-    const TICK_START: usize = 3;
-    const AFTER_FIRST: usize = 4;
-    const AFTER_EACH_TICK: usize = 5;
-    const AFTER_LAST: usize = 6;
-    const TICK_END: usize = 7;
-    const PER_TICK: usize = 5;
-
-    /// Scripted host: never sleeps, never touches the global bus. A raised
-    /// signal stays raised, like on the real bus.
-    struct Scripted {
-        origin: Instant,
-        /// Offset from `origin` returned by each call to `now`, in tenths of
-        /// `DT`. Past the end of the script the last value is repeated.
-        now_tenths: [u32; 16],
-        now_calls: usize,
-        sleeps: [Option<Instant>; 16],
-        sleep_calls: usize,
-        poll_calls: usize,
-        /// Check from which the shutdown / the emergency stop is on the bus.
-        shutdown_from: Option<usize>,
-        estop_from: Option<usize>,
-    }
-
-    impl Scripted {
-        fn new(origin: Instant) -> Self {
-            Self {
-                origin,
-                now_tenths: [0; 16],
-                now_calls: 0,
-                sleeps: [None; 16],
-                sleep_calls: 0,
-                poll_calls: 0,
-                shutdown_from: None,
-                estop_from: None,
-            }
-        }
-
-        fn script(mut self, tenths: &[u32]) -> Self {
-            let last = tenths.last().copied().unwrap_or(0);
-            for (i, slot) in self.now_tenths.iter_mut().enumerate() {
-                *slot = tenths.get(i).copied().unwrap_or(last);
-            }
-            self
-        }
-
-        fn shutdown_from(mut self, check: usize) -> Self {
-            self.shutdown_from = Some(check);
-            self
-        }
-
-        fn estop_from(mut self, check: usize) -> Self {
-            self.estop_from = Some(check);
-            self
-        }
-
-        fn at(&self, tenths: u32) -> Instant {
-            self.origin + DT * tenths / 10
-        }
-    }
-
-    impl Host for Scripted {
-        fn now(&mut self) -> Instant {
-            let i = self.now_calls.min(self.now_tenths.len() - 1);
-            self.now_calls += 1;
-            self.at(self.now_tenths[i])
-        }
-
-        fn sleep_until(&mut self, deadline: Instant) {
-            if let Some(slot) = self.sleeps.get_mut(self.sleep_calls) {
-                *slot = Some(deadline);
-            }
-            self.sleep_calls += 1;
-        }
-
-        fn poll(&mut self) -> Option<Signal> {
-            let check = self.poll_calls;
-            self.poll_calls += 1;
-            assert!(check < 256, "the loop did not stop on the signal");
-
-            let raised = |from: Option<usize>| from.is_some_and(|from| check >= from);
-            let kind = if raised(self.estop_from) {
-                SignalKind::EmergencyStop
-            } else if raised(self.shutdown_from) {
-                SignalKind::Shutdown
-            } else {
-                return None;
-            };
-            Some(Signal {
-                kind,
-                meta: SignalMeta::new("scripted", file!(), line!()),
-            })
-        }
-    }
 
     /// How many times each bucket was walked.
     #[derive(Default)]
@@ -862,115 +768,11 @@ mod tests {
 
         use super::*;
 
-        /// An adapter call or a bucket walk.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        enum Call {
-            Check,
-            Open,
-            Zero,
-            Ping,
-            Health,
-            Configure,
-            ReadAll,
-            TorqueOn,
-            Read,
-            Write,
-            Hold,
-            TorqueOff,
-            Close,
-            PreInit,
-            Init,
-            PostInit,
-            First,
-            EachTick,
-            Last,
-        }
-
         // Named, not a glob: they shadow the schedule labels of `super::*`.
         use Call::{
             Check, Close, Configure, EachTick, First, Health, Hold, Init, Last, Open, Ping,
             PostInit, PreInit, Read, ReadAll, TorqueOff, TorqueOn, Write, Zero,
         };
-
-        /// What `write` or `hold` was handed: the positions, the masks and the
-        /// actuators of the batch (every one for `hold`).
-        #[derive(Clone, Copy, Debug, PartialEq)]
-        struct Sent {
-            q: [Q; JOINTS],
-            written: Written,
-            batch: Mask,
-        }
-
-        const CAPACITY: usize = 96;
-
-        /// The log the recorder and the controllers share. Fixed capacity: no
-        /// heap in the core, tests included.
-        struct Log {
-            calls: RefCell<([Call; CAPACITY], usize)>,
-            write: Cell<Option<Sent>>,
-            hold: Cell<Option<Sent>>,
-        }
-
-        impl Log {
-            fn new() -> Self {
-                Self {
-                    calls: RefCell::new(([Check; CAPACITY], 0)),
-                    write: Cell::new(None),
-                    hold: Cell::new(None),
-                }
-            }
-
-            fn push(&self, call: Call) {
-                let (calls, len) = &mut *self.calls.borrow_mut();
-                *calls.get_mut(*len).expect("log capacity") = call;
-                *len += 1;
-            }
-
-            fn calls(&self) -> Ref<'_, [Call]> {
-                Ref::map(self.calls.borrow(), |(calls, len)| &calls[..*len])
-            }
-        }
-
-        /// Position the recorder's `read_all` reads on every actuator.
-        const SEED: Q = Q(10.0);
-
-        /// A fake adapter: logs every call, can fail one bring-up step. Each
-        /// `read` moves actuator 0 by one.
-        struct Recorder<'a> {
-            log: &'a Log,
-            fail: Option<Call>,
-            owned: Mask,
-            every: NonZeroU32,
-        }
-
-        impl<'a> Recorder<'a> {
-            fn new(log: &'a Log) -> Self {
-                Self {
-                    log,
-                    fail: None,
-                    owned: Mask::ALL,
-                    every: NonZeroU32::MIN,
-                }
-            }
-
-            fn failing(log: &'a Log, call: Call) -> Self {
-                Self {
-                    fail: Some(call),
-                    ..Self::new(log)
-                }
-            }
-
-            fn step(&mut self, call: Call) -> Result<(), Failed> {
-                self.log.push(call);
-                match self.fail {
-                    Some(fail) if fail == call => Err(Failed(call)),
-                    _ => Ok(()),
-                }
-            }
-        }
-
-        #[derive(Debug, PartialEq)]
-        struct Failed(Call);
 
         /// The run error of a one-member list whose recorder failed `call`.
         fn failed(call: Call) -> HardwareError<MemberError<Failed, core::convert::Infallible>> {
@@ -978,96 +780,6 @@ mod tests {
                 name: core::any::type_name::<Recorder<'static>>(),
                 error: Failed(call),
             })
-        }
-
-        impl core::fmt::Display for Failed {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(f, "{:?} failed", self.0)
-            }
-        }
-
-        impl core::error::Error for Failed {}
-
-        impl seal::Adapter for Recorder<'_> {}
-
-        impl Hal for Recorder<'_> {
-            type Error = Failed;
-
-            fn check(&mut self, _overrides: Overrides) -> Result<Claim, Failed> {
-                self.step(Check)?;
-                Ok(Claim {
-                    owned: self.owned,
-                    group: [Group(0); JOINTS],
-                    read_every: [self.every; JOINTS],
-                    read_cost: Duration::ZERO,
-                    write_cost: Duration::ZERO,
-                })
-            }
-
-            fn open(&mut self) -> Result<(), Failed> {
-                self.step(Open)
-            }
-
-            fn zero(&mut self) -> Result<(), Failed> {
-                self.step(Zero)
-            }
-
-            fn ping(&mut self) -> Result<(), Failed> {
-                self.step(Ping)
-            }
-
-            fn health(&mut self) -> Result<(), Failed> {
-                self.step(Health)
-            }
-
-            fn configure(&mut self) -> Result<(), Failed> {
-                self.step(Configure)
-            }
-
-            fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Failed> {
-                *sample.q = [SEED; JOINTS];
-                self.step(ReadAll)
-            }
-
-            fn torque_on(&mut self) -> Result<(), Failed> {
-                self.step(TorqueOn)
-            }
-
-            fn read(&mut self, sample: Sample<'_>, _faults: &mut Faults) -> Mask {
-                self.log.push(Read);
-                sample.q[0] = sample.q[0] + Q(1.0);
-                Mask::ALL
-            }
-
-            fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, _faults: &mut Faults) {
-                self.log.push(Write);
-                let mut actuators = Mask::NONE;
-                for &actuator in batch.runs().flat_map(|(_group, run)| run) {
-                    actuators.set(actuator);
-                }
-                self.log.write.set(Some(Sent {
-                    q: *command.q,
-                    written: *command.written,
-                    batch: actuators,
-                }));
-            }
-
-            fn hold(&mut self, target: Command<'_>) {
-                self.log.push(Hold);
-                self.log.hold.set(Some(Sent {
-                    q: *target.q,
-                    written: *target.written,
-                    batch: Mask::ALL,
-                }));
-            }
-
-            fn torque_off(&mut self) {
-                self.log.push(TorqueOff);
-            }
-
-            fn close(&mut self) {
-                self.log.push(Close);
-            }
         }
 
         fn walk(log: &Log, call: Call) -> impl Fn(&Time, &mut RobotState, &Sensors) + '_ {
