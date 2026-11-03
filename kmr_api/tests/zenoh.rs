@@ -2,8 +2,10 @@
 //! process (quickstart § Phase Z, US4). The tick-exact cases (k, never k+1; superseded; the
 //! local write wins) run without a network in kmr_api/src/zenoh/tests.rs.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -61,6 +63,60 @@ fn gateway(instance: &'static str, port: u16) -> Gateway {
 /// A controller that does nothing.
 fn idle(_time: &Time, _state: &mut State, _sensors: &Sensors) {}
 
+thread_local! {
+    /// Whether this thread's allocations are counted: const-initialized, no destructor.
+    static COUNTED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Allocations of counted threads.
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+
+/// [`System`], counting the allocations of a thread while its window is open (T048).
+struct Counting;
+
+// SAFETY: every method forwards its arguments unchanged to `System`, which upholds the
+// `GlobalAlloc` contract; the count reads a const thread-local `Cell` and bumps an atomic,
+// allocating nothing and touching neither the layout nor the pointers.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count();
+        // SAFETY: the caller's contract for `alloc` is passed on as is.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count();
+        // SAFETY: the caller's contract for `alloc_zeroed` is passed on as is.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        count();
+        // SAFETY: `ptr` came from this allocator, which is `System`; the caller's contract holds.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from this allocator, which is `System`; the caller's contract holds.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+/// Counts one allocation when the calling thread's window is open; none while it is torn down.
+fn count() {
+    if COUNTED.try_with(Cell::get).unwrap_or(false) {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Opens or closes the calling thread's window: [`RealTime`] calls it on the tick thread.
+fn window(open: bool) {
+    COUNTED.set(open);
+}
+
 /// Runs `robot` for `ticks` real ticks on a recorder logging to `log`.
 fn run<C: kmr_api::Drive<N>>(
     robot: kmr_api::Robot<N, __Spec, C, kmr_api::Filled>,
@@ -69,6 +125,7 @@ fn run<C: kmr_api::Drive<N>>(
 ) {
     let mut host = RealTime::new(ticks);
     host.external = Some(&EXTERNAL_FLAGS);
+    host.window = window;
     let mut drivers = HCons {
         head: Recorder::new(log),
         tail: HNil,
@@ -132,8 +189,13 @@ fn us4_as1_each_tick_is_received_or_counted_missed_and_the_ring_is_served() {
         .set_limit_policy_all(Policy::Clamp)
         .add_plugins(gateway)
         .add_controller(EachTick, idle);
+    let before = ALLOCS.load(Ordering::Relaxed);
     run(robot, TICKS, &log);
+    let tick_allocs = ALLOCS.load(Ordering::Relaxed) - before;
     asker.join().expect("the ring query thread");
+
+    // T048 (SC-003, SRS NFR-1): from tick 1 to the stop, gateway on.
+    assert_eq!(tick_allocs, 0, "allocations on the tick thread");
 
     let ticks = received
         .lock()
@@ -225,4 +287,24 @@ fn a_gateway_without_a_peer_runs_and_publishes_into_nothing() {
         .add_controller(EachTick, idle);
     run(robot, 200, &log);
     assert!(counters.published() + counters.missed_samples() >= 199);
+}
+
+/// Allocates once, on tick 5.
+fn allocating(time: &Time, _state: &mut State, _sensors: &Sensors) {
+    if time.tick() == 5 {
+        std::hint::black_box(Vec::<u8>::with_capacity(16));
+    }
+}
+
+#[test]
+fn the_window_counts_an_allocation_of_the_tick_thread() {
+    let _serial = serial();
+    let log = Log::new();
+    let robot = Robot::new()
+        .set_dt(DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .add_controller(EachTick, allocating);
+    let before = ALLOCS.load(Ordering::Relaxed);
+    run(robot, 20, &log);
+    assert_eq!(ALLOCS.load(Ordering::Relaxed) - before, 1);
 }
