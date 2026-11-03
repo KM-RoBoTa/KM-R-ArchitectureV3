@@ -131,6 +131,9 @@ pub struct Robot {
     pub actuators: Vec<CheckedActuator>,
     /// In file order.
     pub links: Vec<CheckedLink>,
+    /// The descriptor says it is a placeholder (its first comment starts with `PLACEHOLDER`):
+    /// test data, not the robot. Its limits are never handed to the engine.
+    pub placeholder: bool,
 }
 
 /// Why a descriptor does not build (contracts/robot-macro.md § Errors).
@@ -277,7 +280,11 @@ pub(crate) fn validate(model: Model, file: &str) -> Result<Robot, ModelError> {
             })
         })
         .collect::<Result<_, ModelError>>()?;
-    Ok(Robot { actuators, links })
+    Ok(Robot {
+        actuators,
+        links,
+        placeholder: false,
+    })
 }
 
 /// Step 6: joint names and link names are unique.

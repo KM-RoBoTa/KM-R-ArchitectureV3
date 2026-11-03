@@ -358,6 +358,7 @@ fn run<const CASE: u8>() -> Result<(), UserError> {
     take();
     *SEEN.lock().unwrap_or_else(PoisonError::into_inner) = None;
     kmr_api::Robot::<N, TwoBrands<CASE>>::new()
+        .set_limit_policy_all(kmr_api::Policy::Clamp)
         .set_dt(Duration::from_millis(1))
         .set_hold(Duration::ZERO)
         .add_plugins(Bus::by_dev("/dev/leg").bus("leg"))
@@ -534,6 +535,7 @@ fn a_plugin_no_brand_takes_is_refused_before_any_bind() {
     let _bus = bus();
     take();
     let unknown = kmr_api::Robot::<N, TwoBrands<COVERED>>::new()
+        .set_limit_policy_all(kmr_api::Policy::Clamp)
         .add_plugins(Bus::by_id("ARM00001").bus("elbow"))
         .add_controller(EachTick, write_all)
         .run();
@@ -548,6 +550,7 @@ fn a_plugin_no_brand_takes_is_refused_before_any_bind() {
         "{unknown:?}"
     );
     let unlabelled = kmr_api::Robot::<N, TwoBrands<COVERED>>::new()
+        .set_limit_policy_all(kmr_api::Policy::Clamp)
         .add_plugins(Bus::by_id("ARM00001"))
         .add_controller(EachTick, write_all)
         .run();
@@ -592,6 +595,7 @@ fn bound<const CASE: u8>()
 -> Result<kmr_api::Bound<N, TwoBrands<CASE>, impl kmr_api::Drive<N> + use<CASE>>, UserError> {
     take();
     kmr_api::Robot::<N, TwoBrands<CASE>>::new()
+        .set_limit_policy_all(kmr_api::Policy::Clamp)
         .set_dt(Duration::from_millis(1))
         .set_hold(Duration::ZERO)
         .add_plugins(Bus::by_dev("/dev/leg").bus("leg"))
@@ -662,6 +666,7 @@ fn without_a_plugin_bind_gives_no_drivers_and_the_run_simulates() {
     let _bus = bus();
     take();
     let mut bound = kmr_api::Robot::<N, TwoBrands<COVERED>>::new()
+        .set_limit_policy_all(kmr_api::Policy::Clamp)
         .set_dt(Duration::from_millis(1))
         .add_controller(EachTick, write_all)
         .bind()

@@ -225,6 +225,7 @@ mod two_buses {
     fn one_plugin_on_two_buses_is_the_adapters_binding_error() {
         let record = seen();
         let res = kmr_api::Robot::<N, TwoBuses>::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial").bus("left"))
             .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
             .run();
@@ -425,6 +426,7 @@ mod recording {
         let _bus = bus();
         take();
         let res = kmr_api::Robot::<N, Records>::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .set_hold(Duration::ZERO)
             .add_controller(EachTick, write_then_stop)
@@ -459,6 +461,7 @@ mod recording {
         let _bus = bus();
         take();
         let res = kmr_api::Robot::<N, FailsOpen>::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .add_controller(EachTick, write_then_stop)
             .run();
@@ -479,10 +482,75 @@ mod recording {
     }
 
     #[test]
+    fn a_limited_actuator_without_a_policy_is_refused_before_any_io() {
+        let _bus = bus();
+        take();
+        let res = kmr_api::Robot::<N, Records>::new()
+            .set_limit_policy(0, kmr_api::Policy::Abort)
+            .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+            .add_controller(EachTick, write_then_stop)
+            .run();
+        assert!(
+            matches!(res, Err(UserError::NoPolicy { actuator: 1 })),
+            "{res:?}"
+        );
+        assert!(take().is_empty());
+    }
+
+    #[test]
+    fn a_policy_for_every_actuator_lets_it_run_and_dt_is_still_checked() {
+        let _bus = bus();
+        take();
+        let res = kmr_api::Robot::<N, Records>::new()
+            .set_limit_policy_group(&[0, 1], kmr_api::Policy::Warn)
+            .set_limit_policy_group(&[2, 3], kmr_api::Policy::Clamp)
+            .add_controller(EachTick, write_then_stop)
+            .run();
+        assert!(res.is_ok(), "{res:?}");
+
+        let res = kmr_api::Robot::<N, Records>::new()
+            .set_dt(Duration::from_micros(5))
+            .add_controller(EachTick, write_then_stop)
+            .run();
+        assert!(
+            matches!(res, Err(UserError::DtOutOfRange { .. })),
+            "{res:?}"
+        );
+    }
+
+    #[test]
+    fn an_index_past_n_and_a_bad_envelope_are_refused() {
+        let res = kmr_api::Robot::<N, Records>::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
+            .set_limit_policy(N, kmr_api::Policy::Clamp)
+            .add_controller(EachTick, write_then_stop)
+            .run();
+        assert!(
+            matches!(res, Err(UserError::NoActuator { index: N, n: N })),
+            "{res:?}"
+        );
+
+        let backwards = kmr_api::Envelope {
+            q: Some((Q(1.0), Q(-1.0))),
+            ..kmr_api::Envelope::NONE
+        };
+        let res = kmr_api::Robot::<N, Records>::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
+            .set_envelope(3, backwards)
+            .add_controller(EachTick, write_then_stop)
+            .run();
+        assert!(
+            matches!(res, Err(UserError::InvalidEnvelope { actuator: 3 })),
+            "{res:?}"
+        );
+    }
+
+    #[test]
     fn without_a_plugin_the_bound_driver_is_never_called() {
         let _bus = bus();
         take();
         let res = kmr_api::Robot::<N, Records>::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_controller(EachTick, write_then_stop)
             .run();
         assert!(res.is_ok(), "{res:?}");
@@ -519,6 +587,7 @@ mod no_table {
     fn a_plugin_is_refused_before_the_run() {
         let record = seen();
         let res = Robot::new()
+            .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
             .run();

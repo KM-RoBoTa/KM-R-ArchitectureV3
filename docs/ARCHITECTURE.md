@@ -306,6 +306,8 @@ checks it, and emits constants at the call site:
 - `model::NAMES`, `LOWER`, `UPPER`, `SPEED`, `EFFORT`, one array per fact,
   indexed by actuator, in `Q`, `Qd`, `Tau` and SRS FR-2.2 units (prismatic in
   mm);
+- `model::PRISMATIC`, `CONTINUOUS`, kind bit sets, and `PLACEHOLDER`, set when
+  the descriptor's first comment starts with `PLACEHOLDER` (test data);
 - `model::LINK_NAMES`, `LINK_PARENT`, `LINK_MASS`, `LINK_COM`, per link;
 - `actuator!("name")`, the index of a joint by name; another name does not
   build.
@@ -320,8 +322,15 @@ build time, which their `clippy.toml` allows.
 name, a descriptor by path, the `hardware = ..` argument split off first.
 The front door adds the `State` and `Robot` aliases, bound to the model's N,
 and one check: N ≤ 64, under `cargo check` at the `robot!` line (the core's
-`Mask::<N>::CHECK` is the backstop under `cargo build`). The kind bit sets `model::PRISMATIC` and `CONTINUOUS` wait for the
-core's public mask width.
+`Mask::<N>::CHECK` is the backstop under `cargo build`).
+
+**Limits.** At finalization `kmr_api` hands the core the model's limits as
+`[Limit; N]` (no position bound where `CONTINUOUS` is set, never the emitted
+`Q(0.0)`), with the policy the builder gave each actuator
+(`set_limit_policy`, `_group`, `_all`) and the envelopes (`set_envelope`,
+`_group`). There is no default policy: an actuator whose limit bounds anything
+and has none is `UserError::NoPolicy`, before any I/O (D2 B, assumed). A
+placeholder model hands no limit until its real descriptor lands.
 
 ## Hardware layer
 

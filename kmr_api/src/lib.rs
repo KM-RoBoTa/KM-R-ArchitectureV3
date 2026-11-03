@@ -13,6 +13,10 @@ pub use error::*;
 mod state;
 pub use state::*;
 
+/// The limit of an actuator, what a breach of it does, and the envelope a controller's
+/// writes are clamped to (SRS FR-4.5, FR-13.5).
+pub use kmr_core::limits::{Envelope, Limit, Policy};
+
 mod faults;
 pub use faults::{Faults, Mask};
 

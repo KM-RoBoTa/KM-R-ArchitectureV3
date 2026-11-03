@@ -244,6 +244,7 @@ macro_rules! __robot_items {
         const UPPER: [$crate::Q; N] = model::UPPER;
         const SPEED: [$crate::Qd; N] = model::SPEED;
         const EFFORT: [$crate::Tau; N] = model::EFFORT;
+        const PLACEHOLDER: bool = model::PLACEHOLDER;
     };
     () => {
         /// The state handle of this robot.

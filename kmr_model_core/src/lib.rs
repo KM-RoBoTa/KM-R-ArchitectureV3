@@ -105,14 +105,38 @@ fn check(text: &str, format: Format, shown: &str) -> Result<Robot, String> {
         Format::Ron => Ron::read(text, shown),
         Format::Json => Json::read(text, shown),
     };
-    model
+    let mut robot = model
         .and_then(|model| validate(model, shown))
-        .map_err(|e: ModelError| e.message())
+        .map_err(|e: ModelError| e.message())?;
+    robot.placeholder = placeholder(text);
+    Ok(robot)
+}
+
+/// Whether the descriptor's first comment, past an XML declaration, starts with `PLACEHOLDER`.
+fn placeholder(text: &str) -> bool {
+    let mut rest = text.trim_start();
+    if let Some(after) = rest.strip_prefix("<?xml") {
+        rest = after.split_once("?>").map_or("", |(_, r)| r).trim_start();
+    }
+    rest.strip_prefix("<!--")
+        .or_else(|| rest.strip_prefix("//"))
+        .is_some_and(|comment| comment.trim_start().starts_with("PLACEHOLDER"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_placeholder_is_told_by_its_first_comment() {
+        assert!(preset("XmBench").is_ok_and(|r| r.placeholder));
+        assert!(preset("Rx28Chain").is_ok_and(|r| !r.placeholder));
+        assert!(placeholder(
+            "<?xml version=\"1.0\"?>\n<!-- PLACEHOLDER: x -->"
+        ));
+        assert!(placeholder("// PLACEHOLDER\n(a: 1)"));
+        assert!(!placeholder("<robot><!-- PLACEHOLDER --></robot>"));
+    }
 
     #[cfg(unix)]
     #[test]

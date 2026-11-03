@@ -16,7 +16,7 @@
     apiUnits = component "kmr_api: units" "Deg, Cm, M and their rates, converted into Q and Qd (SRS FR-2.2)." "Rust"
     apiPayloads = component "kmr_api: payloads" "Medium and heavy payloads by mass and mount link; the mount is checked against the model's links at finalization, before any I/O (SRS FR-8.1, FR-8.4)." "Rust"
     apiErrors = component "kmr_api: errors" "UserError of run() and bind(), each saying how to fix it, the adapter's error typed inside BringUp; StateError of the handles (SRS FR-6.4, NFR-2, NFR-4)." "Rust, thiserror"
-    apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' presets and Dynamixel table types. Defined once, never copied." "Rust pub use"
+    apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, Mask, Limit, Policy, Envelope, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' presets and Dynamixel table types. Defined once, never copied." "Rust pub use"
     apiFake = component "kmr_api: fake brands" "Two test-only brands of fake members, so robot! expands over two brands in kmr_api's tests. Test builds only." "Rust, cfg(test)"
 
     apiMacro -> apiSpec "Emits the __Spec that implements"
@@ -47,7 +47,7 @@
     }
 
     group "kmr_api: builder" {
-        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, add_plugins, register_payload, add_controller, add_controller_with, add_controller_as_thread, run, bind." "Rust struct" {
+        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins, register_payload, add_controller, add_controller_with, add_controller_as_thread, run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
             tags "Code"
         }
         apiBound = component "kmr_api::Bound" "A finalized robot with its drivers: drivers() before the run, run() hands them back after it." "Rust struct" {
@@ -59,7 +59,7 @@
     }
 
     group "kmr_api: hardware spec" {
-        apiSpecTrait = component "kmr_api::Spec" "Drivers, LINK_NAMES and bind(plugins). Hidden; robot! implements it." "Rust trait" {
+        apiSpecTrait = component "kmr_api::Spec" "Drivers, LINK_NAMES, the model's kinds and limit columns, PLACEHOLDER, LIMITS (the [Limit; N] of the columns, no position bound where continuous) and bind(plugins). Hidden; robot! implements it." "Rust trait" {
             tags "Code"
         }
         apiLend = component "kmr_api::Lend" "A driver list that lends each member as &mut, so Bound::run hands the list back." "Rust trait" {
@@ -119,7 +119,7 @@
     }
 
     group "kmr_api: errors" {
-        apiUserError = component "kmr_api::UserError" "DuplicateBus, UnknownBus, SharedBusLabel, LabelRequired, FeatureOff, NoHardwareDeclared, BringUp, UnknownLink, DtOutOfRange." "Rust enum" {
+        apiUserError = component "kmr_api::UserError" "DuplicateBus, UnknownBus, SharedBusLabel, LabelRequired, FeatureOff, NoHardwareDeclared, BringUp, UnknownLink, DtOutOfRange, NoPolicy, NoActuator, InvalidEnvelope." "Rust enum" {
             tags "Code"
         }
         apiStateError = component "kmr_api::StateError, StateErrorKind" "A handle's failed read or write, from the core's state error." "Rust enums" {

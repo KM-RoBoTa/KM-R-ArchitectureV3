@@ -25,6 +25,7 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
     let links = links(robot);
     let prismatic = kinds(robot, Kind::Prismatic, krate);
     let continuous = kinds(robot, Kind::Continuous, krate);
+    let placeholder = robot.placeholder;
     quote! {
         /// Actuator count of this robot, from its descriptor.
         #[allow(dead_code)]
@@ -67,6 +68,10 @@ pub(crate) fn emit(robot: &Robot, krate: &TokenStream, tracked: Option<&str>) ->
             /// so `LOWER` and `UPPER` hold no bound for them. Revolute is
             /// neither.
             pub const CONTINUOUS: [u64; #krate::MASK_WORDS] = #continuous;
+
+            /// The descriptor is a placeholder, test data: its limits never reach the
+            /// engine.
+            pub const PLACEHOLDER: bool = #placeholder;
 
             #links
         }
@@ -226,6 +231,7 @@ mod tests {
         Robot {
             actuators,
             links: Vec::new(),
+            placeholder: false,
         }
     }
 
@@ -446,6 +452,7 @@ mod tests {
             "EFFORT",
             "PRISMATIC",
             "CONTINUOUS",
+            "PLACEHOLDER",
             "LINK_NAMES",
             "LINK_PARENT",
             "LINK_MASS",

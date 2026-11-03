@@ -215,6 +215,7 @@ mod sc_009 {
                         .unwrap_or_else(super::PoisonError::into_inner);
                     assert_eq!(N, $n);
                     let result = Robot::new()
+                        .set_limit_policy_all(kmr_api::Policy::Clamp)
                         .set_dt(Duration::from_millis(1))
                         .add_controller(EachTick, stop_at_tick_1)
                         .run();

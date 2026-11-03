@@ -163,6 +163,17 @@ pub enum UserError {
         "actuator {actuator} has a joint limit and no limit policy; set one with `.set_limit_policy_all(Policy::Clamp)` (or `set_limit_policy`, `set_limit_policy_group`)"
     )]
     NoPolicy { actuator: usize },
+
+    /// A builder setting names an actuator the robot does not have (SRS FR-6.4).
+    #[error("actuator {index} does not exist: this robot has {n} actuators, 0 to {n} - 1")]
+    NoActuator { index: usize, n: usize },
+
+    /// An envelope bound is not finite, or its lower bound is above its upper one (SRS
+    /// FR-13.5).
+    #[error(
+        "the envelope of actuator {actuator} is invalid; give each bound finite values with lower <= upper"
+    )]
+    InvalidEnvelope { actuator: usize },
 }
 
 /// Prints the [`Display`](core::fmt::Display) text, so `fn main() -> Result<(), UserError>`

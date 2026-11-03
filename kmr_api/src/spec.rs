@@ -9,7 +9,7 @@ use kmr_core::hal::{Drivers, Hal, NoHardware};
 use kmr_core::{HCons, HNil};
 
 use crate::brand::{Brand, Refused};
-use crate::{Q, Qd, Tau, UserError};
+use crate::{Limit, Q, Qd, Tau, UserError};
 
 #[cfg(test)]
 pub(crate) mod fake;
@@ -46,6 +46,18 @@ pub trait Spec<const N: usize> {
     /// Top effort per actuator.
     const EFFORT: [Tau; N];
 
+    /// The descriptor is a placeholder, test data: its limits never reach the engine.
+    const PLACEHOLDER: bool = false;
+
+    /// The model's limit of each actuator, typed (SRS FR-4.5).
+    const LIMITS: [Limit; N] = limits(
+        Self::LOWER,
+        Self::UPPER,
+        Self::SPEED,
+        Self::EFFORT,
+        Self::CONTINUOUS,
+    );
+
     /// Binds the bus plugins to the members, no I/O. `run()` calls it only when plugins are
     /// declared.
     ///
@@ -54,6 +66,30 @@ pub trait Spec<const N: usize> {
     /// [`UserError::FeatureOff`], [`UserError::NoHardwareDeclared`], a plugin no member takes,
     /// or a member's binding error as [`UserError::BringUp`].
     fn bind(plugins: &[Binding]) -> Result<Self::Drivers, UserError>;
+}
+
+/// The limit of each actuator from the model's columns: `lower` and `upper` are `None` where
+/// bit `i` of `continuous` is set, never the `Q(0.0)` the model emits there (SRS FR-4.5).
+pub const fn limits<const N: usize>(
+    lower: [Q; N],
+    upper: [Q; N],
+    speed: [Qd; N],
+    effort: [Tau; N],
+    continuous: [u64; crate::MASK_WORDS],
+) -> [Limit; N] {
+    let mut out = [Limit::NONE; N];
+    let mut i = 0;
+    while i < N {
+        let free = continuous[i / 64] & (1 << (i % 64)) != 0;
+        out[i] = Limit {
+            lower: if free { None } else { Some(lower[i]) },
+            upper: if free { None } else { Some(upper[i]) },
+            speed: speed[i],
+            effort: effort[i],
+        };
+        i += 1;
+    }
+    out
 }
 
 /// A list of drivers that lends its members to a run, so [`Bound::run`](crate::Bound::run)
@@ -371,5 +407,38 @@ mod tests {
     #[test]
     fn a_matching_plugin_binds() {
         assert!(__bind::<4, _>(xm_bench(), &[PLUGIN]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    #[test]
+    fn a_continuous_actuator_gets_no_position_bound() {
+        let limits = limits(
+            [Q(-1.0), Q(0.0)],
+            [Q(1.0), Q(0.0)],
+            [Qd(2.0), Qd(3.0)],
+            [Tau(4.0), Tau(5.0)],
+            [0b10; crate::MASK_WORDS],
+        );
+        assert_eq!(
+            limits,
+            [
+                Limit {
+                    lower: Some(Q(-1.0)),
+                    upper: Some(Q(1.0)),
+                    speed: Qd(2.0),
+                    effort: Tau(4.0),
+                },
+                Limit {
+                    lower: None,
+                    upper: None,
+                    speed: Qd(3.0),
+                    effort: Tau(5.0),
+                },
+            ]
+        );
     }
 }

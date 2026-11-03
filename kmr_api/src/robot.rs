@@ -2,7 +2,9 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::spec::Lend;
-use crate::{Binding, Bus, Payload, Schedule, Sensors, Spec, State, Time, UserError};
+use crate::{
+    Binding, Bus, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
+};
 use kmr_core::hal::{Drivers, NoHardware};
 use kmr_core::{
     ControlFn, ControlFnWith, Empty, Filled, HCons, HNil, HasController, Inline, InlineWith,
@@ -118,7 +120,38 @@ pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
     inner: kmr_core::Robot<N, C, E>,
     plugins: Vec<Bus>,
     payloads: Vec<Payload>,
+    guards: Guards<N>,
     spec: PhantomData<fn() -> H>,
+}
+
+/// The limit policies and envelopes the builder collected, handed to the core at
+/// finalization.
+struct Guards<const N: usize> {
+    policy: [Option<Policy>; N],
+    envelope: [Envelope; N],
+    /// The first actuator index past N a setting named.
+    stray: Option<usize>,
+}
+
+impl<const N: usize> Guards<N> {
+    /// No policy, no envelope.
+    fn new() -> Self {
+        Self {
+            policy: [None; N],
+            envelope: [Envelope::NONE; N],
+            stray: None,
+        }
+    }
+
+    /// Applies `set` to actuator `i`, or notes `i` past N.
+    fn at(&mut self, i: usize, set: impl FnOnce(&mut Option<Policy>, &mut Envelope)) {
+        match (self.policy.get_mut(i), self.envelope.get_mut(i)) {
+            (Some(policy), Some(envelope)) => set(policy, envelope),
+            _ => {
+                self.stray.get_or_insert(i);
+            }
+        }
+    }
 }
 
 impl<const N: usize, H: Spec<N>> Robot<N, H> {
@@ -128,6 +161,7 @@ impl<const N: usize, H: Spec<N>> Robot<N, H> {
             inner: kmr_core::Robot::new(),
             plugins: Vec::new(),
             payloads: Vec::new(),
+            guards: Guards::new(),
             spec: PhantomData,
         }
     }
@@ -162,6 +196,53 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         }
     }
 
+    /// What a breach of actuator `i`'s limit does (SRS FR-4.5). Every actuator whose model
+    /// limit bounds anything needs one, or [`run`](Self::run) refuses with
+    /// [`UserError::NoPolicy`] before any I/O. An `i` past N is [`UserError::NoActuator`].
+    pub fn set_limit_policy(mut self, i: usize, policy: Policy) -> Self {
+        self.guards.at(i, |slot, _| *slot = Some(policy));
+        self
+    }
+
+    /// [`set_limit_policy`](Self::set_limit_policy) for every actuator of `group`.
+    pub fn set_limit_policy_group<const K: usize>(
+        mut self,
+        group: &[usize; K],
+        policy: Policy,
+    ) -> Self {
+        for &i in group {
+            self.guards.at(i, |slot, _| *slot = Some(policy));
+        }
+        self
+    }
+
+    /// [`set_limit_policy`](Self::set_limit_policy) for every actuator.
+    pub fn set_limit_policy_all(mut self, policy: Policy) -> Self {
+        self.guards.policy = [Some(policy); N];
+        self
+    }
+
+    /// Bounds actuator `i`'s written values: a value outside is clamped and its `envelope`
+    /// fault bit set (SRS FR-13.5). Each bound must be finite with `lower <= upper`, or
+    /// [`run`](Self::run) refuses with [`UserError::InvalidEnvelope`]. An `i` past N is
+    /// [`UserError::NoActuator`].
+    pub fn set_envelope(mut self, i: usize, envelope: Envelope) -> Self {
+        self.guards.at(i, |_, slot| *slot = envelope);
+        self
+    }
+
+    /// [`set_envelope`](Self::set_envelope) for every actuator of `group`.
+    pub fn set_envelope_group<const K: usize>(
+        mut self,
+        group: &[usize; K],
+        envelope: Envelope,
+    ) -> Self {
+        for &i in group {
+            self.guards.at(i, |_, slot| *slot = envelope);
+        }
+        self
+    }
+
     /// Carries the builder data over to a robot whose controller set grew.
     fn grown<D>(
         self,
@@ -171,6 +252,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             inner: grow(self.inner),
             plugins: self.plugins,
             payloads: self.payloads,
+            guards: self.guards,
             spec: PhantomData,
         }
     }
@@ -317,11 +399,13 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         Ok(Bound { inner, drivers })
     }
 
-    /// Checks the builder data, no I/O.
+    /// Checks the builder data, no I/O, and hands the limits, their policies and the envelopes
+    /// to the core. A placeholder model's limits are not handed over.
     ///
     /// # Errors
     ///
-    /// [`UserError::DuplicateBus`], then [`UserError::UnknownLink`].
+    /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], [`UserError::NoActuator`],
+    /// then [`UserError::InvalidEnvelope`].
     fn finalize(self) -> Result<(kmr_core::Robot<N, C, E>, Vec<Binding>), UserError>
     where
         H: Spec<N>,
@@ -340,10 +424,24 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
                 link: payload.mount(),
             });
         }
-        Ok((
-            self.inner,
-            self.plugins.iter().map(|bus| bus.binding).collect(),
-        ))
+        if let Some(index) = self.guards.stray {
+            return Err(UserError::NoActuator { index, n: N });
+        }
+        if let Some(actuator) = self.guards.envelope.iter().position(|e| !valid(e)) {
+            return Err(UserError::InvalidEnvelope { actuator });
+        }
+        // DECISION: a placeholder model (kmr_model T023) hands no limit, so no policy is
+        // needed until its real descriptor lands (kmr_model T029).
+        let limits = if H::PLACEHOLDER {
+            [Limit::NONE; N]
+        } else {
+            H::LIMITS
+        };
+        let inner = self
+            .inner
+            .set_limits(limits, self.guards.policy)
+            .set_envelopes(self.guards.envelope);
+        Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
     }
 }
 
@@ -383,6 +481,14 @@ impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
         }
         Ok(drivers)
     }
+}
+
+/// Whether every bound of `envelope` is finite with `lower <= upper`.
+fn valid(envelope: &Envelope) -> bool {
+    let ok = |(lo, hi): (f32, f32)| lo.is_finite() && hi.is_finite() && lo <= hi;
+    envelope.q.is_none_or(|(lo, hi)| ok((lo.0, hi.0)))
+        && envelope.qd.is_none_or(|(lo, hi)| ok((lo.0, hi.0)))
+        && envelope.tau.is_none_or(|(lo, hi)| ok((lo.0, hi.0)))
 }
 
 /// The drivers of a run without a bus plugin.
@@ -537,6 +643,7 @@ mod tests {
         let pad = Arc::new(Mutex::new(0u32));
 
         TestRobot::new()
+            .set_limit_policy_all(Policy::Clamp)
             .set_dt(Duration::from_millis(1))
             .add_controller(EachTick, bump_q)
             // ctx FIRST — the api argument order.
