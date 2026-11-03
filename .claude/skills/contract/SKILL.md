@@ -1,12 +1,13 @@
 ---
 name: contract
-description: Step 4 of the cycle. From one module SRS (docs/srs/modules/<module>.md), draft the module's pub stubs and test names with todo!() bodies. Nothing is implemented. Use on /contract <module>.
+description: Step 4 of the cycle. From one module's section of docs/srs/SRS.md, draft the module's pub stubs and test names with todo!() bodies. Nothing is implemented. Use on /contract <module>.
 ---
 
 # contract
 
-Input: a module name. Its SRS is
-`docs/srs/modules/<module>.md`. Ask for the name if not given.
+Input: a module name. Its SRS is the `## Module: <module>`
+section of `docs/srs/SRS.md` and the requirements its `Covers:` line
+names. Ask for the name if not given.
 
 1. Read the SRS section, the module's `//!` doc comment in the skeleton,
    and its C4 box in `docs/c4/<module>.dsl`. If any is missing, stop and

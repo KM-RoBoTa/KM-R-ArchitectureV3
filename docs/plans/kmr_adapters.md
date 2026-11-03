@@ -1,0 +1,53 @@
+# Plan: kmr_adapters
+
+Open tasks copied from `specs/001-kmr-adapters/tasks.md` on 2026-11-03, when the
+project left spec-kit. Ids are the spec-kit ones, so the cross-references
+(`Blocked on Tnnn`, `Unblocks Tnnn`, other crates' ids) still resolve.
+Context for each task (HUMAN, Hand-off, assumed decisions, research) stays
+in [`specs/001-kmr-adapters/`](../../specs/001-kmr-adapters/).
+
+## Phase 1: Setup
+
+- [ ] T002 HUMAN (dxl_rs, critical path step 1): add `force_torque_off` on the `TorqueOff` type-state, or a free function by port, id and protocol, in ../dxl_rs/build/actuator_codegen.rs; it writes `Torque_Enable` = 0 with `write1ByteTxRx1` / `write1ByteTxRx2` at the model's address (24 on AX, 64 on X), whatever the torque state (research R1, contracts/backend.md). Unblocks T017
+- [ ] T003 HUMAN (dxl_rs): commit or drop the `.ron` edits in ../dxl_rs and push `feat/battery-status` to KM-RoBoTa/dxl-rs. Unblocks T052 (git dependency) and T053 (CI)
+
+## Phase 6: User Story 1 and 2, through the engine (Priority: P1), plan step D, critical path steps 3 to 11
+
+### Agent
+
+- [ ] T044 [US1] Hand-off, owner controllers plan C0 and C2 (critical path step 10); C2 blocked on T042. `controllers/src/main.rs`: `robot!(XmBench)` (C0, unblocked, before kmr_api A4), a bounded swing from `prev(0)`, `shutdown!` after a fixed time (C2); no bus line in the shipped file (assumed, pending human: D15 A); the bench adds `.add_plugins(Bus::by_id("<U2D2 serial>"))` locally. No edit here
+- [ ] T045 [US2] HUMAN: Bench (critical path step 11; quickstart.md § 5), one session with core T018, kmr_api T017 and controllers T014, T015. Blocked on core T004–T013, T017, T041, kmr_api T011, controllers T012. The four actuators follow the swing (SC-001); after a shutdown and after an emergency stop, raised by the local `emergency_stop!` line of controllers T015, Dynamixel Wizard reads `Torque Enable` = 0 on ids 1 to 4, also with one actuator read-only (SC-005); ten runs in a row reopen the port; without the udev rule bring-up fails with the latency-timer hint and nothing is powered (FR-004)
+
+## Phase 7: User Story 4, clear faults (Priority: P2)
+
+- [ ] T047 [US4] HUMAN: Bench: unplug one actuator mid-run; `offline` and `stale` are set for it and the loop keeps its grid (the ~34 ms SDK stall is a known limit, research R13)
+
+## Phase 8: The rest, plan step E
+
+- [ ] T049 [US4] Protocol 1 health under the SDK boundary exemption: add `BackendError::Unsupported` in kmr_adapters/src/dynamixel/backend.rs; `read_health` returns it for Protocol 1 in kmr_adapters/src/dynamixel/dxl_rs.rs (at the call site) and in kmr_adapters/src/dynamixel/scripted.rs; `health` in kmr_adapters/src/dynamixel.rs warns once per Protocol 1 actuator and skips voltage and temperature; the Protocol 1 bring-up tests of T009 flip to `Ok` (FR-006 (SRS FR-5.2); research R11)
+- [ ] T050 [US1] HUMAN: dxl_rs: one 10-byte block sync read at address 126 in ../dxl_rs/src/transport.rs (research R12)
+- [ ] T051 [US1] Blocked on T050. In kmr_adapters/src/dynamixel/dxl_rs.rs `sync_read_state` makes one call per group; `STATE_READS` becomes `&[10]` there and in kmr_adapters/src/dynamixel/scripted.rs; remove the `#[ignore]` of T008; the declared read cost follows (FR-010, FR-035 (SRS FR-5.3, NFR-11))
+- [ ] T052 [US5] Blocked on T003. In Cargo.toml (root) replace `dxl_rs = { path = "../dxl_rs" }` with the git dependency on the pushed branch or a pushed rev (`git ls-remote` checks it), then `cargo update -p dxl_rs` (SC-007 (SRS NFR-5))
+- [ ] T053 [US5] HUMAN (CI workflow edit, as core T053, T059 and controllers T018, T027). Blocked on T052 and on the human's choice of dxl-rs access in CI (public repository or an ssh-agent step; fix-plan decision 1). In .github/workflows/ci.yml install libclang and the C cross toolchain, and cross-build `controllers` with `--features kmr_api/dynamixel` for aarch64-unknown-linux-gnu and armv7-unknown-linux-gnueabihf; the job is green (SC-007 (SRS NFR-5))
+- [ ] T054 [US5] HUMAN: dxl_rs: put the no-op stub bindings (build/dynamixel/dynamixel_sdk.rs, "Using stub DynamixelSDK bindings") behind an explicit feature in ../dxl_rs/build.rs, so a robot binary never builds on stubs; then bump the rev of T052
+- [ ] T055 [US5] Blocked on T053. Cross-build `controllers` with `--features kmr_api/dynamixel` for aarch64 and armv7 on a machine with no serial device; the build log has no "Using stub DynamixelSDK bindings" line; the toolchain steps live in .github/workflows/ci.yml (SC-007 (SRS FR-5.5, NFR-5))
+- [ ] T056 [US3] Hand-off, HUMAN, owner core T020–T027 (K2.0 to K2.7, design-const-generic-n.md § 5 steps 0 to 7; **state/field.rs**, **controllers.rs, schedule.rs, schedule/macros.rs**); step 8 is kmr_api's. No edit here
+- [ ] T057 [US3] Blocked on T056 (core T027, K2.7). In kmr_adapters/src/dynamixel.rs, kmr_adapters/src/binding.rs and kmr_adapters/src/dynamixel/dxl_rs.rs: `Dynamixel<B, NB, N>`, `impl Hal<N>`, `bind` takes `Table<NB, N>`, `DxlRs` sizes its handle table from N (design-const-generic-n step 9; FR-022 (SRS FR-6.1))
+- [ ] T058 [US3] Blocked on core T025 (K2.5, HUMAN: `MASK_WORDS` public in `kmr_core::hal`) only; the doctests pass literal bit sets, so kmr_model's `model::PRISMATIC` (kmr_model T032) is not needed here. In kmr_adapters/src/dynamixel/config.rs add `pub const fn check_kinds(self, prismatic: [u64; MASK_WORDS]) -> Self` (`MASK_WORDS` from `kmr_core::hal`; bit i is word i / 64, bit i % 64): a set bit is a compile error "SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion" naming its index; add a `compile_fail` doctest and a passing one. Not `[u64; N.div_ceil(64)]` (does not compile in kmr_api's `Spec<N>` on stable). Hand-off: kmr_api plan B3 calls it as `const _: Table<__NB, __M> = __TABLE.check_kinds(model::PRISMATIC);` (a `const _: () = ..` form is E0308); no kmr_api edit here (FR-021 (SRS FR-2.2); SC-006)
+- [ ] T059 [US1] HUMAN (`unsafe impl GlobalAlloc`: AGENTS.md keeps anything `unsafe` off limits for agents). In kmr_adapters/src/dynamixel/tests.rs add a counting `#[global_allocator]` under `#[cfg(test)]` (per-thread counter) and a test of 10 000 ticks of `read` and `write` on the scripted bus asserting zero allocations (SC-008 (SRS NFR-1); FR-013)
+- [ ] T068 [US1] After T045; blocked on kmr_api T021 (the front door calls `__model!`; today kmr_api/src/robot_macro.rs:24 reads `<Preset>::N`). This crate owns the presets' hardware half, so the removal is here (kmr_model T028 hands off to it): in kmr_adapters/src/presets.rs drop `Preset::N`, and in kmr_adapters/src/presets/xm_bench.rs its derivation from `HARDWARE.actuators.len()`; N comes from the preset's model half (kmr_model T024; kmr_model research R7, review #2). The table keeps its own length; the count check (T025, kmr_api T023) keeps table and model in step. Drop the "`Preset::N` is 4" check of the T026 test (FR-023 (SRS FR-6.1))
+
+## Phase 9: Polish and cross-cutting
+
+- [ ] T061 Hand-off, owner core T060 (HUMAN; docs/decisions/0002-hal-contract.md records the contract of kmr_core/src/hal.rs, so one owner). The adapter items go there: drop "port binding as a const"; `force_torque_off` and the strict fake, the table generic over N, binding by label (D6), plugin baud at `bind` (research R6), zero offset (D8), default cadence (D9), Protocol 1 health exemption. This plan's PR lists the SRS problems of research R15 for the human (constitution V). No edit to 0002 here
+- [ ] T063 HUMAN Bench SC-003: write-tick I/O under 1 ms at a 1 ms tick, read ticks logged apart, measured costs within the declared ones; pick the `DEFAULT_READ_EVERY` value (D9)
+- [ ] T064 Blocked on T063. Set `DEFAULT_READ_EVERY` in kmr_adapters/src/dynamixel/config.rs to the measured value and drop "placeholder" from its doc; hand the number to core T060 for docs/decisions/0002-hal-contract.md
+
+## Added 2026-11-02 (multi-brand robot: AX-12, MX-64 and AK60 on their own buses)
+
+- [ ] T071 [2026-11-02] Agent (kmr-v3-7e session), after T069. MX-64 in kmr_adapters/src/dynamixel/config.rs `Model`: Protocol 1 (Goal Position 30, Present Position 36, Present Speed 38, Present Load 40, size 2) and Protocol 2.0 firmware (Goal Position 116, Present Velocity 128, Present Position 132, size 4), as two models, its series and units in dynamixel/units.rs; scripted-backend tests for an AX-12 bus beside an MX-64 bus in one table. A P1 sync write may mix AX-12, RX-28 and MX-64 (same address and size); the group key may be the bus alone if the backend splits by (address, size), as dxl_rs v2's Easy tier does. Open, not this task: the MX "Torque Ctrl Mode Enable" register that makes goal writes do nothing (dxl_rs v2 issue). (SRS FR-5.3, FR-5.4)
+- [ ] T072 [2026-11-02] Agent (kmr-v3-7e session), after T069. CubeMars AK60-6 MIT adapter in kmr_adapters/src/cubemars.rs (+ cubemars/ submodules): one member per CAN interface (`by_dev("can0")`), raw SocketCAN, frames ported from cubemars_rs src/main.rs (its lib.rs `get_feedback` makes the motor limp: do not use it). MIT only: p from `Q`, v from `Qd`, tau_ff from `Tau`, Kp and Kd fixed per actuator in the table (150 and 1) until the core has `Kp`/`Kd` fields (SRS FR-2.2). `check` claims its indices, cadence 1, one local group per interface. Ping, health and `read_all` use the exit frame FF×7 FD (limp, answers with state; verify on hardware); `torque_on` sends enter FF×7 FC and the first command must carry the measured q (no jump). `write` sends one frame per written actuator, never blocks; `read` drains the replies of the previous tick non-blocking, matched on data[0], so feedback is one tick old. Out-of-range values (P ±12.5 rad, V ±45 rad/s, T ±15 N·m) go to `faults.rejected`, never clipped. Signs of p, v and tau negated on send and receive; zero frame FE never sent, offsets from the startup position. `torque_off` sends FD to every actuator. Never run against can0 from an agent session. Blocked on the maintainer for SRS FR-2.5 (an unwritten actuator gets no frame, so no reply) and FR-4.1 (torque off after the hold drops the GeckoLeg). (SRS FR-5.1, FR-5.3, FR-5.6, FR-5.10)
+
+## Added 2026-10-29 (D18, limits through the API)
+
+- [ ] T070 [2026-10-29] Future (D18, decided 2026-10-29, not in this version): actuator limits configurable through the API as a plugin capability. Every actuator plugin whose hardware supports it, all Dynamixel models and not only the RX, may expose "set health limits" (Min and Max Voltage Limit, Temperature Limit), written to the actuator's own EEPROM registers, torque off, and read back by `health` in kmr_adapters/src/dynamixel.rs, which already checks against them. Needs a capability shape in kmr_api first (spec Roadmap, FR-006 (SRS FR-5.2)).

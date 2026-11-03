@@ -62,8 +62,7 @@ and I can say in one sentence why the project exists. **Tool:**
 ## 2. Defining (POC-ready SRS, holes allowed)
 
 **Who:** me drafting, agent probing for ambiguity. **What:**
-`docs/srs/SRS.md`, split into one `docs/srs/modules/<module>.md` per C2
-container, requirements numbered
+`docs/srs/SRS.md`, one `## Module: <module>` section per C2 container, requirements numbered
 `<MOD>-<n>`, each one testable sentence. Holes are allowed and marked
 `TODO(srs)`; the SRS is POC-ready, not final. **Exit:** every C2
 container has an SRS section with at least one testable requirement,

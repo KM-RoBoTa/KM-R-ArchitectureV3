@@ -32,9 +32,21 @@ module it depends on is at step 4 or later.
 items only; toy = build + run only. `docs/srs/SRS.md` non-functional section
 overrides `QA.md`.
 
+`profile: serious`
+
+Every crate entered the cycle on 2026-11-03 from spec-kit, already being
+built, so all of them start at step 5 without a step-4 sign-off. Their
+open tasks are in `docs/plans/<module>.md`.
+
 | module | owner | mode | step | branch | last oracle run |
 |---|---|---|---|---|---|
-| _example_ | mine · delegated | draft · pair · loop · unset | 1–9 · `needs contract rework` | `mod/<name>` | `2026-10-29 green` |
+| kmr_core | mine | unset | 5 | — | `2026-11-03 red`: clippy, 6 errors |
+| kmr_adapters | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_model | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_api | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| controllers | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_ffi | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| bench | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
 
 - **owner** `mine`: I write it. Agents do not touch its files without
   listing them first. `delegated`: an agent writes it under the step-4
