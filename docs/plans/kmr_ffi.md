@@ -46,7 +46,7 @@ in [`specs/006-kmr-ffi/`](../../specs/006-kmr-ffi/).
 ## Phase 6: User Story 4, a new field without FFI chores (Priority: P4), plan C3
 
 - [x] T027 [US4] In kmr_ffi/src/fields.rs add a test: a test-only field list with one extra field `dummy` gives it a `Slot` array, a `WriteBuf` array, a `Written` mask, a line in `kmr_ffi.h` and `kmr_ffi.hpp`, and a name in both bridges' lists, from that one line (SC-004 first half; US4 scenario 1; FR-014 (SRS FR-10.2))
-- [ ] T028 [US4] Hand-off, owner kmr_api G1 (its trybuild suite, kmr_api/tests/ui/); blocked on T013 and core K7.1 (T009). A compile-fail case: the apply-step `match` generated from a field list that leaves one `FieldId` variant out fails with `E0004` naming that variant (SC-004 second half; US4 scenario 2). kmr_api G1 does not list this case yet (reported). No kmr_api edit here
+- [x] T028 [US4] Hand-off, owner kmr_api G1 (its trybuild suite, kmr_api/tests/ui/); blocked on T013 and core K7.1 (T009). A compile-fail case: the apply-step `match` generated from a field list that leaves one `FieldId` variant out fails with `E0004` naming that variant (SC-004 second half; US4 scenario 2). kmr_api G1 does not list this case yet (reported). No kmr_api edit here Done 2026-11-03: kmr_api/tests/ui/ffi/apply_misses_a_field.rs, run by kmr_api/tests/ui.rs under the `ffi` feature: `kmr_api::__ffi_apply!` over a list without `kd` fails with `E0004` naming `FieldId::Kd`
 
 ## Phase 7: Polish and cross-cutting, plan E1 to E5
 
