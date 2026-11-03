@@ -78,6 +78,15 @@ mod limits {
         assert_eq!(model::EFFORT[2], Tau(20.0));
     }
 
+    #[test]
+    fn kinds_are_bit_sets_readable_without_a_fake_infinite_limit() {
+        assert_ne!(model::CONTINUOUS[0] & (1 << 1), 0);
+        assert_ne!(model::PRISMATIC[0] & (1 << 2), 0);
+        assert_eq!(model::CONTINUOUS[0] & !(1 << 1), 0);
+        assert_eq!(model::PRISMATIC[0] & !(1 << 2), 0);
+        let _: [u64; kmr_api::MASK_WORDS] = model::CONTINUOUS;
+    }
+
     // 3.14 is the descriptor's value, not an approximate PI.
     #[allow(clippy::approx_constant)]
     #[test]
