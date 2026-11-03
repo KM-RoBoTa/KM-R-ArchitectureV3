@@ -43,6 +43,11 @@ pub fn preset(name: &str) -> Result<Robot, String> {
     parse(preset.text, preset.shown)
 }
 
+/// The name of every preset, in the order `robot!`'s error lists them.
+pub fn preset_names() -> impl Iterator<Item = &'static str> {
+    presets::names()
+}
+
 /// The checked robot of the descriptor file at `path`.
 ///
 /// `path` is taken as given; `robot!` joins it to the calling crate's `CARGO_MANIFEST_DIR`

@@ -1,6 +1,7 @@
 //! The build-script helper (feature `build`): headers, ABI file and the C/C++ compile.
 //!
-//! Run from the user's `build.rs` (assumed, pending human: D12 A). It writes `kmr_ffi.h` (C11),
+//! Run from the user's `build.rs` (D12 A, decision 0009): [`robot`] or [`model`] names the
+//! robot again, and kmr_model_core gives the same N as `robot!`. It writes `kmr_ffi.h` (C11),
 //! `kmr_ffi.hpp` (C++17) and `kmr_ffi_abi.rs` into `OUT_DIR`, all for one N and one History
 //! depth, then compiles the user's sources against those headers with `cc`. `foreign!` in
 //! `main.rs` checks the ABI file against `robot!`, so C built for another N fails the build.
@@ -15,11 +16,11 @@ use std::path::{Component, Path, PathBuf};
 /// What can go wrong in the build-script helper.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// No robot preset of that name.
-    #[error("unknown robot preset `{0}`")]
+    /// No robot preset of that name; `robot!`'s message, listing every preset.
+    #[error("{0}")]
     UnknownPreset(String),
-    /// The robot descriptor could not be read.
-    #[error("robot descriptor: {0}")]
+    /// The robot descriptor could not be read or is invalid; `robot!`'s message.
+    #[error("{0}")]
     Descriptor(String),
     /// N is outside `1..=64`, the actuators one [`Mask`](crate::Mask) holds.
     #[error("kmr_ffi: N = {0} is outside 1..=64, one mask bit per actuator")]
@@ -38,25 +39,87 @@ pub enum Error {
     Compile(String),
 }
 
-/// A build of the user's C and C++ sources for one N and one History depth.
+/// Where a build's N comes from, read when [`Build::compile`] runs.
+enum Robot {
+    /// A preset shipped in kmr_model_core, by name.
+    Preset(String),
+    /// A descriptor file, relative to the calling crate's `Cargo.toml`.
+    Model(PathBuf),
+    /// N given as is.
+    #[cfg(test)]
+    Count(usize),
+}
+
+/// A build of the user's C and C++ sources for one robot and one History depth.
 pub struct Build {
-    /// Actuator count, `robot!`'s N.
-    n: usize,
+    /// The robot whose actuator count is `robot!`'s N.
+    robot: Robot,
     /// History depth, the core's `HISTORY_DEPTH`.
     depth: usize,
 }
 
+/// A build for the preset named `name`, the robot `robot!(name)` gives, and `depth` History
+/// slots.
+///
+/// kmr_api's `ffi-build` wrapper passes the core's `HISTORY_DEPTH` as `depth`.
+// DECISION: `depth` is an argument, not a lookup: kmr_ffi keeps no engine dependency (research
+// R9, decision 0009), so the crate that has the core (kmr_api) supplies it.
+pub fn robot(name: &str, depth: usize) -> Build {
+    Build {
+        robot: Robot::Preset(name.to_owned()),
+        depth,
+    }
+}
+
+/// A build for the descriptor at `path`, the robot `robot!(model = path)` gives, and `depth`
+/// History slots.
+///
+/// A relative `path` is relative to the calling crate's `Cargo.toml`, as in `robot!`.
+pub fn model(path: impl AsRef<Path>, depth: usize) -> Build {
+    Build {
+        robot: Robot::Model(path.as_ref().to_path_buf()),
+        depth,
+    }
+}
+
 impl Build {
     /// A build for `n` actuators and `depth` History slots.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "robot() and model() (T011) supply N and the depth"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn new(n: usize, depth: usize) -> Self {
-        Self { n, depth }
+        Self {
+            robot: Robot::Count(n),
+            depth,
+        }
+    }
+
+    /// N, from kmr_model_core: the same reader and checks `robot!` runs.
+    fn n(&self) -> Result<usize, Error> {
+        match &self.robot {
+            Robot::Preset(name) => kmr_model_core::preset(name).map(|r| r.n()).map_err(|msg| {
+                if kmr_model_core::preset_names().any(|p| p == name) {
+                    Error::Descriptor(msg)
+                } else {
+                    Error::UnknownPreset(msg)
+                }
+            }),
+            Robot::Model(path) => {
+                let path = match std::env::var_os("CARGO_MANIFEST_DIR") {
+                    Some(dir) => Path::new(&dir).join(path),
+                    None if path.is_absolute() => path.clone(),
+                    None => {
+                        return Err(Error::Descriptor(
+                            "kmr: CARGO_MANIFEST_DIR is not set; build with cargo".into(),
+                        ));
+                    }
+                };
+                println!("cargo:rerun-if-changed={}", path.display());
+                kmr_model_core::descriptor(&path)
+                    .map(|r| r.n())
+                    .map_err(Error::Descriptor)
+            }
+            #[cfg(test)]
+            Robot::Count(n) => Ok(*n),
+        }
     }
 
     /// Writes the headers and the ABI file into `OUT_DIR`, then compiles `sources` against them.
@@ -65,15 +128,16 @@ impl Build {
     /// build when a file in a source's folder changes, so headers next to the sources count; a
     /// header elsewhere needs its own `cargo:rerun-if-changed`.
     pub fn compile(&self, sources: &[&str]) -> Result<(), Error> {
-        if !(1..=crate::Mask::BITS as usize).contains(&self.n) {
-            return Err(Error::ActuatorCount(self.n));
+        let n = self.n()?;
+        if !(1..=crate::Mask::BITS as usize).contains(&n) {
+            return Err(Error::ActuatorCount(n));
         }
         let (c, cpp) = split(sources)?;
         let out = std::env::var_os("OUT_DIR").ok_or(Error::NoOutDir)?;
         let out = Path::new(&out);
-        write(&out.join("kmr_ffi.h"), &c_header(self.n, self.depth))?;
+        write(&out.join("kmr_ffi.h"), &c_header(n, self.depth))?;
         write(&out.join("kmr_ffi.hpp"), &cpp_header())?;
-        write(&out.join("kmr_ffi_abi.rs"), &abi_rs(self.n, self.depth))?;
+        write(&out.join("kmr_ffi_abi.rs"), &abi_rs(n, self.depth))?;
         for path in watched(sources) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
@@ -668,6 +732,49 @@ int main() {
         let missing = Path::new("/nonexistent/kmr_ffi.h");
         let err = write(missing, "").expect_err("no such folder");
         assert!(matches!(&err, Error::Write(path, _) if path == missing));
+    }
+
+    #[test]
+    fn a_preset_gives_robot_macro_n() {
+        assert_eq!(robot("XmBench", 4).n().ok(), Some(4));
+        assert_eq!(robot("Rx28Chain", 4).n().ok(), Some(10));
+    }
+
+    #[test]
+    fn an_unknown_preset_is_robot_macro_message() {
+        let err = robot("Nope", 4).n().expect_err("no such preset");
+        assert!(matches!(&err, Error::UnknownPreset(_)));
+        assert_eq!(
+            err.to_string(),
+            "kmr: no preset named Nope; presets: XmBench, Rx28Chain"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_path_is_relative_to_the_manifest() {
+        let build = model("../kmr_model_core/presets/rx28_chain.urdf", 4);
+        assert_eq!(build.n().ok(), Some(10));
+    }
+
+    #[test]
+    fn a_bad_descriptor_is_robot_macro_message() {
+        let err = model("no/such/robot.urdf", 4).n().expect_err("no file");
+        assert!(matches!(&err, Error::Descriptor(_)));
+        assert!(
+            err.to_string()
+                .starts_with("kmr: cannot read robot descriptor "),
+            "{err}"
+        );
+        let err = model("robot.yaml", 4).n().expect_err("unknown syntax");
+        assert!(err.to_string().ends_with("expected .urdf, .ron or .json"));
+    }
+
+    #[test]
+    fn a_robot_is_resolved_before_out_dir() {
+        let err = robot("Nope", 4)
+            .compile(&["swing.c"])
+            .expect_err("no preset");
+        assert!(matches!(err, Error::UnknownPreset(_)));
     }
 
     #[test]

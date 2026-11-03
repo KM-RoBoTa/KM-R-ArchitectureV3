@@ -28,10 +28,15 @@ const PRESETS: &[Preset] = &[
     },
 ];
 
+/// The name of every preset, in table order.
+pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+    PRESETS.iter().map(|p| p.name)
+}
+
 /// The preset named `name`, or the error listing every preset.
 pub(crate) fn find(name: &str) -> Result<&'static Preset, String> {
     PRESETS.iter().find(|p| p.name == name).ok_or_else(|| {
-        let all: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
+        let all: Vec<&str> = names().collect();
         format!("kmr: no preset named {name}; presets: {}", all.join(", "))
     })
 }

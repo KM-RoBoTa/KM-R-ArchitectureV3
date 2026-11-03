@@ -560,6 +560,7 @@ name = "kmr_ffi"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "kmr_model_core",
  "mlua",
  "pyo3",
  "thiserror",

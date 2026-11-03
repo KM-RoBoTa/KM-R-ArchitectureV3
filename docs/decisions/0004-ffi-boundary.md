@@ -26,7 +26,7 @@ Six choices shape the boundary:
 | `kmr_ffi` crate, `for_each_field!`, `for_each_flag!` | written |
 | `ReadView`, `Slot`, `WriteBuf`, `Written`, `ActuatorFlags`, `TimeView`, layout tests | written |
 | Header and ABI-file generator, `Build::compile` over `cc` | written; N and depth are passed in |
-| `robot(..)`, `.model(..)`: N from a preset or a descriptor | not written: waits on the kmr_model library entry (kmr_model T059, D12) |
+| `robot(..)`, `model(..)`: N from a preset or a descriptor | written over `kmr_model_core` (T011, [0009](0009-kmr-model-library-split.md)); the History depth is an argument kmr_api's `ffi-build` wrapper fills |
 | `call`, `Status`, `ForeignError`, `foreign!` | not written: `unsafe`, human (T007, T012) |
 | Glue in `kmr_api::ffi` | not written: kmr_api G1, after the core readers (core K1, K3.5, K4.1, K7.1) |
 | Python and Lua bridges | not written: wait on `ForeignError` (T007) |
@@ -140,8 +140,8 @@ Six choices shape the boundary:
 - **D3** (`envelope` per actuator, A): one line in `for_each_flag!`.
 - **D4** (N ≤ 64, A): `type Mask`, its const assert in `view.rs` and the N
   check in `Build::compile`.
-- **D12** (build helper in the user's `build.rs`, A): `kmr_ffi::build` and
-  `foreign!`.
+- **D12** (build helper in the user's `build.rs`, A; decided 2026-11-03,
+  [0009](0009-kmr-model-library-split.md)): `kmr_ffi::build` and `foreign!`.
 - **D13** (returned status, A): `Status` in `call.rs` and its `match` in
   `kmr_api/src/ffi.rs`.
 - **D14** (ROS2 baseline for SRS FR-10.4: a minimal `ros2 pkg create` node,
