@@ -29,6 +29,8 @@ mod fields;
 mod script;
 mod view;
 
+#[cfg(feature = "lua")]
+pub mod lua;
 #[cfg(feature = "python")]
 pub mod python;
 
