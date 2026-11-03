@@ -140,7 +140,7 @@ Each entry: decision, why, what else was weighed. SRS ids next to spec ids.
    hardware half (R7), checked against the model's N, and kmr_adapters plan B5 deletes the
    file.
 
-## R12. A kmr_model entry for build scripts (open, pending human: D12)
+## R12. A kmr_model entry for build scripts (decided 2026-11-03: D12 A)
 
 - **Need**: kmr_ffi's build helper (kmr_ffi plan B2, D12 A) must get N in a user `build.rs`
   from a preset name or descriptor path, the same N `robot!` gets.
@@ -148,7 +148,11 @@ Each entry: decision, why, what else was weighed. SRS ids next to spec ids.
   kmr_model. A library entry needs kmr_model split into a lib crate (parse, validate, `Model`)
   and a thin macro crate over it. The coordination page lists the split for SRS FR-8.3 and
   FR-11.3 too.
-- **Status**: not planned here. It waits for D12; under D12 B or C it may not be needed.
+- **Status**: decided 2026-11-03, D12 A, taken for the maintainer under the goal "don't ask"
+  ([decision 0009](../../docs/decisions/0009-kmr-model-library-split.md)). Built by T059: the
+  library is `kmr_model_core` (descriptor, preset, readers, checks, `Robot`, `Robot::n()`); the
+  proc-macro crate keeps the name `kmr_model`, so kmr_api's dependency and `__model!` path do
+  not change. kmr_ffi's build helper (its T011) depends on `kmr_model_core`.
 
 ## R13. Coordination log
 

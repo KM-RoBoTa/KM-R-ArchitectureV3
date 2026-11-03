@@ -1,5 +1,7 @@
 //! The robot descriptor, read at compile time (SRS FR-6.1).
 //!
+//! A thin proc macro over `kmr_model_core`, which reads and checks the
+//! descriptor; this crate parses the macro input and emits the constants.
 //! Runs inside the compiler on the build machine: the heap it uses is gone
 //! when the build ends, and the binary only receives constants.
 
@@ -9,20 +11,13 @@
 
 mod emit;
 mod input;
-mod model;
-mod presets;
-mod serde_format;
-mod urdf;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::TokenStream as TokenStream2;
 
 use crate::input::{Input, Source};
-use crate::model::{Descriptor, Format, ModelError, Reader, Robot, validate};
-use crate::serde_format::{Json, Ron};
-use crate::urdf::Urdf;
 
 /// `N`, the `model` module and the rebuild tracking of one robot model.
 ///
@@ -48,107 +43,16 @@ fn expand(input: &Input) -> syn::Result<TokenStream2> {
                 syn::Error::new(span, "kmr: CARGO_MANIFEST_DIR is not set; build with cargo")
             })?;
             let path = PathBuf::from(dir).join(lit.value());
-            let descriptor = load(&path).map_err(|msg| syn::Error::new(span, msg))?;
-            let shown = shown(&descriptor.path).map_err(|msg| syn::Error::new(span, msg))?;
-            let robot = check(&descriptor, shown, span)?;
+            let robot =
+                kmr_model_core::descriptor(&path).map_err(|msg| syn::Error::new(span, msg))?;
+            // `descriptor` refused a path that is not UTF-8.
+            let shown = path.to_str().unwrap_or_default();
             Ok(emit::emit(&robot, &input.krate, Some(shown)))
         }
         Source::Preset(name) => {
-            let span = name.span();
-            let preset =
-                presets::find(&name.to_string()).map_err(|msg| syn::Error::new(span, msg))?;
-            let descriptor = Descriptor {
-                path: PathBuf::from(preset.shown),
-                format: format(Path::new(preset.shown))
-                    .map_err(|msg| syn::Error::new(span, msg))?,
-                text: preset.text.to_owned(),
-            };
-            let robot = check(&descriptor, preset.shown, span)?;
+            let robot = kmr_model_core::preset(&name.to_string())
+                .map_err(|msg| syn::Error::new(name.span(), msg))?;
             Ok(emit::emit(&robot, &input.krate, None))
         }
-    }
-}
-
-/// `path` as the text shown in messages and given to `include_bytes!`.
-fn shown(path: &Path) -> Result<&str, String> {
-    path.to_str().ok_or_else(|| {
-        format!(
-            "kmr: the descriptor path {} is not valid UTF-8",
-            path.display()
-        )
-    })
-}
-
-/// The syntax of the descriptor at `path`, from its extension.
-fn format(path: &Path) -> Result<Format, String> {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("urdf") => Ok(Format::Urdf),
-        Some("ron") => Ok(Format::Ron),
-        Some("json") => Ok(Format::Json),
-        _ => Err(format!(
-            "kmr: {}: expected .urdf, .ron or .json",
-            path.display()
-        )),
-    }
-}
-
-/// Validation step 1: the descriptor at `path`, read.
-fn load(path: &Path) -> Result<Descriptor, String> {
-    let shown = shown(path)?;
-    let format = format(path)?;
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("kmr: cannot read robot descriptor {shown}: {e}"))?;
-    Ok(Descriptor {
-        path: path.to_owned(),
-        format,
-        text,
-    })
-}
-
-/// The checked robot of `descriptor`, its errors spanned on `span`.
-fn check(descriptor: &Descriptor, shown: &str, span: Span) -> syn::Result<Robot> {
-    read(descriptor, shown)
-        .and_then(|model| validate(model, shown))
-        .map_err(|e| syn::Error::new(span, e.message()))
-}
-
-/// The model of `descriptor`, by the reader of its syntax.
-fn read(descriptor: &Descriptor, shown: &str) -> Result<model::Model, ModelError> {
-    match descriptor.format {
-        Format::Urdf => Urdf::read(&descriptor.text, shown),
-        Format::Ron => Ron::read(&descriptor.text, shown),
-        Format::Json => Json::read(&descriptor.text, shown),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn a_path_that_is_not_utf8_is_an_error() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-
-        let path = Path::new(OsStr::from_bytes(b"/robot/\xff.urdf"));
-        assert!(load(path).is_err_and(|e| e.contains("is not valid UTF-8")));
-    }
-
-    #[test]
-    fn an_unknown_extension_is_an_error() {
-        let err = load(Path::new("/robot/arm.yaml")).err();
-        assert_eq!(
-            err.as_deref(),
-            Some("kmr: /robot/arm.yaml: expected .urdf, .ron or .json")
-        );
-    }
-
-    #[test]
-    fn a_missing_file_is_an_error() {
-        let err = load(Path::new("/no/such/robot.urdf")).err();
-        assert!(err.is_some_and(|e| {
-            e.starts_with("kmr: cannot read robot descriptor /no/such/robot.urdf: ")
-        }));
     }
 }

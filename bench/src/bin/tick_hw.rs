@@ -17,7 +17,7 @@ kmr_api::robot!(XmBench);
 
 #[cfg(feature = "two-bus")]
 kmr_api::robot!(
-    model = "../kmr_model/presets/xm_bench.urdf",
+    model = "../kmr_model_core/presets/xm_bench.urdf",
     hardware = two_bus::TABLE
 );
 

@@ -1,7 +1,7 @@
 //! The model halves of the presets KM-RoBoTa ships (research R7).
 //!
 //! The hardware halves live in `kmr_adapters::presets`, under the same names.
-//! The text is embedded here, so editing a preset rebuilds kmr_model and its
+//! The text is embedded here, so editing a preset rebuilds kmr_model_core and its
 //! callers; the expansion needs no `include_bytes!` tracking.
 
 /// One preset's model half.
@@ -18,20 +18,25 @@ pub(crate) struct Preset {
 const PRESETS: &[Preset] = &[
     Preset {
         name: "XmBench",
-        shown: "kmr_model/presets/xm_bench.urdf",
+        shown: "kmr_model_core/presets/xm_bench.urdf",
         text: include_str!("../presets/xm_bench.urdf"),
     },
     Preset {
         name: "Rx28Chain",
-        shown: "kmr_model/presets/rx28_chain.urdf",
+        shown: "kmr_model_core/presets/rx28_chain.urdf",
         text: include_str!("../presets/rx28_chain.urdf"),
     },
 ];
 
+/// The name of every preset, in table order.
+pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+    PRESETS.iter().map(|p| p.name)
+}
+
 /// The preset named `name`, or the error listing every preset.
 pub(crate) fn find(name: &str) -> Result<&'static Preset, String> {
     PRESETS.iter().find(|p| p.name == name).ok_or_else(|| {
-        let all: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
+        let all: Vec<&str> = names().collect();
         format!("kmr: no preset named {name}; presets: {}", all.join(", "))
     })
 }

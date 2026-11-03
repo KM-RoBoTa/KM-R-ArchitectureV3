@@ -1,8 +1,9 @@
 //! The one call into foreign code: the C function type, its status and its errors.
 //!
 //! [`call`] clears the write buffer, runs the foreign function once and, on an error, clears it
-//! again, so an error applies nothing (FR-012 (SRS FR-2.5)). The C path is the crate's only
-//! `unsafe` block; no heap, no lock, no `dyn` on it (FR-021, FR-022 (SRS NFR-1, NFR-2)).
+//! again, so an error applies nothing (FR-012 (SRS FR-2.5)). [`foreign!`](crate::foreign)
+//! declares the C bodies. The C path is the crate's only `unsafe` block; no heap, no lock, no
+//! `dyn` on it (FR-021, FR-022 (SRS NFR-1, NFR-2)).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -135,6 +136,41 @@ where
         *buf = WriteBuf::default();
     }
     out
+}
+
+/// Declares C and C++ controller bodies built by the build helper, and checks they were built
+/// for this robot.
+///
+/// Once per crate, after `robot!`, whose `N` it resolves in scope: `foreign! { depth = D; fn
+/// swing; fn other; }`. kmr_api's `ffi::foreign!` passes the core's `HISTORY_DEPTH` as `D`. It
+/// includes `OUT_DIR/kmr_ffi_abi.rs` from the build helper and fails `cargo check` with
+/// `error[E0080]` when the C sources were built for another N or depth (SC-005 (SRS FR-10.2,
+/// FR-6.1)). Each name is an `unsafe extern "C"` function of the [`CFn`] signature; it coerces
+/// to `CFn<N, D>` for [`call`].
+#[macro_export]
+macro_rules! foreign {
+    (depth = $depth:expr; $(fn $name:ident;)+) => {
+        ::core::include!(::core::concat!(::core::env!("OUT_DIR"), "/kmr_ffi_abi.rs"));
+        const _: () = ::core::assert!(FFI_N == N, "kmr_ffi: C sources were built for another N");
+        const _: () = ::core::assert!(
+            FFI_DEPTH == $depth,
+            "kmr_ffi: C sources were built for another History depth"
+        );
+        // SAFETY: the build helper compiled these bodies against `kmr_ffi.h` of the same build,
+        // whose prototypes are this signature; the asserts above pin its N and depth. Calling
+        // one stays `unsafe`: `call` does it once, over references of these exact types.
+        unsafe extern "C" {
+            $(
+                #[doc = ::core::concat!("The C or C++ controller body `", ::core::stringify!($name), "`.")]
+                fn $name(
+                    read: *const $crate::ReadView<N, { $depth }>,
+                    write: *mut $crate::WriteBuf<N>,
+                    time: *const $crate::TimeView,
+                    ctx: *mut ::core::ffi::c_void,
+                ) -> i32;
+            )+
+        }
+    };
 }
 
 #[cfg(test)]
