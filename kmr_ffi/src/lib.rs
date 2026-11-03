@@ -25,7 +25,12 @@
 
 mod call;
 mod fields;
+#[cfg(any(feature = "python", feature = "lua", test))]
+mod script;
 mod view;
+
+#[cfg(feature = "python")]
+pub mod python;
 
 // Also under test, so the default test run checks the headers.
 #[cfg(any(feature = "build", test))]
