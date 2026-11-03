@@ -26,7 +26,7 @@ use tracing::{error, info, trace, warn};
 
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
-use crate::hal::{Audit, Batch, Drivers, HardwareError, Layout, Overrides, Plan, Step};
+use crate::hal::{Audit, Batch, Drivers, HardwareError, Layout, Overrides, Plan, Step, TickFlags};
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::RobotState;
@@ -440,6 +440,9 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 
         // No log per tick (SRS NFR-1): the overrun total is logged at exit.
         let wake = robot.config.time.end_tick(host.now());
+        if robot.config.time.overrun().is_some() {
+            state.raise(TickFlags::OVERRUN);
+        }
 
         // Before the sleep: a stop must not wait for it. Before the clear: the
         // hold of a shutdown keeps this tick's writes.
@@ -2139,6 +2142,33 @@ mod tests {
 
             assert_eq!(seen.map(|s| s.now.is_empty()), [false, true, true]);
             assert_eq!(seen[0].flags_before, Some(TickFlags::NONE));
+        }
+
+        #[test]
+        fn us6_an_overrun_on_tick_7_reads_set_at_depth_1_on_tick_8() {
+            // `now` at arm, then at the start and the end of each tick, in
+            // tenths of DT: tick 7 starts at 75 and ends at 85, past its 80.
+            let mut script = [0_u32; 19];
+            script[0] = 0;
+            for (tick, pair) in script[1..].chunks_mut(2).enumerate() {
+                let start = u32::try_from(tick).expect("small") * 10 + 5;
+                pair[0] = start;
+                if let Some(end) = pair.get_mut(1) {
+                    *end = if tick == 7 { start + 10 } else { start };
+                }
+            }
+            let host = Scripted::new(Instant::now()).script(&script);
+
+            let seen = run::<9>(Recorder::new(&Log::new()), host);
+
+            let overrun = seen.map(|s| {
+                s.flags_before
+                    .is_some_and(|f| f.contains(TickFlags::OVERRUN))
+            });
+            assert_eq!(
+                overrun,
+                [false, false, false, false, false, false, false, false, true]
+            );
         }
 
         #[test]

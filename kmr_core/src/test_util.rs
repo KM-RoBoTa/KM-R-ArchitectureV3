@@ -65,7 +65,7 @@ pub struct Scripted {
     pub origin: Instant,
     /// Offset from `origin` returned by each call to `now`, in tenths of
     /// `DT`. Past the end of the script the last value is repeated.
-    pub now_tenths: [u32; 16],
+    pub now_tenths: [u32; 32],
     /// Calls to `now` so far.
     pub now_calls: usize,
     /// The deadline of each of the first 16 sleeps.
@@ -85,7 +85,7 @@ impl Scripted {
     pub fn new(origin: Instant) -> Self {
         Self {
             origin,
-            now_tenths: [0; 16],
+            now_tenths: [0; 32],
             now_calls: 0,
             sleeps: [None; 16],
             sleep_calls: 0,
