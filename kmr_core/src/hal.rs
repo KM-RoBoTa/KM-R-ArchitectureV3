@@ -7,6 +7,7 @@
 use core::convert::Infallible;
 use core::num::NonZeroU32;
 use core::ops::Range;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use tracing::warn;
@@ -582,6 +583,35 @@ impl TickFlags {
         self.0 == 0
     }
 }
+
+/// Tick flags raised from outside the loop, from any thread: the gateway's
+/// watchdog and authentication (SRS FR-13.4). The loop takes them once per
+/// tick, after `read` and before `First`, into that tick's slot. Lock-free;
+/// apart from the signal bus.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct ExternalFlags(AtomicU32);
+
+impl ExternalFlags {
+    /// No flag raised.
+    pub const fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    /// Raises `flags`; they stay raised until the loop takes them.
+    pub fn raise(&self, flags: TickFlags) {
+        self.0.fetch_or(flags.bits(), Ordering::Release);
+    }
+
+    /// The flags raised since the last take, cleared.
+    pub fn take(&self) -> TickFlags {
+        TickFlags::from_bits(self.0.swap(0, Ordering::Acquire))
+    }
+}
+
+/// The flags the real loop takes each tick.
+#[doc(hidden)]
+pub static EXTERNAL_FLAGS: ExternalFlags = ExternalFlags::new();
 
 /// The hardware contract of one member of the robot's hardware (SRS FR-5.1,
 /// section 7): the engine calls it for the actuators it claims. Static

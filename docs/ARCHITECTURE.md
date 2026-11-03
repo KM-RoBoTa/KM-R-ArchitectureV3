@@ -180,12 +180,12 @@ falls back to 1 ms with one warning.
 |---|---|---|
 | 1 | bus check, any signal | |
 | 2 | `begin_tick(now)` | |
-| 3 | push a History slot (a copy of the previous one), `read` into it | the actuators due this tick |
+| 3 | push a History slot (a copy of the previous one, no fault set), `read` into it and its faults; fold in the tick flags raised from other threads (`ExternalFlags`) | the actuators due this tick |
 | 4 | `First`, then an emergency-stop check | |
 | 5 | `EachTick`, then an emergency-stop check | |
 | 6 | `Last`, then an emergency-stop check | |
 | 7 | `Batch` from this tick's write masks; `write` if not empty | one transaction per group |
-| 8 | `end_tick(now)`: tick count, overrun | |
+| 8 | `end_tick(now)`: tick count, overrun; a late tick sets `OVERRUN` in its slot | |
 | 9 | bus check, any signal | |
 | 10 | clear Desired | |
 | 11 | sleep to the next grid point | |

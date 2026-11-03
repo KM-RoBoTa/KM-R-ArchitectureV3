@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use crate::error::RunError;
 use crate::hal::{
-    Batch, Claim, Command, Drivers, Faults, Group, Hal, HardwareError, Mask, Overrides, Sample,
-    Written, seal,
+    Batch, Claim, Command, Drivers, ExternalFlags, Faults, Group, Hal, HardwareError, Mask,
+    Overrides, Sample, TickFlags, Written, seal,
 };
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
@@ -78,6 +78,8 @@ pub struct Scripted {
     pub shutdown_from: Option<usize>,
     /// Check from which the emergency stop is on the bus.
     pub estop_from: Option<usize>,
+    /// Where the loop takes its external tick flags from; none when `None`.
+    pub external: Option<&'static ExternalFlags>,
 }
 
 impl Scripted {
@@ -92,6 +94,7 @@ impl Scripted {
             poll_calls: 0,
             shutdown_from: None,
             estop_from: None,
+            external: None,
         }
     }
 
@@ -153,6 +156,10 @@ impl Host for Scripted {
             kind,
             meta: SignalMeta::new("scripted", file!(), line!()),
         })
+    }
+
+    fn take_flags(&mut self) -> TickFlags {
+        self.external.map_or(TickFlags::NONE, ExternalFlags::take)
     }
 }
 

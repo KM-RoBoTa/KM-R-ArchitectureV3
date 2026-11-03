@@ -136,6 +136,9 @@
         coreFaults = component "hal::Faults, TickFlags" "Per-actuator fault masks and whole-tick flags of one tick, kept in its History slot." "Rust structs" {
             tags "Code"
         }
+        coreExternalFlags = component "hal::ExternalFlags" "AtomicU32 of tick flags raised from any thread (fetch_or Release); the loop takes it (swap Acquire) after read, into the tick's slot. Apart from the signal bus." "Rust struct, hidden" {
+            tags "Code"
+        }
         coreNoHardware = component "hal::NoHardware" "The simulating member used when no plugin is given." "Rust struct" {
             tags "Code"
         }
@@ -181,6 +184,7 @@
     coreHalTrait -> coreIo "Reads into and writes from"
     coreHalTrait -> coreFaults "Reports into"
     coreHistory -> coreFaults "Keeps per slot"
+    coreRuntimeFn -> coreExternalFlags "Takes each tick through the Host"
     coreIo -> coreMask "Flags actuators with"
     coreNoHardware -> coreHalTrait "Implements"
 }

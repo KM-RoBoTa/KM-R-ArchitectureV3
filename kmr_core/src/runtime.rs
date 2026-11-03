@@ -26,7 +26,9 @@ use tracing::{error, info, trace, warn};
 
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
-use crate::hal::{Audit, Batch, Drivers, HardwareError, Layout, Overrides, Plan, Step, TickFlags};
+use crate::hal::{
+    Audit, Batch, Drivers, EXTERNAL_FLAGS, HardwareError, Layout, Overrides, Plan, Step, TickFlags,
+};
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::RobotState;
@@ -68,6 +70,10 @@ pub trait Host {
     fn sleep_until(&mut self, deadline: Instant);
     /// The signal on the bus, if any.
     fn poll(&mut self) -> Option<Signal>;
+    /// The tick flags raised from outside the loop since the last call.
+    fn take_flags(&mut self) -> TickFlags {
+        TickFlags::NONE
+    }
 }
 
 /// The real world: system clock, absolute sleep, global signal bus.
@@ -102,6 +108,10 @@ impl Host for RealHost {
 
     fn poll(&mut self) -> Option<Signal> {
         Signal::drain()
+    }
+
+    fn take_flags(&mut self) -> TickFlags {
+        EXTERNAL_FLAGS.take()
     }
 }
 
@@ -400,6 +410,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
             let read = hal.read(sample, faults, layout.slots(), &mut audit);
             state.refreshed(read);
         }
+        state.raise(host.take_flags());
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
         }
@@ -536,6 +547,8 @@ pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     host: &mut H,
     hal: &mut D,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
+    // Flags raised before the run belong to no tick of it.
+    let _ = host.take_flags();
     let dt = tick_period(robot.config.dt)?;
     robot.config.time.set_delta(dt);
 
@@ -2168,6 +2181,55 @@ mod tests {
             assert_eq!(
                 overrun,
                 [false, false, false, false, false, false, false, false, true]
+            );
+        }
+
+        #[test]
+        fn a_flag_raised_from_another_thread_during_tick_0_reads_in_tick_1() {
+            use std::sync::atomic::AtomicBool;
+            static FLAGS: crate::hal::ExternalFlags = crate::hal::ExternalFlags::new();
+            static GO: AtomicBool = AtomicBool::new(false);
+            static RAISED: AtomicBool = AtomicBool::new(false);
+            FLAGS.raise(TickFlags::SENSOR_MISSING);
+
+            let seen = RefCell::new([TickFlags::NONE; 3]);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::First,
+                |time: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                    let tick = usize::try_from(time.tick()).expect("small");
+                    if let Some(slot) = seen.borrow_mut().get_mut(tick) {
+                        *slot = state.tick_flags(0).expect("this tick's slot");
+                    }
+                    if tick == 0 {
+                        GO.store(true, Ordering::Release);
+                        while !RAISED.load(Ordering::Acquire) {
+                            std::hint::spin_loop();
+                        }
+                    }
+                },
+            );
+            let mut host = Scripted {
+                external: Some(&FLAGS),
+                ..Scripted::new(Instant::now())
+            }
+            .shutdown_from(TICK_END + 2 * PER_TICK);
+
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    while !GO.load(Ordering::Acquire) {
+                        std::hint::spin_loop();
+                    }
+                    FLAGS.raise(TickFlags::UNAUTHORIZED);
+                    RAISED.store(true, Ordering::Release);
+                });
+                let result = run_with(&mut robot, &mut host, &mut one(NoHardware));
+                assert!(result.is_ok());
+            });
+
+            // The flag raised before the run is dropped, the one of tick 0 lands once.
+            assert_eq!(
+                seen.into_inner(),
+                [TickFlags::NONE, TickFlags::UNAUTHORIZED, TickFlags::NONE]
             );
         }
 
