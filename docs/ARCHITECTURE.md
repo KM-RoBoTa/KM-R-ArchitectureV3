@@ -20,7 +20,9 @@ user code:
   foreign code. No engine dependency; users reach it only through
   `kmr_api::ffi` (features `ffi`, `ffi-build`), whose `call` copies the
   state into the view, calls, and applies the flagged writes through the
-  `State` setters.
+  `State` setters. Its example crates, `kmr_ffi/examples/<language>/`, are
+  workspace members: a build of the workspace needs a C and C++ compiler and
+  the Python headers.
 - **`controllers`** (`controllers/`) — where controllers are written. It
   depends on `kmr_api` only.
 
