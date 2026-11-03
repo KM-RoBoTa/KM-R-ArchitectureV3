@@ -205,6 +205,12 @@ mod two_buses {
         type Drivers = kmr_api::HCons<kmr_api::__DxlAdapter<2, N>, kmr_api::HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base"];
+        const PRISMATIC: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+        const CONTINUOUS: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+        const LOWER: [kmr_api::Q; N] = [kmr_api::Q(-1.0); N];
+        const UPPER: [kmr_api::Q; N] = [kmr_api::Q(1.0); N];
+        const SPEED: [kmr_api::Qd; N] = [kmr_api::Qd(1.0); N];
+        const EFFORT: [kmr_api::Tau; N] = [kmr_api::Tau(1.0); N];
 
         fn bind(plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
             let hardware = kmr_api::HCons {
@@ -369,6 +375,12 @@ mod recording {
         type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base"];
+        const PRISMATIC: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+        const CONTINUOUS: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+        const LOWER: [kmr_api::Q; N] = [kmr_api::Q(-1.0); N];
+        const UPPER: [kmr_api::Q; N] = [kmr_api::Q(1.0); N];
+        const SPEED: [kmr_api::Qd; N] = [kmr_api::Qd(1.0); N];
+        const EFFORT: [kmr_api::Tau; N] = [kmr_api::Tau(1.0); N];
 
         fn bind(_plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
             Ok(kmr_api::HCons {
@@ -385,6 +397,12 @@ mod recording {
         type Drivers = kmr_api::HCons<Recorder, kmr_api::HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base"];
+        const PRISMATIC: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+        const CONTINUOUS: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+        const LOWER: [kmr_api::Q; N] = [kmr_api::Q(-1.0); N];
+        const UPPER: [kmr_api::Q; N] = [kmr_api::Q(1.0); N];
+        const SPEED: [kmr_api::Qd; N] = [kmr_api::Qd(1.0); N];
+        const EFFORT: [kmr_api::Tau; N] = [kmr_api::Tau(1.0); N];
 
         fn bind(_plugins: &[kmr_api::Binding]) -> Result<Self::Drivers, UserError> {
             Ok(kmr_api::HCons {

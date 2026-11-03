@@ -19,6 +19,19 @@ fn aliases_build_a_robot() {
     let _robot = Robot::new().add_controller(EachTick, zero);
 }
 
+/// `Spec` carries the model's facts, for the builder and the limits (SRS FR-4.5).
+#[test]
+fn spec_carries_the_model_facts() {
+    use kmr_api::Spec;
+    assert_eq!(<__Spec as Spec<N>>::LOWER, model::LOWER);
+    assert_eq!(<__Spec as Spec<N>>::UPPER, model::UPPER);
+    assert_eq!(<__Spec as Spec<N>>::SPEED, model::SPEED);
+    assert_eq!(<__Spec as Spec<N>>::EFFORT, model::EFFORT);
+    assert_eq!(<__Spec as Spec<N>>::CONTINUOUS, [1 << 1]);
+    assert_eq!(<__Spec as Spec<N>>::PRISMATIC, [1 << 2]);
+    assert_eq!(<__Spec as Spec<N>>::LINK_NAMES, model::LINK_NAMES);
+}
+
 /// The model's value types are kmr_api's: a controller names no `kmr_core` path.
 #[test]
 fn model_constants_are_kmr_api_types() {

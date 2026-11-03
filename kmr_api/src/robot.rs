@@ -426,6 +426,12 @@ mod tests {
         type Drivers = HCons<crate::__NoHardware, HNil>;
 
         const LINK_NAMES: &'static [&'static str] = &["base", "tool"];
+        const PRISMATIC: [u64; crate::MASK_WORDS] = [0; crate::MASK_WORDS];
+        const CONTINUOUS: [u64; crate::MASK_WORDS] = [0; crate::MASK_WORDS];
+        const LOWER: [crate::Q; 4] = [crate::Q(-1.0); 4];
+        const UPPER: [crate::Q; 4] = [crate::Q(1.0); 4];
+        const SPEED: [crate::Qd; 4] = [crate::Qd(1.0); 4];
+        const EFFORT: [crate::Tau; 4] = [crate::Tau(1.0); 4];
 
         fn bind(plugins: &[crate::Binding]) -> Result<Self::Drivers, UserError> {
             crate::__bind_none(plugins)

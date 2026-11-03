@@ -8,8 +8,8 @@ use kmr_adapters::dynamixel::Placement;
 use kmr_core::hal::{Drivers, Hal, NoHardware};
 use kmr_core::{HCons, HNil};
 
-use crate::UserError;
 use crate::brand::{Brand, Refused};
+use crate::{Q, Qd, Tau, UserError};
 
 #[cfg(test)]
 pub(crate) mod fake;
@@ -27,6 +27,24 @@ pub trait Spec<const N: usize> {
 
     /// The model's link names, in file order: the mounts a payload may name (SRS FR-8.1).
     const LINK_NAMES: &'static [&'static str];
+
+    /// Prismatic actuators, bit `i` in word `i / 64` as the core's mask (SRS FR-2.2).
+    const PRISMATIC: [u64; crate::MASK_WORDS];
+
+    /// Continuous actuators, laid out as [`Spec::PRISMATIC`]: no position limit.
+    const CONTINUOUS: [u64; crate::MASK_WORDS];
+
+    /// Lowest position per actuator; no bound where [`Spec::CONTINUOUS`] is set (SRS FR-4.5).
+    const LOWER: [Q; N];
+
+    /// Highest position per actuator; no bound where [`Spec::CONTINUOUS`] is set.
+    const UPPER: [Q; N];
+
+    /// Top speed per actuator.
+    const SPEED: [Qd; N];
+
+    /// Top effort per actuator.
+    const EFFORT: [Tau; N];
 
     /// Binds the bus plugins to the members, no I/O. `run()` calls it only when plugins are
     /// declared.

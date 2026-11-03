@@ -117,7 +117,7 @@ macro_rules! robot {
         impl $crate::Spec<{ N }> for __Spec {
             type Drivers = $crate::HCons<$crate::__NoHardware, $crate::HNil>;
 
-            const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
+            $crate::__robot_items!(@consts);
 
             fn bind(
                 plugins: &[$crate::Binding],
@@ -163,7 +163,7 @@ macro_rules! robot {
             type Drivers =
                 <$crate::robot!(@parts $($brand),+) as $crate::Brands<{ N }>>::Drivers;
 
-            const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
+            $crate::__robot_items!(@consts);
 
             fn bind(
                 plugins: &[$crate::Binding],
@@ -209,7 +209,8 @@ macro_rules! robot {
 }
 
 /// The items of `robot!` that do not come from the model: the aliases, `__Spec` and the
-/// checks on `N`; with `@table`, the count check and `Spec` of a one-table robot. Hidden, so
+/// checks on `N`; with `@table`, the count check and `Spec` of a one-table robot; with
+/// `@consts`, the model's facts as `Spec`'s consts. Hidden, so
 /// a user cannot set `N` through it (003 review #7).
 #[doc(hidden)]
 #[macro_export]
@@ -222,7 +223,7 @@ macro_rules! __robot_items {
         impl $crate::Spec<{ N }> for __Spec {
             type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB, { N }>, $crate::HNil>;
 
-            const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
+            $crate::__robot_items!(@consts);
 
             fn bind(
                 plugins: &[$crate::Binding],
@@ -234,6 +235,15 @@ macro_rules! __robot_items {
                 $crate::__bind::<{ N }, _>(hardware, plugins)
             }
         }
+    };
+    (@consts) => {
+        const LINK_NAMES: &'static [&'static str] = &model::LINK_NAMES;
+        const PRISMATIC: [u64; $crate::MASK_WORDS] = model::PRISMATIC;
+        const CONTINUOUS: [u64; $crate::MASK_WORDS] = model::CONTINUOUS;
+        const LOWER: [$crate::Q; N] = model::LOWER;
+        const UPPER: [$crate::Q; N] = model::UPPER;
+        const SPEED: [$crate::Qd; N] = model::SPEED;
+        const EFFORT: [$crate::Tau; N] = model::EFFORT;
     };
     () => {
         /// The state handle of this robot.

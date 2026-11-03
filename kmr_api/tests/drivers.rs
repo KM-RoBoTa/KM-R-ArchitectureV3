@@ -310,6 +310,12 @@ impl<const CASE: u8> Spec<N> for TwoBrands<CASE> {
     type Drivers = Members;
 
     const LINK_NAMES: &'static [&'static str] = &["base"];
+    const PRISMATIC: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+    const CONTINUOUS: [u64; kmr_api::MASK_WORDS] = [0; kmr_api::MASK_WORDS];
+    const LOWER: [kmr_api::Q; N] = [kmr_api::Q(-1.0); N];
+    const UPPER: [kmr_api::Q; N] = [kmr_api::Q(1.0); N];
+    const SPEED: [kmr_api::Qd; N] = [kmr_api::Qd(1.0); N];
+    const EFFORT: [kmr_api::Tau; N] = [kmr_api::Tau(1.0); N];
 
     fn bind(plugins: &[Binding]) -> Result<Members, UserError> {
         let arm = Part::<Arm>::new(evens());
