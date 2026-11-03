@@ -37,6 +37,7 @@ pub use config::{
     Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Protocol, Series, Table, Torque,
     Zero,
 };
+pub(crate) use config::{Message, fail, position, same};
 
 /// The read and write cost `check` declares for `table` with every actuator
 /// owned, in const evaluation: the presets' `READ_COST` and `WRITE_COST`
@@ -423,6 +424,20 @@ pub enum DynamixelError {
         )]
         source: BackendError,
     },
+}
+
+/// The plugins' mismatch, as the Dynamixel error naming it.
+impl From<binding::Unmatched> for DynamixelError {
+    fn from(unmatched: binding::Unmatched) -> Self {
+        use binding::Unmatched;
+        match unmatched {
+            Unmatched::UnknownBus { label, port } => Self::UnknownBus { label, port },
+            Unmatched::UnboundBus { bus } => Self::UnboundBus { bus },
+            Unmatched::ExtraPlugin { port } => Self::ExtraPlugin { port },
+            Unmatched::LabelRequired { port } => Self::LabelRequired { port },
+            Unmatched::BusBoundTwice { bus, port } => Self::BusBoundTwice { bus, port },
+        }
+    }
 }
 
 /// Stands in for the port of a bus no plugin bound, in an error that cannot
