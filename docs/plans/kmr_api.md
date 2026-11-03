@@ -68,7 +68,7 @@ in [`specs/004-kmr-api/`](../../specs/004-kmr-api/).
 
 ## Phase 10: Polish and cross-cutting
 
-- [ ] T059 [P] Blocked on core K6.3 (HUMAN) and kmr_adapters T067 (plan E10). In kmr_api/Cargo.toml add `presort-off = ["kmr_core/presort-off"]` (assumed, pending human: D11, option B); check that `kmr_api::presets::XmBench::READ_COST` and `WRITE_COST` are reachable through the existing `pub use kmr_adapters::presets`. Bench FR-016 (SRS FR-5.3), kmr_adapters FR-035 (SRS NFR-11, FR-5.3); plan C7
+- [x] T059 [P] Blocked on core K6.3 (HUMAN) and kmr_adapters T067 (plan E10). In kmr_api/Cargo.toml add `presort-off = ["kmr_core/presort-off"]` (assumed, pending human: D11, option B); check that `kmr_api::presets::XmBench::READ_COST` and `WRITE_COST` are reachable through the existing `pub use kmr_adapters::presets`. Bench FR-016 (SRS FR-5.3), kmr_adapters FR-035 (SRS NFR-11, FR-5.3); plan C7. Done 2026-11-03: feature added; `kmr_api/tests/presets.rs` reads `XmBench::READ_COST` and `WRITE_COST` through `kmr_api::presets` (kmr_adapters T067 had landed)
 - [ ] T063 Hand-off, owner controllers plan C7 (HUMAN; walkthrough in controllers/README.md, plan C3): time to first motion against the ROS2 baseline (assumed, pending human: D14), SC-002 (SRS FR-10.4, NFR-4), FR-071 (SRS FR-10.4, NFR-4). No edit here
 - [ ] T064 Run specs/004-kmr-api/quickstart.md § "Every change" and every phase section whose tasks are done; `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace --no-fail-fast`
 
