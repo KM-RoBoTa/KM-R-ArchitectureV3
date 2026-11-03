@@ -29,9 +29,24 @@ fn main() -> color_eyre::Result<()> {
         // `robot.go_home(ramp)` exist, but a call to either does not build until it is.
     }
 
+    // How long this example runs before it stops itself.
+    const DEMO_LENGTH: Duration = Duration::from_millis(50);
+
     fn use_time(time: &Time, _robot: &mut State, _sensors: &Sensors) {
-        // You may have notices the `&Time` struct in the signature.
-        todo!()
+        // You may have noticed the `&Time` struct in the signature. It is the
+        // loop's clock, read-only: the time since the start, the tick period,
+        // the tick number and how late the loop ran.
+        let _period: Duration = time.dt();
+        let _tick: u64 = time.tick();
+        if let Some(late) = time.last_overrun() {
+            println!("tick {} finished {late:?} late", time.tick());
+        }
+
+        // Here, the example ends itself once it has run long enough. A shutdown
+        // is graceful: this tick finishes, then `run()` returns `Ok(())`.
+        if time.elapsed() >= DEMO_LENGTH {
+            kmr_api::shutdown!("demo over");
+        }
     }
 
     fn replace_all_q(_time: &Time, robot: &mut State, _sensors: &Sensors) {
@@ -97,8 +112,9 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // A group is a fixed set of joint indices — non-contiguous allowed, e.g.
-    // [1, 3, 4]. Here, the right arm: joints 3, 4, 5.
-    const R_ARM: [usize; 3] = [3, 4, 5];
+    // [1, 3, 4]. Here, the right arm: joints 1, 2, 3 of the 4-actuator bench.
+    // DECISION: was [3, 4, 5], past the XmBench's 4 actuators, so it never read.
+    const R_ARM: [usize; 3] = [1, 2, 3];
     fn use_groups(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         // One other nice feature are groups. You can specify a dedicated group
         // in the form of an array of indexes, and work with them using the
@@ -124,7 +140,10 @@ fn main() -> color_eyre::Result<()> {
         let index: usize = 1;
         let history_depth = 2;
         // Read the next line as "I want to read the state from 2 ticks ago".
-        let prev = robot.prev_q_at(index, history_depth).unwrap();
+        // The first two ticks have no such state yet: skip them.
+        let Ok(prev) = robot.prev_q_at(index, history_depth) else {
+            return;
+        };
         // then simply multiply the value by 3.
         //
         // WARN: wait, why can i mult without wrapping nor converting the f32 ?
@@ -194,7 +213,9 @@ fn main() -> color_eyre::Result<()> {
                 // your home controller logic
                 initialization(_time, robot, _sensors);
 
-                todo!("call graceful shutdown");
+                // Then stop gracefully, and leave this controller for this tick.
+                kmr_api::shutdown!("no sample to control from");
+                return;
             }
         };
 
@@ -217,9 +238,18 @@ fn main() -> color_eyre::Result<()> {
             // `e.kind()` is the bare, payload-free cause — match it without
             // `{ .. }`. The numbers are still in `e` (its `Display`) if you want them.
             Err(e) => match e.kind() {
-                StateError::OutOfRange => todo!(),
-                StateError::HistoryValueOutOfRange => todo!(),
-                StateError::CriticalValueMissing => todo!(),
+                // A wrong index is a bug in this controller: stop the robot.
+                StateError::OutOfRange => {
+                    kmr_api::shutdown!("index out of range");
+                    return;
+                }
+                // Not that far back yet: use the newest value instead.
+                StateError::HistoryValueOutOfRange => match robot.q_at(index) {
+                    Ok(q) => q,
+                    Err(_) => return,
+                },
+                // Nothing to control from this tick: skip it.
+                StateError::CriticalValueMissing | StateError::Undecided => return,
             },
         };
 
@@ -453,7 +483,11 @@ fn main() -> color_eyre::Result<()> {
     // 1) A humidity sensor
     // 2) A camera sensor
     fn estop(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
-        kmr_api::emergency_stop!("battery too low");
+        // Your battery reading here; an emergency stop cuts torque at once.
+        let battery_percent = 80;
+        if battery_percent < 10 {
+            kmr_api::emergency_stop!("battery too low");
+        }
     }
 
     fn use_sensors(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
