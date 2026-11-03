@@ -7,8 +7,8 @@
 // kmr_api::ffi, the glue that fills the views from State and applies the
 // writes, is drawn in kmr_api.dsl.
 
-// The example crates kmr_ffi/examples/c and kmr_ffi/examples/cpp are user
-// crates (controllers like the controllers crate) and are not drawn.
+// The example crates kmr_ffi/examples/{c,cpp,python,lua} are user crates
+// (controllers like the controllers crate) and are not drawn.
 
 !element kmr.control {
     ffiFields = component "kmr_ffi: field list" "The one declaration of what crosses: the core's sealed fields and the per-actuator flags. Every per-field item, Rust type and header line, is generated from it, so a new field is one line (SRS FR-10.2)." "Rust macro_rules"
