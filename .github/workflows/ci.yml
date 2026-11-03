@@ -31,6 +31,10 @@ jobs:
   cross:
     name: cross-build
     runs-on: ubuntu-latest
+    env:
+      # The bench binaries link: the two targets need their own linkers (bench FR-025).
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -39,3 +43,7 @@ jobs:
       # No `dynamixel` feature: the robot binary must build with no C SDK and no device.
       - run: cargo build -p kmr_adapters -p kmr_api --target aarch64-unknown-linux-gnu
       - run: cargo build -p kmr_adapters -p kmr_api --target armv7-unknown-linux-gnueabihf
+      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+      # The bench, no `hardware` feature: the same binary runs on both kernels of the Pi.
+      - run: cargo build -p kmr_bench --release --bins --target aarch64-unknown-linux-gnu
+      - run: cargo build -p kmr_bench --release --bins --target armv7-unknown-linux-gnueabihf
