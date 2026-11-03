@@ -198,10 +198,11 @@ pub(crate) fn spawn<const N: usize, I: Inbox<N>>(
                 }
                 while let Ok(Some(query)) = entities.ring.try_recv() {
                     idle = false;
-                    for sample in ring.iter() {
-                        // A query whose asker left fails its reply: nothing to do.
-                        let _ = query.reply(query.key_expr(), sample.encode()).wait();
-                    }
+                    // DECISION: one reply holding the whole ring: replies on one key are
+                    // consolidated to the newest by default.
+                    let bytes: Vec<u8> = ring.iter().flat_map(SampleMsg::encode).collect();
+                    // A query whose asker left fails its reply: nothing to do.
+                    let _ = query.reply(query.key_expr(), bytes).wait();
                 }
                 if idle {
                     thread::sleep(POLL);

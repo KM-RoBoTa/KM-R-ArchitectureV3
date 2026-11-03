@@ -10,10 +10,12 @@ use crate::{Filled, Robot, Spec, UserError};
 pub use kmr_core::hal::Drivers;
 /// The adapter-side fault bits a [`Recorder`] reports on `read` and adds on `write`.
 pub use kmr_core::hal::Faults;
+/// The tick flags raised from outside the loop: what [`RealTime`] takes when told to.
+pub use kmr_core::hal::{EXTERNAL_FLAGS, ExternalFlags};
 pub use kmr_core::test_util::{
     AFTER_EACH_TICK, AFTER_FIRST, AFTER_INIT, AFTER_LAST, AFTER_PRE_INIT, BEFORE_TORQUE_ON,
-    CAPACITY, Call, DT, Failed, Host, Log, PER_TICK, Recorder, SEED, Scripted, Sent, TICK_END,
-    TICK_START, Ticking,
+    CAPACITY, Call, DT, Failed, Host, Log, PER_TICK, RealTime, Recorder, SEED, Scripted, Sent,
+    TICK_END, TICK_START, Ticking,
 };
 
 /// How a scripted run ended.

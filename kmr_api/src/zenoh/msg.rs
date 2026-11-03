@@ -160,6 +160,18 @@ impl<const N: usize> SampleMsg<N> {
     }
 }
 
+/// The samples of a `history/ring` reply, oldest first; `None` unless `bytes` is a whole
+/// number of samples.
+pub fn decode_ring<const N: usize>(bytes: &[u8]) -> Option<Vec<SampleMsg<N>>> {
+    if !bytes.len().is_multiple_of(sample_len(N)) {
+        return None;
+    }
+    bytes
+        .chunks_exact(sample_len(N))
+        .map(SampleMsg::decode)
+        .collect()
+}
+
 /// Appends `values`, little-endian.
 fn put_f32s(out: &mut Vec<u8>, values: &[f32]) {
     for value in values {
@@ -246,6 +258,9 @@ mod tests {
         assert_eq!((back.tick, back.age), (77, Some(3)));
         assert!(back.q[1].is_nan() && back.q[0] == 1.0);
         assert_eq!(back.faults, msg.faults);
+        let ring = [msg.encode(), msg.encode()].concat();
+        assert_eq!(decode_ring::<2>(&ring).map(|r| r.len()), Some(2));
+        assert_eq!(decode_ring::<2>(&ring[1..]), None);
         let none = SampleMsg { age: None, ..msg };
         assert_eq!(
             SampleMsg::<2>::decode(&none.encode()).map(|m| m.age),

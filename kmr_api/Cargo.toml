@@ -44,9 +44,16 @@ kmr_core = { workspace = true, features = ["test-util"] }
 color-eyre.workspace = true
 # Compile-fail cases of kmr_api/tests/ui/ (SC-008 (SRS NFR-3)).
 trybuild.workspace = true
+# The remote peer of kmr_api/tests/zenoh.rs, in the test process.
+zenoh.workspace = true
 
 [[example]]
 name = "complete_api_example"
+
+# The gateway against an in-process peer on loopback.
+[[test]]
+name = "zenoh"
+required-features = ["zenoh", "test-util"]
 
 [lints]
 workspace = true

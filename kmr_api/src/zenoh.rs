@@ -18,7 +18,7 @@ use crate::slot::{Latest, LatestReader, LatestWriter};
 use crate::{Faults, Time};
 
 pub use gateway::Counters;
-pub use msg::{DesiredMsg, SampleMsg, desired_len, sample_len};
+pub use msg::{DesiredMsg, SampleMsg, decode_ring, desired_len, sample_len};
 
 use gateway::{Entities, Inbox, Running, bump};
 
