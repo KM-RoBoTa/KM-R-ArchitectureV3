@@ -139,6 +139,39 @@ fn six_thousand_ticks_complete_with_every_jitter_figure() {
 }
 
 #[test]
+fn the_engine_count_agrees_at_one_ms() {
+    let r = run("engine-1ms", &[("KMR_BENCH_TICKS", "3000")], None);
+    let text = r.report.as_str();
+    assert_eq!(r.key("time_surface"), Some("\"engine\""), "{text}");
+    let bench = r.int("bench_overruns").expect("bench_overruns");
+    assert_eq!(r.int("engine_overruns"), Some(bench), "{text}");
+    assert!(!r.flagged("inconsistent"), "{text}");
+    for key in ["engine_tick", "engine_dt_ns", "engine_elapsed_ns"] {
+        assert!(r.int(key).is_some(), "{key} missing:\n{text}");
+    }
+    assert_eq!(r.int("engine_dt_ns"), Some(1_000_000));
+    assert_eq!(r.int("engine_tick"), Some(2999));
+}
+
+/// DECISION: at 10 µs the bench count is checked as a lower bound of the engine's, not for
+/// equality: a tick that ends between the bench's last stamp and the engine's own end stamp
+/// is late for the engine only (probe.rs `ORIGIN`). The `inconsistent` flag still shows it.
+#[test]
+fn the_engine_count_bounds_the_bench_count_at_ten_us() {
+    let r = run(
+        "engine-10us",
+        &[("KMR_BENCH_TICKS", "21000"), ("KMR_BENCH_DT_NS", "10000")],
+        None,
+    );
+    let text = r.report.as_str();
+    assert_eq!(r.key("status"), Some("\"complete\""), "{text}");
+    let bench = r.int("bench_overruns").expect("bench_overruns");
+    let engine = r.int("engine_overruns").expect("engine_overruns");
+    assert!(engine >= bench, "{text}");
+    assert_eq!(r.flagged("inconsistent"), engine != bench, "{text}");
+}
+
+#[test]
 fn a_bad_plan_fails_before_the_run() {
     let r = run("bad-plan", &[("KMR_BENCH_TICKS", "abc")], None);
     assert_eq!(r.code, Some(1));
