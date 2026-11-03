@@ -456,6 +456,7 @@ fn run_with<CS: Drive, H: Host, D: Drivers>(
     hal.claim(Overrides::default(), &mut plan)?;
     let layout = plan.finish()?;
     let (mut state, sensors) = init_phase::pre_init();
+    state.set_cadence(layout.read_every);
 
     if robot.config.time.delta().is_zero() {
         warn!(
@@ -939,6 +940,7 @@ mod tests {
             log: &'a Log,
             fail: Option<Call>,
             owned: Mask,
+            every: NonZeroU32,
         }
 
         impl<'a> Recorder<'a> {
@@ -947,6 +949,7 @@ mod tests {
                     log,
                     fail: None,
                     owned: Mask::ALL,
+                    every: NonZeroU32::MIN,
                 }
             }
 
@@ -995,7 +998,7 @@ mod tests {
                 Ok(Claim {
                     owned: self.owned,
                     group: [Group(0); JOINTS],
-                    read_every: [NonZeroU32::MIN; JOINTS],
+                    read_every: [self.every; JOINTS],
                     read_cost: Duration::ZERO,
                     write_cost: Duration::ZERO,
                 })
@@ -1518,6 +1521,26 @@ mod tests {
             tracing::subscriber::with_default(counter, || simulated(&mut robot, &mut host));
 
             assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
+        }
+
+        #[test]
+        fn controllers_read_the_cadence_the_adapter_claimed() {
+            let log = Log::new();
+            let seen = Cell::new(None);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::PreInit,
+                |_: &Time, state: &mut RobotState, _: &Sensors| {
+                    seen.set(state.cadence(0).ok());
+                },
+            );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+            let mut recorder = Recorder::new(&log);
+            recorder.every = NonZeroU32::new(3).expect("3 is not zero");
+
+            let result = run_with(&mut robot, &mut host, &mut one(recorder));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(seen.get().map(NonZeroU32::get), Some(3));
         }
 
         #[test]

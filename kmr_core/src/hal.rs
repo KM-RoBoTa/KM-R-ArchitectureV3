@@ -208,12 +208,12 @@ impl<'a> Slots<'a> {
 }
 
 /// Settings the control engineer may give through the API, forwarded untouched.
+///
+/// Empty: the read cadence is the adapter's, read back through
+/// [`crate::RobotState::cadence`], with no builder knob (SRS FR-5.3).
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, Debug)]
-pub struct Overrides {
-    /// Read cadence for every bus, in ticks.
-    pub read_every: Option<NonZeroU32>,
-}
+pub struct Overrides {}
 
 /// Which desired fields were written this tick, one mask per field.
 #[non_exhaustive]
@@ -609,12 +609,11 @@ impl seal::Adapter for NoHardware {}
 impl Hal for NoHardware {
     type Error = Infallible;
 
-    fn check(&mut self, overrides: Overrides) -> Result<Claim, Infallible> {
-        let every = overrides.read_every.unwrap_or(NonZeroU32::MIN);
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim, Infallible> {
         Ok(Claim {
             owned: Mask::ALL,
             group: [Group(0); JOINTS],
-            read_every: [every; JOINTS],
+            read_every: [NonZeroU32::MIN; JOINTS],
             read_cost: Duration::ZERO,
             write_cost: Duration::ZERO,
         })

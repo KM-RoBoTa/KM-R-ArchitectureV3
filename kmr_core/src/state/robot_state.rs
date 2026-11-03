@@ -1,3 +1,5 @@
+use core::num::NonZeroU32;
+
 use super::desired::Desired;
 use super::field::{StateField, sealed};
 use super::history::History;
@@ -9,7 +11,6 @@ use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
 use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 
-#[derive(Default)]
 /// The robot state abstraction.
 ///
 /// It holds both the desired values, and the history of states.
@@ -24,6 +25,18 @@ use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
     pub(in crate::state) desired: Desired,
     pub(in crate::state) history: History<JOINTS, DEPTH>,
+    /// Read cadence of each actuator in ticks, from the layout; 1 until set.
+    pub(in crate::state) cadence: [NonZeroU32; JOINTS],
+}
+
+impl<const DEPTH: usize> Default for RobotState<DEPTH> {
+    fn default() -> Self {
+        Self {
+            desired: Desired::default(),
+            history: History::default(),
+            cadence: [NonZeroU32::MIN; JOINTS],
+        }
+    }
 }
 
 /// Direct writes to desired state are not allowed:
@@ -123,11 +136,23 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
         })
     }
 
-    // ── Public state setters ────────────────────────────────────────────
+    /// Read cadence of actuator `index`: it is read every `cadence` ticks.
+    /// Set by the adapter at bring-up, read-only here.
+    pub fn cadence(&self, index: usize) -> Result<NonZeroU32, StateError> {
+        self.cadence
+            .get(index)
+            .copied()
+            .ok_or(StateError::OutOfRange { index, len: JOINTS })
+    }
 }
 
 /// The engine's side: what it hands the adapter and resets once applied.
 impl<const DEPTH: usize> RobotState<DEPTH> {
+    /// Takes the read cadence of the finished layout.
+    pub(crate) fn set_cadence(&mut self, cadence: [NonZeroU32; JOINTS]) {
+        self.cadence = cadence;
+    }
+
     /// Fields written since the last apply.
     pub(crate) fn written(&self) -> &Written {
         &self.desired.written

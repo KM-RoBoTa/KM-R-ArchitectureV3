@@ -20,7 +20,7 @@ use rstest::rstest;
 fn create_test_robot() -> RobotState {
     RobotState {
         desired: zeroed_desired(),
-        history: History::default(),
+        ..RobotState::default()
     }
 }
 
@@ -483,7 +483,7 @@ fn history_depth_is_independent_of_the_joint_count() {
     const DEPTH: usize = JOINTS + 5;
     let mut robot = RobotState::<DEPTH> {
         desired: zeroed_desired(),
-        history: History::default(),
+        ..RobotState::default()
     };
 
     for _ in 0..DEPTH + 1 {
@@ -621,4 +621,21 @@ fn value_types_are_one_f32_and_a_slot_starts_a_cache_line() {
     assert_eq!(align_of::<Q>(), align_of::<f32>());
     assert_eq!(align_of::<State<4>>(), 64);
     assert_eq!(size_of::<State<4>>() % 64, 0);
+}
+
+#[test]
+fn cadence_is_one_until_set_and_refuses_an_out_of_range_index() {
+    use core::num::NonZeroU32;
+    let mut robot = create_test_robot();
+    assert_eq!(robot.cadence(0), Ok(NonZeroU32::MIN));
+    let three = NonZeroU32::new(3).unwrap();
+    robot.set_cadence([three; JOINTS]);
+    assert_eq!(robot.cadence(JOINTS - 1), Ok(three));
+    assert_eq!(
+        robot.cadence(JOINTS),
+        Err(StateError::OutOfRange {
+            index: JOINTS,
+            len: JOINTS
+        })
+    );
 }
