@@ -1471,6 +1471,40 @@ mod tests {
         }
 
         #[test]
+        fn the_signal_that_ended_the_run_is_logged_once_at_exit() {
+            static STOPPED: AtomicU32 = AtomicU32::new(0);
+            static ABORTED: AtomicU32 = AtomicU32::new(0);
+            let runs = [
+                (
+                    Scripted::new(Instant::now()).shutdown_from(TICK_END + 2 * PER_TICK),
+                    tracing::Level::INFO,
+                    "control loop stopped",
+                    &STOPPED,
+                ),
+                (
+                    Scripted::new(Instant::now()).estop_from(AFTER_FIRST + PER_TICK),
+                    tracing::Level::ERROR,
+                    "control loop aborted",
+                    &ABORTED,
+                ),
+            ];
+            for (mut host, level, needle, count) in runs {
+                let log = Log::new();
+                let mut robot = recording_robot!(log);
+                let counter = Counter::new(needle, count).at(level);
+
+                let result = tracing::subscriber::with_default(counter, || {
+                    run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)))
+                });
+
+                assert!(result.is_ok());
+            }
+
+            assert_eq!(STOPPED.load(Ordering::Relaxed), 1);
+            assert_eq!(ABORTED.load(Ordering::Relaxed), 1);
+        }
+
+        #[test]
         fn the_tick_loop_logs_nothing_per_tick() {
             static ONE_TICK: AtomicU32 = AtomicU32::new(0);
             static FIVE_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -1525,6 +1559,7 @@ mod tests {
         struct Counter {
             needle: &'static str,
             count: &'static AtomicU32,
+            level: tracing::Level,
         }
 
         impl Counter {
@@ -1533,7 +1568,16 @@ mod tests {
                 SILENT.call_once(|| {
                     let _ = tracing::subscriber::set_global_default(Silent);
                 });
-                Self { needle, count }
+                Self {
+                    needle,
+                    count,
+                    level: tracing::Level::WARN,
+                }
+            }
+
+            /// Counts the events of `level` instead of the warnings.
+            fn at(self, level: tracing::Level) -> Self {
+                Self { level, ..self }
             }
         }
 
@@ -1595,7 +1639,7 @@ mod tests {
 
         impl tracing::Subscriber for Counter {
             fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-                *metadata.level() == tracing::Level::WARN
+                *metadata.level() == self.level
             }
 
             fn event(&self, event: &tracing::Event<'_>) {

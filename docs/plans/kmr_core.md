@@ -55,7 +55,7 @@ in [`specs/002-kmr-core/`](../../specs/002-kmr-core/).
 - [x] T046 [US2] HUMAN: K4.3 hold duration `Option<Duration>`, `None` default, `set_hold` in kmr_core/src/config/user_config.rs and kmr_core/src/robot.rs; `Some(d)`: the runtime sleeps to `min(hold_end, now + dt)` and polls the bus after each slice, an estop ends the wait (kmr_core/src/runtime.rs, kmr_core/src/clock.rs); `Host` unchanged (research R14). Test SC-010: `torque_off` follows `hold` after `d` within one `dt`; an estop at 1 s of 2 s ends the wait. FR-033 (SRS FR-4.1). Unblocks kmr_api C4
   - 2026-11-02: done on `dev`, uncommitted, pending review: `Robot::set_hold(Duration)` in kmr_core and kmr_api; maintainer decision: no `set_hold` means no hold at all (torque off at once); the wait runs in `dt` steps on absolute deadlines and an emergency stop cuts it. SRS FR-4.1 text still says "writes a final hold command": maintainer to amend.
 - [x] T047 [US6] HUMAN: K4.4 set `TickFlags::OVERRUN` in the slot of the late tick (kmr_core/src/runtime.rs, kmr_core/src/clock.rs). Test: an overrun on tick 7 reads set at depth 1 on tick 8 (US6 scenario 1). FR-051, FR-029 (SRS FR-13.4, FR-3.3)
-- [ ] T048 [US2] HUMAN: K4.5 `run()` logs the signal that ended it, once, at exit, in kmr_core/src/runtime.rs; `Ok(())` for both signals. FR-038 (SRS §8 open "run() after an emergency stop")
+- [x] T048 [US2] HUMAN: K4.5 `run()` logs the signal that ended it, once, at exit, in kmr_core/src/runtime.rs; `Ok(())` for both signals. FR-038 (SRS §8 open "run() after an emergency stop")
 
 ## Phase 7: M5 API hooks (US6, US2), supports SRS delivery steps 5 and 6
 
