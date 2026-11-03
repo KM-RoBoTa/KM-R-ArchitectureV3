@@ -5,9 +5,13 @@ use super::joint_state::{Kd, Kp, Q, Qd, Tau};
 use crate::error::StateError;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// The current state of the robot.
+/// The current state of the robot: one history slot.
 ///
-///
+/// Layout: structure of arrays, one `[_; N]` per field, so a field read walks
+/// contiguous memory. `repr(C)` keeps the declared field order; `align(64)`
+/// starts every slot on a cache line, so a 4-actuator slot (80 bytes) spans
+/// two lines and never shares one with its neighbour in the ring.
+#[repr(C, align(64))]
 pub(crate) struct State<const N: usize> {
     /// Array of all joint's position (as radiants).
     /// See [`super::joint_state::Q`]

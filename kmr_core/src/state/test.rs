@@ -609,3 +609,16 @@ fn the_home_state_is_undecided_not_a_panic() {
         Err(StateError::Undecided(_))
     ));
 }
+
+#[test]
+fn value_types_are_one_f32_and_a_slot_starts_a_cache_line() {
+    use core::mem::{align_of, size_of};
+    assert_eq!(size_of::<Q>(), 4);
+    assert_eq!(size_of::<Qd>(), 4);
+    assert_eq!(size_of::<Tau>(), 4);
+    assert_eq!(size_of::<Kp>(), 4);
+    assert_eq!(size_of::<Kd>(), 4);
+    assert_eq!(align_of::<Q>(), align_of::<f32>());
+    assert_eq!(align_of::<State<4>>(), 64);
+    assert_eq!(size_of::<State<4>>() % 64, 0);
+}
