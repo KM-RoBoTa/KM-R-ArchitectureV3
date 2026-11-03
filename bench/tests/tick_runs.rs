@@ -91,13 +91,14 @@ fn run(case: &str, vars: &[(&str, &str)], interrupt_after: Option<Duration>) -> 
     let code = child.wait().expect("tick ends").code();
     Run {
         code,
-        report: read(&report),
-        log: read(&log),
+        report: read(&report, true),
+        log: read(&log, false),
     }
 }
 
-/// The file at `path`, empty when missing; fails when it does not fit.
-fn read(path: &Path) -> Buf<CAP> {
+/// The file at `path`, empty when missing. A file over [`CAP`] fails when `whole`, else keeps its
+/// first bytes: a debug build logs every late tick, and the lines that matter come first.
+fn read(path: &Path, whole: bool) -> Buf<CAP> {
     let mut buf = Buf::new();
     let Ok(mut file) = File::open(path) else {
         return buf;
@@ -108,7 +109,12 @@ fn read(path: &Path) -> Buf<CAP> {
         if n == 0 {
             return buf;
         }
-        assert!(buf.push(&chunk[..n]), "{} over {CAP} bytes", path.display());
+        if !buf.push(&chunk[..n]) {
+            assert!(!whole, "{} over {CAP} bytes", path.display());
+            let room = CAP - buf.len();
+            buf.push(&chunk[..room.min(n)]);
+            return buf;
+        }
     }
 }
 
