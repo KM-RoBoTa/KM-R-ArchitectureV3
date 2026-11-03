@@ -161,7 +161,16 @@ impl Layout {
         members: usize,
     ) -> Self {
         let mut order: [usize; JOINTS] = core::array::from_fn(|index| index);
+        #[cfg(not(feature = "presort-off"))]
         order.sort_unstable_by_key(|&index| (group.get(index).copied(), index));
+        // DECISION: `presort-off` keeps declaration order inside each member
+        // only: the walk hands each member a contiguous part of the order.
+        #[cfg(feature = "presort-off")]
+        order.sort_unstable_by_key(|&index| {
+            let of = group.get(index).map_or(0, |g| u16::from(g.0));
+            let ends = bound.get(1..=members).unwrap_or(&[]);
+            (ends.partition_point(|&end| end <= of), index)
+        });
         Self {
             group,
             read_every,
@@ -363,7 +372,8 @@ impl<'a> Sample<'a> {
 }
 
 /// Written actuators, in group order: the whole robot's, or one member's
-/// once the walk selected it.
+/// once the walk selected it. With the `presort-off` feature, in declaration
+/// order inside each member (SRS FR-5.3, for the bench's comparison).
 #[derive(Debug)]
 pub struct Batch<'a> {
     layout: &'a Layout,
@@ -688,6 +698,25 @@ mod tests {
         assert!(mask.is_empty());
     }
 
+    #[cfg(feature = "presort-off")]
+    #[test]
+    fn presort_off_keeps_declaration_order() {
+        let layout = layout(|index| u8::from(index % 2 == 0));
+        let mut written = Written::default();
+        written.q.set(0);
+        written.qd.set(1);
+        written.tau.set(2);
+
+        let batch = Batch::new(&layout, &written);
+        let mut runs = batch.runs();
+
+        assert_eq!(runs.next(), Some((Group(1), &[0][..])));
+        assert_eq!(runs.next(), Some((Group(0), &[1][..])));
+        assert_eq!(runs.next(), Some((Group(1), &[2][..])));
+        assert_eq!(runs.next(), None);
+    }
+
+    #[cfg(not(feature = "presort-off"))]
     #[test]
     fn batch_keeps_written_actuators_in_group_order() {
         let layout = layout(|index| u8::from(index % 2 == 0));

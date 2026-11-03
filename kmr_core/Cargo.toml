@@ -23,6 +23,9 @@ frunk.workspace = true
 # a `[dev-dependencies]` entry, so no release build carries a way to forge a
 # sample or to read the write-only staging area.
 test-util = []
+# Batches keep declaration order instead of group order: the bench's
+# baseline for the presort (SRS FR-5.3). Off by default.
+presort-off = []
 # Dev bench stopgap until N is a const generic (core M2): JOINTS = 10, not 4.
 joints-10 = []
 
