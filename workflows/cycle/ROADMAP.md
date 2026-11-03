@@ -44,13 +44,13 @@ Until `agent/integration` and `agent/replace-spec-kit` are merged into
 
 | module | owner | mode | step | branch | last oracle run |
 |---|---|---|---|---|---|
-| kmr_core | delegated | loop | 5 | — | `2026-11-03 red`: clippy, 6 errors |
-| kmr_adapters | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| kmr_model | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| kmr_api | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| controllers | mine | pair | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| kmr_ffi | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| bench | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_core | delegated | loop | 5 | agent-goal | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_adapters | delegated | loop | 5 | agent-goal | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_model | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_api | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| controllers | mine | pair | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_ffi | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| bench | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 
 - **owner** `mine`: I write it. Agents do not touch its files without
   listing them first. `delegated`: an agent writes it under the step-4
