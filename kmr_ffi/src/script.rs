@@ -13,6 +13,8 @@ macro_rules! names {
         &[$(stringify!($name)),*]
     };
 }
+#[cfg(test)]
+pub(crate) use names;
 
 /// Every field, the names of `read.<field>` and `write.set_<field>`.
 pub(crate) const FIELDS: &[&str] = crate::for_each_field!(names);
