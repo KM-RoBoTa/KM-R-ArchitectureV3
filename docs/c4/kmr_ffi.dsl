@@ -7,6 +7,9 @@
 // kmr_api::ffi, the glue that fills the views from State and applies the
 // writes, is drawn in kmr_api.dsl.
 
+// The example crates kmr_ffi/examples/c and kmr_ffi/examples/cpp are user
+// crates (controllers like the controllers crate) and are not drawn.
+
 !element kmr.control {
     ffiFields = component "kmr_ffi: field list" "The one declaration of what crosses: the core's sealed fields and the per-actuator flags. Every per-field item, Rust type and header line, is generated from it, so a new field is one line (SRS FR-10.2)." "Rust macro_rules"
     ffiView = component "kmr_ffi: views" "The #[repr(C)], Copy, pointer-free types foreign code reads and writes: the History with ages, the clock as integers, the write buffer with its written mask. N in 1..=64, checked at compile time (SRS FR-10.1, FR-2.3, FR-3.3)." "Rust, repr(C)"
