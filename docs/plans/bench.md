@@ -67,7 +67,7 @@ in [`specs/007-bench/`](../../specs/007-bench/).
 
 ## Phase 11: Phase B, `dt` range check (US3) (plan B-2)
 
-- [ ] T050 [US3] Waits on kmr_api A6. bench/tests/tick_runs.rs: `KMR_BENCH_DT_NS=5000` gives exit 1, `failed`, `reason` = the one-line `UserError` text (kmr_api A6: `Debug` = `Display`); until A6 lands the case expects `complete` with `dt_ns = 5000` (research R21 P4); `ceiling.sh` unchanged (quickstart §4; FR-024, FR-007 (SRS NFR-2, FR-3.1))
+- [x] T050 [US3] Waits on kmr_api A6. bench/tests/tick_runs.rs: `KMR_BENCH_DT_NS=5000` gives exit 1, `failed`, `reason` = the one-line `UserError` text (kmr_api A6: `Debug` = `Display`); until A6 lands the case expects `complete` with `dt_ns = 5000` (research R21 P4); `ceiling.sh` unchanged (quickstart §4; FR-024, FR-007 (SRS NFR-2, FR-3.1))
 
 ## Phase 12: Upstream follow-ups (no new measurement)
 

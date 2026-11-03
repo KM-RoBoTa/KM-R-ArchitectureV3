@@ -181,6 +181,21 @@ fn a_bad_plan_fails_before_the_run() {
 }
 
 #[test]
+fn a_dt_below_the_floor_fails_with_the_api_error() {
+    let r = run("dt-5us", &[("KMR_BENCH_DT_NS", "5000")], None);
+    let text = r.report.as_str();
+    assert_eq!(r.code, Some(1), "{text}");
+    assert_eq!(r.key("status"), Some("\"failed\""), "{text}");
+    assert_eq!(r.int("dt_ns"), Some(5000));
+    assert_eq!(
+        r.key("reason"),
+        Some("\"dt of 5µs is out of range; give `.set_dt(..)` a value from 10 µs to 1 s\""),
+        "{text}"
+    );
+    assert!(!r.has_figures(), "{text}");
+}
+
+#[test]
 fn ctrl_c_ends_the_run_incomplete_without_figures() {
     let r = run(
         "ctrl-c",
