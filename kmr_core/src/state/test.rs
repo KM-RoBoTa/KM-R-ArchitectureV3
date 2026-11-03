@@ -13,7 +13,7 @@ use rstest::rstest;
 
 // The tests off under `joints-10` spell four actuators in their literals.
 
-// `RobotState::default()` routes through `home_state()` which is `todo!()`, so we
+// The home state is undecided (`StateError::Undecided`, SRS FR-2.7), so we
 // build the test fixtures directly from zeroed fields instead. The plumbing under
 // test (slot routing, history reads, desired writes) is independent of the home
 // state, so a zeroed start is a valid, panic-free baseline.
@@ -597,4 +597,15 @@ fn the_hold_target_is_the_sample_overlaid_with_this_ticks_writes() {
     assert_eq!(target.qd, sample.qd);
     assert_eq!(target.tau, [Tau(0.25), Tau(0.0), Tau(0.0), Tau(0.0)]);
     assert_eq!(&target.written, robot.written());
+}
+
+#[test]
+fn the_home_state_is_undecided_not_a_panic() {
+    let robot = create_test_robot();
+    let undecided = Err(StateError::Undecided("SRS FR-2.7: home state source"));
+    assert_eq!(robot.home_state::<Q>(), undecided);
+    assert!(matches!(
+        State::<JOINTS>::home_state(),
+        Err(StateError::Undecided(_))
+    ));
 }

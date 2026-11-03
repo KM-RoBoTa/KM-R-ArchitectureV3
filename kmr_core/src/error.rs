@@ -41,6 +41,10 @@ pub enum StateError {
 
     #[error("Value requested is unavailable.")]
     CriticalValueMissing,
+
+    /// The behaviour is not decided yet; the text names the open SRS item.
+    #[error("not decided yet: {0}")]
+    Undecided(&'static str),
 }
 
 #[derive(Debug, PartialEq, thiserror::Error)]

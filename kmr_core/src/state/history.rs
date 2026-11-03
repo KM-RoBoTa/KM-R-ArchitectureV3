@@ -2,6 +2,7 @@ use circular_buffer::FixedCircularBuffer;
 
 use super::JOINTS;
 use super::joint_state::{Kd, Kp, Q, Qd, Tau};
+use crate::error::StateError;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// The current state of the robot.
@@ -24,10 +25,9 @@ pub(crate) struct State<const N: usize> {
 }
 
 impl State<JOINTS> {
-    fn home_state() -> Self {
-        todo!(
-            "I must save somewhere permanant the home state. This must be the default because zeroing all actuators as default is dangerous."
-        )
+    /// The robot model's home state; its source is still open in the SRS.
+    pub(crate) fn home_state() -> Result<Self, StateError> {
+        Err(StateError::Undecided("SRS FR-2.7: home state source"))
     }
 
     /// Returns a completely zeroed-out state.

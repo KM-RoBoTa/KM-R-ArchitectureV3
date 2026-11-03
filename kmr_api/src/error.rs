@@ -26,6 +26,10 @@ pub enum StateError {
     /// The requested value has not been recorded yet.
     #[error("value requested is unavailable")]
     CriticalValueMissing,
+
+    /// The behaviour is not decided yet; the text names the open SRS item.
+    #[error("not decided yet: {0}")]
+    Undecided(&'static str),
 }
 
 /// Payload-free cause of a [`PrivateStateError`].
@@ -42,6 +46,8 @@ pub enum StateErrorKind {
     HistoryValueOutOfRange,
     /// The requested value has not been recorded yet.
     CriticalValueMissing,
+    /// The behaviour is not decided yet.
+    Undecided,
 }
 
 impl StateError {
@@ -52,6 +58,7 @@ impl StateError {
             Self::OutOfRange { .. } => StateErrorKind::OutOfRange,
             Self::HistoryValueOutOfRange { .. } => StateErrorKind::HistoryValueOutOfRange,
             Self::CriticalValueMissing => StateErrorKind::CriticalValueMissing,
+            Self::Undecided(_) => StateErrorKind::Undecided,
         }
     }
 }
@@ -68,6 +75,7 @@ impl From<CoreStateError> for StateError {
                 max_depth,
             },
             CoreStateError::CriticalValueMissing => Self::CriticalValueMissing,
+            CoreStateError::Undecided(item) => Self::Undecided(item),
         }
     }
 }
@@ -270,6 +278,13 @@ mod tests {
             },
             UserError::UnknownLink { link: "nope" },
         ]
+    }
+
+    #[test]
+    fn an_undecided_core_error_keeps_the_srs_item() {
+        let e = StateError::from(CoreStateError::Undecided("SRS FR-2.7: home state source"));
+        assert_eq!(e.kind(), StateErrorKind::Undecided);
+        assert!(e.to_string().contains("SRS FR-2.7"));
     }
 
     #[cfg(not(debug_assertions))]

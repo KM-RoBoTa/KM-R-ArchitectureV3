@@ -60,8 +60,8 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     // ── State getters ───────────────────────────────────────────────────
     /// Returns the array [`StateField`] defined as the home position for the
     /// current robot model.
-    pub(crate) fn home_state<T: StateField>(&self) -> [T; JOINTS] {
-        todo!("return home state for specified state field")
+    pub(crate) fn home_state<T: StateField>(&self) -> Result<[T; JOINTS], StateError> {
+        Err(StateError::Undecided("SRS FR-2.7: home state source"))
     }
 
     /// Newest entry's slot for field type `T`. None if history is empty.
