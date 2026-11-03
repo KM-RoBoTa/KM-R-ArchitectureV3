@@ -19,10 +19,10 @@ names. Ask for the name if not given.
      `///` doc comment naming the requirement ids it serves, body `todo!()`
    - hot structs from the Data subsection: `#[repr(C)]`, typed fields,
      and a `size_of` test pinning the size
-   - `#[cfg(test)] mod tests` with one `#[test] fn <mod>_<n>_<slug>()`
-     per requirement `<MOD>-<n>`, body `todo!()`
+   - `#[cfg(test)] mod tests` with one `#[test] fn <id>_<slug>()`
+     per SRS id (`fr_4_5_clamp_policy`), body `todo!()`
 4. No private items, no implementation, no new dependencies. Anything
-   the SRS leaves open: a `TODO(srs)` comment in place and a row in
+   the SRS leaves open: `unimplemented!("SRS <id>: <question>")` in place and a row in
    `docs/deferred.md`.
 5. Run `cargo build`: must be green. `cargo test` must compile.
 6. Print the pub surface, one line per item, and ask for sign-off. On

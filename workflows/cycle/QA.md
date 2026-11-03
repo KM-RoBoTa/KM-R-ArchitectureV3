@@ -30,7 +30,7 @@ pass/fail and, for `[reviewer]` items, one line of evidence.
 ## Docs
 
 - [ ] `[reviewer]` `[poc, serious]` The module's SRS section matches the code. Every
-      requirement `<MOD>-<n>` has a test named for it (`[serious]` only). Every pub item is
+      requirement id the module covers has a test that names it (`[serious]` only). Every pub item is
       implied by a requirement. Nothing in the code contradicts a
       requirement.
 - [ ] `[reviewer]` `[poc, serious]` A C4 box for the module exists in

@@ -11,7 +11,8 @@ or from the skill that runs them.
   step 4 only when every module it depends on is at step 4 or later.
 - The pub surface is frozen at the end of step 4. Changing it afterwards
   is a deferral, not a decision.
-- One branch per module, one squash commit per module at step 7.
+- One `feature/<module>` branch per module, squash-merged into `dev` at
+  step 7.
 - A **change** (bug, small feature, refactor) enters at step 4 and exits
   at step 7. A **new module** runs 1→9.
 
@@ -32,7 +33,7 @@ one line in the summary saying it was done.
 1. Verify the exit test of the step is met. If not, say which part
    fails and stop. Never end a step on a promise. Ending step 6: run
    `superpowers:requesting-code-review` with `QA.md` first. Ending
-   step 7: confirm the squash commit is on main first.
+   step 7: confirm the squash commit is on `dev` first.
 2. Update the module's row in `workflows/cycle/ROADMAP.md`:
    - `step` → the next step, or `needs contract rework` after 3 open
      deferrals on this module
@@ -63,8 +64,9 @@ and I can say in one sentence why the project exists. **Tool:**
 
 **Who:** me drafting, agent probing for ambiguity. **What:**
 `docs/srs/SRS.md`, one `## Module: <module>` section per C2 container, requirements numbered
-`<MOD>-<n>`, each one testable sentence. Holes are allowed and marked
-`TODO(srs)`; the SRS is POC-ready, not final. **Exit:** every C2
+with SRS ids (`FR-4.5`, `NFR-2`), each one testable sentence. Holes are
+allowed and marked **\[decision\]**, and in code
+`unimplemented!("SRS <id>: <question>")` (SRS § 5); the SRS is POC-ready, not final. **Exit:** every C2
 container has an SRS section with at least one testable requirement,
 and every hole is marked. **Tool:** `superpowers:brainstorming`, plain
 markdown.
@@ -80,7 +82,7 @@ Each module gets a C3 box in `docs/c4/<module>.dsl`, included from
 `docs/workspace.dsl`. **Exit:**
 `cargo build` green on the skeleton, dependency order readable from the
 `//!` comments, every module has a C3 box. Ends with the skeleton and
-the owner column filled (default `mine`). **Tool:** run
+the owner column filled (default `delegated`). **Tool:** run
 `superpowers:brainstorming` (skip if the SRS is complete enough), then
 `superpowers:writing-plans`. Output: `docs/plans/<module>.md` with
 tasks numbered `<module>-NN`. This file is the task list for steps 5 to
@@ -103,9 +105,9 @@ warns on `todo!()`: expected until step 5 ends. **Tool:** `/contract`,
 ## 5. Build
 
 **Entry:** run `/mode` if the row has no mode; otherwise use the row.
-Then 5a or 5b by owner. Commit per task, message starts with the task
-ID (`shape-03: ...`). Step 9 changes use the issue number (`#42: ...`)
-as the ID.
+Then 5a or 5b by owner. Commit per task, Conventional Commits with the task
+ID first in the description (`feat(core): T037 ...`). Step 9 changes use
+the issue number (`fix(api): #42 ...`) as the ID.
 
 ## 5a. Build mine (pair)
 
@@ -148,9 +150,10 @@ on why. **Tool:** `superpowers:requesting-code-review`, `QA.md`.
 
 ## 7. Merge
 
-**Who:** me. **What:** one squash commit per module onto the main
-branch. Message: module name, SRS section, one line on what it does.
-Branch deleted. **Exit:** main builds, oracle green on main, ROADMAP row
+**Who:** me. **What:** a PR from `feature/<module>` into `dev`,
+squash-merged by me. Message: Conventional Commits, module, SRS section,
+one line on what it does. Branch deleted. `dev` reaches `main` through
+its own PR. **Exit:** `dev` builds, oracle green on `dev`, ROADMAP row
 says step 8 (new module) or is closed (change). **Tool:** git, then the
 automatic step end.
 

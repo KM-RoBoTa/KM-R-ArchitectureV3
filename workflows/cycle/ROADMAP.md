@@ -40,13 +40,13 @@ open tasks are in `docs/plans/<module>.md`.
 
 | module | owner | mode | step | branch | last oracle run |
 |---|---|---|---|---|---|
-| kmr_core | mine | unset | 5 | — | `2026-11-03 red`: clippy, 6 errors |
-| kmr_adapters | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| kmr_model | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| kmr_api | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| controllers | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| kmr_ffi | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
-| bench | mine | unset | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_core | delegated | loop | 5 | — | `2026-11-03 red`: clippy, 6 errors |
+| kmr_adapters | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_model | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_api | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| controllers | mine | pair | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| kmr_ffi | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
+| bench | delegated | loop | 5 | — | `2026-11-03 red`: tests green, clippy stops at kmr_core |
 
 - **owner** `mine`: I write it. Agents do not touch its files without
   listing them first. `delegated`: an agent writes it under the step-4
@@ -54,5 +54,6 @@ open tasks are in `docs/plans/<module>.md`.
 - **mode**: set with `/mode`. Default `pair` for `mine`, `loop` for
   `delegated`.
 - **step**: the step the module is *in*, updated at step end.
-- **branch**: one branch per module, one squash commit at step 7.
+- **branch**: one `feature/<module>` per module, squash-merged into
+  `dev` at step 7.
 - **last oracle run**: date and green/red, written at step end.
