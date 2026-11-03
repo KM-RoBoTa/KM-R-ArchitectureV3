@@ -16,3 +16,4 @@ pub mod procfs;
 pub mod report;
 pub mod results;
 pub mod setup;
+pub mod tick;
