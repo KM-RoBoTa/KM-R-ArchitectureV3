@@ -1418,6 +1418,218 @@ mod tests {
         }
     }
 
+    mod long_runs {
+        //! SC-001 and SC-002 over 10 000 scripted ticks: the order of every
+        //! tick, and the grid under injected overruns.
+
+        use core::convert::Infallible;
+
+        use super::*;
+
+        const TICKS: u32 = 10_000;
+
+        /// One step of a tick, in the order SC-001 expects.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Event {
+            Read,
+            FirstA,
+            FirstB,
+            EachA,
+            EachB,
+            LastA,
+            LastB,
+            Write,
+            Sleep,
+        }
+
+        const TICK: [Event; 9] = [
+            Event::Read,
+            Event::FirstA,
+            Event::FirstB,
+            Event::EachA,
+            Event::EachB,
+            Event::LastA,
+            Event::LastB,
+            Event::Write,
+            Event::Sleep,
+        ];
+
+        /// Shared by the host, the adapter and the controllers: the clock,
+        /// the step expected next, the finished ticks and the tick starts.
+        struct World {
+            clock: Cell<Instant>,
+            step: Cell<usize>,
+            ticks: Cell<u32>,
+            origin: Cell<Option<Instant>>,
+            last_slot: Cell<Option<u128>>,
+        }
+
+        impl World {
+            fn new() -> Self {
+                Self {
+                    clock: Cell::new(Instant::now()),
+                    step: Cell::new(0),
+                    ticks: Cell::new(0),
+                    origin: Cell::new(None),
+                    last_slot: Cell::new(None),
+                }
+            }
+
+            /// Checks that `event` is the step expected next.
+            fn saw(&self, event: Event) {
+                let step = self.step.get();
+                assert_eq!(event, TICK[step % TICK.len()], "step {step}");
+                self.step.set(step + 1);
+            }
+
+            /// Checks that a tick starting now is on the grid, in a new slot.
+            fn tick_starts(&self) {
+                let origin = self.origin.get().expect("armed before tick 0");
+                let offset = (self.clock.get() - origin).as_nanos();
+                assert_eq!(offset % DT.as_nanos(), 0, "off the grid");
+                let slot = offset / DT.as_nanos();
+                if let Some(last) = self.last_slot.get() {
+                    assert!(slot > last, "two ticks in slot {slot}");
+                }
+                self.last_slot.set(Some(slot));
+            }
+
+            fn work(&self, duration: Duration) {
+                self.clock.set(self.clock.get() + duration);
+            }
+        }
+
+        /// The host: a clock moved by the controllers' work and by the sleeps.
+        struct Clockwork<'a>(&'a World);
+
+        impl Host for Clockwork<'_> {
+            fn now(&mut self) -> Instant {
+                let now = self.0.clock.get();
+                if self.0.origin.get().is_none() {
+                    self.0.origin.set(Some(now));
+                }
+                now
+            }
+
+            fn sleep_until(&mut self, deadline: Instant) {
+                self.0.saw(Event::Sleep);
+                assert!(deadline >= self.0.clock.get(), "sleeps into the past");
+                self.0.clock.set(deadline);
+            }
+
+            fn poll(&mut self) -> Option<Signal> {
+                (self.0.ticks.get() >= TICKS).then(|| Signal {
+                    kind: SignalKind::Shutdown,
+                    meta: SignalMeta::new("scripted", file!(), line!()),
+                })
+            }
+        }
+
+        /// The adapter: reads and writes are steps of the tick.
+        struct Steps<'a>(&'a World);
+
+        impl seal::Adapter for Steps<'_> {}
+
+        impl Hal for Steps<'_> {
+            type Error = Infallible;
+
+            fn check(&mut self, _overrides: Overrides) -> Result<Claim, Infallible> {
+                Ok(Claim {
+                    owned: Mask::ALL,
+                    group: [Group(0); JOINTS],
+                    read_every: [NonZeroU32::MIN; JOINTS],
+                    read_cost: Duration::ZERO,
+                    write_cost: Duration::ZERO,
+                })
+            }
+            fn open(&mut self) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn zero(&mut self) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn ping(&mut self) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn health(&mut self) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn configure(&mut self) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn torque_on(&mut self) -> Result<(), Infallible> {
+                Ok(())
+            }
+            fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+                self.0.saw(Event::Read);
+                Mask::ALL
+            }
+            fn write(&mut self, _command: Command<'_>, _batch: &Batch<'_>, _faults: &mut Faults) {
+                self.0.saw(Event::Write);
+            }
+            fn hold(&mut self, _target: Command<'_>) {}
+            fn torque_off(&mut self) {}
+            fn close(&mut self) {}
+        }
+
+        /// Runs `TICKS` ticks; `work(k)` is how long the controllers of tick
+        /// `k` take.
+        fn run(world: &World, work: impl Fn(u32) -> Duration) {
+            let step = |event| move |_: &Time, _: &mut RobotState, _: &Sensors| world.saw(event);
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .add_controller(First, move |_: &Time, _: &mut RobotState, _: &Sensors| {
+                    world.tick_starts();
+                    world.saw(Event::FirstA);
+                })
+                .add_controller(First, step(Event::FirstB))
+                .add_controller(
+                    EachTick,
+                    move |_: &Time, state: &mut RobotState, _: &Sensors| {
+                        world.saw(Event::EachA);
+                        world.work(work(world.ticks.get()));
+                        state.set_at(Q(1.0), 0).expect("actuator 0 exists");
+                    },
+                )
+                .add_controller(EachTick, step(Event::EachB))
+                .add_controller(Last, step(Event::LastA))
+                .add_controller(Last, move |_: &Time, _: &mut RobotState, _: &Sensors| {
+                    world.saw(Event::LastB);
+                    world.ticks.set(world.ticks.get() + 1);
+                });
+
+            let result = run_with(&mut robot, &mut Clockwork(world), &mut one(Steps(world)));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(world.ticks.get(), TICKS);
+            // The last tick stops before its sleep.
+            assert_eq!(world.step.get(), TICK.len() * TICKS as usize - 1);
+        }
+
+        #[test]
+        fn sc_001_every_tick_reads_walks_in_order_writes_and_sleeps() {
+            let world = World::new();
+            run(&world, |_| DT * 3 / 10);
+            assert_eq!(world.last_slot.get(), Some(u128::from(TICKS - 1)));
+        }
+
+        #[test]
+        fn sc_002_overrun_ticks_still_start_on_the_grid_one_per_slot() {
+            let world = World::new();
+            run(&world, |k| match k {
+                k if k % 13 == 0 => DT * 5 / 2,
+                k if k % 7 == 0 => DT * 17 / 10,
+                k if k % 5 == 0 => DT,
+                _ => DT * 3 / 10,
+            });
+            let slots = world.last_slot.get().expect("ticks ran");
+            assert!(slots > u128::from(TICKS - 1), "overruns skip slots");
+        }
+    }
+
     mod three_members {
         //! An AX-12 on one Dynamixel bus, an MX-64 on another and an AK60 on
         //! CAN, as one robot of three members: each sees only its own
