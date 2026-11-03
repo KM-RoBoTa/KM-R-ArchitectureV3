@@ -254,6 +254,8 @@ impl RealTime {
     }
 }
 
+impl crate::runtime::seal::Host for RealTime {}
+
 impl Host for RealTime {
     fn now(&mut self) -> Instant {
         Instant::now()
