@@ -39,6 +39,40 @@
 //! It is not a microcontroller software architecture. While limited no_std can
 //! be used in the future, the overall architectural design is not meant to be
 //! no_std.
+//!
+//! # What does not build
+//!
+//! The staging area of the desired values is write-only:
+//!
+//! ```compile_fail,E0616
+//! fn peek(state: &kmr_core::RobotState<4>) {
+//!     let _ = state.desired;
+//! }
+//! ```
+//!
+//! The field set is sealed: no new field type outside the core.
+//!
+//! ```compile_fail,E0277
+//! #[derive(Clone, Copy)]
+//! struct Temperature(f32);
+//! impl kmr_core::state::StateField for Temperature {}
+//! ```
+//!
+//! The phases are sealed: no new phase outside the core.
+//!
+//! ```compile_fail,E0277
+//! #[derive(Clone, Copy)]
+//! struct Midway;
+//! impl kmr_core::Schedule for Midway {}
+//! ```
+//!
+//! A robot without a controller does not run:
+//!
+//! ```compile_fail,E0277
+//! kmr_core::Robot::<4>::new().run().ok();
+//! ```
+//!
+//! The direct field write is refused in [`state`] (`RobotState`).
 
 #![forbid(clippy::disallowed_types)]
 // Test code may unwrap: a panic there IS the failure report. Everywhere else
