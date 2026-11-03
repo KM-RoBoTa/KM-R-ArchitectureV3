@@ -53,6 +53,10 @@ pub struct RunPlan {
     pub measurement: Buf<NAME_CAP>,
     /// Cell id, for the report.
     pub cell: Buf<NAME_CAP>,
+    /// Test-only: the tick at which `work` allocates once (research R21 P4). Debug builds only,
+    /// so the release binaries the scripts run cannot inject.
+    #[cfg(debug_assertions)]
+    pub inject_at: Option<u64>,
 }
 
 impl RunPlan {
@@ -97,6 +101,11 @@ impl RunPlan {
             },
             measurement: name(&get, MEASUREMENT, "jitter")?,
             cell: name(&get, CELL, "adhoc")?,
+            #[cfg(debug_assertions)]
+            inject_at: match get(INJECT_AT) {
+                None => None,
+                Some(_) => Some(int(&get, INJECT_AT, 0)?),
+            },
         };
         if plan.ticks <= plan.warmup.saturating_add(2) {
             return Err(BadPlan(TICKS));
@@ -146,6 +155,9 @@ const WRITE: &str = "KMR_BENCH_WRITE";
 const MEASUREMENT: &str = "KMR_BENCH_MEASUREMENT";
 /// Cell id.
 const CELL: &str = "KMR_BENCH_CELL";
+/// Test-only allocation tick, debug builds only.
+#[cfg(debug_assertions)]
+const INJECT_AT: &str = "KMR_BENCH_INJECT_AT";
 
 /// An unsigned base-10 integer variable, `default` when unset.
 fn int<V: AsRef<OsStr>>(
@@ -294,6 +306,16 @@ mod tests {
             Some(WORK_NS)
         );
         assert_eq!(bad([(OUT, "r"), (DT_NS, "1000"), (WORK_NS, "999")]), None);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_injection_tick_is_read_in_debug_builds() {
+        let plan = RunPlan::parse(env([(OUT, "r")])).expect("good plan");
+        assert_eq!(plan.inject_at, None);
+        let plan = RunPlan::parse(env([(OUT, "r"), (INJECT_AT, "1010")])).expect("good plan");
+        assert_eq!(plan.inject_at, Some(1010));
+        assert_eq!(bad([(OUT, "r"), (INJECT_AT, "x")]), Some(INJECT_AT));
     }
 
     #[test]

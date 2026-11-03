@@ -26,6 +26,9 @@ pub static PLANNED: AtomicU64 = AtomicU64::new(0);
 pub static WORK_ITERS: AtomicU64 = AtomicU64::new(0);
 /// Whether `work` writes every actuator.
 pub static WRITE_ALL: AtomicBool = AtomicBool::new(false);
+/// Test-only: the tick at which `work` allocates once; `u64::MAX` for never. Debug builds only.
+#[cfg(debug_assertions)]
+pub static INJECT_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// The process epoch every stamp counts from; set by `main` before `run()`.
 pub static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -59,6 +62,8 @@ pub fn configure(plan: &RunPlan, ps_per_iter: u64) {
     PLANNED.store(plan.ticks, Relaxed);
     WORK_ITERS.store(calib::iters_for(plan.work_ns, ps_per_iter), Relaxed);
     WRITE_ALL.store(plan.write == WriteMode::All, Relaxed);
+    #[cfg(debug_assertions)]
+    INJECT_AT.store(plan.inject_at.unwrap_or(u64::MAX), Relaxed);
 }
 
 /// `First`, registered first: stamps the start, records lateness and gap from tick W, opens the window at W.
@@ -96,6 +101,10 @@ pub fn work(_: &Time, state: &mut State, _: &Sensors) {
     black_box(calib::spin(WORK_ITERS.load(Relaxed)));
     if WRITE_ALL.load(Relaxed) {
         write_target(state);
+    }
+    #[cfg(debug_assertions)]
+    if TICK.load(Relaxed) == INJECT_AT.load(Relaxed) {
+        black_box(std::ffi::CString::new("bench").ok());
     }
 }
 
