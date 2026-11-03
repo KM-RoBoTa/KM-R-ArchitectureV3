@@ -1,3 +1,5 @@
+//! The robot state: value types, write-only desired values, read-only history.
+
 use crate::error::StateError;
 
 // todo: build time variable from model, not implemented yet — keep here, not in a submodule

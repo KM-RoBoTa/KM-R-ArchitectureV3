@@ -28,6 +28,7 @@ macro_rules! schedules {
     }
 
     impl Scheduled {
+        /// Every bucket empty.
         pub fn new() -> Self {
             Scheduled { $($field: HNil),+ }
         }

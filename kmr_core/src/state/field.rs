@@ -26,7 +26,24 @@ pub(crate) mod sealed {
 ///
 /// Public because `kmr_api` re-exports it (as `Field`) for users to name as a
 /// bound, but sealed: the `sealed::Slot` supertrait lives in a crate-private
-/// module, so no downstream crate can add a new field type.
+/// module, so no downstream crate can add a new field type:
+///
+/// ```compile_fail
+/// #[derive(Clone, Copy)]
+/// struct Mine(f32);
+/// impl From<f32> for Mine {
+///     fn from(v: f32) -> Self {
+///         Mine(v)
+///     }
+/// }
+/// impl kmr_core::state::StateField for Mine {}
+/// ```
+// DECISION: the private supertrait IS the seal, so `private_bounds` is allowed
+// here rather than widening `Slot` (its methods name the crate-private `Desired`).
+#[allow(
+    private_bounds,
+    reason = "the crate-private supertrait seals the field set"
+)]
 pub trait StateField: sealed::Slot {}
 
 impl sealed::Slot for Q {

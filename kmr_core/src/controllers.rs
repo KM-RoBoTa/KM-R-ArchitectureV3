@@ -51,6 +51,7 @@ impl<'a> Env<'a> {
 /// stored node type nameable (a closure type is not) so the builder's
 /// type-state still threads through.
 pub trait ControlFn {
+    /// Runs the controller once.
     fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors);
 }
 
@@ -65,6 +66,7 @@ impl<F: Fn(&Time, &mut RobotState, &Sensors)> ControlFn for F {
 /// `Fn(&Time, &mut RobotState, &Sensors, &mut T)`; `kmr_api` implements it on
 /// its own wrapper so it can present the api argument order/types instead.
 pub trait ControlFnWith<T> {
+    /// Runs the controller once with its context.
     fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors, ctx: &mut T);
 }
 
@@ -79,6 +81,7 @@ impl<T, F: Fn(&Time, &mut RobotState, &Sensors, &mut T)> ControlFnWith<T> for F 
 /// Blanket-implemented for `Fn(&Time, &mut T)`; `kmr_api` wraps it to present
 /// `Fn(&mut T, &Time)`.
 pub trait ThreadFn<T> {
+    /// Runs the threaded controller once with its context.
     fn call(&self, time: &Time, ctx: &mut T);
 }
 
