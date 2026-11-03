@@ -5,6 +5,7 @@
 mod gateway;
 pub mod keys;
 mod msg;
+mod security;
 
 use std::sync::Arc;
 
@@ -19,26 +20,9 @@ use crate::{Faults, Time};
 
 pub use gateway::Counters;
 pub use msg::{DesiredMsg, SampleMsg, decode_ring, desired_len, sample_len};
+pub use security::Identity;
 
 use gateway::{Entities, Inbox, Running, bump};
-
-/// How the gateway reaches its peers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Identity {
-    /// Plain TCP on the loopback interface only: every endpoint must be `tcp/127.0.0.1:..`,
-    /// `tcp/[::1]:..` or `tcp/localhost:..`. No certificate: any process of this machine is
-    /// trusted to name itself in its Desired key.
-    // DECISION: a loopback identity for one-machine setups and tests; it refuses any other
-    // endpoint, so it never opens the robot to the network.
-    Loopback,
-}
-
-impl Identity {
-    /// The loopback identity: plain TCP, loopback endpoints only.
-    pub const fn loopback() -> Self {
-        Self::Loopback
-    }
-}
 
 /// The gateway's settings (contracts/zenoh.md § Builder).
 #[derive(Clone, Debug)]
@@ -100,8 +84,9 @@ impl Gateway {
         }
     }
 
-    /// The session's configuration: peer mode, no multicast scouting, the endpoints.
-    fn session_config(&self) -> Result<::zenoh::Config, GatewayError> {
+    /// The session's configuration: peer mode, no multicast scouting, the endpoints, the
+    /// identity's transport and ACL with `sources` as the remote sources.
+    pub(crate) fn session_config(&self, sources: &[&str]) -> Result<::zenoh::Config, GatewayError> {
         let mut config = ::zenoh::Config::default();
         let mut set = |key: &str, value: String| {
             config
@@ -112,19 +97,16 @@ impl Gateway {
         set("scouting/multicast/enabled", "false".into())?;
         set("listen/endpoints", json_list(&self.listen)?)?;
         set("connect/endpoints", json_list(&self.connect)?)?;
-        match self.config.identity {
-            Identity::Loopback => {
-                if let Some(endpoint) = self
-                    .listen
-                    .iter()
-                    .chain(&self.connect)
-                    .find(|e| !is_loopback(e))
-                {
-                    return Err(GatewayError::NotLoopback {
-                        endpoint: endpoint.clone(),
-                    });
-                }
-            }
+        let endpoints: Vec<&String> = self.listen.iter().chain(&self.connect).collect();
+        let instance = self.instance()?;
+        for (key, value) in security::transport(
+            &self.config.identity,
+            instance,
+            self.config.read_history,
+            sources,
+            &endpoints,
+        )? {
+            set(key, value)?;
         }
         Ok(config)
     }
@@ -133,7 +115,7 @@ impl Gateway {
     /// tick's side.
     pub(crate) fn start<const N: usize>(&self) -> Result<(Running, TickSide<N>), GatewayError> {
         let instance = self.instance()?;
-        let session = ::zenoh::open(self.session_config()?)
+        let session = ::zenoh::open(self.session_config(&[])?)
             .wait()
             .map_err(GatewayError::session)?;
         let entities = Entities::declare(session, instance)?;
@@ -187,6 +169,11 @@ pub enum GatewayError {
         "endpoint `{endpoint}` is not on the loopback interface; a loopback gateway only takes `tcp/127.0.0.1:..`, `tcp/[::1]:..` or `tcp/localhost:..`"
     )]
     NotLoopback { endpoint: String },
+    /// A gateway with a certificate identity was given an endpoint other than `tls/..`.
+    #[error(
+        "endpoint `{endpoint}` is not TLS; a gateway with `Identity::files` only takes `tls/..` endpoints"
+    )]
+    NotTls { endpoint: String },
     /// Two gateways were plugged in.
     #[error("two gateways are plugged in; plug in one")]
     TwoGateways,
@@ -212,13 +199,6 @@ fn json_list(endpoints: &[String]) -> Result<String, GatewayError> {
     }
     let quoted: Vec<String> = endpoints.iter().map(|e| format!("\"{e}\"")).collect();
     Ok(format!("[{}]", quoted.join(",")))
-}
-
-/// Whether `endpoint` is plain TCP on the loopback interface.
-fn is_loopback(endpoint: &str) -> bool {
-    ["tcp/127.0.0.1:", "tcp/[::1]:", "tcp/localhost:"]
-        .iter()
-        .any(|prefix| endpoint.starts_with(prefix))
 }
 
 /// Hands every Desired of the instance that decodes to the tick.
