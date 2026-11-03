@@ -294,13 +294,13 @@ fn open_opens_every_interface_and_names_the_one_that_fails() {
     assert!(adapter.transport().calls().eq([&open]));
 
     let mut failing = leg([0.0; N]);
-    failing.transport().open_error = Some((0, TransportError::BindUnsupported));
+    failing.transport().open_error = Some((0, TransportError::NoInterface));
     assert_eq!(
         failing.open(),
         Err(CubeMarsError::InterfaceOpen {
             bus: "leg",
             interface: "vcan-test",
-            source: TransportError::BindUnsupported
+            source: TransportError::NoInterface
         })
     );
 }

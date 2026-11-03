@@ -19,7 +19,7 @@
     adaptersCubeMember = component "kmr_adapters: CubeMars member" "Implements Hal for AK60-6 actuators in MIT mode, one group per CAN interface, read every tick: bring-up asked limp with the exit frame, positions offset from Init (the zero frame is never sent), enter then a start command at the measured position, one frame per actuator per tick, replies drained one tick old, exit frame at torque off (SRS FR-5.1, FR-5.3, FR-5.6)." "Rust"
     adaptersMit = component "kmr_adapters: MIT frames" "p/v/kp/kd/t packed 16/12/12/12/12 bits over the AK60-6 ranges, signs negated both ways, ported from cubemars_rs; a value out of range is refused, never clipped." "Rust"
     adaptersCan = component "kmr_adapters: CAN transport seam" "The private trait between the CubeMars member and the CAN bus: open, non-blocking send and receive, a bring-up wait, close." "Rust trait"
-    adaptersSocketCan = component "kmr_adapters: SocketCan" "The CAN transport on raw SocketCAN through safe rustix, behind the cubemars feature. Binding to the interface is deferred: it needs a sockaddr_can (docs/deferred.md)." "Rust, rustix"
+    adaptersSocketCan = component "kmr_adapters: SocketCan" "The CAN transport on raw SocketCAN: one non-blocking CAN_RAW socket per interface, bound by name through the socketcan crate, behind the cubemars feature." "Rust, socketcan"
     adaptersScriptedCan = component "kmr_adapters: scripted CAN bus" "Simulated AK60-6 motors answering every frame with their state, a fixed-size call log, scripted failures. Test builds only." "Rust, cfg(test)"
 
     adaptersPresets -> adaptersTable "Declares its hardware as a checked"

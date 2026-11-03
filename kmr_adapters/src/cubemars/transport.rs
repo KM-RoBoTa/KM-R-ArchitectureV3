@@ -19,10 +19,6 @@ pub(crate) enum TransportError {
     /// The CAN socket could not be opened.
     #[error("the CAN socket could not be opened (errno {0})")]
     Socket(i32),
-    /// Binding the socket needs a `sockaddr_can`, which safe rustix cannot
-    /// build (docs/deferred.md).
-    #[error("binding a CAN socket to its interface is not implemented yet (docs/deferred.md)")]
-    BindUnsupported,
     /// The kernel's transmit queue is full: the frame was not queued.
     #[error("the transmit queue is full")]
     Full,

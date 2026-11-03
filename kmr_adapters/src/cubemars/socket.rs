@@ -1,34 +1,27 @@
 //! The SocketCAN transport: one non-blocking `CAN_RAW` socket per interface,
-//! through rustix's safe API only.
-//!
-//! Binding a socket to its interface takes a `sockaddr_can`, which safe
-//! rustix cannot build: `open` resolves the interface, then fails with
-//! [`TransportError::BindUnsupported`] (docs/deferred.md). Sending,
-//! receiving and waiting are written and ready for it.
+//! bound by interface name through the `socketcan` crate's safe API.
 
-use core::num::NonZeroU32;
+// DECISION: the `socketcan` crate (maintainer-approved 2026-11-03) binds
+// the socket: safe rustix builds no `sockaddr_can`, and agents write no
+// `unsafe`.
+
 use core::time::Duration;
-use std::os::fd::OwnedFd;
+use std::io::{self, ErrorKind};
 
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::io::Errno;
-use rustix::net::netdevice::name_to_index;
-use rustix::net::{AddressFamily, Protocol, SocketFlags, SocketType, socket_with};
+use socketcan::{CanDataFrame, CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
 
 use super::transport::{Transport, TransportError};
 
-/// `CAN_RAW`, linux/can.h.
-const CAN_RAW: Protocol = Protocol::from_raw(NonZeroU32::MIN);
-/// Bytes of a classic `struct can_frame`.
-const CAN_MTU: usize = 16;
-/// Data bytes of a frame.
-const DATA_LEN: u8 = 8;
+/// `ENODEV`: no interface has the name.
+const ENODEV: i32 = 19;
+/// `ENOBUFS`: the transmit queue is full.
+const ENOBUFS: i32 = 105;
 
 /// The SocketCAN transport over `NB` interfaces.
 #[derive(Debug)]
 pub struct SocketCan<const NB: usize> {
     /// Socket of each bus, once opened.
-    sockets: [Option<OwnedFd>; NB],
+    sockets: [Option<CanSocket>; NB],
 }
 
 impl<const NB: usize> SocketCan<NB> {
@@ -40,7 +33,7 @@ impl<const NB: usize> SocketCan<NB> {
     }
 
     /// The socket of bus `bus`.
-    fn socket(&self, bus: usize) -> Result<&OwnedFd, TransportError> {
+    fn socket(&self, bus: usize) -> Result<&CanSocket, TransportError> {
         self.sockets
             .get(bus)
             .and_then(Option::as_ref)
@@ -54,55 +47,36 @@ impl<const NB: usize> Default for SocketCan<NB> {
     }
 }
 
-/// The `struct can_frame` of `data` to standard id `id`.
-fn encode(id: u8, data: [u8; 8]) -> [u8; CAN_MTU] {
-    let mut frame = [0; CAN_MTU];
-    let (head, payload) = frame.split_at_mut(8);
-    let (can_id, rest) = head.split_at_mut(4);
-    can_id.copy_from_slice(&u32::from(id).to_ne_bytes());
-    if let Some(len) = rest.first_mut() {
-        *len = DATA_LEN;
-    }
-    payload.copy_from_slice(&data);
-    frame
+/// The OS error number of `error`, 0 when it carries none.
+fn errno(error: &io::Error) -> i32 {
+    error.raw_os_error().unwrap_or(0)
 }
 
-/// The data of a received `struct can_frame`; `None` for a remote or error
-/// frame, or one of fewer than 8 data bytes.
-fn decode(frame: &[u8; CAN_MTU]) -> Option<[u8; 8]> {
-    /// `CAN_RTR_FLAG | CAN_ERR_FLAG`.
-    const NOT_DATA: u32 = 0x4000_0000 | 0x2000_0000;
-    let (head, payload) = frame.split_at(8);
-    let can_id = u32::from_ne_bytes(head.get(..4)?.try_into().ok()?);
-    if can_id & NOT_DATA != 0 || head.get(4).copied() != Some(DATA_LEN) {
-        return None;
-    }
-    payload.try_into().ok()
+/// The socket bound to `interface`, non-blocking.
+fn open_one(interface: &str) -> Result<CanSocket, TransportError> {
+    let socket = CanSocket::open(interface).map_err(|error| match error.raw_os_error() {
+        Some(ENODEV) => TransportError::NoInterface,
+        _ => TransportError::Socket(errno(&error)),
+    })?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| TransportError::Socket(errno(&error)))?;
+    Ok(socket)
 }
 
-/// Binds `socket` to interface `index`: needs a `sockaddr_can`, which only
-/// an `unsafe impl SocketAddrArg` can give rustix (docs/deferred.md).
-fn bind(_socket: &OwnedFd, _index: u32) -> Result<(), TransportError> {
-    Err(TransportError::BindUnsupported)
+/// The 8 data bytes of a received frame; `None` for a remote or error
+/// frame, or a data frame of another length.
+fn data(frame: &CanFrame) -> Option<[u8; 8]> {
+    match frame {
+        CanFrame::Data(data) => data.data().try_into().ok(),
+        CanFrame::Remote(_) | CanFrame::Error(_) => None,
+    }
 }
 
 impl<const NB: usize> Transport for SocketCan<NB> {
     fn open(&mut self, interfaces: &[&'static str]) -> Result<(), (usize, TransportError)> {
         for (bus, &interface) in interfaces.iter().enumerate() {
-            let opened = socket_with(
-                AddressFamily::CAN,
-                SocketType::RAW,
-                SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
-                Some(CAN_RAW),
-            )
-            .map_err(|errno| TransportError::Socket(errno.raw_os_error()))
-            .and_then(|socket| {
-                let index =
-                    name_to_index(&socket, interface).map_err(|_| TransportError::NoInterface)?;
-                bind(&socket, index)?;
-                Ok(socket)
-            });
-            match (opened, self.sockets.get_mut(bus)) {
+            match (open_one(interface), self.sockets.get_mut(bus)) {
                 (Ok(socket), Some(slot)) => *slot = Some(socket),
                 (Ok(_), None) => {
                     self.close();
@@ -119,27 +93,29 @@ impl<const NB: usize> Transport for SocketCan<NB> {
 
     fn send(&mut self, bus: usize, id: u8, data: [u8; 8]) -> Result<(), TransportError> {
         let socket = self.socket(bus)?;
-        match rustix::io::write(socket, &encode(id, data)) {
-            Ok(CAN_MTU) => Ok(()),
-            Ok(_) => Err(TransportError::Io(Errno::IO.raw_os_error())),
-            Err(Errno::AGAIN | Errno::NOBUFS) => Err(TransportError::Full),
-            Err(errno) => Err(TransportError::Io(errno.raw_os_error())),
-        }
+        let frame = StandardId::new(u16::from(id))
+            .and_then(|id| CanDataFrame::new(id, &data))
+            .ok_or(TransportError::Io(0))?;
+        socket
+            .write_frame(&frame)
+            .map_err(|error| match (error.kind(), error.raw_os_error()) {
+                (ErrorKind::WouldBlock, _) | (_, Some(ENOBUFS)) => TransportError::Full,
+                _ => TransportError::Io(errno(&error)),
+            })
     }
 
     fn recv(&mut self, bus: usize) -> Result<Option<[u8; 8]>, TransportError> {
         let socket = self.socket(bus)?;
-        let mut frame = [0; CAN_MTU];
         loop {
-            match rustix::io::read(socket, &mut frame) {
-                Ok(CAN_MTU) => match decode(&frame) {
-                    Some(data) => return Ok(Some(data)),
-                    None => continue,
-                },
-                Ok(_) => continue,
-                Err(Errno::AGAIN) => return Ok(None),
-                Err(Errno::INTR) => continue,
-                Err(errno) => return Err(TransportError::Io(errno.raw_os_error())),
+            match socket.read_frame() {
+                Ok(frame) => {
+                    if let Some(data) = data(&frame) {
+                        return Ok(Some(data));
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(None),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(TransportError::Io(errno(&error))),
             }
         }
     }
@@ -148,16 +124,20 @@ impl<const NB: usize> Transport for SocketCan<NB> {
         if let Some(data) = self.recv(bus)? {
             return Ok(Some(data));
         }
-        let socket = self.socket(bus)?;
-        let timeout = Timespec {
-            tv_sec: timeout.as_secs().try_into().unwrap_or(i64::MAX),
-            tv_nsec: timeout.subsec_nanos().into(),
-        };
-        let mut fds = [PollFd::new(socket, PollFlags::IN)];
-        match poll(&mut fds, Some(&timeout)) {
-            Ok(0) => Ok(None),
-            Ok(_) | Err(Errno::INTR) => self.recv(bus),
-            Err(errno) => Err(TransportError::Io(errno.raw_os_error())),
+        match self.socket(bus)?.read_frame_timeout(timeout) {
+            Ok(frame) => match data(&frame) {
+                Some(data) => Ok(Some(data)),
+                None => self.recv(bus),
+            },
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(TransportError::Io(errno(&error))),
         }
     }
 
@@ -171,31 +151,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_frame_is_the_kernels_can_frame() {
-        let frame = encode(3, [1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(&frame[..4], &3u32.to_ne_bytes());
-        assert_eq!(frame[4], 8);
-        assert_eq!(&frame[5..8], &[0, 0, 0]);
-        assert_eq!(&frame[8..], &[1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(decode(&frame), Some([1, 2, 3, 4, 5, 6, 7, 8]));
-    }
-
-    #[test]
-    fn remote_error_and_short_frames_carry_no_reply() {
-        let mut remote = encode(3, [0; 8]);
-        remote[3] |= if cfg!(target_endian = "little") {
-            0x40
-        } else {
-            0
-        };
-        remote[0] |= if cfg!(target_endian = "big") { 0x40 } else { 0 };
-        assert_eq!(decode(&remote), None);
-        let mut short = encode(3, [0; 8]);
-        short[4] = 6;
-        assert_eq!(decode(&short), None);
-    }
-
-    #[test]
     fn nothing_is_sent_or_read_before_open() {
         let mut can = SocketCan::<1>::new();
         assert_eq!(
@@ -203,5 +158,22 @@ mod tests {
             Err(TransportError::NotOpen { bus: 0 })
         );
         assert_eq!(can.recv(0), Err(TransportError::NotOpen { bus: 0 }));
+    }
+
+    #[test]
+    fn an_interface_no_machine_has_is_an_error_naming_its_bus() {
+        let mut can = SocketCan::<2>::new();
+        let error = can.open(&["nonexistent0", "nonexistent1"]);
+        assert!(matches!(error, Err((0, _))), "{error:?}");
+        assert_eq!(can.recv(0), Err(TransportError::NotOpen { bus: 0 }));
+    }
+
+    #[test]
+    fn only_eight_byte_data_frames_carry_a_reply() {
+        let id = StandardId::new(1).unwrap();
+        let full = CanFrame::Data(CanDataFrame::new(id, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap());
+        assert_eq!(data(&full), Some([1, 2, 3, 4, 5, 6, 7, 8]));
+        let short = CanFrame::Data(CanDataFrame::new(id, &[1, 2]).unwrap());
+        assert_eq!(data(&short), None);
     }
 }
