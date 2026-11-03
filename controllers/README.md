@@ -74,3 +74,25 @@ writes two files, its `Cargo.toml` (one dependency, `kmr_api`) and its
   own handler first, Ctrl-C may not stop the loop (kmr warns at start). The
   demo still ends after 12 s.
 
+## Baseline
+
+The onboarding claim of SRS FR-10.4 is measured against ROS2 (assumed,
+pending human: D14). This section is the one place that says how.
+
+- **The baseline:** a minimal node made with `ros2 pkg create`, once in C++
+  and once in Python, on the current ROS2 LTS, driving the same four
+  actuators through the vendor's ROS2 SDK package.
+- **What counts:** only files the user writes or edits count, for both sides.
+  Generated files do not.
+- **The bar:** kmr beats both variants on time and on file count.
+
+### Trial record
+
+One row per trial, kept with this README. Elapsed is from a fresh checkout
+to the first motion.
+
+| side | robot | elapsed (min) | files written | lines edited | commands run |
+|---|---|---|---|---|---|
+| kmr | XmBench | | | | |
+| ROS2 C++ | XmBench | | | | |
+| ROS2 Python | XmBench | | | | |
