@@ -31,6 +31,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace --no-fail-fast
 
+  no-std:
+    name: no_std core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      # The engine without `std` and without `alloc` (core SC-007, SRS NFR-7).
+      - run: cargo build -p kmr_core --no-default-features --target thumbv7em-none-eabihf
+
+
   cross:
     name: cross-build
     runs-on: ubuntu-latest
