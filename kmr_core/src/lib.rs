@@ -36,9 +36,14 @@
 //! surface follows the needs of `kmr_api` and may change without notice: users
 //! are expected to go through `kmr_api`.
 //!
-//! It is not a microcontroller software architecture. While limited no_std can
-//! be used in the future, the overall architectural design is not meant to be
-//! no_std.
+//! # `std` and `no_std`
+//!
+//! The default `std` feature brings the hosted engine: Ctrl-C handling,
+//! logging, the system clock and sleep, threaded controllers. Without it the
+//! crate is `no_std` and needs no `alloc` (SRS NFR-7): state, schedules,
+//! limits, the hardware contract and the loop stay, and a target brings its
+//! own [`Host`] and [`Instant`]. A run entry point for such a target is not
+//! part of this version.
 //!
 //! # What does not build
 //!

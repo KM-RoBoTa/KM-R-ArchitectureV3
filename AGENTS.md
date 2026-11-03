@@ -169,6 +169,11 @@ Rust edition 2024.
   (build helper and script bridges; never in kmr's own per-call work, SRS
   FR-10.3). Elsewhere use fixed arrays and `'static`s. `kmr_core/src/lib.rs` also
   `#![forbid(clippy::disallowed_types)]` and `#![forbid(clippy::unwrap_used)]`.
+- **The core builds `no_std` without `alloc`.** `std` is a default feature of
+  `kmr_core` (Ctrl-C, logging, system clock, threads). CI builds
+  `cargo build -p kmr_core --no-default-features --target thumbv7em-none-eabihf`:
+  import from `core::`, log through `crate::logging`, gate anything hosted
+  behind `#[cfg(feature = "std")]`.
 - **Everything is `pub(crate)` by default.** Only what `kmr_api` must name is
   `pub`. When adding a type, default to private and widen only if `kmr_api`
   needs it.
@@ -176,9 +181,9 @@ Rust edition 2024.
 
 ## Architecture
 
-### Static dispatch via HList (frunk), no `dyn`
+### Static dispatch via HList (frunk_core), no `dyn`
 
-Controllers are stored in a heterogeneous list (`frunk`'s `HCons`/`HNil`),
+Controllers are stored in a heterogeneous list (`frunk_core`'s `HCons`/`HNil`),
 monomorphized — zero `dyn`, zero fat pointers. `Robot<L>` (`robot.rs`) *has*
 the list as a field; each `.add_controller*` prepends one node, growing the
 type by one `HCons` layer. The node types are `Inline` / `InlineWith` /
@@ -229,16 +234,17 @@ returns `Ok(())` for a shutdown and for an emergency stop alike.
   `Env`, so the engine can mutate the clock between the controller walks
   while controllers only ever get `&Time`. Do not hold an `Env` across phases.
 - **`Host` seam**: the loop takes the instant, the sleep and the bus through
-  the private `Host` trait (`RealHost` in production, monomorphized, no
-  `dyn`; its sleep is an absolute `clock_nanosleep` on the monotonic clock,
+  the `Host` trait, public and sealed like `hal::seal::Adapter`
+  (`kmr_core::host_seal`), on the core's own `Instant` (`RealHost` in
+  production under `std`, monomorphized, no `dyn`; its sleep is an absolute `clock_nanosleep` on the monotonic clock,
   an optional spin tail off by default). Loop tests use a scripted host: they never sleep and never touch the
   global bus. Tests on the real bus live in `kmr_core/tests/run_signals.rs`
   (own process) and take a file-local lock.
 
-The hardware layer does not exist yet: the init bodies, the
-`state_transition` step, the final write of a shutdown and the torque cut of
-an emergency stop are TODOs. `Threaded` controllers are stored but never
-spawned (hand-off open in the ROADMAP).
+The hardware contract is `hal.rs`: `run_on` takes a list of drivers
+(`hal/set.rs`), and the `Powered` guard ends every exit, unwind included,
+with `torque_off` then `close` on every member. `Threaded` controllers are
+stored but never spawned (hand-off open in the ROADMAP).
 
 ### Signal bus (`signal.rs`) — the only channel from controllers back to the loop
 
@@ -250,7 +256,7 @@ expansion mints a per-call-site `static SignalMeta` (`file!`/`line!` folded in
 only under `debug_assertions`), so nothing allocates and the path is
 async-signal-safe. `compare_exchange` is monotonic: estop never downgrades to
 shutdown, first winner keeps its meta. Runtime calls `Signal::reset()` once at
-entry and `Signal::drain()` four times per tick (happy path = one atomic load
+entry and `Signal::drain()` five times per tick (happy path = one atomic load
 each). `drain()` loads and never clears: the bus stays raised until the next
 `reset()`.
 
