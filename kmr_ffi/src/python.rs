@@ -90,6 +90,8 @@ pub struct Bridge {
     /// The flag names the objects are built from.
     flags: &'static [&'static str],
     /// Built on the first call, when N and D are known.
+    // DECISION: `load` takes no N or D (contracts/bridges.md), so the script objects are built
+    // lazily; `tick_flags` is not exposed, the contract lists only the per-actuator flags.
     objects: Option<Objects>,
 }
 

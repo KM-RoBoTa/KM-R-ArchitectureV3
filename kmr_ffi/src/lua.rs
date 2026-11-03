@@ -100,6 +100,8 @@ pub struct Bridge {
     /// The flag names the tables are built from.
     flags: &'static [&'static str],
     /// Built on the first call, when N and D are known.
+    // DECISION: `load` takes no N or D (contracts/bridges.md), so the script objects are built
+    // lazily; `tick_flags` is not exposed, the contract lists only the per-actuator flags.
     tables: Option<Tables>,
 }
 
@@ -115,6 +117,7 @@ fn lua_err(e: mlua::Error) -> ForeignError {
 }
 
 /// A `u64` as a Lua integer; past `i64::MAX` it saturates.
+// DECISION: saturate, not wrap: a negative tick would read as time running backwards.
 fn int(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
@@ -243,6 +246,7 @@ fn drain<const N: usize>(t: &Tables, buf: &mut WriteBuf<N>) -> mlua::Result<()> 
 fn status(ret: &Value) -> Result<Status, ForeignError> {
     match ret {
         Value::Nil => Ok(Status::Continue),
+        // DECISION: integers only, so `return 2.0` is `Code(-1)`, as a wrong Python type is.
         Value::Integer(rc) => i32::try_from(*rc)
             .ok()
             .and_then(Status::from_code)
