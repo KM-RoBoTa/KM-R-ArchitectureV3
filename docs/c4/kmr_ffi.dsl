@@ -1,11 +1,12 @@
 //
 // kmr_ffi holds the plain C types that cross to a foreign controller and the
 // build-script helper that writes the headers and compiles the user's C and
-// C++. It has no kmr dependency; its build helper runs in the user's build.rs,
-// its types, the call and the script bridges end up in the control process.
-// Drawn as it exists: foreign! and kmr_api::ffi (the glue that fills the views
-// from State and applies the writes) are not written yet, so they are named
-// here and not drawn.
+// C++. It has no engine dependency; its build helper runs in the user's
+// build.rs and reads N through kmr_model_core (decision 0009), its types, the
+// call and the script bridges end up in the control process.
+// Drawn as it exists: kmr_api::ffi (the glue that fills the views from State
+// and applies the writes) is not written yet, so it is named here and not
+// drawn.
 
 !element kmr.control {
     ffiFields = component "kmr_ffi: field list" "The one declaration of what crosses: the core's sealed fields and the per-actuator flags. Every per-field item, Rust type and header line, is generated from it, so a new field is one line (SRS FR-10.2)." "Rust macro_rules"
@@ -55,7 +56,10 @@
     }
 
     group "kmr_ffi: build helper" {
-        ffiBuildType = component "build::Build" "One build for N and a History depth; compile() writes the three files and compiles the sources." "Rust struct" {
+        ffiBuildType = component "build::Build" "One build for a robot and a History depth; compile() reads N, writes the three files and compiles the sources." "Rust struct" {
+            tags "Code"
+        }
+        ffiBuildFns = component "build::robot, build::model" "A Build for a preset name or a descriptor path, N read through kmr_model_core as robot! reads it; the depth is an argument kmr_api fills." "Rust fns" {
             tags "Code"
         }
         ffiBuildError = component "build::Error" "Unknown preset or unreadable descriptor, N outside 1..=64, a source neither C nor C++, no OUT_DIR, a failed write or compile." "Rust enum, thiserror" {
@@ -67,6 +71,9 @@
     }
 
     group "kmr_ffi: call" {
+        ffiForeignMacro = component "foreign!" "Includes the ABI file, const-asserts its N and depth against robot!'s, declares each C body in an unsafe extern C block of the CFn signature (SRS FR-10.2, FR-6.1)." "Rust macro_rules" {
+            tags "Code"
+        }
         ffiCFn = component "call::CFn<N, D>" "unsafe extern C fn(*const ReadView, *mut WriteBuf, *const TimeView, *mut c_void) -> i32." "Rust type alias" {
             tags "Code"
         }
@@ -108,7 +115,10 @@
     ffiWriteBuf -> ffiForEachField "Is generated from"
     ffiSlot -> ffiForEachField "Is generated from"
     ffiFlags -> ffiForEachFlag "Is generated from"
+    ffiBuildFns -> ffiBuildType "Gives"
     ffiBuildType -> ffiHeaders "Writes"
+    ffiForeignMacro -> ffiHeaders "Checks the ABI file of"
+    ffiForeignMacro -> ffiCFn "Declares bodies of"
     ffiBuildType -> ffiBuildError "Fails with"
     ffiHeaders -> ffiForEachField "Reads"
     ffiHeaders -> ffiForEachFlag "Reads"
