@@ -38,7 +38,7 @@ impl Limit {
     };
 
     /// Whether the limit bounds anything.
-    pub fn bounds_anything(&self) -> bool {
+    pub(crate) fn bounds_anything(&self) -> bool {
         *self != Self::NONE
     }
 }

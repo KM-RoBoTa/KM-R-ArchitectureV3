@@ -42,7 +42,7 @@
 //! logging, the system clock and sleep, threaded controllers. Without it the
 //! crate is `no_std` and needs no `alloc` (SRS NFR-7): state, schedules,
 //! limits, the hardware contract and the loop stay, and a target brings its
-//! own [`Host`] and [`Instant`]. A run entry point for such a target is not
+//! own `Host` and [`Instant`]. A run entry point for such a target is not
 //! part of this version.
 //!
 //! # What does not build
@@ -122,8 +122,9 @@ mod robot;
 pub use clock::{Instant, Time};
 pub use controllers::{ControlFn, ControlFnWith, Inline, InlineWith, ThreadFn, Threaded};
 pub use robot::{Empty, Filled, HCons, HNil, HasController, Robot, Stages};
+// Hidden: for a port to a target without `std`, never for controllers.
+#[doc(hidden)]
 pub use runtime::Host;
-/// Seal of [`Host`], for the platform crates that bring their own host.
 #[doc(hidden)]
 pub use runtime::seal as host_seal;
 pub use schedule::{

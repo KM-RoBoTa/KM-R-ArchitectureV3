@@ -16,7 +16,9 @@ use crate::state::{Kd, Kp, Q, Qd, Tau};
 
 mod set;
 
-pub use set::{Audit, Claim, Coverage, Drivers, HardwareError, Member, MemberError, Plan, Step};
+pub use set::{Claim, Coverage, Drivers, HardwareError, Member, MemberError};
+// Named only by the hidden methods of `Drivers`, which the engine alone calls.
+pub(crate) use set::{Audit, Plan, Step};
 
 /// Seal of [`Hal`]: open to adapter crates, closed to controllers, which
 /// cannot depend on `kmr_core`.

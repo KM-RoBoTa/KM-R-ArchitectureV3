@@ -75,7 +75,7 @@ impl SignalMeta {
 
 /// The kind of stop requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalKind {
+pub(crate) enum SignalKind {
     /// Graceful shutdown — write one final desired state, then exit.
     Shutdown,
     /// Emergency stop — skip `write_state`, cut torque immediately.
