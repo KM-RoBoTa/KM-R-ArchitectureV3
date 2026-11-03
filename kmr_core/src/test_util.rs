@@ -15,7 +15,7 @@ use crate::hal::{
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::Q;
-use crate::{Robot, Signal, SignalKind};
+use crate::{Robot, Signal, SignalKind, Stages};
 
 pub use crate::runtime::Host;
 
@@ -50,6 +50,16 @@ pub fn run_scripted<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     drivers: &mut D,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     crate::runtime::run_with(robot, host, drivers)
+}
+
+/// [`run_scripted`], with `stages` around the controllers of each tick.
+pub fn run_scripted_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
+    robot: &mut Robot<N, CS, crate::Filled>,
+    host: &mut H,
+    drivers: &mut D,
+    stages: &mut S,
+) -> Result<Signal, RunError<HardwareError<D::Error>>> {
+    crate::runtime::run_staged(robot, host, drivers, stages)
 }
 
 /// Whether `signal` is an emergency stop rather than a shutdown.
@@ -232,6 +242,8 @@ pub enum Call {
     First,
     EachTick,
     Last,
+    Inbound,
+    Outbound,
 }
 
 /// What `write` or `hold` was handed: the positions, the masks and the

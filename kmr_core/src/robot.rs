@@ -86,6 +86,27 @@ pub trait HasController: seal::Sealed {}
 
 impl HasController for Filled {}
 
+/// Hooks around the controllers of each tick, for kmr_api's gateway (SRS
+/// FR-7.1): `inbound` after `read` and the external flags, before `First`;
+/// `outbound` after the write and the clock bookkeeping, so this tick's
+/// sample, its faults, flags and age are reachable. Static dispatch, called
+/// on the tick: no heap, lock, wait or I/O.
+#[doc(hidden)]
+pub trait Stages<const N: usize> {
+    /// Before `First`: may write Desired.
+    fn inbound(&mut self, state: &mut RobotState<N>, time: &Time) {
+        let _ = (state, time);
+    }
+
+    /// After the write: reads the tick.
+    fn outbound(&mut self, state: &RobotState<N>, time: &Time) {
+        let _ = (state, time);
+    }
+}
+
+/// No stage: what [`Robot::run_on`] runs with.
+impl<const N: usize> Stages<N> for () {}
+
 impl<const N: usize> Robot<N, Scheduled, Empty> {
     /// Returns a default Robot.
     ///
@@ -293,7 +314,21 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         CS: Drive<N>,
         E: HasController,
     {
-        runtime::runtime(self.filled(), hal).map(|_signal| ())
+        self.run_on_staged(hal, ())
+    }
+
+    /// [`Robot::run_on`], with `stages` around the controllers of each tick.
+    #[doc(hidden)]
+    pub fn run_on_staged<D: Drivers<N>, S: Stages<N>>(
+        self,
+        hal: D,
+        stages: S,
+    ) -> Result<(), RunError<HardwareError<D::Error>>>
+    where
+        CS: Drive<N>,
+        E: HasController,
+    {
+        runtime::runtime(self.filled(), hal, stages).map(|_signal| ())
     }
 
     /// Runs the robot on [`NoHardware`]: nothing is read or written. Only a

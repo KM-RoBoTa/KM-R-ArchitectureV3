@@ -110,7 +110,7 @@ mod robot;
 // exception, `kmr_api` names it from the root like the other two handles.
 pub use clock::Time;
 pub use controllers::{ControlFn, ControlFnWith, Inline, InlineWith, ThreadFn, Threaded};
-pub use robot::{Empty, Filled, HCons, HNil, HasController, Robot};
+pub use robot::{Empty, Filled, HCons, HNil, HasController, Robot, Stages};
 pub use schedule::{
     Drive, EachTick, First, Init, Insert, Last, PostInit, PreInit, Schedule, Scheduled,
 };

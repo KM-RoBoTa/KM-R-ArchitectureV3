@@ -136,6 +136,9 @@
         coreFaults = component "hal::Faults, TickFlags" "Per-actuator fault masks and whole-tick flags of one tick, kept in its History slot." "Rust structs" {
             tags "Code"
         }
+        coreStages = component "robot::Stages, Robot::run_on_staged" "Hidden hooks around each tick's controllers: inbound after read, before First; outbound after the write and end_tick. () is the no-stage default of run_on. Static dispatch." "Rust trait" {
+            tags "Code"
+        }
         coreExternalFlags = component "hal::ExternalFlags" "AtomicU32 of tick flags raised from any thread (fetch_or Release); the loop takes it (swap Acquire) after read, into the tick's slot. Apart from the signal bus." "Rust struct, hidden" {
             tags "Code"
         }
@@ -185,6 +188,7 @@
     coreHalTrait -> coreFaults "Reports into"
     coreHistory -> coreFaults "Keeps per slot"
     coreRuntimeFn -> coreExternalFlags "Takes each tick through the Host"
+    coreRuntimeFn -> coreStages "Calls around each tick's controllers"
     coreIo -> coreMask "Flags actuators with"
     coreNoHardware -> coreHalTrait "Implements"
 }

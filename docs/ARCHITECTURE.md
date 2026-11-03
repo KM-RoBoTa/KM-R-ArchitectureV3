@@ -161,7 +161,7 @@ the internal type paths.
 ```
 finalization (claims, no I/O)
 pre_init → open, zero → init → ping, health, configure, read_all → torque_on → post_init
-loop { read → first → each_tick → last → write → clock bookkeeping → clear desired → sleep }
+loop { read → inbound → first → each_tick → last → write → clock bookkeeping → outbound → clear desired → sleep }
 hold (shutdown with set_hold only) → torque_off → close
 ```
 
@@ -181,11 +181,12 @@ falls back to 1 ms with one warning.
 | 1 | bus check, any signal | |
 | 2 | `begin_tick(now)` | |
 | 3 | push a History slot (a copy of the previous one, no fault set), `read` into it and its faults; fold in the tick flags raised from other threads (`ExternalFlags`) | the actuators due this tick |
+| 3b | `Stages::inbound` (kmr_api's gateway; `()` on `run_on`) | |
 | 4 | `First`, then an emergency-stop check | |
 | 5 | `EachTick`, then an emergency-stop check | |
 | 6 | `Last`, then an emergency-stop check | |
 | 7 | `Batch` from this tick's write masks; `write` if not empty | one transaction per group |
-| 8 | `end_tick(now)`: tick count, overrun; a late tick sets `OVERRUN` in its slot | |
+| 8 | `end_tick(now)`: tick count, overrun; a late tick sets `OVERRUN` in its slot; then `Stages::outbound` | |
 | 9 | bus check, any signal | |
 | 10 | clear Desired | |
 | 11 | sleep to the next grid point | |

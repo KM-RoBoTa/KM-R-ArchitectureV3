@@ -32,7 +32,7 @@ use crate::hal::{
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::RobotState;
-use crate::{Robot, Sensors, Signal, SignalKind, shutdown};
+use crate::{Robot, Sensors, Signal, SignalKind, Stages, shutdown};
 
 /// Tick duration used when `Robot::set_dt` was never called.
 const FALLBACK_DT: Duration = Duration::from_millis(1);
@@ -390,13 +390,14 @@ mod ctrl_phase {
 
 /// The tick loop: read, the three buckets, write. Returns the signal that
 /// ended it.
-fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
+fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
     robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
     sensors: &Sensors,
     host: &mut H,
     hal: &mut D,
     layout: &Layout<N>,
+    stages: &mut S,
 ) -> Signal {
     loop {
         if let Some(signal) = host.poll() {
@@ -414,6 +415,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
         }
+        stages.inbound(state, &robot.config.time);
 
         ctrl_phase::first(robot, state, sensors);
         if let Some(signal) = estop(host.poll()) {
@@ -454,6 +456,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
         if robot.config.time.overrun().is_some() {
             state.raise(TickFlags::OVERRUN);
         }
+        stages.outbound(state, &robot.config.time);
 
         // Before the sleep: a stop must not wait for it. Before the clear: the
         // hold of a shutdown keeps this tick's writes.
@@ -469,13 +472,14 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 
 /// Startup phases with the bring-up calls, the tick loop, then the hold of a
 /// shutdown. Every exit after `open` leaves through [`Powered`].
-fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
+fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
     robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
     sensors: &Sensors,
     host: &mut H,
     hal: &mut D,
     layout: &Layout<N>,
+    stages: &mut S,
 ) -> Result<Signal, D::Error> {
     let mut writes = StartupWrites::default();
 
@@ -524,7 +528,7 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     // After the bring-up, so tick 0 is not charged with it (SRS FR-5.10).
     robot.config.time.arm(host.now());
 
-    let signal = control_loop(robot, state, sensors, host, powered.0, layout);
+    let signal = control_loop(robot, state, sensors, host, powered.0, layout, stages);
     // An emergency stop raised since the loop ended skips the hold.
     let mut signal = estop(host.poll()).unwrap_or(signal);
     if signal.kind() == SignalKind::Shutdown
@@ -547,6 +551,16 @@ pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     host: &mut H,
     hal: &mut D,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
+    run_staged(robot, host, hal, &mut ())
+}
+
+/// [`run_with`], with `stages` around the controllers of each tick.
+pub(crate) fn run_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
+    robot: &mut Robot<N, CS, crate::Filled>,
+    host: &mut H,
+    hal: &mut D,
+    stages: &mut S,
+) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     // Flags raised before the run belong to no tick of it.
     let _ = host.take_flags();
     let dt = tick_period(robot.config.dt)?;
@@ -560,7 +574,7 @@ pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
     state.set_cadence(layout.read_every);
 
     // The guard has dropped by now: torque is off before the log lines.
-    let signal = run_phases(robot, &mut state, &sensors, host, hal, &layout)
+    let signal = run_phases(robot, &mut state, &sensors, host, hal, &layout, stages)
         .map_err(|e| RunError::Hal(HardwareError::Member(e)))?;
 
     match signal.kind() {
@@ -579,9 +593,10 @@ pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 ///
 /// Returns the signal that ended the run, a claim mismatch, or a member's
 /// error.
-pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>>(
+pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>, S: Stages<N>>(
     mut robot: Robot<N, CS, crate::Filled>,
     mut hal: D,
+    mut stages: S,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     Signal::reset();
 
@@ -602,7 +617,7 @@ pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>>(
         );
     }
 
-    run_with(&mut robot, &mut RealHost::new(), &mut hal)
+    run_staged(&mut robot, &mut RealHost::new(), &mut hal, &mut stages)
 }
 
 #[cfg(test)]
@@ -884,8 +899,8 @@ mod tests {
 
         // Named, not a glob: they shadow the schedule labels of `super::*`.
         use Call::{
-            Check, Close, Configure, EachTick, First, Health, Hold, Init, Last, Open, Ping,
-            PostInit, PreInit, Read, ReadAll, TorqueOff, TorqueOn, Write, Zero,
+            Check, Close, Configure, EachTick, First, Health, Hold, Inbound, Init, Last, Open,
+            Outbound, Ping, PostInit, PreInit, Read, ReadAll, TorqueOff, TorqueOn, Write, Zero,
         };
 
         /// The run error of a one-member list whose recorder failed `call`.
@@ -1468,6 +1483,46 @@ mod tests {
             tracing::subscriber::with_default(counter, || simulated(&mut robot, &mut host));
 
             assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
+        }
+
+        /// Logs each stage into the shared log.
+        struct Staged<'a>(&'a Log<N>);
+
+        impl Stages<N> for Staged<'_> {
+            fn inbound(&mut self, state: &mut RobotState<N>, _time: &Time) {
+                self.0.push(Inbound);
+                state.set_at(Q(7.0), 2).expect("in range");
+            }
+
+            fn outbound(&mut self, state: &RobotState<N>, _time: &Time) {
+                self.0.push(Outbound);
+                assert!(state.faults(0).is_ok());
+            }
+        }
+
+        #[test]
+        fn stages_run_after_read_before_first_and_after_write() {
+            let log = Log::new();
+            let mut robot = recording_robot!(log);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END);
+
+            let result = run_staged(
+                &mut robot,
+                &mut host,
+                &mut one(Recorder::new(&log)),
+                &mut Staged(&log),
+            );
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(log.calls()[..11], STARTUP);
+            assert_eq!(
+                log.calls()[11..],
+                [
+                    Read, Inbound, First, EachTick, Last, Write, Outbound, TorqueOff, Close
+                ]
+            );
+            // The inbound write reaches the tick's command.
+            assert_eq!(log.write.get().map(|w| w.q[2]), Some(Q(7.0)));
         }
 
         #[test]
