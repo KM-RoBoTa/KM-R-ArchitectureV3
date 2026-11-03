@@ -5,8 +5,18 @@
 //! [`TimeView`], the function fills a [`WriteBuf`], and the glue applies only the flagged
 //! entries through the normal setters. The builder, the loop and the hardware never cross.
 //!
-//! This crate holds the plain `#[repr(C)]` types that cross and the one field list they are
-//! generated from. It has no kmr dependency; users reach it through `kmr_api::ffi`.
+//! This crate holds the plain `#[repr(C)]` types that cross, the one field list they are
+//! generated from, and [`call`], which runs one foreign body over them: a [`CFn`] or a script
+//! bridge. It has no kmr dependency; users reach it through `kmr_api::ffi`.
+//!
+//! # Features
+//!
+//! All off by default; without them no foreign-language code is compiled.
+//!
+//! - `build`: the build-script helper that writes the C and C++ headers and compiles the user's
+//!   sources.
+//! - `python`: `python::Bridge`, an embedded CPython; needs the Python headers and library.
+//! - `lua`: `lua::Bridge`, a vendored Lua 5.4; needs only a C compiler. Tables are 1-based.
 //!
 //! # Safety of the foreign side
 //!
@@ -17,7 +27,8 @@
 //!   `HISTORY_DEPTH` slots long; `kmr_set_<field>` ignores an index past N, a raw array write
 //!   does not.
 //! - Slow, allocating or blocking foreign code is allowed: kmr counts the overruns and does not
-//!   enforce a language's cost (FR-005 (SRS FR-10.3)).
+//!   enforce a language's cost (FR-005 (SRS FR-10.3)). The Python bridge takes the GIL and the
+//!   Lua bridge runs its VM, both allocating, on every call: that cost is the user's.
 
 #![forbid(clippy::unwrap_used)]
 #![deny(clippy::panic, clippy::indexing_slicing)]
