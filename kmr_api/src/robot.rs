@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::spec::Lend;
 use crate::{Binding, Bus, Payload, Schedule, Sensors, Spec, State, Time, UserError};
 use kmr_core::hal::{Drivers, NoHardware};
+use kmr_core::state::JOINTS;
 use kmr_core::{
     ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
     Threaded,
@@ -395,7 +396,7 @@ fn simulated() -> HCons<NoHardware, HNil> {
 fn drive<C, D>(inner: kmr_core::Robot<C>, drivers: D) -> Result<(), UserError>
 where
     C: kmr_core::Drive,
-    D: Drivers<Error: Send + Sync>,
+    D: Drivers<JOINTS, Error: Send + Sync>,
 {
     inner.run_on(drivers).map_err(UserError::bring_up)
 }

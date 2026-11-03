@@ -6,6 +6,7 @@
 use kmr_adapters::binding::Binding;
 use kmr_adapters::dynamixel::Placement;
 use kmr_core::hal::{Drivers, Hal, NoHardware};
+use kmr_core::state::JOINTS;
 use kmr_core::{HCons, HNil};
 
 use crate::UserError;
@@ -21,7 +22,7 @@ pub(crate) mod fake;
 pub trait Spec {
     /// The robot's hardware: the list of its drivers, one member per brand,
     /// `HCons<A, HCons<B, HNil>>`. Its error crosses threads inside [`UserError::BringUp`].
-    type Drivers: Lend;
+    type Drivers: Lend<JOINTS>;
 
     /// The model's link names, in file order: the mounts a payload may name (SRS FR-8.1).
     const LINK_NAMES: &'static [&'static str];
@@ -42,9 +43,9 @@ pub trait Spec {
 /// Implemented for every list of members whose errors cross threads; `Drivers` is sealed by
 /// the core, so nothing else can implement it.
 #[doc(hidden)]
-pub trait Lend: Drivers<Error: Send + Sync> {
+pub trait Lend<const N: usize>: Drivers<N, Error: Send + Sync> {
     /// The list of `&mut` members, a list of drivers itself.
-    type Lent<'a>: Drivers<Error: Send + Sync>
+    type Lent<'a>: Drivers<N, Error: Send + Sync>
     where
         Self: 'a;
 
@@ -52,7 +53,7 @@ pub trait Lend: Drivers<Error: Send + Sync> {
     fn lend(&mut self) -> Self::Lent<'_>;
 }
 
-impl Lend for HNil {
+impl<const N: usize> Lend<N> for HNil {
     type Lent<'a> = HNil;
 
     fn lend(&mut self) -> HNil {
@@ -60,7 +61,7 @@ impl Lend for HNil {
     }
 }
 
-impl<A: Hal<Error: Send + Sync>, T: Lend> Lend for HCons<A, T> {
+impl<const N: usize, A: Hal<N, Error: Send + Sync>, T: Lend<N>> Lend<N> for HCons<A, T> {
     type Lent<'a>
         = HCons<&'a mut A, T::Lent<'a>>
     where

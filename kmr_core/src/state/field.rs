@@ -21,7 +21,7 @@ pub(crate) mod sealed {
         /// The array of this field in one history slot.
         fn field<const N: usize>(state: &State<N>) -> &[Self; N];
         /// The write mask of this field.
-        fn mask(written: &mut Written) -> &mut Mask;
+        fn mask<const N: usize>(written: &mut Written<N>) -> &mut Mask<N>;
     }
 }
 
@@ -83,7 +83,7 @@ impl sealed::Slot for Q {
     fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.q
     }
-    fn mask(written: &mut Written) -> &mut Mask {
+    fn mask<const N: usize>(written: &mut Written<N>) -> &mut Mask<N> {
         &mut written.q
     }
 }
@@ -107,7 +107,7 @@ impl sealed::Slot for Qd {
     fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.qd
     }
-    fn mask(written: &mut Written) -> &mut Mask {
+    fn mask<const N: usize>(written: &mut Written<N>) -> &mut Mask<N> {
         &mut written.qd
     }
 }
@@ -133,7 +133,7 @@ impl sealed::Slot for Tau {
         &state.tau
     }
 
-    fn mask(written: &mut Written) -> &mut Mask {
+    fn mask<const N: usize>(written: &mut Written<N>) -> &mut Mask<N> {
         &mut written.tau
     }
 }
@@ -159,7 +159,7 @@ impl sealed::Slot for Kp {
         &state.kp
     }
 
-    fn mask(written: &mut Written) -> &mut Mask {
+    fn mask<const N: usize>(written: &mut Written<N>) -> &mut Mask<N> {
         &mut written.kp
     }
 }
@@ -185,7 +185,7 @@ impl sealed::Slot for Kd {
         &state.kd
     }
 
-    fn mask(written: &mut Written) -> &mut Mask {
+    fn mask<const N: usize>(written: &mut Written<N>) -> &mut Mask<N> {
         &mut written.kd
     }
 }

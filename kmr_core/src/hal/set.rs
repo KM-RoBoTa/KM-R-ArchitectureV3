@@ -19,14 +19,14 @@ const MAX_GROUPS: u16 = 256;
 /// What one member declares at run() finalization, no I/O. Entries outside
 /// `owned` are ignored.
 #[derive(Clone, Debug)]
-pub struct Claim {
+pub struct Claim<const N: usize = JOINTS> {
     /// Actuators the member drives.
-    pub owned: Mask,
+    pub owned: Mask<N>,
     /// Member-local group of each owned actuator; the engine renumbers them
     /// robot-wide.
-    pub group: [Group; JOINTS],
+    pub group: [Group; N],
     /// Read cadence of each owned actuator, in ticks.
-    pub read_every: [NonZeroU32; JOINTS],
+    pub read_every: [NonZeroU32; N],
     /// Estimated bus time of one full read of the member.
     pub read_cost: Duration,
     /// Estimated bus time of one full write of the member.
@@ -86,33 +86,33 @@ pub enum Coverage {
 /// The claims merged so far, in declaration order.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct Plan {
+pub struct Plan<const N: usize = JOINTS> {
     /// Actuators of each member, by position. Each owns one at least, so
-    /// there are at most `JOINTS` members.
-    owned: [Mask; JOINTS],
+    /// there are at most `N` members.
+    owned: [Mask<N>; N],
     /// Type name of each member, by position.
-    name: [&'static str; JOINTS],
-    /// Member k has the groups `bound[k]..bound[k + 1]`.
-    bound: [u16; JOINTS + 1],
+    name: [&'static str; N],
+    /// Member k has the groups `ends[k - 1]..ends[k]`, from 0 for the first.
+    ends: [u16; N],
     members: usize,
-    taken: Mask,
-    group: [Group; JOINTS],
-    read_every: [NonZeroU32; JOINTS],
+    taken: Mask<N>,
+    group: [Group; N],
+    read_every: [NonZeroU32; N],
     read_cost: Duration,
     write_cost: Duration,
 }
 
-impl Plan {
+impl<const N: usize> Plan<N> {
     /// No claim yet.
     pub(crate) fn new() -> Self {
         Self {
-            owned: [Mask::NONE; JOINTS],
-            name: [""; JOINTS],
-            bound: [0; JOINTS + 1],
+            owned: [Mask::NONE; N],
+            name: [""; N],
+            ends: [0; N],
             members: 0,
             taken: Mask::NONE,
-            group: [Group(0); JOINTS],
-            read_every: [NonZeroU32::MIN; JOINTS],
+            group: [Group(0); N],
+            read_every: [NonZeroU32::MIN; N],
             read_cost: Duration::ZERO,
             write_cost: Duration::ZERO,
         }
@@ -121,7 +121,7 @@ impl Plan {
     /// Adds the claim of the next member, of type name `name`, its groups
     /// shifted past those already taken. Costs add up: members run one after
     /// the other. On error the plan is left as it was.
-    pub(crate) fn add(&mut self, name: &'static str, claim: &Claim) -> Result<(), Coverage> {
+    pub(crate) fn add(&mut self, name: &'static str, claim: &Claim<N>) -> Result<(), Coverage> {
         let base = self.next_group();
         let member = Member {
             position: u8::try_from(self.members).unwrap_or(u8::MAX),
@@ -148,7 +148,7 @@ impl Plan {
         let (Some(owned), Some(slot), Some(end)) = (
             self.owned.get_mut(self.members),
             self.name.get_mut(self.members),
-            self.bound.get_mut(self.members + 1),
+            self.ends.get_mut(self.members),
         ) else {
             return Err(Coverage::TooManyGroups { member });
         };
@@ -173,7 +173,10 @@ impl Plan {
 
     /// First group of the next member.
     fn next_group(&self) -> u16 {
-        self.bound.get(self.members).copied().unwrap_or(MAX_GROUPS)
+        match self.members.checked_sub(1) {
+            None => 0,
+            Some(last) => self.ends.get(last).copied().unwrap_or(MAX_GROUPS),
+        }
     }
 
     /// The member that took `actuator`.
@@ -190,7 +193,7 @@ impl Plan {
     }
 
     /// The layout of the whole robot, once every member was added.
-    pub(crate) fn finish(self) -> Result<Layout, Coverage> {
+    pub(crate) fn finish(self) -> Result<Layout<N>, Coverage> {
         if let Some(actuator) = Mask::ALL.difference(self.taken).iter().next() {
             return Err(Coverage::Unowned { actuator });
         }
@@ -199,7 +202,7 @@ impl Plan {
             self.read_every,
             (self.read_cost, self.write_cost),
             self.owned,
-            self.bound,
+            self.ends,
             self.members,
         ))
     }
@@ -261,7 +264,7 @@ where
 
 impl<E, T> MemberError<E, T> {
     /// The error of member `M`, named by its type, the head of the list.
-    pub fn head<M: Hal<Error = E>>(error: E) -> Self {
+    pub fn head<M: super::seal::Adapter>(error: E) -> Self {
         Self::Head {
             name: type_name::<M>(),
             error,
@@ -341,11 +344,11 @@ pub(crate) struct Stray {
 
 /// What a member could change, copied before its call. Empty in release
 /// builds.
-struct Before {
+struct Before<const N: usize> {
     #[cfg(debug_assertions)]
-    values: Option<State<JOINTS>>,
+    values: Option<State<N>>,
     #[cfg(debug_assertions)]
-    faults: Option<Faults>,
+    faults: Option<Faults<N>>,
 }
 
 impl Audit {
@@ -355,7 +358,10 @@ impl Audit {
     }
 
     /// Copies what the next member call may change.
-    fn before(sample: Option<&Sample<'_>>, faults: Option<&Faults>) -> Before {
+    fn before<const N: usize>(
+        sample: Option<&Sample<'_, N>>,
+        faults: Option<&Faults<N>>,
+    ) -> Before<N> {
         #[cfg(debug_assertions)]
         return Before {
             values: sample.map(|s| State {
@@ -377,13 +383,13 @@ impl Audit {
     /// Notes the first actuator outside `owned` that the member of type name
     /// `member` changed since `before`. The first stray change of the walk
     /// wins.
-    fn after(
+    fn after<const N: usize>(
         &mut self,
         member: &'static str,
-        before: Before,
-        sample: Option<&Sample<'_>>,
-        faults: Option<&Faults>,
-        owned: Mask,
+        before: Before<N>,
+        sample: Option<&Sample<'_, N>>,
+        faults: Option<&Faults<N>>,
+        owned: Mask<N>,
     ) {
         #[cfg(debug_assertions)]
         {
@@ -412,12 +418,12 @@ impl Audit {
 
 /// The bits of every field of `actuator`, NaN included.
 #[cfg(debug_assertions)]
-fn row(
-    q: &[crate::state::Q; JOINTS],
-    qd: &[crate::state::Qd; JOINTS],
-    tau: &[crate::state::Tau; JOINTS],
-    kp: &[crate::state::Kp; JOINTS],
-    kd: &[crate::state::Kd; JOINTS],
+fn row<const N: usize>(
+    q: &[crate::state::Q; N],
+    qd: &[crate::state::Qd; N],
+    tau: &[crate::state::Tau; N],
+    kp: &[crate::state::Kp; N],
+    kd: &[crate::state::Kd; N],
     actuator: usize,
 ) -> Option<[u32; 5]> {
     Some([
@@ -431,7 +437,7 @@ fn row(
 
 /// The fault bits of `actuator`.
 #[cfg(debug_assertions)]
-fn fault_row(faults: &Faults, actuator: usize) -> [bool; 4] {
+fn fault_row<const N: usize>(faults: &Faults<N>, actuator: usize) -> [bool; 4] {
     [
         faults.stale.get(actuator),
         faults.bus_error.get(actuator),
@@ -443,7 +449,7 @@ fn fault_row(faults: &Faults, actuator: usize) -> [bool; 4] {
 /// The robot's hardware: a list of [`Hal`] members, `HCons<A, HCons<B,
 /// HNil>>`. Implemented by the engine only; the walk calls every member,
 /// head first, and cuts torque in reverse.
-pub trait Drivers: seal::Drivers {
+pub trait Drivers<const N: usize = JOINTS>: seal::Drivers {
     /// One variant per member, nested.
     type Error: seal::Nested;
 
@@ -452,7 +458,7 @@ pub trait Drivers: seal::Drivers {
     fn claim(
         &mut self,
         overrides: Overrides,
-        plan: &mut Plan,
+        plan: &mut Plan<N>,
     ) -> Result<(), HardwareError<Self::Error>>;
 
     /// `step` on every member; the first error stops the walk.
@@ -463,8 +469,8 @@ pub trait Drivers: seal::Drivers {
     #[doc(hidden)]
     fn read_all(
         &mut self,
-        sample: Sample<'_>,
-        slots: Slots<'_>,
+        sample: Sample<'_, N>,
+        slots: Slots<'_, N>,
         audit: &mut Audit,
     ) -> Result<(), Self::Error>;
 
@@ -473,27 +479,27 @@ pub trait Drivers: seal::Drivers {
     #[doc(hidden)]
     fn read(
         &mut self,
-        sample: Sample<'_>,
-        faults: &mut Faults,
-        slots: Slots<'_>,
+        sample: Sample<'_, N>,
+        faults: &mut Faults<N>,
+        slots: Slots<'_, N>,
         audit: &mut Audit,
-    ) -> Mask;
+    ) -> Mask<N>;
 
     /// [`Hal::write`] on every member with a run in `batch`, each given its
     /// own runs and writes.
     #[doc(hidden)]
     fn write(
         &mut self,
-        command: Command<'_>,
-        batch: &mut Batch<'_>,
-        faults: &mut Faults,
-        slots: Slots<'_>,
+        command: Command<'_, N>,
+        batch: &mut Batch<'_, N>,
+        faults: &mut Faults<N>,
+        slots: Slots<'_, N>,
         audit: &mut Audit,
     );
 
     /// [`Hal::hold`] on every member, each given its own writes.
     #[doc(hidden)]
-    fn hold(&mut self, target: Command<'_>, slots: Slots<'_>);
+    fn hold(&mut self, target: Command<'_, N>, slots: Slots<'_, N>);
 
     /// [`Hal::torque_off`] on every member, last first.
     #[doc(hidden)]
@@ -506,13 +512,13 @@ pub trait Drivers: seal::Drivers {
 
 impl seal::Drivers for HNil {}
 
-impl Drivers for HNil {
+impl<const N: usize> Drivers<N> for HNil {
     type Error = Infallible;
 
     fn claim(
         &mut self,
         _overrides: Overrides,
-        _plan: &mut Plan,
+        _plan: &mut Plan<N>,
     ) -> Result<(), HardwareError<Infallible>> {
         Ok(())
     }
@@ -523,8 +529,8 @@ impl Drivers for HNil {
 
     fn read_all(
         &mut self,
-        _sample: Sample<'_>,
-        _slots: Slots<'_>,
+        _sample: Sample<'_, N>,
+        _slots: Slots<'_, N>,
         _audit: &mut Audit,
     ) -> Result<(), Infallible> {
         Ok(())
@@ -532,40 +538,40 @@ impl Drivers for HNil {
 
     fn read(
         &mut self,
-        _sample: Sample<'_>,
-        _faults: &mut Faults,
-        _slots: Slots<'_>,
+        _sample: Sample<'_, N>,
+        _faults: &mut Faults<N>,
+        _slots: Slots<'_, N>,
         _audit: &mut Audit,
-    ) -> Mask {
+    ) -> Mask<N> {
         Mask::NONE
     }
 
     fn write(
         &mut self,
-        _command: Command<'_>,
-        _batch: &mut Batch<'_>,
-        _faults: &mut Faults,
-        _slots: Slots<'_>,
+        _command: Command<'_, N>,
+        _batch: &mut Batch<'_, N>,
+        _faults: &mut Faults<N>,
+        _slots: Slots<'_, N>,
         _audit: &mut Audit,
     ) {
     }
 
-    fn hold(&mut self, _target: Command<'_>, _slots: Slots<'_>) {}
+    fn hold(&mut self, _target: Command<'_, N>, _slots: Slots<'_, N>) {}
 
     fn torque_off(&mut self) {}
 
     fn close(&mut self) {}
 }
 
-impl<H: Hal, T: Drivers> seal::Drivers for HCons<H, T> {}
+impl<H: super::seal::Adapter, T: seal::Drivers> seal::Drivers for HCons<H, T> {}
 
-impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
+impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
     type Error = MemberError<H::Error, T::Error>;
 
     fn claim(
         &mut self,
         overrides: Overrides,
-        plan: &mut Plan,
+        plan: &mut Plan<N>,
     ) -> Result<(), HardwareError<Self::Error>> {
         let claim = self
             .head
@@ -593,8 +599,8 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
 
     fn read_all(
         &mut self,
-        mut sample: Sample<'_>,
-        slots: Slots<'_>,
+        mut sample: Sample<'_, N>,
+        slots: Slots<'_, N>,
         audit: &mut Audit,
     ) -> Result<(), Self::Error> {
         let (owned, _groups, rest) = slots.split();
@@ -610,11 +616,11 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
 
     fn read(
         &mut self,
-        mut sample: Sample<'_>,
-        faults: &mut Faults,
-        slots: Slots<'_>,
+        mut sample: Sample<'_, N>,
+        faults: &mut Faults<N>,
+        slots: Slots<'_, N>,
         audit: &mut Audit,
-    ) -> Mask {
+    ) -> Mask<N> {
         let (owned, _groups, rest) = slots.split();
         let before = Audit::before(Some(&sample), Some(faults));
         let head = self
@@ -627,10 +633,10 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
 
     fn write(
         &mut self,
-        command: Command<'_>,
-        batch: &mut Batch<'_>,
-        faults: &mut Faults,
-        slots: Slots<'_>,
+        command: Command<'_, N>,
+        batch: &mut Batch<'_, N>,
+        faults: &mut Faults<N>,
+        slots: Slots<'_, N>,
         audit: &mut Audit,
     ) {
         let (owned, groups, rest) = slots.split();
@@ -648,7 +654,7 @@ impl<H: Hal, T: Drivers> Drivers for HCons<H, T> {
         self.tail.write(command, batch, faults, rest, audit);
     }
 
-    fn hold(&mut self, target: Command<'_>, slots: Slots<'_>) {
+    fn hold(&mut self, target: Command<'_, N>, slots: Slots<'_, N>) {
         let (owned, _groups, rest) = slots.split();
         let written = target.written.within(owned);
         self.head.hold(Command {

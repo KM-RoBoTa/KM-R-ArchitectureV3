@@ -25,28 +25,46 @@ pub mod seal {
     pub trait Adapter {}
 }
 
-const WORDS: usize = JOINTS.div_ceil(64);
+/// Words of a [`Mask`]: the one place the actuator limit lives, `64 *
+/// MASK_WORDS` (SRS Definitions "Write mask"). Also the length of the kind
+/// bit sets (`PRISMATIC`, `CONTINUOUS`) the model emits.
+pub const MASK_WORDS: usize = 1;
 
-/// One bit per actuator.
+/// One bit per actuator, `N` actuators. N above `64 * MASK_WORDS` is refused
+/// by [`Mask::CHECK`].
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Mask([u64; WORDS]);
+pub struct Mask<const N: usize = JOINTS>([u64; MASK_WORDS]);
 
-impl Mask {
+impl<const N: usize> Mask<N> {
+    /// Fails the build when `N` does not fit the mask. Post-monomorphization:
+    /// it fires under `cargo build`, once named (`Robot::new` names it).
+    pub const CHECK: () = assert!(
+        N <= 64 * MASK_WORDS,
+        "SRS write mask: more than 64 actuators"
+    );
+
     /// No actuator.
-    pub const NONE: Self = Self([0; WORDS]);
+    pub const NONE: Self = Self([0; MASK_WORDS]);
 
-    /// Every actuator, `0..JOINTS`.
+    /// Every actuator, `0..N`.
     pub const ALL: Self = {
-        let mut words = [u64::MAX; WORDS];
-        if !JOINTS.is_multiple_of(64) {
-            words[WORDS - 1] = (1 << (JOINTS % 64)) - 1;
+        let mut words = [0; MASK_WORDS];
+        let mut word = 0;
+        while word < MASK_WORDS {
+            let start = word * 64;
+            if N >= start + 64 {
+                words[word] = u64::MAX;
+            } else if N > start {
+                words[word] = (1 << (N - start)) - 1;
+            }
+            word += 1;
         }
         Self(words)
     };
 
-    /// Sets the bit of `index`. An index past `JOINTS` is ignored.
+    /// Sets the bit of `index`. An index past `N` is ignored.
     pub fn set(&mut self, index: usize) {
-        if index >= JOINTS {
+        if index >= N {
             return;
         }
         if let Some(word) = self.0.get_mut(index / 64) {
@@ -54,14 +72,14 @@ impl Mask {
         }
     }
 
-    /// Clears the bit of `index`. An index past `JOINTS` is ignored.
+    /// Clears the bit of `index`. An index past `N` is ignored.
     pub fn clear(&mut self, index: usize) {
         if let Some(word) = self.0.get_mut(index / 64) {
             *word &= !(1 << (index % 64));
         }
     }
 
-    /// Whether the bit of `index` is set. `false` past `JOINTS`.
+    /// Whether the bit of `index` is set. `false` past `N`.
     pub fn get(&self, index: usize) -> bool {
         self.0
             .get(index / 64)
@@ -103,7 +121,7 @@ impl Mask {
     /// Indices whose bit is set, ascending.
     pub fn iter(&self) -> impl Iterator<Item = usize> {
         let mask = *self;
-        (0..JOINTS).filter(move |&index| mask.get(index))
+        (0..N).filter(move |&index| mask.get(index))
     }
 }
 
@@ -114,53 +132,53 @@ pub struct Group(pub u8);
 /// The whole robot's hardware, merged once at run() finalization from the
 /// members' claims.
 #[derive(Debug)]
-pub struct Layout {
+pub struct Layout<const N: usize = JOINTS> {
     /// Pre-sort key of each actuator, robot-wide (SRS FR-5.3).
-    pub group: [Group; JOINTS],
+    pub group: [Group; N],
     /// Read cadence in force for each actuator, in ticks.
-    pub read_every: [NonZeroU32; JOINTS],
+    pub read_every: [NonZeroU32; N],
     /// Estimated bus time of one full read.
     pub read_cost: Duration,
     /// Estimated bus time of one full write.
     pub write_cost: Duration,
-    order: [usize; JOINTS],
+    order: [usize; N],
     /// Actuators of each member, by position.
-    owned: [Mask; JOINTS],
-    /// Member k has the groups `bound[k]..bound[k + 1]`.
-    bound: [u16; JOINTS + 1],
+    owned: [Mask<N>; N],
+    /// Member k has the groups `ends[k - 1]..ends[k]`, from 0 for the first.
+    ends: [u16; N],
     members: usize,
 }
 
-impl Layout {
+impl<const N: usize> Layout<N> {
     /// The layout of one member owning every actuator, sorted by group once.
     pub fn new(
-        group: [Group; JOINTS],
-        read_every: [NonZeroU32; JOINTS],
+        group: [Group; N],
+        read_every: [NonZeroU32; N],
         read_cost: Duration,
         write_cost: Duration,
     ) -> Self {
         let groups = group.iter().map(|g| u16::from(g.0) + 1).max();
-        let mut bound = [0; JOINTS + 1];
-        if let Some(end) = bound.get_mut(1) {
+        let mut ends = [0; N];
+        if let Some(end) = ends.first_mut() {
             *end = groups.unwrap_or(0);
         }
-        let mut owned = [Mask::NONE; JOINTS];
+        let mut owned = [Mask::NONE; N];
         if let Some(all) = owned.first_mut() {
             *all = Mask::ALL;
         }
-        Self::merged(group, read_every, (read_cost, write_cost), owned, bound, 1)
+        Self::merged(group, read_every, (read_cost, write_cost), owned, ends, 1)
     }
 
     /// The layout of `members` members, sorted by group once.
     pub(crate) fn merged(
-        group: [Group; JOINTS],
-        read_every: [NonZeroU32; JOINTS],
+        group: [Group; N],
+        read_every: [NonZeroU32; N],
         (read_cost, write_cost): (Duration, Duration),
-        owned: [Mask; JOINTS],
-        bound: [u16; JOINTS + 1],
+        owned: [Mask<N>; N],
+        ends: [u16; N],
         members: usize,
     ) -> Self {
-        let mut order: [usize; JOINTS] = core::array::from_fn(|index| index);
+        let mut order: [usize; N] = core::array::from_fn(|index| index);
         #[cfg(not(feature = "presort-off"))]
         order.sort_unstable_by_key(|&index| (group.get(index).copied(), index));
         // DECISION: `presort-off` keeps declaration order inside each member
@@ -168,7 +186,7 @@ impl Layout {
         #[cfg(feature = "presort-off")]
         order.sort_unstable_by_key(|&index| {
             let of = group.get(index).map_or(0, |g| u16::from(g.0));
-            let ends = bound.get(1..=members).unwrap_or(&[]);
+            let ends = ends.get(..members).unwrap_or(&[]);
             (ends.partition_point(|&end| end <= of), index)
         });
         Self {
@@ -178,16 +196,17 @@ impl Layout {
             write_cost,
             order,
             owned,
-            bound,
+            ends,
             members,
         }
     }
 
     /// Each member's actuators and groups, in declaration order.
-    pub(crate) fn slots(&self) -> Slots<'_> {
+    pub(crate) fn slots(&self) -> Slots<'_, N> {
         Slots {
             owned: self.owned.get(..self.members).unwrap_or(&[]),
-            bound: self.bound.get(..=self.members).unwrap_or(&[]),
+            ends: self.ends.get(..self.members).unwrap_or(&[]),
+            start: 0,
         }
     }
 }
@@ -195,24 +214,31 @@ impl Layout {
 /// A cursor over the members' actuators and groups, as the walk takes them.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
-pub struct Slots<'a> {
-    owned: &'a [Mask],
-    bound: &'a [u16],
+pub struct Slots<'a, const N: usize = JOINTS> {
+    owned: &'a [Mask<N>],
+    ends: &'a [u16],
+    /// First group of the next member.
+    start: u16,
 }
 
-impl<'a> Slots<'a> {
+impl<'a, const N: usize> Slots<'a, N> {
     /// The first member's actuators and groups, and the rest.
-    pub(crate) fn split(self) -> (Mask, Range<u16>, Self) {
+    pub(crate) fn split(self) -> (Mask<N>, Range<u16>, Self) {
         let (owned, rest) = match self.owned {
             [first, rest @ ..] => (*first, rest),
             [] => (Mask::NONE, self.owned),
         };
-        let groups = match self.bound {
-            [start, end, ..] => *start..*end,
-            _ => 0..0,
+        let (groups, ends) = match self.ends {
+            [end, ends @ ..] => (self.start..*end, ends),
+            [] => (self.start..self.start, self.ends),
         };
-        let bound = self.bound.get(1..).unwrap_or(&[]);
-        (owned, groups, Self { owned: rest, bound })
+        let start = groups.end;
+        let rest = Self {
+            owned: rest,
+            ends,
+            start,
+        };
+        (owned, groups, rest)
     }
 }
 
@@ -227,20 +253,20 @@ pub struct Overrides {}
 /// Which desired fields were written this tick, one mask per field.
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Written {
+pub struct Written<const N: usize = JOINTS> {
     /// Actuators whose `Q` was written.
-    pub q: Mask,
+    pub q: Mask<N>,
     /// Actuators whose `Qd` was written.
-    pub qd: Mask,
+    pub qd: Mask<N>,
     /// Actuators whose `Tau` was written.
-    pub tau: Mask,
+    pub tau: Mask<N>,
     /// Actuators whose `Kp` was written.
-    pub kp: Mask,
+    pub kp: Mask<N>,
     /// Actuators whose `Kd` was written.
-    pub kd: Mask,
+    pub kd: Mask<N>,
 }
 
-impl Written {
+impl<const N: usize> Written<N> {
     /// Every field of every actuator.
     pub const ALL: Self = Self {
         q: Mask::ALL,
@@ -251,7 +277,7 @@ impl Written {
     };
 
     /// Actuators with at least one field written.
-    pub fn any(&self) -> Mask {
+    pub fn any(&self) -> Mask<N> {
         self.q
             .union(self.qd)
             .union(self.tau)
@@ -260,7 +286,7 @@ impl Written {
     }
 
     /// The writes of the actuators of `owned` only.
-    pub(crate) fn within(&self, owned: Mask) -> Self {
+    pub(crate) fn within(&self, owned: Mask<N>) -> Self {
         Self {
             q: self.q.intersection(owned),
             qd: self.qd.intersection(owned),
@@ -274,30 +300,30 @@ impl Written {
 /// Values the adapter sends: this tick's desired state, or the hold target.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
-pub struct Command<'a> {
+pub struct Command<'a, const N: usize = JOINTS> {
     /// Desired positions.
-    pub q: &'a [Q; JOINTS],
+    pub q: &'a [Q; N],
     /// Desired velocities.
-    pub qd: &'a [Qd; JOINTS],
+    pub qd: &'a [Qd; N],
     /// Desired torques.
-    pub tau: &'a [Tau; JOINTS],
+    pub tau: &'a [Tau; N],
     /// Desired position gains.
-    pub kp: &'a [Kp; JOINTS],
+    pub kp: &'a [Kp; N],
     /// Desired velocity gains.
-    pub kd: &'a [Kd; JOINTS],
+    pub kd: &'a [Kd; N],
     /// Fields written this tick.
-    pub written: &'a Written,
+    pub written: &'a Written<N>,
 }
 
-impl<'a> Command<'a> {
+impl<'a, const N: usize> Command<'a, N> {
     /// Borrows the values to send.
     pub fn new(
-        q: &'a [Q; JOINTS],
-        qd: &'a [Qd; JOINTS],
-        tau: &'a [Tau; JOINTS],
-        kp: &'a [Kp; JOINTS],
-        kd: &'a [Kd; JOINTS],
-        written: &'a Written,
+        q: &'a [Q; N],
+        qd: &'a [Qd; N],
+        tau: &'a [Tau; N],
+        kp: &'a [Kp; N],
+        kd: &'a [Kd; N],
+        written: &'a Written<N>,
     ) -> Self {
         Self {
             q,
@@ -313,18 +339,18 @@ impl<'a> Command<'a> {
 /// Owned values of the shutdown hold: the latest sample overlaid with the
 /// tick's writes, which `written` marks (SRS FR-4.1).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct HoldTarget {
-    pub(crate) q: [Q; JOINTS],
-    pub(crate) qd: [Qd; JOINTS],
-    pub(crate) tau: [Tau; JOINTS],
-    pub(crate) kp: [Kp; JOINTS],
-    pub(crate) kd: [Kd; JOINTS],
-    pub(crate) written: Written,
+pub(crate) struct HoldTarget<const N: usize = JOINTS> {
+    pub(crate) q: [Q; N],
+    pub(crate) qd: [Qd; N],
+    pub(crate) tau: [Tau; N],
+    pub(crate) kp: [Kp; N],
+    pub(crate) kd: [Kd; N],
+    pub(crate) written: Written<N>,
 }
 
-impl HoldTarget {
+impl<const N: usize> HoldTarget<N> {
     /// Borrows the target as the command `hold` takes.
-    pub(crate) fn command(&self) -> Command<'_> {
+    pub(crate) fn command(&self) -> Command<'_, N> {
         Command::new(
             &self.q,
             &self.qd,
@@ -340,33 +366,33 @@ impl HoldTarget {
 /// overwrites what it reads.
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct Sample<'a> {
+pub struct Sample<'a, const N: usize = JOINTS> {
     /// Read positions.
-    pub q: &'a mut [Q; JOINTS],
+    pub q: &'a mut [Q; N],
     /// Read velocities.
-    pub qd: &'a mut [Qd; JOINTS],
+    pub qd: &'a mut [Qd; N],
     /// Read torques.
-    pub tau: &'a mut [Tau; JOINTS],
+    pub tau: &'a mut [Tau; N],
     /// Position gains the adapter last applied; untouched by those without.
-    pub kp: &'a mut [Kp; JOINTS],
+    pub kp: &'a mut [Kp; N],
     /// Velocity gains the adapter last applied; untouched by those without.
-    pub kd: &'a mut [Kd; JOINTS],
+    pub kd: &'a mut [Kd; N],
 }
 
-impl<'a> Sample<'a> {
+impl<'a, const N: usize> Sample<'a, N> {
     /// Borrows the slot to fill.
     pub fn new(
-        q: &'a mut [Q; JOINTS],
-        qd: &'a mut [Qd; JOINTS],
-        tau: &'a mut [Tau; JOINTS],
-        kp: &'a mut [Kp; JOINTS],
-        kd: &'a mut [Kd; JOINTS],
+        q: &'a mut [Q; N],
+        qd: &'a mut [Qd; N],
+        tau: &'a mut [Tau; N],
+        kp: &'a mut [Kp; N],
+        kd: &'a mut [Kd; N],
     ) -> Self {
         Self { q, qd, tau, kp, kd }
     }
 
     /// Lends the same slot again, to the next member.
-    pub(crate) fn reborrow(&mut self) -> Sample<'_> {
+    pub(crate) fn reborrow(&mut self) -> Sample<'_, N> {
         Sample::new(self.q, self.qd, self.tau, self.kp, self.kd)
     }
 }
@@ -375,9 +401,9 @@ impl<'a> Sample<'a> {
 /// once the walk selected it. With the `presort-off` feature, in declaration
 /// order inside each member (SRS FR-5.3, for the bench's comparison).
 #[derive(Debug)]
-pub struct Batch<'a> {
-    layout: &'a Layout,
-    index: [usize; JOINTS],
+pub struct Batch<'a, const N: usize = JOINTS> {
+    layout: &'a Layout<N>,
+    index: [usize; N],
     len: usize,
     /// The selected actuators are `index[from..to]`.
     from: usize,
@@ -386,11 +412,11 @@ pub struct Batch<'a> {
     base: u8,
 }
 
-impl<'a> Batch<'a> {
+impl<'a, const N: usize> Batch<'a, N> {
     /// The actuators of `written` with at least one field set, sorted by group.
-    pub fn new(layout: &'a Layout, written: &Written) -> Self {
+    pub fn new(layout: &'a Layout<N>, written: &Written<N>) -> Self {
         let any = written.any();
-        let mut index = [0; JOINTS];
+        let mut index = [0; N];
         let mut len = 0;
         for &actuator in &layout.order {
             if any.get(actuator)
@@ -435,7 +461,7 @@ impl<'a> Batch<'a> {
     }
 
     /// One run per group, groups ascending, actuators ascending inside a run.
-    pub fn runs(&self) -> Runs<'_> {
+    pub fn runs(&self) -> Runs<'_, N> {
         Runs {
             group: &self.layout.group,
             rest: self.index.get(self.from..self.to).unwrap_or(&[]),
@@ -446,13 +472,13 @@ impl<'a> Batch<'a> {
 
 /// Iterator over the runs of a [`Batch`].
 #[derive(Debug)]
-pub struct Runs<'a> {
-    group: &'a [Group; JOINTS],
+pub struct Runs<'a, const N: usize = JOINTS> {
+    group: &'a [Group; N],
     rest: &'a [usize],
     base: u8,
 }
 
-impl<'a> Iterator for Runs<'a> {
+impl<'a, const N: usize> Iterator for Runs<'a, N> {
     type Item = (Group, &'a [usize]);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -474,16 +500,16 @@ impl<'a> Iterator for Runs<'a> {
 /// Per-tick fault bits set by the adapter (SRS FR-13.4).
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Faults {
+pub struct Faults<const N: usize = JOINTS> {
     /// Read failed: the previous value was kept (SRS FR-2.6).
-    pub stale: Mask,
+    pub stale: Mask<N>,
     /// Transaction error on the actuator's bus.
-    pub bus_error: Mask,
+    pub bus_error: Mask<N>,
     /// No answer from the actuator.
-    pub offline: Mask,
+    pub offline: Mask<N>,
     /// Written but not sent: torque off, field not taken by its mode, or
     /// value outside the actuator's range.
-    pub rejected: Mask,
+    pub rejected: Mask<N>,
 }
 
 /// The hardware contract of one member of the robot's hardware (SRS FR-5.1,
@@ -496,14 +522,14 @@ pub struct Faults {
 /// The engine restricts `write` to the member's runs, with local group ids,
 /// and the `written` masks of `write` and `hold` to its actuators. `Sample`
 /// and `Faults` stay whole-robot: a member touches only its own slots.
-pub trait Hal: seal::Adapter {
+pub trait Hal<const N: usize = JOINTS>: seal::Adapter {
     /// Bring-up and finalization failures. Names the actuator and the port
     /// when there is one.
     type Error: core::error::Error + 'static;
 
     /// run() finalization, no I/O: validates the configuration, applies the
     /// overrides, claims the member's actuators.
-    fn check(&mut self, overrides: Overrides) -> Result<Claim, Self::Error>;
+    fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, Self::Error>;
 
     /// Init: resolves every port, then flushes, sets the latency timer and
     /// opens each one. Nothing is powered.
@@ -522,24 +548,24 @@ pub trait Hal: seal::Adapter {
     fn configure(&mut self) -> Result<(), Self::Error>;
 
     /// PostInit: one full read of every actuator, whatever the cadence.
-    fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Self::Error>;
+    fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error>;
 
     /// PostInit: torque on where the adapter configuration says so.
     fn torque_on(&mut self) -> Result<(), Self::Error>;
 
     /// Tick, once, before `First`: reads the actuators due this tick and
     /// returns the ones refreshed. No allocation, lock, sleep or retry.
-    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults) -> Mask;
+    fn read(&mut self, sample: Sample<'_, N>, faults: &mut Faults<N>) -> Mask<N>;
 
     /// Tick, once, after `Last`: sends `command` for the actuators of
     /// `batch`, one transaction per run where the protocol allows it. No
     /// allocation, lock, sleep or retry.
-    fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults);
+    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>);
 
     /// Shutdown: holds each actuator per its mode. `written` marks values
     /// from this tick's command; the rest is the latest sample. Best effort,
     /// never fails.
-    fn hold(&mut self, target: Command<'_>);
+    fn hold(&mut self, target: Command<'_, N>);
 
     /// Shutdown, emergency stop, bring-up error: torque off everywhere. Best
     /// effort, never fails.
@@ -549,14 +575,14 @@ pub trait Hal: seal::Adapter {
     fn close(&mut self);
 }
 
-impl<A: Hal> seal::Adapter for &mut A {}
+impl<A: seal::Adapter> seal::Adapter for &mut A {}
 
 /// Lends the adapter to a run, so the caller keeps it before and after
 /// (SRS FR-5.9).
-impl<A: Hal> Hal for &mut A {
+impl<const N: usize, A: Hal<N>> Hal<N> for &mut A {
     type Error = A::Error;
 
-    fn check(&mut self, overrides: Overrides) -> Result<Claim, Self::Error> {
+    fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, Self::Error> {
         (**self).check(overrides)
     }
 
@@ -580,7 +606,7 @@ impl<A: Hal> Hal for &mut A {
         (**self).configure()
     }
 
-    fn read_all(&mut self, sample: Sample<'_>) -> Result<(), Self::Error> {
+    fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error> {
         (**self).read_all(sample)
     }
 
@@ -588,15 +614,15 @@ impl<A: Hal> Hal for &mut A {
         (**self).torque_on()
     }
 
-    fn read(&mut self, sample: Sample<'_>, faults: &mut Faults) -> Mask {
+    fn read(&mut self, sample: Sample<'_, N>, faults: &mut Faults<N>) -> Mask<N> {
         (**self).read(sample, faults)
     }
 
-    fn write(&mut self, command: Command<'_>, batch: &Batch<'_>, faults: &mut Faults) {
+    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
         (**self).write(command, batch, faults);
     }
 
-    fn hold(&mut self, target: Command<'_>) {
+    fn hold(&mut self, target: Command<'_, N>) {
         (**self).hold(target);
     }
 
@@ -616,14 +642,14 @@ pub struct NoHardware;
 
 impl seal::Adapter for NoHardware {}
 
-impl Hal for NoHardware {
+impl<const N: usize> Hal<N> for NoHardware {
     type Error = Infallible;
 
-    fn check(&mut self, _overrides: Overrides) -> Result<Claim, Infallible> {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, Infallible> {
         Ok(Claim {
             owned: Mask::ALL,
-            group: [Group(0); JOINTS],
-            read_every: [NonZeroU32::MIN; JOINTS],
+            group: [Group(0); N],
+            read_every: [NonZeroU32::MIN; N],
             read_cost: Duration::ZERO,
             write_cost: Duration::ZERO,
         })
@@ -650,7 +676,7 @@ impl Hal for NoHardware {
         Ok(())
     }
 
-    fn read_all(&mut self, _sample: Sample<'_>) -> Result<(), Infallible> {
+    fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), Infallible> {
         Ok(())
     }
 
@@ -658,13 +684,13 @@ impl Hal for NoHardware {
         Ok(())
     }
 
-    fn read(&mut self, _sample: Sample<'_>, _faults: &mut Faults) -> Mask {
+    fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
         Mask::NONE
     }
 
-    fn write(&mut self, _command: Command<'_>, _batch: &Batch<'_>, _faults: &mut Faults) {}
+    fn write(&mut self, _command: Command<'_, N>, _batch: &Batch<'_, N>, _faults: &mut Faults<N>) {}
 
-    fn hold(&mut self, _target: Command<'_>) {}
+    fn hold(&mut self, _target: Command<'_, N>) {}
 
     fn torque_off(&mut self) {}
 
@@ -675,10 +701,12 @@ impl Hal for NoHardware {
 mod tests {
     use super::*;
 
-    fn layout(group: impl Fn(usize) -> u8) -> Layout {
+    const N: usize = 4;
+
+    fn layout(group: impl Fn(usize) -> u8) -> Layout<N> {
         Layout::new(
             core::array::from_fn(|index| Group(group(index))),
-            [NonZeroU32::MIN; JOINTS],
+            [NonZeroU32::MIN; N],
             Duration::ZERO,
             Duration::ZERO,
         )
@@ -686,15 +714,24 @@ mod tests {
 
     #[test]
     fn all_sets_exactly_the_actuators() {
-        assert_eq!(Mask::ALL.iter().count(), JOINTS);
-        assert!(!Mask::ALL.get(JOINTS));
+        assert_eq!(Mask::<N>::ALL.iter().count(), N);
+        assert!(!Mask::<N>::ALL.get(N));
+    }
+
+    #[test]
+    fn all_fills_one_word_from_one_to_sixty_four_actuators() {
+        assert!(Mask::<1>::ALL.iter().eq([0]));
+        assert_eq!(Mask::<10>::ALL.iter().count(), 10);
+        assert_eq!(Mask::<64>::ALL.iter().count(), 64);
+        assert!(Mask::<64>::ALL.get(63));
+        assert!(Mask::<0>::ALL.is_empty());
     }
 
     #[test]
     fn out_of_range_bits_are_ignored() {
-        let mut mask = Mask::NONE;
-        mask.set(JOINTS);
-        mask.clear(JOINTS + 64);
+        let mut mask = Mask::<N>::NONE;
+        mask.set(N);
+        mask.clear(N + 64);
         assert!(mask.is_empty());
     }
 
@@ -702,7 +739,7 @@ mod tests {
     #[test]
     fn presort_off_keeps_declaration_order() {
         let layout = layout(|index| u8::from(index % 2 == 0));
-        let mut written = Written::default();
+        let mut written = Written::<N>::default();
         written.q.set(0);
         written.qd.set(1);
         written.tau.set(2);
@@ -720,7 +757,7 @@ mod tests {
     #[test]
     fn batch_keeps_written_actuators_in_group_order() {
         let layout = layout(|index| u8::from(index % 2 == 0));
-        let mut written = Written::default();
+        let mut written = Written::<N>::default();
         written.q.set(0);
         written.qd.set(1);
         written.tau.set(2);
@@ -736,7 +773,7 @@ mod tests {
     #[test]
     fn nothing_written_is_an_empty_batch() {
         let layout = layout(|_| 0);
-        let batch = Batch::new(&layout, &Written::default());
+        let batch = Batch::new(&layout, &Written::<N>::default());
         assert!(batch.is_empty());
         assert_eq!(batch.runs().next(), None);
     }

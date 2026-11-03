@@ -12,7 +12,7 @@ pub(crate) struct Desired<const N: usize> {
     pub(in crate::state) kd: [Kd; N],
     /// Values written since the last apply, one mask per field, apart from
     /// the arrays (SRS FR-2.5, NFR-10).
-    pub(in crate::state) written: Written,
+    pub(in crate::state) written: Written<N>,
 }
 
 impl<const N: usize> Default for Desired<N> {

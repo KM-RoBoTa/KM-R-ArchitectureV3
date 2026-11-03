@@ -141,19 +141,19 @@ impl<const N: usize> RobotState<N> {
 }
 
 /// The engine's side: what it hands the adapter and resets once applied.
-impl RobotState<JOINTS> {
+impl<const N: usize> RobotState<N> {
     /// Takes the read cadence of the finished layout.
-    pub(crate) fn set_cadence(&mut self, cadence: [NonZeroU32; JOINTS]) {
+    pub(crate) fn set_cadence(&mut self, cadence: [NonZeroU32; N]) {
         self.cadence = cadence;
     }
 
     /// Fields written since the last apply.
-    pub(crate) fn written(&self) -> &Written {
+    pub(crate) fn written(&self) -> &Written<N> {
         &self.desired.written
     }
 
     /// Borrows Desired as the command `write` sends.
-    pub(crate) fn command(&self) -> Command<'_> {
+    pub(crate) fn command(&self) -> Command<'_, N> {
         Command::new(
             &self.desired.q,
             &self.desired.qd,
@@ -171,7 +171,7 @@ impl RobotState<JOINTS> {
 
     /// Pushes a copy of `prev(0)` (zeros when empty) and lends it to the
     /// adapter: what it does not read keeps its last value (SRS FR-2.6).
-    pub(crate) fn push_slot(&mut self) -> Option<Sample<'_>> {
+    pub(crate) fn push_slot(&mut self) -> Option<Sample<'_, N>> {
         let next = self.history.buf.back().copied().unwrap_or_default();
         self.history.buf.push_back(next);
         let slot = self.history.buf.back_mut()?; // None only with a depth of 0
@@ -186,7 +186,7 @@ impl RobotState<JOINTS> {
 
     /// The latest sample overlaid with this tick's writes, never the cleared
     /// Desired. `None` before the first sample.
-    pub(crate) fn hold_target(&self) -> Option<HoldTarget> {
+    pub(crate) fn hold_target(&self) -> Option<HoldTarget<N>> {
         let sample = self.history.buf.back()?;
         let written = self.desired.written;
         Some(HoldTarget {
@@ -201,7 +201,7 @@ impl RobotState<JOINTS> {
 }
 
 /// `sample` with the values of `desired` whose bit is set in `mask`.
-fn overlay<T: Copy, const N: usize>(mut sample: [T; N], desired: &[T; N], mask: Mask) -> [T; N] {
+fn overlay<T: Copy, const N: usize>(mut sample: [T; N], desired: &[T; N], mask: Mask<N>) -> [T; N] {
     for (index, (value, wanted)) in sample.iter_mut().zip(desired).enumerate() {
         if mask.get(index) {
             *value = *wanted;
