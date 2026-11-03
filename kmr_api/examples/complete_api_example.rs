@@ -62,6 +62,10 @@ fn main() -> color_eyre::Result<()> {
 
         // Here, we read the current value of q. By current, we understand
         // "the latest read value from the actuators themselves".
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let current_q = robot.q();
 
         // NOTE: the into() needs context to work.
@@ -89,6 +93,10 @@ fn main() -> color_eyre::Result<()> {
         // controlling the stem angle of a mounted camera separatly would
         // be complitely separate.
 
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let index: usize = 0;
         let current_q = robot.q_at(index);
 
@@ -119,6 +127,10 @@ fn main() -> color_eyre::Result<()> {
         // One other nice feature are groups. You can specify a dedicated group
         // in the form of an array of indexes, and work with them using the
         // exact same set of methods.
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let mut r_arm = robot.group(R_ARM);
 
         // Accessing `q()` on a group returns only the current for the chosen
@@ -161,6 +173,10 @@ fn main() -> color_eyre::Result<()> {
     }
 
     fn error_handling(_time: &Time, robot: &mut State, _sensors: &Sensors) {
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let current: Option<[Q; N]> = robot.q();
         // `robot.q()` returns an Option<[Q;N]>.
         // This is because an internal bug can occure, let's say because of an I/O
@@ -286,6 +302,10 @@ fn main() -> color_eyre::Result<()> {
     ) {
         // here, we simply read a flag the user defined and set all positions
         // if true.
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         if *tracker.read_flag() {
             let current = robot.q().unwrap();
             let desired = current.map(|q| q + 100.0.into());
@@ -474,6 +494,10 @@ fn main() -> color_eyre::Result<()> {
         drop(input);
 
         // Turn the stick into a robot command.
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let current = robot.q();
         let desired = current.unwrap().map(|q| q + Q(x));
         robot.set_all_q(desired);
