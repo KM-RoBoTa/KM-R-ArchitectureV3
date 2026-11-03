@@ -550,6 +550,7 @@ dependencies = [
  "derive_more",
  "frunk",
  "rstest",
+ "rustix",
  "thiserror",
  "tracing",
  "tracing-subscriber",

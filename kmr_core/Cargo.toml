@@ -17,6 +17,11 @@ tracing-subscriber.workspace = true
 derive_more.workspace = true
 frunk.workspace = true
 
+# The real-time sleep of the loop: absolute `clock_nanosleep` on the
+# monotonic clock (SRS FR-3.2). Safe API; already a workspace dependency.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix = { workspace = true, features = ["thread", "time"] }
+
 [features]
 # Test hooks for the crates built on top of the core: record a sensed sample,
 # read the desired buffer back, and drive the runtime with a scripted host and

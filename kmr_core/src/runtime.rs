@@ -70,8 +70,22 @@ pub trait Host {
     fn poll(&mut self) -> Option<Signal>;
 }
 
-/// The real world: system clock, thread sleep, global signal bus.
-struct RealHost;
+/// The real world: system clock, absolute sleep, global signal bus.
+struct RealHost {
+    /// Wakes this long before each deadline and spins the rest; zero: no spin.
+    spin_tail: Duration,
+}
+
+impl RealHost {
+    /// The host of a run: no spin tail.
+    // DECISION: no spin by default and no user knob yet; the NFR-1 bench
+    // (bench A-10) measures whether a tail is worth its CPU first.
+    const fn new() -> Self {
+        Self {
+            spin_tail: Duration::ZERO,
+        }
+    }
+}
 
 impl Host for RealHost {
     fn now(&mut self) -> Instant {
@@ -79,14 +93,47 @@ impl Host for RealHost {
     }
 
     fn sleep_until(&mut self, deadline: Instant) {
-        // TODO: jitter under a non real-time scheduler. Spin tail or
-        // `clock_nanosleep(TIMER_ABSTIME)`, with the hardware layer.
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let wake = deadline.checked_sub(self.spin_tail).unwrap_or(deadline);
+        sleep_until(wake);
+        while Instant::now() < deadline {
+            core::hint::spin_loop();
+        }
     }
 
     fn poll(&mut self) -> Option<Signal> {
         Signal::drain()
     }
+}
+
+/// Blocks until `deadline` with an absolute `clock_nanosleep` on the
+/// monotonic clock, so a late wake never shifts the next one (SRS FR-3.2).
+///
+/// `Instant` has no public clock value: the deadline is carried over as its
+/// distance from now, added to the monotonic clock read right after.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn sleep_until(deadline: Instant) {
+    use rustix::thread::{ClockId, clock_nanosleep_absolute};
+    use rustix::time::{Timespec, clock_gettime};
+
+    let ahead = deadline.saturating_duration_since(Instant::now());
+    if ahead.is_zero() {
+        return;
+    }
+    let target = Timespec::try_from(ahead)
+        .ok()
+        .and_then(|ahead| clock_gettime(ClockId::Monotonic).checked_add(ahead));
+    let Some(target) = target else {
+        std::thread::sleep(ahead);
+        return;
+    };
+    // A signal handler woke it early: sleep again to the same deadline.
+    while clock_nanosleep_absolute(ClockId::Monotonic, &target) == Err(rustix::io::Errno::INTR) {}
+}
+
+/// Blocks until `deadline` (no absolute monotonic sleep on this target).
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn sleep_until(deadline: Instant) {
+    std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
 }
 
 /// Set once the Ctrl-C handler of the process is the one of the engine.
@@ -536,7 +583,7 @@ pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>>(
         );
     }
 
-    run_with(&mut robot, &mut RealHost, &mut hal)
+    run_with(&mut robot, &mut RealHost::new(), &mut hal)
 }
 
 #[cfg(test)]
@@ -724,7 +771,7 @@ mod tests {
     #[test]
     fn real_host_sleeps_until_the_deadline_and_its_clock_moves() {
         // Lower bound only: a sleep never returns early, whatever the load.
-        let mut host = RealHost;
+        let mut host = RealHost::new();
         let deadline = host.now() + Duration::from_millis(2);
 
         host.sleep_until(deadline);
@@ -732,6 +779,29 @@ mod tests {
 
         // A deadline already behind must not block, nor panic.
         host.sleep_until(deadline);
+    }
+
+    #[test]
+    fn the_spin_tail_still_wakes_at_the_deadline_never_before() {
+        let mut host = RealHost {
+            spin_tail: Duration::from_micros(300),
+        };
+        for _ in 0..5 {
+            let deadline = host.now() + Duration::from_millis(1);
+            host.sleep_until(deadline);
+            assert!(host.now() >= deadline);
+        }
+    }
+
+    #[test]
+    fn a_long_sleep_ends_near_its_deadline() {
+        // Upper bound loose enough for a loaded CI host: the absolute sleep
+        // must not drift by the length of the wait.
+        let mut host = RealHost::new();
+        let deadline = host.now() + Duration::from_millis(20);
+        host.sleep_until(deadline);
+        let late = host.now().saturating_duration_since(deadline);
+        assert!(late < Duration::from_millis(15), "{late:?}");
     }
 
     #[test]

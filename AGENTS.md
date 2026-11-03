@@ -229,7 +229,8 @@ returns `Ok(())` for a shutdown and for an emergency stop alike.
   while controllers only ever get `&Time`. Do not hold an `Env` across phases.
 - **`Host` seam**: the loop takes the instant, the sleep and the bus through
   the private `Host` trait (`RealHost` in production, monomorphized, no
-  `dyn`). Loop tests use a scripted host: they never sleep and never touch the
+  `dyn`; its sleep is an absolute `clock_nanosleep` on the monotonic clock,
+  an optional spin tail off by default). Loop tests use a scripted host: they never sleep and never touch the
   global bus. Tests on the real bus live in `kmr_core/tests/run_signals.rs`
   (own process) and take a file-local lock.
 

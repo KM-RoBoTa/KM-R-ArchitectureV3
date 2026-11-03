@@ -216,10 +216,10 @@ panic included, with `torque_off` then `close` on every member.
 | emergency stop during the hold | | cut short | yes, at once | `Ok` |
 | a member touching an index it does not own (debug builds) | no | no | yes, as an emergency stop | `Ok` |
 
-Not implemented yet: the startup of threaded controllers (they are stored,
-never spawned), the real-time sleep (`std::thread::sleep` today), and the
-`dt` range check in the core (`kmr_api` checks it for now) — see the
-[roadmap](ROADMAP.md).
+The sleep is an absolute `clock_nanosleep` on the monotonic clock (Linux,
+through `rustix`), with an optional spin tail before the deadline, off by
+default. Not implemented yet: the startup of threaded controllers (they are
+stored, never spawned) — see the [roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
 
