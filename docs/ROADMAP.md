@@ -26,11 +26,21 @@ a runtime entity registry — keep the 1kHz hot path static.
     - spawn the threaded controllers (blocked by the hand-off question below)
     - tick rate per controller
     - real-time sleep (`clock_nanosleep(TIMER_ABSTIME)` or spin tail)
-    - decide: should an emergency stop make `run()` return `Err`? Needs a new
-      variant in `ApiError` and `UserError`
-    - the `NoControllers` check in `Robot::run()`
-    - `complete_api_example` and `controllers/src/main.rs` now run until
-      Ctrl-C
+    - the empty-robot check, as a type-state compile error, and one
+      `RunError { Config, Hal }` for `run()` with the `dt` range check in the
+      core ([decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md),
+      core T034, T035). Settled: `run()` returns `Ok` for a shutdown and an
+      emergency stop alike
+    - N as a const generic set by `robot!`, `JOINTS` removed
+      ([decision 0007](decisions/0007-actuator-count-const-generic.md), core
+      T021 to T030)
+    - per-slot faults, tick flags and per-actuator age in the History (core
+      T036, T044); today the per-tick fault masks are dropped
+    - the home state (`todo!()`, core T031)
+    - `controllers/src/main.rs` still runs until Ctrl-C; the swing reference
+      (controllers T006-T011) ends itself with `shutdown!` after 12 s of
+      `elapsed()`. Walkthrough in `controllers/README.md`
+    - `complete_api_example` panics in a `todo!()` (kmr_api T014)
 - [ ] Hardware layer (SRS delivery step 1), in progress. Design in
     [decision 0002](decisions/0002-hal-contract.md) and
     `specs/001-kmr-adapters/`:
@@ -55,8 +65,8 @@ a runtime entity registry — keep the 1kHz hot path static.
     - swap `dxl_rs` for `dxl_rs_v2` behind the `Backend` trait once it has a
       bus: removes the SDK's per-tick allocations and its ~34 ms stall on a
       missing servo
-    - accept or overrule the SRS deviations listed in decision 0002, and
-      bring it up to date with the list of members
+    - accept or overrule the SRS deviations listed in decision 0002 (brought
+      up to date with the list of members and the adapter items 2026-11-03)
 - [ ] Robot model (`kmr_model`), what this version leaves out:
     - several robots in one `.ron` descriptor (SRS FR-6.5); a descriptor
       with several root links is refused

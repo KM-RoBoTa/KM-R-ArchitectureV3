@@ -39,7 +39,7 @@ in [`specs/001-kmr-adapters/`](../../specs/001-kmr-adapters/).
 
 ## Phase 9: Polish and cross-cutting
 
-- [ ] T061 Hand-off, owner core T060 (HUMAN; docs/decisions/0002-hal-contract.md records the contract of kmr_core/src/hal.rs, so one owner). The adapter items go there: drop "port binding as a const"; `force_torque_off` and the strict fake, the table generic over N, binding by label (D6), plugin baud at `bind` (research R6), zero offset (D8), default cadence (D9), Protocol 1 health exemption. This plan's PR lists the SRS problems of research R15 for the human (constitution V). No edit to 0002 here
+- [x] T061 Hand-off, owner core T060 (HUMAN; docs/decisions/0002-hal-contract.md records the contract of kmr_core/src/hal.rs, so one owner). The adapter items go there: drop "port binding as a const"; `force_torque_off` and the strict fake, the table generic over N, binding by label (D6), plugin baud at `bind` (research R6), zero offset (D8), default cadence (D9), Protocol 1 health exemption. This plan's PR lists the SRS problems of research R15 for the human (constitution V). No edit to 0002 here
 - [ ] T063 HUMAN Bench SC-003: write-tick I/O under 1 ms at a 1 ms tick, read ticks logged apart, measured costs within the declared ones; pick the `DEFAULT_READ_EVERY` value (D9)
 - [ ] T064 Blocked on T063. Set `DEFAULT_READ_EVERY` in kmr_adapters/src/dynamixel/config.rs to the measured value and drop "placeholder" from its doc; hand the number to core T060 for docs/decisions/0002-hal-contract.md
 

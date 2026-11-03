@@ -163,8 +163,10 @@ Rust edition 2024.
 - **No heap allocation, except in the API.** The root `clippy.toml` sets
   `disallowed-types` = `Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap` for the
   whole workspace. `kmr_api/clippy.toml` overrides it with an empty list: the
-  API is the one crate where heap types are allowed. Elsewhere use fixed
-  arrays and `'static`s. `kmr_core/src/lib.rs` also
+  API is the one crate where heap types are allowed. Two crates outside the
+  loop override it the same way: `kmr_model` (build time only) and `kmr_ffi`
+  (build helper and script bridges; never in kmr's own per-call work, SRS
+  FR-10.3). Elsewhere use fixed arrays and `'static`s. `kmr_core/src/lib.rs` also
   `#![forbid(clippy::disallowed_types)]` and `#![forbid(clippy::unwrap_used)]`.
 - **Everything is `pub(crate)` by default.** Only what `kmr_api` must name is
   `pub`. When adding a type, default to private and widen only if `kmr_api`

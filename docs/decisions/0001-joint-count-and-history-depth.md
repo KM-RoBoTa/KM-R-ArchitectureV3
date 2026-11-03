@@ -3,6 +3,10 @@
 Status: **proposed**, waiting for the maintainer's decision. The code does not
 follow it yet; see [Current state](#current-state).
 
+The joint-count half is superseded by
+[0007](0007-actuator-count-const-generic.md): N is a const generic, set by
+`robot!` from the descriptor (SRS FR-6.1). The history-depth half stands.
+
 ## The question
 
 Two sizes shape the robot state: the number of joints and the number of past

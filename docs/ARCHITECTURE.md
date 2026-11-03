@@ -147,20 +147,44 @@ layer. Everything is monomorphized: no `dyn`, no fat pointers, no heap. Node
 types (`Inline`, `InlineWith`, `Threaded`) are opaque: users can hold the list
 but can neither forge nor read a node.
 
-`Robot::run()` rejects an empty controller list with a **runtime** check
-rather than a trait bound, because a trait-bound failure would leak internal
-type paths into the user's compiler error.
+An empty controller list is not checked today: `run()` on a robot with no
+controller powers the hardware and commands nothing.
+[Decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md) makes
+it a compile error by type-state, with a readable `on_unimplemented` message
+in front of the internal type paths (core T035).
 
 ## Runtime loop
 
 ```
-pre_init → init → post_init
-loop { read → first → each_tick → last → write → clock bookkeeping → sleep }
+finalization (claims, no I/O)
+pre_init → open, zero → init → ping, health, configure, read_all → torque_on → post_init
+loop { read → first → each_tick → last → write → clock bookkeeping → clear desired → sleep }
+hold (shutdown with set_hold only) → torque_off → close
 ```
 
-The loop runs until a signal is raised. After the `Last` bucket the engine
-computes the overrun and the accumulated overrun, stamps the last update and
-sleeps until the next deadline.
+**One clock.** `robot.config.time` is the only clock. The engine writes it
+between two controller walks; controllers get `&Time` through each phase's
+short-lived `Env`. The clock never reads the system time: the runtime injects
+every instant (`arm` after the bring-up, so tick 0 is not charged with it,
+then `begin_tick`, `end_tick`), through a private `Host` seam that tests
+replace with a scripted host. A `dt` of zero or never set falls back to 1 ms
+with one warning.
+
+**One tick**, in order:
+
+| # | Step | Hardware |
+|---|---|---|
+| 1 | bus check, any signal | |
+| 2 | `begin_tick(now)` | |
+| 3 | push a History slot (a copy of the previous one), `read` into it | the actuators due this tick |
+| 4 | `First`, then an emergency-stop check | |
+| 5 | `EachTick`, then an emergency-stop check | |
+| 6 | `Last`, then an emergency-stop check | |
+| 7 | `Batch` from this tick's write masks; `write` if not empty | one transaction per group |
+| 8 | `end_tick(now)`: tick count, overrun | |
+| 9 | bus check, any signal | |
+| 10 | clear Desired | |
+| 11 | sleep to the next grid point | |
 
 Deadlines are absolute: each one is `origin + k * dt`, with `dt` the value
 given to `set_dt`. Sleeping for `dt` after each tick would make the real
@@ -169,14 +193,30 @@ finishes after its deadline, the loop stays on the same grid: it skips the
 slots it missed and sleeps to the first grid point still ahead, so the next
 tick starts on the grid and has a whole `dt` to run. It never runs a burst of
 ticks to catch up, never moves the grid and never starts a tick in the middle
-of a slot.
+of a slot. A late tick is logged at `debug` and counted; one summary line
+at the end gives the accumulated overrun.
 
-Controllers read the clock, the engine writes it, and only between two
-controller walks.
+**Startup writes are dropped.** Desired values written in `PreInit`, `Init`
+or `PostInit` are never sent: only ticks command the hardware. One warning
+names the phases that wrote.
 
-Each tick reads the [hardware](#hardware-layer) into a new history slot
-before `First` and writes what the controllers wrote after `Last`. Not
-implemented yet: the startup of threaded controllers — see the
+**Exits.** From `open` on, a guard (`Powered`) ends every exit, a controller
+panic included, with `torque_off` then `close` on every member.
+
+| Exit | Tick write | Hold | Torque off, close | `run_on` returns |
+|---|---|---|---|---|
+| claim mismatch or `check` error | no | no | no, nothing opened | `Err` |
+| emergency stop in `PreInit` | no | no | no, nothing opened | `Ok` |
+| `open` .. `torque_on` error | no | no | yes, at once | `Err` |
+| any signal before `torque_on` | no | no | yes, torque never on | `Ok` |
+| shutdown in a tick | yes, the tick completes | with `set_hold` only | yes, after the hold | `Ok` |
+| emergency stop in a tick | no, if raised before the write | no | yes, at once | `Ok` |
+| emergency stop during the hold | | cut short | yes, at once | `Ok` |
+| a member touching an index it does not own (debug builds) | no | no | yes, as an emergency stop | `Ok` |
+
+Not implemented yet: the startup of threaded controllers (they are stored,
+never spawned), the real-time sleep (`std::thread::sleep` today), and the
+`dt` range check in the core (`kmr_api` checks it for now) — see the
 [roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
@@ -191,17 +231,50 @@ allocates and the path is async-signal-safe. Escalation is monotonic — an
 emergency stop is never downgraded to a shutdown, and the first reason raised
 wins.
 
-The runtime checks the bus between the phases, four times per tick (one
-atomic load each on the happy path):
+The runtime checks the bus five times per tick (one atomic load each on the
+happy path): at tick start, after `First`, after `EachTick`, after `Last`
+and at tick end, and after each startup phase:
 
 - a **shutdown** lets the current tick finish, `Last` included, then `run()`
   returns;
 - an **emergency stop** ends the loop at the next check: the phases left in
-  the tick are skipped. Controllers registered after the raising one in the
-  same phase still run.
+  the tick are skipped, and one raised in `Last` skips the write. There is
+  no hold. Controllers registered after the raising one in the same phase
+  still run.
+- any signal pending before `torque_on` stops the bring-up: the actuators
+  are never powered.
 
-Both are logged with their reason and, in debug builds, their call site.
-`run()` returns `Ok(())` in both cases.
+Both are logged once, at exit, with their reason and, in debug builds, their
+call site: `info` for a shutdown, `error` for an emergency stop. `run()`
+returns `Ok(())` in both cases. Ctrl-C, SIGTERM and SIGHUP raise a shutdown;
+if the process already has a handler of its own, a warning says they will
+not stop the loop.
+
+## State
+
+`RobotState` holds two parts, never reachable as fields:
+
+- **Desired**, write-only for controllers: this tick's commanded `Q`, `Qd`,
+  `Tau`, `Kp`, `Kd` and one written mask per field. The write sends only
+  what was written; Desired is cleared after it, so nothing is assumed to
+  persist from one tick to the next.
+- **History**, read-only for controllers: a ring of `HISTORY_DEPTH` samples,
+  newest first. Each tick pushes a slot that starts as a copy of the
+  previous one; the adapter overwrites what it reads, so an actuator not
+  read this tick (cadence, or a failed read) keeps its last value.
+  `prev_*(0)` is this tick's sample.
+
+The field set is sealed: `Q`, `Qd`, `Tau`, `Kp`, `Kd`, routed to their
+storage by the private `Slot` trait. The shutdown hold target is the latest
+sample overlaid with this tick's writes.
+
+As on this branch: the actuator count is the `JOINTS` constant (4, or 10
+under the `joints-10` dev feature);
+[decision 0007](decisions/0007-actuator-count-const-generic.md) makes it a
+const generic N set by `robot!` (core T021 to T030). The per-tick fault
+masks are computed and dropped; storing them per History slot, with tick
+flags and the per-actuator age, is core T036 and T044. The home state is
+still a `todo!()` (core T031).
 
 ## Robot model
 
@@ -302,8 +375,7 @@ Still open: Dynamixel velocity and current modes (`dxl_rs` cannot write the
 operating mode register, SRS section 8), one 10-byte sync read per group
 instead of three, `dxl_rs` as a pinned git dependency with a cross build in
 CI, and N as a const generic of the core. The contract and its departures
-from the SRS are argued in [decision 0002](decisions/0002-hal-contract.md),
-which predates the list of members.
+from the SRS are argued in [decision 0002](decisions/0002-hal-contract.md).
 
 ## Real-time constraints
 
@@ -312,9 +384,10 @@ The control path targets ~1 kHz and must be deterministic:
 - no heap allocation (`Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap` are banned
   by clippy in `kmr_core`);
 - no `unwrap()` in the engine;
-- fixed sizes known at compile time (joint count, history depth); whether they are
-  constants or generic parameters is argued in
-  [decision 0001](decisions/0001-joint-count-and-history-depth.md).
+- fixed sizes known at compile time: the history depth is a constant
+  ([decision 0001](decisions/0001-joint-count-and-history-depth.md)), the
+  actuator count becomes a const generic set by `robot!`
+  ([decision 0007](decisions/0007-actuator-count-const-generic.md)).
 
 ## Not a full ECS — and why that stays open
 
