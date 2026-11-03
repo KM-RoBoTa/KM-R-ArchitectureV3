@@ -497,7 +497,9 @@ impl<'a, const N: usize> Iterator for Runs<'a, N> {
     }
 }
 
-/// Per-tick fault bits set by the adapter (SRS FR-13.4).
+/// Per-actuator fault bits of one tick, kept in its History slot (SRS
+/// FR-13.4). The adapter sets the first four in `read` and `write`; the
+/// engine's limit stage sets `joint_limit` and `envelope`.
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Faults<const N: usize> {
@@ -510,6 +512,75 @@ pub struct Faults<const N: usize> {
     /// Written but not sent: torque off, field not taken by its mode, or
     /// value outside the actuator's range.
     pub rejected: Mask<N>,
+    /// A written value breached the actuator's limit (SRS FR-4.5).
+    pub joint_limit: Mask<N>,
+    /// A written value left the actuator's envelope and was clamped (SRS
+    /// FR-13.5).
+    // DECISION: D3 A (assumed, pending human): an envelope breach clamps and
+    // sets its own bit, apart from `joint_limit`.
+    pub envelope: Mask<N>,
+}
+
+impl<const N: usize> Faults<N> {
+    /// Actuators with at least one fault bit set.
+    pub fn any(&self) -> Mask<N> {
+        self.stale
+            .union(self.bus_error)
+            .union(self.offline)
+            .union(self.rejected)
+            .union(self.joint_limit)
+            .union(self.envelope)
+    }
+
+    /// Whether no bit is set.
+    pub fn is_empty(&self) -> bool {
+        self.any().is_empty()
+    }
+}
+
+/// Whole-tick flags, kept in the tick's History slot next to its [`Faults`]
+/// (SRS FR-13.4). A `u32`, one bit per flag.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct TickFlags(u32);
+
+impl TickFlags {
+    /// No flag.
+    pub const NONE: Self = Self(0);
+    /// The tick finished after its deadline (SRS FR-3.3).
+    pub const OVERRUN: Self = Self(1);
+    /// A sensor gave no reading this tick.
+    pub const SENSOR_MISSING: Self = Self(1 << 1);
+    /// A remote source fell silent past its timeout (SRS FR-13.3).
+    pub const REMOTE_TIMEOUT: Self = Self(1 << 2);
+    /// A message from an identity that is not a remote source was dropped
+    /// (SRS FR-13.2).
+    pub const UNAUTHORIZED: Self = Self(1 << 3);
+
+    /// The flags of the bits `bits`; unknown bits are kept.
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// The bits, one per flag.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Whether every flag of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The flags of `self` and of `other`.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether no flag is set.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 /// The hardware contract of one member of the robot's hardware (SRS FR-5.1,

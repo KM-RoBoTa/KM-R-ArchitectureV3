@@ -112,7 +112,7 @@
         coreDesired = component "state::desired::Desired" "This tick's commanded values and their written masks." "Rust struct, private" {
             tags "Code"
         }
-        coreHistory = component "state::history::History" "Ring of State snapshots, newest first." "Rust struct, private" {
+        coreHistory = component "state::history::History" "Ring of State snapshots, newest first, each with the tick's Faults and TickFlags in a parallel ring." "Rust struct, private" {
             tags "Code"
         }
         coreField = component "state::StateField" "The sealed field bound; sealed::Slot routes each type to its storage." "Rust trait, sealed" {
@@ -133,7 +133,7 @@
         coreIo = component "hal::Sample, Command, Batch, Written" "What a read fills and a write sends; Batch groups the written actuators in runs per Group." "Rust structs" {
             tags "Code"
         }
-        coreFaults = component "hal::Faults" "Per-actuator fault masks of one tick." "Rust struct" {
+        coreFaults = component "hal::Faults, TickFlags" "Per-actuator fault masks and whole-tick flags of one tick, kept in its History slot." "Rust structs" {
             tags "Code"
         }
         coreNoHardware = component "hal::NoHardware" "The simulating member used when no plugin is given." "Rust struct" {
@@ -180,6 +180,7 @@
     coreDrivers -> coreAudit "Records into"
     coreHalTrait -> coreIo "Reads into and writes from"
     coreHalTrait -> coreFaults "Reports into"
+    coreHistory -> coreFaults "Keeps per slot"
     coreIo -> coreMask "Flags actuators with"
     coreNoHardware -> coreHalTrait "Implements"
 }

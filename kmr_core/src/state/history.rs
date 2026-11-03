@@ -2,6 +2,7 @@ use circular_buffer::FixedCircularBuffer;
 
 use super::joint_state::{Kd, Kp, Q, Qd, Tau};
 use crate::error::StateError;
+use crate::hal::{Faults, TickFlags};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// The current state of the robot: one history slot.
@@ -63,8 +64,22 @@ impl<const N: usize> Default for State<N> {
     }
 }
 
+/// The fault bits and flags of one tick, kept next to its [`State`] slot.
+///
+/// Apart from [`State`], so the values keep their layout and a new slot
+/// starts with no flag instead of a copy of the last one.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub(crate) struct Flags<const N: usize> {
+    /// Per-actuator faults of the tick.
+    pub(crate) faults: Faults<N>,
+    /// Whole-tick flags.
+    pub(crate) tick: TickFlags,
+}
+
 #[derive(Default, Debug, PartialEq)]
 /// READ ONLY
 pub(crate) struct History<const N: usize, const DEPTH: usize> {
     pub(in crate::state) buf: FixedCircularBuffer<State<N>, DEPTH>,
+    /// One entry per slot of `buf`, pushed with it.
+    pub(in crate::state) flags: FixedCircularBuffer<Flags<N>, DEPTH>,
 }

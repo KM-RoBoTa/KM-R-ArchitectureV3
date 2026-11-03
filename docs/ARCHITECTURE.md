@@ -280,9 +280,16 @@ sample overlaid with this tick's writes.
 The actuator count is a const generic N set by `robot!`
 ([decision 0007](decisions/0007-actuator-count-const-generic.md)): `RobotState<N>`,
 `Robot<N, CS, E>`, `Hal<N>`, `Mask<N>`, one word of mask, `MASK_WORDS = 1`, so
-N runs from 1 to 64. The per-tick fault
-masks are computed and dropped; storing them per History slot, with tick
-flags, is core T044. The home state is `StateError::Undecided` (core T031).
+N runs from 1 to 64.
+
+**Faults and tick flags.** Each History slot carries, next to its sample, the
+tick's per-actuator `Faults` (`stale`, `bus_error`, `offline`, `rejected` from
+the adapter, `joint_limit` and `envelope` from the limit stage) and its
+`TickFlags` (`OVERRUN`, `SENSOR_MISSING`, `REMOTE_TIMEOUT`, `UNAUTHORIZED`).
+A new slot starts with none set. `faults(depth)` and `tick_flags(depth)` read
+them; controllers cannot set or clear one. `read` faults show at depth 0 from
+`First` on; `write` and limit faults, and `OVERRUN`, at depth 1 on the next
+tick. The home state is `StateError::Undecided` (core T031).
 
 ## Robot model
 

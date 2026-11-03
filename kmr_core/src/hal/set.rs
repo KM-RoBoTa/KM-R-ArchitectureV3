@@ -437,12 +437,14 @@ fn row<const N: usize>(
 
 /// The fault bits of `actuator`.
 #[cfg(debug_assertions)]
-fn fault_row<const N: usize>(faults: &Faults<N>, actuator: usize) -> [bool; 4] {
+fn fault_row<const N: usize>(faults: &Faults<N>, actuator: usize) -> [bool; 6] {
     [
         faults.stale.get(actuator),
         faults.bus_error.get(actuator),
         faults.offline.get(actuator),
         faults.rejected.get(actuator),
+        faults.joint_limit.get(actuator),
+        faults.envelope.get(actuator),
     ]
 }
 

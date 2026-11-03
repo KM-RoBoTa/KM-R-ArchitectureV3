@@ -302,6 +302,11 @@ pub struct Recorder<'a, const N: usize> {
     pub every: NonZeroU32,
     /// The fault bits each `read` reports.
     pub faults: Faults<N>,
+    /// Only read call `k` reports `faults`, when `Some(k)`; every one when
+    /// `None`.
+    pub faults_on: Option<u32>,
+    /// The fault bits each `write` adds.
+    pub write_faults: Faults<N>,
     /// Calls to `read` so far: call `k` refreshes the owned actuators when
     /// `k` is a multiple of `every`, none otherwise.
     pub reads: u32,
@@ -316,6 +321,8 @@ impl<'a, const N: usize> Recorder<'a, N> {
             owned: Mask::ALL,
             every: NonZeroU32::MIN,
             faults: Faults::default(),
+            faults_on: None,
+            write_faults: Faults::default(),
             reads: 0,
         }
     }
@@ -399,14 +406,21 @@ impl<const N: usize> Hal<N> for Recorder<'_, N> {
         if let Some(first) = sample.q.first_mut() {
             *first = *first + Q(1.0);
         }
-        *faults = self.faults;
+        if self.faults_on.is_none_or(|on| on == self.reads) {
+            *faults = self.faults;
+        }
         let due = self.reads.is_multiple_of(self.every.get());
         self.reads = self.reads.wrapping_add(1);
         if due { self.owned } else { Mask::NONE }
     }
 
-    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, _faults: &mut Faults<N>) {
+    fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
         self.log.push(Call::Write);
+        let mine = self.write_faults;
+        faults.stale = faults.stale.union(mine.stale);
+        faults.bus_error = faults.bus_error.union(mine.bus_error);
+        faults.offline = faults.offline.union(mine.offline);
+        faults.rejected = faults.rejected.union(mine.rejected);
         let mut actuators = Mask::NONE;
         for &actuator in batch.runs().flat_map(|(_group, run)| run) {
             actuators.set(actuator);

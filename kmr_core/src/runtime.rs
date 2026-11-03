@@ -26,7 +26,7 @@ use tracing::{error, info, trace, warn};
 
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
-use crate::hal::{Audit, Batch, Drivers, Faults, HardwareError, Layout, Overrides, Plan, Step};
+use crate::hal::{Audit, Batch, Drivers, HardwareError, Layout, Overrides, Plan, Step};
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::RobotState;
@@ -394,11 +394,10 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
         }
         robot.config.time.begin_tick(host.now());
 
-        // Dropped until the per-slot fault flags land (SRS FR-13.4).
-        let mut faults = Faults::default();
+        // The faults go to the new slot, where controllers read them (SRS FR-13.4).
         let mut audit = Audit::default();
-        if let Some(sample) = state.push_slot() {
-            let read = hal.read(sample, &mut faults, layout.slots(), &mut audit);
+        if let Some((sample, faults)) = state.push_tick() {
+            let read = hal.read(sample, faults, layout.slots(), &mut audit);
             state.refreshed(read);
         }
         if let Some(signal) = stray_stop(&mut audit) {
@@ -423,6 +422,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 
         let mut batch = Batch::new(layout, state.written());
         if !batch.is_empty() {
+            let mut faults = state.faults_mut().map(|f| *f).unwrap_or_default();
             hal.write(
                 state.command(),
                 &mut batch,
@@ -430,6 +430,9 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
                 layout.slots(),
                 &mut audit,
             );
+            if let Some(slot) = state.faults_mut() {
+                *slot = faults;
+            }
         }
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
@@ -2043,6 +2046,106 @@ mod tests {
                 assert_eq!(seen.steps.get(), 6, "up to read_all, no torque_on");
                 assert!(seen.torque_off.get() && seen.closed.get());
             }
+        }
+    }
+
+    /// The per-slot faults and tick flags (SRS FR-13.4).
+    mod per_slot_flags {
+        use super::*;
+        use crate::hal::TickFlags;
+
+        /// What a `First` controller saw on one tick.
+        #[derive(Clone, Copy, Debug, Default, PartialEq)]
+        struct Seen {
+            now: Faults<N>,
+            before: Option<Faults<N>>,
+            flags_before: Option<TickFlags>,
+        }
+
+        /// The mask of `indices`.
+        fn mask(indices: &[usize]) -> Mask<N> {
+            let mut mask = Mask::NONE;
+            for &index in indices {
+                mask.set(index);
+            }
+            mask
+        }
+
+        /// Runs `ticks` ticks of a robot writing actuator 1 on tick 0, on
+        /// `recorder` and `host`; what `First` saw on each tick.
+        fn run<const T: usize>(recorder: Recorder<'_, N>, host: Scripted) -> [Seen; T] {
+            let seen = RefCell::new([Seen::default(); T]);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::First,
+                |time: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                    let tick = usize::try_from(time.tick()).expect("small");
+                    if let Some(slot) = seen.borrow_mut().get_mut(tick) {
+                        *slot = Seen {
+                            now: *state.faults(0).expect("this tick's slot"),
+                            before: state.faults(1).ok().copied(),
+                            flags_before: state.tick_flags(1).ok(),
+                        };
+                    }
+                    if tick == 0 {
+                        state.set_at(Q(1.0), 1).expect("in range");
+                    }
+                },
+            );
+            let mut host = host.shutdown_from(TICK_END + (T - 1) * PER_TICK);
+            let result = run_with(&mut robot, &mut host, &mut one(recorder));
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            seen.into_inner()
+        }
+
+        #[test]
+        fn sc_006_a_fault_shows_in_its_ticks_slot_at_depth_0_then_1() {
+            let log = Log::new();
+            let mut faults = Faults::default();
+            faults.stale.set(2);
+            let mut write_faults = Faults::default();
+            write_faults.rejected.set(1);
+            let recorder = Recorder {
+                faults,
+                faults_on: Some(1),
+                write_faults,
+                ..Recorder::new(&log)
+            };
+
+            let seen = run::<3>(recorder, Scripted::new(Instant::now()));
+
+            assert_eq!(
+                seen.map(|s| s.now.stale),
+                [mask(&[]), mask(&[2]), mask(&[])]
+            );
+            assert_eq!(seen[2].before.map(|f| f.stale), Some(mask(&[2])));
+            // The write of tick 0 reads at depth 1 on tick 1, never at depth 0.
+            assert_eq!(seen[0].now.rejected, Mask::NONE);
+            assert_eq!(seen[1].before.map(|f| f.rejected), Some(mask(&[1])));
+            assert_eq!(seen[1].now.rejected, Mask::NONE);
+        }
+
+        #[test]
+        fn a_new_slot_starts_without_a_fault() {
+            let log = Log::new();
+            let mut faults = Faults::default();
+            faults.offline.set(0);
+            let recorder = Recorder {
+                faults,
+                faults_on: Some(0),
+                ..Recorder::new(&log)
+            };
+
+            let seen = run::<3>(recorder, Scripted::new(Instant::now()));
+
+            assert_eq!(seen.map(|s| s.now.is_empty()), [false, true, true]);
+            assert_eq!(seen[0].flags_before, Some(TickFlags::NONE));
+        }
+
+        #[test]
+        fn a_depth_past_the_history_is_an_error() {
+            let state = RobotState::<N>::default();
+            assert!(state.faults(0).is_err());
+            assert!(state.tick_flags(crate::HISTORY_DEPTH).is_err());
         }
     }
 }

@@ -3,13 +3,13 @@ use core::num::NonZeroU32;
 use super::HISTORY_DEPTH;
 use super::desired::Desired;
 use super::field::{StateField, sealed};
-use super::history::History;
 #[cfg(feature = "test-util")]
 use super::history::State;
+use super::history::{Flags, History};
 #[cfg(feature = "test-util")]
 use super::joint_state::{Q, Qd, Tau};
 use crate::error::StateError;
-use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
+use crate::hal::{Command, Faults, HoldTarget, Mask, Sample, TickFlags, Written};
 
 /// The robot state abstraction.
 ///
@@ -171,6 +171,30 @@ impl<const N: usize> RobotState<N> {
             })
     }
 
+    /// The fault bits of the tick `history_depth` back (0 = this tick). A
+    /// tick's `read` faults show at depth 0 from `First` on; its `write` and
+    /// limit faults from the next tick on, at depth 1 (SRS FR-13.4).
+    pub fn faults(&self, history_depth: usize) -> Result<&Faults<N>, StateError> {
+        self.flags(history_depth).map(|flags| &flags.faults)
+    }
+
+    /// The whole-tick flags of the tick `history_depth` back (0 = this
+    /// tick). `OVERRUN` is set once the tick ended, so it reads at depth 1.
+    pub fn tick_flags(&self, history_depth: usize) -> Result<TickFlags, StateError> {
+        self.flags(history_depth).map(|flags| flags.tick)
+    }
+
+    /// The flags of the slot `history_depth` back.
+    fn flags(&self, history_depth: usize) -> Result<&Flags<N>, StateError> {
+        self.history
+            .flags
+            .nth_back(history_depth)
+            .ok_or(StateError::HistoryValueOutOfRange {
+                provided_depth: history_depth,
+                max_depth: self.history.flags.len().saturating_sub(1),
+            })
+    }
+
     /// Read cadence of actuator `index`: it is read every `cadence` ticks.
     /// Set by the adapter at bring-up, read-only here.
     pub fn cadence(&self, index: usize) -> Result<NonZeroU32, StateError> {
@@ -214,6 +238,12 @@ impl<const N: usize> RobotState<N> {
     /// adapter: what it does not read keeps its last value (SRS FR-2.6). Every
     /// sampled actuator ages one tick.
     pub(crate) fn push_slot(&mut self) -> Option<Sample<'_, N>> {
+        self.push_tick().map(|(sample, _faults)| sample)
+    }
+
+    /// [`Self::push_slot`], plus the new slot's faults, empty, for `read` to
+    /// fill.
+    pub(crate) fn push_tick(&mut self) -> Option<(Sample<'_, N>, &mut Faults<N>)> {
         for (age, held) in self.age.iter_mut().zip(&mut self.sampled) {
             if *held > 0 {
                 *age = age.saturating_add(1);
@@ -222,14 +252,31 @@ impl<const N: usize> RobotState<N> {
         }
         let next = self.history.buf.back().copied().unwrap_or_default();
         self.history.buf.push_back(next);
+        self.history.flags.push_back(Flags::default());
         let slot = self.history.buf.back_mut()?; // None only with a depth of 0
-        Some(Sample::new(
-            &mut slot.q,
-            &mut slot.qd,
-            &mut slot.tau,
-            &mut slot.kp,
-            &mut slot.kd,
+        let flags = self.history.flags.back_mut()?;
+        Some((
+            Sample::new(
+                &mut slot.q,
+                &mut slot.qd,
+                &mut slot.tau,
+                &mut slot.kp,
+                &mut slot.kd,
+            ),
+            &mut flags.faults,
         ))
+    }
+
+    /// The newest slot's faults, for the limit stage and `write`.
+    pub(crate) fn faults_mut(&mut self) -> Option<&mut Faults<N>> {
+        self.history.flags.back_mut().map(|flags| &mut flags.faults)
+    }
+
+    /// Sets `flags` in the newest slot.
+    pub(crate) fn raise(&mut self, flags: TickFlags) {
+        if let Some(slot) = self.history.flags.back_mut() {
+            slot.tick = slot.tick.union(flags);
+        }
     }
 
     /// The actuators of `read` were refreshed in the newest slot: age 0.
