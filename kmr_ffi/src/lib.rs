@@ -23,6 +23,7 @@
 #![deny(clippy::panic, clippy::indexing_slicing)]
 #![warn(missing_docs)]
 
+mod call;
 mod fields;
 mod view;
 
@@ -30,4 +31,5 @@ mod view;
 #[cfg(any(feature = "build", test))]
 pub mod build;
 
+pub use call::{CFn, Foreign, ForeignError, Status, call};
 pub use view::{AGE_NONE, ActuatorFlags, Mask, ReadView, Slot, TimeView, WriteBuf, Written};
