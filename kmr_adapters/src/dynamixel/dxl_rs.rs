@@ -26,7 +26,7 @@ use tracing::warn;
 use super::backend::{
     Backend, BackendError, GoalRegister, Health, OpenFailure, PortSpec, RawState, Setting, Wire,
 };
-use super::config::{Model, Protocol};
+use super::config::{HealthLimits, Model, Protocol};
 
 /// Ports one process can drive.
 const MAX_PORTS: usize = 4;
@@ -795,6 +795,21 @@ impl<const N: usize> Backend for DxlRs<N> {
             | Model::Xw540T140
             | Model::Xw540T260 => Err(BackendError::NoAngleLimits),
         }
+    }
+
+    /// Unsupported: `dxl_rs` has no public register write, and its C SDK
+    /// bindings are crate-private.
+    fn write_health_limits(
+        &mut self,
+        port: usize,
+        _model: Model,
+        _id: u8,
+        _limits: HealthLimits,
+    ) -> Result<(), BackendError> {
+        self.number(port)?;
+        Err(BackendError::Unsupported {
+            operation: "writing the health limit registers",
+        })
     }
 
     fn close_ports(&mut self) {

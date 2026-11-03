@@ -672,6 +672,24 @@ const fn actuator_mut(actuators: &mut [Actuator], index: usize) -> &mut Actuator
     }
 }
 
+/// Health limits an actuator holds in its own control table (EEPROM),
+/// written at bring-up when a [`Placement`] sets them, then checked by the
+/// health step (D18; FR-006 (SRS FR-5.2)).
+///
+/// Integers at the registers' resolution, the unit in each name: 0.1 V and
+/// °C, so what is written is what is read back.
+// DECISION: register units, not volts as f32: the write must read back
+// equal, and a float would round on the way to the 0.1 V register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealthLimits {
+    /// Min Voltage Limit, in 0.1 V: 95 is 9.5 V.
+    pub min_voltage_dv: u16,
+    /// Max Voltage Limit, in 0.1 V.
+    pub max_voltage_dv: u16,
+    /// Temperature Limit, in °C.
+    pub temperature_c: u8,
+}
+
 /// A checked [`Table`] placed in the robot: the engine index of each of its
 /// actuators, in table order. The Dynamixel member owns these indices and no
 /// other (SRS FR-5.1). Built through [`Table::at`] or [`Table::in_order`].
@@ -682,6 +700,9 @@ pub struct Placement<const NB: usize, const M: usize> {
     /// Engine index of each actuator of `table`, distinct, below the
     /// write mask's `64 * MASK_WORDS`.
     pub(crate) at: [usize; M],
+    /// Health limits written to each actuator of `table` at bring-up;
+    /// `None` leaves its registers as they are.
+    pub(crate) limits: [Option<HealthLimits>; M],
 }
 
 impl<const NB: usize, const M: usize> Placement<NB, M> {
@@ -693,6 +714,12 @@ impl<const NB: usize, const M: usize> Placement<NB, M> {
     /// Engine index of each actuator of the table, in table order.
     pub const fn indices(&self) -> &[usize; M] {
         &self.at
+    }
+
+    /// Health limits written to each actuator of the table at bring-up, in
+    /// table order; `None` leaves its registers as they are.
+    pub const fn limits(&self) -> &[Option<HealthLimits>; M] {
+        &self.limits
     }
 
     /// The placement, refused when the model marks prismatic an engine index
@@ -709,6 +736,100 @@ impl<const NB: usize, const M: usize> Placement<NB, M> {
             refuse_prismatic(self.at[row], &prismatic);
             row += 1;
         }
+        self
+    }
+
+    /// The placement, every actuator of its table given `limits` (D18): at
+    /// bring-up, torque off, the adapter writes them to the actuator's
+    /// Min Voltage Limit, Max Voltage Limit and Temperature Limit, reads
+    /// them back, and the health check holds the actuator to them.
+    ///
+    /// # Panics
+    ///
+    /// On limits an actuator cannot hold, see
+    /// [`Placement::health_limits_of`]; in const evaluation, that is the
+    /// compile error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kmr_adapters::dynamixel::{Actuator, Bus, HealthLimits, Mode, Model, Table, Torque, Zero};
+    ///
+    /// const ARM: Table<1, 1> = Table {
+    ///     buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+    ///     actuators: [Actuator {
+    ///         bus: 0,
+    ///         id: 1,
+    ///         model: Model::Xm430W210,
+    ///         mode: Mode::Position,
+    ///         torque: Torque::On,
+    ///         zero: Zero::DEFAULT,
+    ///     }],
+    /// };
+    /// const LIMITS: HealthLimits = HealthLimits {
+    ///     min_voltage_dv: 100,
+    ///     max_voltage_dv: 140,
+    ///     temperature_c: 70,
+    /// };
+    /// let _placed = ARM.at([0]).health_limits(LIMITS);
+    /// ```
+    pub const fn health_limits(mut self, limits: HealthLimits) -> Self {
+        let mut row = 0;
+        while row < M {
+            self = self.health_limits_of(row, limits);
+            row += 1;
+        }
+        self
+    }
+
+    /// The placement, actuator `row` of its table given `limits` (D18), as
+    /// [`Placement::health_limits`] does for every row.
+    ///
+    /// # Panics
+    ///
+    /// On a row past the table, a Min Voltage Limit above the Max, and on
+    /// Protocol 1, whose limit registers are one byte, a voltage above 255;
+    /// in const evaluation, that is the compile error.
+    ///
+    /// ```compile_fail
+    /// use kmr_adapters::dynamixel::{
+    ///     Actuator, Bus, HealthLimits, Mode, Model, Placement, Table, Torque, Zero,
+    /// };
+    ///
+    /// const RX: Table<1, 1> = Table {
+    ///     buses: [Bus { label: "rx", baud: 1_000_000, read_every: None }],
+    ///     actuators: [Actuator {
+    ///         bus: 0,
+    ///         id: 1,
+    ///         model: Model::Rx28,
+    ///         mode: Mode::Position,
+    ///         torque: Torque::On,
+    ///         zero: Zero::DEFAULT,
+    ///     }],
+    /// };
+    /// // 30.0 V does not fit the RX-28's one-byte register.
+    /// const _: Placement<1, 1> = RX.in_order().health_limits_of(
+    ///     0,
+    ///     HealthLimits { min_voltage_dv: 60, max_voltage_dv: 300, temperature_c: 80 },
+    /// );
+    /// ```
+    // DECISION: Protocol 1 takes limits too: its AX, RX and MX control
+    // tables hold them at 11 to 13, one byte each.
+    pub const fn health_limits_of(mut self, row: usize, limits: HealthLimits) -> Self {
+        if row >= M {
+            fail(Message::actuator(row).text("health limits for a row past the table"));
+        }
+        if limits.min_voltage_dv > limits.max_voltage_dv {
+            fail(Message::actuator(row).text("Min Voltage Limit above Max Voltage Limit"));
+        }
+        let one_byte = limits.max_voltage_dv <= u8::MAX as u16;
+        if matches!(self.table.actuators[row].model.protocol(), Protocol::One) && !one_byte {
+            fail(
+                Message::actuator(row)
+                    .text("Protocol 1 voltage limits are one byte, at most 255 (25.5 V)"),
+            );
+        }
+        self.limits[row] = Some(limits);
         self
     }
 }
@@ -876,7 +997,11 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
             index += 1;
             rest = later;
         }
-        Placement { table, at }
+        Placement {
+            table,
+            at,
+            limits: [None; M],
+        }
     }
 
     /// The table checked by [`Table::check`], actuator `k` at engine index
@@ -905,19 +1030,28 @@ pub(crate) struct Placed<const N: usize> {
     slots: [Option<Actuator>; N],
     /// The first table row placed at an index past `N`, and that index.
     past: Option<(usize, usize)>,
+    /// Health limits to write at each engine index.
+    limits: [Option<HealthLimits>; N],
 }
 
 impl<const N: usize> Placed<N> {
     /// The actuators of `placement`, each at its engine index.
     pub(crate) const fn new<const NB: usize, const M: usize>(placement: &Placement<NB, M>) -> Self {
         let mut slots = [None; N];
+        let mut limits = [None; N];
         let mut past = None;
         let mut row = 0;
         let mut rest: &[Actuator] = &placement.table.actuators;
         let mut at: &[usize] = &placement.at;
         while let ([actuator, more @ ..], [index, later @ ..]) = (rest, at) {
-            match slots.split_at_mut_checked(*index) {
-                Some((_, [slot, ..])) => *slot = Some(*actuator),
+            match (
+                slots.split_at_mut_checked(*index),
+                limits.split_at_mut_checked(*index),
+            ) {
+                (Some((_, [slot, ..])), Some((_, [limit, ..]))) => {
+                    *slot = Some(*actuator);
+                    *limit = placement.limits[row];
+                }
                 _ => {
                     if past.is_none() {
                         past = Some((row, *index));
@@ -928,7 +1062,16 @@ impl<const N: usize> Placed<N> {
             rest = more;
             at = later;
         }
-        Self { slots, past }
+        Self {
+            slots,
+            past,
+            limits,
+        }
+    }
+
+    /// Health limits to write to the actuator at engine index `index`.
+    pub(crate) fn limits(&self, index: usize) -> Option<HealthLimits> {
+        self.limits.get(index).copied().flatten()
     }
 
     /// The first table row placed past the robot's `N` actuators, and its

@@ -34,8 +34,8 @@ use port::DevicePath;
 pub use self::dxl_rs::DxlRs;
 use config::Placed;
 pub use config::{
-    Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Protocol, Series, Table, Torque,
-    Zero,
+    Actuator, Bus, DEFAULT_READ_EVERY, HealthLimits, Mode, Model, Placement, Protocol, Series,
+    Table, Torque, Zero,
 };
 pub(crate) use config::{Message, fail, position, same};
 
@@ -247,6 +247,41 @@ pub enum DynamixelError {
         measured_c: u8,
         /// The actuator's Temperature Limit, in °C.
         limit_c: u8,
+    },
+    /// Health limits set for an actuator whose torque is on: its EEPROM
+    /// takes no write then (Protocol 2).
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: torque on, its health limits are not written; switch it off first"
+    )]
+    LimitsTorqueOn {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+    },
+    /// The health limits read back are not the ones written.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: health limits read back {}–{} V, {} °C, written {}–{} V, {} °C",
+        Volts(.read.min_voltage_dv),
+        Volts(.read.max_voltage_dv),
+        .read.temperature_c,
+        Volts(.written.min_voltage_dv),
+        Volts(.written.max_voltage_dv),
+        .written.temperature_c
+    )]
+    LimitsMismatch {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Limits written.
+        written: HealthLimits,
+        /// Limits read back.
+        read: HealthLimits,
     },
     /// The actuator reports a hardware error (Protocol 2).
     #[error(
@@ -868,18 +903,61 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         Ok(())
     }
 
-    /// Reads every actuator's voltage and temperature and checks them
+    /// Writes the health limits its [`Placement`] sets for an actuator, then
+    /// reads every actuator's voltage and temperature and checks them
     /// against the limits it holds in its own control table, and on
     /// Protocol 2 its Hardware Error Status. Inside those limits but outside
     /// the model's datasheet range is one warning per value, no error.
+    ///
+    /// Limits are written with the torque off and read back equal, else the
+    /// error names both (D18).
     fn health(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (model, id) = (actuator.model, actuator.id);
+            let written = self.actuators.limits(index);
+            if let Some(limits) = written {
+                // DECISION: an actuator found powered is refused, never
+                // switched off here: it may be holding a load, and cutting
+                // torque is the loop's safety call, not the bring-up's.
+                // Protocol 1 has no torque read and no EEPROM lock.
+                if model.protocol() == Protocol::Two {
+                    let on = self
+                        .backend
+                        .read_setting(actuator.bus, model, id, Setting::TorqueEnable)
+                        .map_err(|error| self.actuator_error(index, error))?;
+                    if on != 0 {
+                        return Err(DynamixelError::LimitsTorqueOn {
+                            actuator: index,
+                            bus: self.label(actuator.bus),
+                            id,
+                        });
+                    }
+                }
+                self.backend
+                    .write_health_limits(actuator.bus, model, id, limits)
+                    .map_err(|error| self.actuator_error(index, error))?;
+            }
             let health = self
                 .backend
                 .read_health(actuator.bus, model, id)
                 .map_err(|error| self.actuator_error(index, error))?;
             let bus = self.label(actuator.bus);
+            let read = HealthLimits {
+                min_voltage_dv: health.min_voltage_dv,
+                max_voltage_dv: health.max_voltage_dv,
+                temperature_c: health.temperature_limit_c,
+            };
+            if let Some(written) = written
+                && written != read
+            {
+                return Err(DynamixelError::LimitsMismatch {
+                    actuator: index,
+                    bus,
+                    id,
+                    written,
+                    read,
+                });
+            }
             if model.protocol() == Protocol::Two && health.error_status != 0 {
                 return Err(DynamixelError::HardwareError {
                     actuator: index,

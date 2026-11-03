@@ -7,7 +7,7 @@ use core::fmt;
 use std::io::ErrorKind;
 use std::path::Path;
 
-use super::config::Model;
+use super::config::{HealthLimits, Model, Protocol};
 
 /// Why a backend call failed: one variant per cause, with its data. `Io`
 /// is a failed serial transaction, nothing else.
@@ -187,6 +187,12 @@ pub(crate) enum BackendError {
         /// ROBOTIS name of the register.
         register: &'static str,
     },
+    /// What the SDK offers no call for.
+    #[error("{operation}: the SDK offers no call for it")]
+    Unsupported {
+        /// What was asked.
+        operation: &'static str,
+    },
     /// A register value wider than the type it is read into.
     #[error("{register} read {value}, wider than the register")]
     Overflow {
@@ -269,6 +275,80 @@ pub(crate) struct Health {
     pub(crate) max_voltage_dv: u16,
     /// Temperature Limit, in °C.
     pub(crate) temperature_limit_c: u8,
+}
+
+/// Address and width of one register.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+    )
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Register {
+    /// Address in the control table.
+    pub(crate) address: u16,
+    /// Width, in bytes.
+    pub(crate) size: u16,
+}
+
+/// The three health limit registers of a model, all EEPROM: written with
+/// the torque off only on Protocol 2.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+    )
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LimitRegisters {
+    /// Temperature Limit; Highest Limit Temperature on Protocol 1.
+    pub(crate) temperature: Register,
+    /// Min Voltage Limit; Lowest Limit Voltage on Protocol 1.
+    pub(crate) min_voltage: Register,
+    /// Max Voltage Limit; Highest Limit Voltage on Protocol 1.
+    pub(crate) max_voltage: Register,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+    )
+)]
+impl LimitRegisters {
+    /// The registers of `model`: AX, RX and Protocol 1 MX at 11, 12 and 13,
+    /// one byte each; X series and MX(2.0) at 31, 34 and 32, the voltages
+    /// two bytes (ROBOTIS e-Manual).
+    pub(crate) const fn of(model: Model) -> Self {
+        const fn at(address: u16, size: u16) -> Register {
+            Register { address, size }
+        }
+        match model.protocol() {
+            Protocol::One => Self {
+                temperature: at(11, 1),
+                min_voltage: at(12, 1),
+                max_voltage: at(13, 1),
+            },
+            Protocol::Two => Self {
+                temperature: at(31, 1),
+                min_voltage: at(34, 2),
+                max_voltage: at(32, 2),
+            },
+        }
+    }
+
+    /// Whether every value of `limits` fits its register.
+    pub(crate) const fn fit(self, limits: HealthLimits) -> bool {
+        const fn fits(register: Register, value: u16) -> bool {
+            register.size >= 2 || value <= u8::MAX as u16
+        }
+        fits(self.min_voltage, limits.min_voltage_dv)
+            && fits(self.max_voltage, limits.max_voltage_dv)
+    }
 }
 
 /// A one-byte register checked at bring-up.
@@ -434,6 +514,17 @@ pub(crate) trait Backend {
     /// Error status, voltage and temperature of one actuator, and its
     /// voltage and temperature limits.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError>;
+
+    /// Writes the Min and Max Voltage Limit and the Temperature Limit of one
+    /// actuator ([`LimitRegisters`]). On Protocol 2 the actuator refuses it
+    /// while its torque is on; reading them back is `read_health`.
+    fn write_health_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        limits: HealthLimits,
+    ) -> Result<(), BackendError>;
 
     /// CW and CCW Angle Limit of one Protocol 1 actuator, raw: both 0 is
     /// wheel mode, anything else joint mode, its goals in `cw..=ccw`.

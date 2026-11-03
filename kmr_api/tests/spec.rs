@@ -327,3 +327,54 @@ mod mixed_brands {
         assert!(__Spec::bind(&PLUGINS).is_ok());
     }
 }
+
+mod health_limits {
+    use kmr_api::dynamixel::{Actuator, Bus, HealthLimits, Mode, Model, Table, Torque, Zero};
+
+    const fn xm430(id: u8) -> Actuator {
+        Actuator {
+            bus: 0,
+            id,
+            model: Model::Xm430W210,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::DEFAULT,
+        }
+    }
+
+    /// Four XM430 on one bus.
+    const ARM: Table<1, 4> = Table {
+        buses: [Bus {
+            label: "arm",
+            baud: 1_000_000,
+            read_every: None,
+        }],
+        actuators: [xm430(1), xm430(2), xm430(3), xm430(4)],
+    };
+
+    /// Limits for every actuator.
+    const LIMITS: HealthLimits = HealthLimits {
+        min_voltage_dv: 100,
+        max_voltage_dv: 140,
+        temperature_c: 70,
+    };
+
+    /// A tighter temperature for the last row.
+    const COOL: HealthLimits = HealthLimits {
+        temperature_c: 60,
+        ..LIMITS
+    };
+
+    kmr_api::robot!(
+        model = "tests/fixtures/four_dxl.urdf",
+        hardware = { dynamixel: ARM.in_order().health_limits(LIMITS).health_limits_of(3, COOL) }
+    );
+
+    #[test]
+    fn the_part_carries_its_health_limits_through_robot() {
+        assert_eq!(
+            __hardware::dynamixel::__PART.limits(),
+            &[Some(LIMITS), Some(LIMITS), Some(LIMITS), Some(COOL)]
+        );
+    }
+}

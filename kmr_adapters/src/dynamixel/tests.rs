@@ -29,11 +29,11 @@ use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
-use super::scripted::{Call, HEALTHY, Record, Scripted};
+use super::scripted::{self, Call, HEALTHY, Record, Scripted};
 use super::{
-    Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Mode, Model, PING_ATTEMPTS,
-    Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero, declared_costs,
-    io as tick, port, units,
+    Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, HealthLimits, Mode, Model,
+    PING_ATTEMPTS, Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero,
+    declared_costs, io as tick, port, units,
 };
 use crate::binding::{Binding, Port};
 use crate::presets::{Rx28Chain, XmBench};
@@ -1305,7 +1305,14 @@ fn torque_on_zeroes_goal_velocity_and_goal_current() -> Result<(), DynamixelErro
     table.actuators[1].mode = Mode::Velocity;
     table.actuators[2].mode = Mode::Current;
     let at = core::array::from_fn(|index| index);
-    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), Placement { table, at });
+    let mut adapter = Dynamixel::<_, _, N>::new(
+        Scripted::new(),
+        Placement {
+            table,
+            at,
+            limits: [None; N],
+        },
+    );
     adapter
         .backend
         .left_goal(0, id(1), GoalRegister::Velocity, 120)
@@ -3859,4 +3866,224 @@ fn ten_thousand_read_and_write_ticks_allocate_nothing() -> Result<(), DynamixelE
     assert!(adapter.backend.count(Call::ReadPosition) >= TICKS);
     assert!(adapter.backend.count(Call::SyncWriteGoal) >= 2 * TICKS);
     Ok(())
+}
+
+// ── T070: health limits written through the placement (D18) ─────────────────
+
+/// Limits other than the scripted actuators' own 6.0–19.0 V and 80 °C.
+const LIMITS: HealthLimits = HealthLimits {
+    min_voltage_dv: 100,
+    max_voltage_dv: 140,
+    temperature_c: 70,
+};
+
+/// An adapter for `table` in order, every actuator given [`LIMITS`], its
+/// scripted ports open and its claim made.
+fn limited_rig<const NB: usize>(table: Table<NB, N>) -> Dynamixel<Scripted, NB, N> {
+    let placement = table.in_order().health_limits(LIMITS);
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+    adapter.check(Overrides::default()).unwrap();
+    mark_open(&mut adapter);
+    adapter
+}
+
+/// The limits `health` reads back from `adapter`'s actuator `index`.
+fn held<const NB: usize>(adapter: &Dynamixel<Scripted, NB, N>, index: usize) -> HealthLimits {
+    let actuator = adapter.actuators.get(index).unwrap();
+    adapter.backend.limits(actuator.bus, actuator.id).unwrap()
+}
+
+#[test]
+fn limits_are_written_torque_off_then_read_back_by_health() -> Result<(), DynamixelError> {
+    let mut adapter = limited_rig(X_TABLE);
+
+    adapter.health()?;
+
+    for index in 0..N {
+        assert_eq!(held(&adapter, index), LIMITS);
+        assert!(!adapter.backend.torqued(0, id(index)));
+    }
+    let order = adapter
+        .backend
+        .calls()
+        .iter()
+        .map(|record| (record.call, record.id));
+    let expected = (0..N).flat_map(|index| {
+        [Call::ReadSetting, Call::WriteHealthLimits, Call::ReadHealth].map(|call| (call, id(index)))
+    });
+    assert!(order.eq(expected));
+    Ok(())
+}
+
+#[test]
+fn health_holds_an_actuator_to_the_limits_written() {
+    let mut adapter = limited_rig(X_TABLE);
+    adapter.backend.health(
+        0,
+        id(2),
+        Health {
+            voltage_dv: 150,
+            ..HEALTHY
+        },
+    );
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Voltage {
+            actuator: 2,
+            bus: "x",
+            id: id(2),
+            measured_dv: 150,
+            min_dv: LIMITS.min_voltage_dv,
+            max_dv: LIMITS.max_voltage_dv,
+        })
+    );
+}
+
+#[test]
+fn a_limit_read_back_other_than_written_is_an_error_naming_both() {
+    let mut adapter = limited_rig(X_TABLE);
+    adapter.backend.stuck_limits(0, id(1));
+
+    let error = adapter.health().unwrap_err();
+
+    assert_eq!(
+        error,
+        DynamixelError::LimitsMismatch {
+            actuator: 1,
+            bus: "x",
+            id: id(1),
+            written: LIMITS,
+            read: HealthLimits {
+                min_voltage_dv: 60,
+                max_voltage_dv: 190,
+                temperature_c: 80,
+            },
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "actuator 1: id 2 on bus x: health limits read back 6.0–19.0 V, 80 °C, written 10.0–14.0 V, 70 °C"
+    );
+}
+
+#[test]
+fn limits_for_a_powered_actuator_are_refused_and_its_torque_left_alone() {
+    let mut adapter = limited_rig(X_TABLE);
+    adapter.backend.already_on(0, id(0));
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::LimitsTorqueOn {
+            actuator: 0,
+            bus: "x",
+            id: id(0),
+        })
+    );
+    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 0);
+    assert_eq!(adapter.backend.count(Call::ForceTorqueOff), 0);
+    assert!(adapter.backend.torqued(0, id(0)));
+}
+
+#[test]
+fn protocol_1_limits_are_written_with_no_torque_read() -> Result<(), DynamixelError> {
+    let mut adapter = limited_rig(AX_TABLE);
+
+    adapter.health()?;
+
+    assert_eq!(adapter.backend.count(Call::ReadSetting), 0);
+    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), N);
+    for index in 0..N {
+        assert_eq!(held(&adapter, index), LIMITS);
+    }
+    Ok(())
+}
+
+#[test]
+fn no_limits_set_writes_none() -> Result<(), DynamixelError> {
+    let mut adapter = rig(MIX_TABLE);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.health()?;
+
+    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 0);
+    assert_eq!(adapter.backend.count(Call::ReadSetting), 0);
+    Ok(())
+}
+
+#[test]
+fn limits_of_one_row_reach_that_actuator_only() -> Result<(), DynamixelError> {
+    let placement = X_TABLE.at([3, 2, 1, 0]).health_limits_of(1, LIMITS);
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.health()?;
+
+    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 1);
+    assert_eq!(
+        adapter
+            .backend
+            .last(Call::WriteHealthLimits)
+            .map(|record| record.id),
+        Some(id(1))
+    );
+    assert_eq!(adapter.actuators.limits(2), Some(LIMITS));
+    Ok(())
+}
+
+#[test]
+fn a_failed_limit_write_names_the_actuator() {
+    let mut adapter = limited_rig(X_TABLE);
+    adapter.backend.fail(
+        Call::WriteHealthLimits,
+        0,
+        id(3),
+        BackendError::Status(0x02),
+    );
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Actuator {
+            actuator: 3,
+            bus: "x",
+            id: id(3),
+            source: BackendError::Status(0x02),
+        })
+    );
+}
+
+#[test]
+fn the_fake_refuses_limits_as_the_actuator_does() {
+    let mut backend = Scripted::new();
+    let specs = [PortSpec {
+        path: Path::new(NULL),
+        baud: 1_000_000,
+    }];
+    assert_eq!(backend.open_ports(&specs), Ok(()));
+    backend.already_on(0, 1);
+    let wide = HealthLimits {
+        min_voltage_dv: 100,
+        max_voltage_dv: 300,
+        temperature_c: 70,
+    };
+
+    assert_eq!(
+        backend.write_health_limits(0, Model::Xm430W210, 1, LIMITS),
+        Err(BackendError::Status(scripted::ACCESS_ERROR))
+    );
+    assert_eq!(
+        backend.write_health_limits(0, Model::Rx28, 2, wide),
+        Err(BackendError::Status(scripted::RANGE_ERROR))
+    );
+    assert_eq!(
+        backend.write_health_limits(0, Model::Xm430W210, 2, wide),
+        Ok(())
+    );
+    assert_eq!(backend.limits(0, 2), Some(wide));
+    assert_eq!(
+        backend.limits(0, 1).map(|held| held.max_voltage_dv),
+        Some(190)
+    );
 }
