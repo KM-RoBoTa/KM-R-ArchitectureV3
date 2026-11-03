@@ -663,3 +663,13 @@ fn every_field_type_names_its_own_field_id() {
         ["q", "qd", "tau", "kp", "kd"]
     );
 }
+
+#[test]
+fn every_value_type_converts_both_ways_with_f32() {
+    assert_eq!(f32::from(Q::from(1.5)), 1.5);
+    assert_eq!(f32::from(Qd::from(2.5)), 2.5);
+    assert_eq!(f32::from(Tau::from(3.5)), 3.5);
+    assert_eq!(f32::from(Kp::from(4.5)), 4.5);
+    let kd: f32 = Kd(5.5).into();
+    assert_eq!(kd, 5.5);
+}

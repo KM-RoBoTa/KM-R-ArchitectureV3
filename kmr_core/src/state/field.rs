@@ -92,6 +92,11 @@ impl From<f32> for Q {
         Q(value)
     }
 }
+impl From<Q> for f32 {
+    fn from(value: Q) -> Self {
+        value.0
+    }
+}
 
 impl sealed::Slot for Qd {
     const ID: FieldId = FieldId::Qd;
@@ -109,6 +114,11 @@ impl StateField for Qd {}
 impl From<f32> for Qd {
     fn from(value: f32) -> Self {
         Qd(value)
+    }
+}
+impl From<Qd> for f32 {
+    fn from(value: Qd) -> Self {
+        value.0
     }
 }
 
@@ -132,6 +142,11 @@ impl From<f32> for Tau {
         Tau(value)
     }
 }
+impl From<Tau> for f32 {
+    fn from(value: Tau) -> Self {
+        value.0
+    }
+}
 
 impl sealed::Slot for Kp {
     const ID: FieldId = FieldId::Kp;
@@ -153,6 +168,11 @@ impl From<f32> for Kp {
         Kp(value)
     }
 }
+impl From<Kp> for f32 {
+    fn from(value: Kp) -> Self {
+        value.0
+    }
+}
 
 impl sealed::Slot for Kd {
     const ID: FieldId = FieldId::Kd;
@@ -172,5 +192,10 @@ impl StateField for Kd {}
 impl From<f32> for Kd {
     fn from(value: f32) -> Self {
         Kd(value)
+    }
+}
+impl From<Kd> for f32 {
+    fn from(value: Kd) -> Self {
+        value.0
     }
 }
