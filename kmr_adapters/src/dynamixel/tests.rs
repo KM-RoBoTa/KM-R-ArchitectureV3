@@ -34,7 +34,7 @@ use super::{
     io as tick, port, units,
 };
 use crate::binding::{Binding, Port};
-use crate::presets::{Preset, Rx28Chain, XmBench};
+use crate::presets::{Rx28Chain, XmBench};
 
 // The scenarios name actuators 0 to 3.
 const _: () = assert!(JOINTS >= 4, "the adapter tests need four actuators");
@@ -2331,7 +2331,6 @@ fn a_powered_actuator_left_on_still_comes_up() -> Result<(), DynamixelError> {
 fn table_of_xm_bench_passes_check_with_four_actuators() {
     let table = XmBench::HARDWARE.check();
 
-    assert_eq!(<XmBench as Preset>::N, 4);
     assert!(table.actuators.iter().map(|actuator| actuator.id).eq(1..=4));
     assert!(table.actuators.iter().all(|actuator| {
         (
@@ -2359,7 +2358,6 @@ fn table_of_xm_bench_passes_check_with_four_actuators() {
 fn table_of_rx28_chain_passes_check_with_ten_actuators() {
     let table = Rx28Chain::HARDWARE.check();
 
-    assert_eq!(<Rx28Chain as Preset>::N, 10);
     assert!(
         table
             .actuators

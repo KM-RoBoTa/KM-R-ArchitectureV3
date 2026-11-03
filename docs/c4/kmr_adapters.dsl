@@ -52,9 +52,6 @@
     }
 
     group "kmr_adapters: presets" {
-        adaptersPreset = component "kmr_adapters::presets::Preset" "The actuator count of a preset, until robot! takes N from kmr_model." "Rust trait" {
-            tags "Code"
-        }
         adaptersXmBench = component "kmr_adapters::presets::XmBench, Rx28Chain" "HARDWARE, READ_COST and WRITE_COST of each shipped robot." "Rust structs" {
             tags "Code"
         }

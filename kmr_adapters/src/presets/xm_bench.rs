@@ -2,7 +2,6 @@
 
 use core::time::Duration;
 
-use super::Preset;
 use crate::dynamixel::{self, Actuator, Bus, Mode, Model, Table, Torque, Zero};
 
 /// The bench chain: four XM430-W210 on one bus.
@@ -29,10 +28,6 @@ impl XmBench {
     /// Line time of one goal write to every actuator of
     /// [`Self::HARDWARE`], as `check` declares it.
     pub const WRITE_COST: Duration = dynamixel::declared_costs(&Self::HARDWARE).1;
-}
-
-impl Preset for XmBench {
-    const N: usize = Self::HARDWARE.actuators.len();
 }
 
 /// The XM430-W210 at firmware id `id`: powered, in position mode, zero at

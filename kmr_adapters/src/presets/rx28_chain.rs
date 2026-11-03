@@ -13,7 +13,6 @@
 use core::num::NonZeroU32;
 use core::time::Duration;
 
-use super::Preset;
 use crate::dynamixel::{self, Actuator, Bus, Mode, Model, Table, Torque, Zero};
 
 /// Firmware ids, in engine order: actuator `i` has `IDS[i]`.
@@ -46,10 +45,6 @@ impl Rx28Chain {
     /// Line time of one goal write to every actuator of
     /// [`Self::HARDWARE`], as `check` declares it.
     pub const WRITE_COST: Duration = dynamixel::declared_costs(&Self::HARDWARE).1;
-}
-
-impl Preset for Rx28Chain {
-    const N: usize = Self::HARDWARE.actuators.len();
 }
 
 /// One [`rx28`] per id of `ids`, in order.
