@@ -14,7 +14,7 @@ note: inside `kmr_api::__brand::dynamixel::check_kinds::<1, 4>`
    |
    |             let _ = hardware.check_kinds(*prismatic);
    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: inside `Placement::<1, 4>::check_kinds`
+note: inside `kmr_api::dynamixel::Placement::<1, 4>::check_kinds`
   --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
    |
    |             refuse_prismatic(self.at[row], &prismatic);

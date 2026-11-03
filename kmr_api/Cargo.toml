@@ -30,6 +30,7 @@ ffi-python = ["ffi", "kmr_ffi/python"]
 ffi-lua = ["ffi", "kmr_ffi/lua"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
+cubemars = ["kmr_adapters/cubemars"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated

@@ -81,7 +81,9 @@ pub use kmr_core::HCons;
 /// The end of a list of drivers.
 pub use kmr_core::HNil;
 #[doc(hidden)]
-pub use spec::{__DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage, Spec};
+pub use spec::{
+    __CubeMarsAdapter, __DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage, Spec,
+};
 
 mod bus;
 pub use bus::Bus;
@@ -103,6 +105,18 @@ pub mod dynamixel {
     pub use kmr_adapters::dynamixel::{
         Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
     };
+}
+
+/// The CubeMars hardware table, for `robot!(model = .., hardware = { cubemars: .. })`.
+pub mod cubemars {
+    /// The CubeMars driver [`Bound::drivers`](crate::Bound::drivers) hands out.
+    pub use kmr_adapters::cubemars::CubeMars;
+    /// Why a CubeMars bind or bring-up failed; reach it with `downcast_ref`.
+    pub use kmr_adapters::cubemars::CubeMarsError;
+    /// The SocketCAN transport of the CubeMars driver.
+    #[cfg(feature = "cubemars")]
+    pub use kmr_adapters::cubemars::SocketCan;
+    pub use kmr_adapters::cubemars::{Actuator, Bus, DEFAULT_KD, DEFAULT_KP, Placement, Table};
 }
 
 #[doc(hidden)]

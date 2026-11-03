@@ -227,3 +227,103 @@ mod user_names {
         assert_eq!(__hardware::dynamixel::__PART.indices(), &PART);
     }
 }
+
+mod mixed_brands {
+    use super::*;
+    use kmr_api::{cubemars, dynamixel};
+
+    /// Two XM430 on bus `arm`.
+    const ARM: dynamixel::Table<1, 2> = dynamixel::Table {
+        buses: [dynamixel::Bus {
+            label: "arm",
+            baud: 1_000_000,
+            read_every: None,
+        }],
+        actuators: [xm430(1), xm430(2)],
+    };
+
+    const fn xm430(id: u8) -> dynamixel::Actuator {
+        dynamixel::Actuator {
+            bus: 0,
+            id,
+            model: dynamixel::Model::Xm430W210,
+            mode: dynamixel::Mode::Position,
+            torque: dynamixel::Torque::On,
+            zero: dynamixel::Zero::DEFAULT,
+        }
+    }
+
+    /// Two AK60-6 on CAN interface `leg`, the second with its own gains.
+    const LEG: cubemars::Table<1, 2> = cubemars::Table {
+        buses: [cubemars::Bus { label: "leg" }],
+        actuators: [
+            cubemars::Actuator::ak60_6(0, 1),
+            cubemars::Actuator::ak60_6(0, 2),
+        ],
+    }
+    .gains(1, 40.0, 0.5);
+
+    kmr_api::robot!(
+        model = "tests/fixtures/four_dxl.urdf",
+        hardware = { dynamixel: ARM.at([0, 2]), cubemars: LEG.at([1, 3]) }
+    );
+
+    /// One plugin per brand: a serial adapter and a CAN interface no machine has.
+    const PLUGINS: [Binding; 2] = [
+        Binding {
+            bus: Some("arm"),
+            ..PLUGIN
+        },
+        Binding {
+            port: Port::ByDev("kmr-test-can"),
+            baud: None,
+            bus: Some("leg"),
+        },
+    ];
+
+    #[cfg(not(any(feature = "dynamixel", feature = "cubemars")))]
+    #[test]
+    fn without_the_features_the_first_brand_is_refused() {
+        assert!(matches!(
+            __Spec::bind(&PLUGINS),
+            Err(UserError::FeatureOff {
+                feature: "dynamixel"
+            })
+        ));
+    }
+
+    #[cfg(all(feature = "dynamixel", not(feature = "cubemars")))]
+    #[test]
+    fn without_the_cubemars_feature_its_plugins_are_refused() {
+        assert!(matches!(
+            __Spec::bind(&PLUGINS),
+            Err(UserError::FeatureOff {
+                feature: "cubemars"
+            })
+        ));
+    }
+
+    #[cfg(feature = "cubemars")]
+    #[test]
+    fn with_the_feature_the_cubemars_member_claims_its_placement() {
+        use kmr_api::cubemars::{CubeMars, SocketCan};
+        use kmr_core::hal::{Group, Hal, Overrides};
+        let leg = LEG.at([1, 3]);
+        let Ok(mut member) =
+            CubeMars::<SocketCan<1>, 1, N>::bind(SocketCan::new(), leg, &PLUGINS[1..])
+        else {
+            panic!("the plugin names the leg's interface");
+        };
+        let Ok(claim) = member.check(Overrides::default()) else {
+            panic!("the table is valid");
+        };
+        assert!(claim.owned.iter().eq([1, 3]));
+        assert_eq!((claim.group[1], claim.group[3]), (Group(0), Group(0)));
+    }
+
+    #[cfg(all(feature = "dynamixel", feature = "cubemars"))]
+    #[test]
+    fn with_both_features_each_brand_binds_its_plugin() {
+        assert!(__Spec::bind(&PLUGINS).is_ok());
+    }
+}

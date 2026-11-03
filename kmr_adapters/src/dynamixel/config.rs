@@ -959,7 +959,7 @@ impl<const N: usize> Placed<N> {
 }
 
 /// Position in `indices` of the first `index`.
-const fn position(indices: &[usize], index: usize) -> Option<usize> {
+pub(crate) const fn position(indices: &[usize], index: usize) -> Option<usize> {
     let mut found = 0;
     let mut rest = indices;
     while let [first, tail @ ..] = rest {
@@ -1009,7 +1009,7 @@ const fn find_label(buses: &[Bus], label: &str) -> Option<usize> {
 }
 
 /// Whether `a` and `b` hold the same bytes.
-const fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) const fn same(a: &[u8], b: &[u8]) -> bool {
     let (mut a, mut b) = (a, b);
     loop {
         match (a, b) {
@@ -1110,13 +1110,13 @@ const fn find(actuators: &[Actuator], bus: usize, id: u8) -> Option<usize> {
 }
 
 /// Stops evaluation with `message`.
-const fn fail(message: Message) -> ! {
+pub(crate) const fn fail(message: Message) -> ! {
     panic!("{}", message.as_str())
 }
 
 /// A panic message built in const evaluation, where `format!` is not
 /// available. Text past the capacity is dropped.
-struct Message {
+pub(crate) struct Message {
     bytes: [u8; MESSAGE_LEN],
     len: usize,
 }
@@ -1131,17 +1131,17 @@ impl Message {
     }
 
     /// A message about the actuator at `index`.
-    const fn actuator(index: usize) -> Self {
+    pub(crate) const fn actuator(index: usize) -> Self {
         Self::new().text("actuator ").number(index).text(": ")
     }
 
     /// A message about the bus at `index`.
-    const fn bus(index: usize) -> Self {
+    pub(crate) const fn bus(index: usize) -> Self {
         Self::new().text("bus ").number(index).text(": ")
     }
 
     /// Appends `text`.
-    const fn text(mut self, text: &str) -> Self {
+    pub(crate) const fn text(mut self, text: &str) -> Self {
         let mut rest = text.as_bytes();
         while let [byte, tail @ ..] = rest {
             self = self.byte(*byte);
@@ -1151,7 +1151,7 @@ impl Message {
     }
 
     /// Appends `number` in decimal.
-    const fn number(mut self, number: usize) -> Self {
+    pub(crate) const fn number(mut self, number: usize) -> Self {
         let mut scale = 1;
         while number / scale >= 10 {
             scale *= 10;
@@ -1180,7 +1180,7 @@ impl Message {
         };
         match core::str::from_utf8(text) {
             Ok(text) => text,
-            Err(_) => "invalid Dynamixel hardware table",
+            Err(_) => "invalid hardware table",
         }
     }
 }

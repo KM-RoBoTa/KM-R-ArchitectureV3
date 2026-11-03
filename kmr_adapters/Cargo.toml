@@ -12,9 +12,12 @@ thiserror.workspace = true
 tracing.workspace = true
 rustix.workspace = true
 dxl_rs = { workspace = true, optional = true }
+socketcan = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["dep:dxl_rs"]
+# The SocketCAN transport of the CubeMars adapter; the adapter itself always builds.
+cubemars = ["dep:socketcan"]
 
 [dev-dependencies]
 rustix = { workspace = true, features = ["pty"] }
