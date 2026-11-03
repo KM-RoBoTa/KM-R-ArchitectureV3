@@ -17,6 +17,9 @@ two-bus = ["hardware"]
 # Batches keep declaration order: the baseline of presort.sh (assumed, pending human: D11 B, the
 # one place with presort.sh). Built into its own target dir, see bench/PROCEDURE.md.
 presort-off = ["kmr_api/presort-off"]
+# kmr_api's Zenoh gateway plugged into `tick`: default deny, no peer, no endpoint (constitution
+# VI); the cost of the gateway's stages on the tick (kmr_api SC-003). Off by default.
+zenoh = ["kmr_api/zenoh"]
 
 [lints]
 workspace = true

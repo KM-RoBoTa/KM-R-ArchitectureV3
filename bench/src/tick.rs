@@ -50,6 +50,8 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
     for bus in bench.plugins {
         robot = robot.add_plugins(*bus);
     }
+    #[cfg(feature = "zenoh")]
+    let robot = robot.add_plugins(gateway());
     let result = robot
         .add_controller(First, probe::start)
         .add_controller(First, probe::noop)
@@ -164,6 +166,19 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
         Ok(())
     });
     exit(bench.binary, written, outcome)
+}
+
+/// kmr_api's gateway with nothing to talk to: loopback identity, no endpoint, no remote
+/// source, so every Desired would be refused; the bench opens no endpoint (constitution VI).
+// DECISION: "default-deny settings" read as no endpoint and no source: a certificate identity
+// would need files on the bench host, and with no endpoint its ACL never sees a peer.
+#[cfg(feature = "zenoh")]
+fn gateway() -> kmr_api::Gateway {
+    kmr_api::Gateway::new(kmr_api::GatewayConfig {
+        instance: "bench",
+        identity: kmr_api::Identity::loopback(),
+        read_history: &[],
+    })
 }
 
 /// The `read_cadence` value: `"<k>"` when every actuator is read every `k` ticks, else
