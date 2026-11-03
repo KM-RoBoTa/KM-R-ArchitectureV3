@@ -693,3 +693,20 @@ fn every_value_type_converts_both_ways_with_f32() {
     let kd: f32 = Kd(5.5).into();
     assert_eq!(kd, 5.5);
 }
+
+#[test]
+fn a_state_of_any_actuator_count_bounds_its_own_indices() {
+    let mut robot = RobotState::<7>::default();
+
+    assert_eq!(robot.set_at(Q(1.0), 6), Ok(()));
+    assert_eq!(
+        robot.set_at(Q(1.0), 7),
+        Err(StateError::OutOfRange { index: 7, len: 7 })
+    );
+    robot.set_all([Kp(2.0); 7]);
+    assert_eq!(robot.desired.kp, [Kp(2.0); 7]);
+    assert_eq!(
+        robot.cadence(7),
+        Err(StateError::OutOfRange { index: 7, len: 7 })
+    );
+}
