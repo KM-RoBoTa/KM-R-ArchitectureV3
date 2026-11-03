@@ -68,8 +68,8 @@ cargo run -p kmr_api --example complete_api_example
 
 ## Contributing
 
-This project is hand-engineered; AI assistance is tolerated under strict
-rules. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR. AI agents
+This project is built spec-first, with agents writing most of the code.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR. AI agents
 start at [`AGENTS.md`](AGENTS.md).
 
 ## License

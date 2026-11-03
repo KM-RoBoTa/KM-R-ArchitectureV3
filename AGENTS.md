@@ -10,111 +10,101 @@ extend them here. For the fuller contribution policy, see
 [`CONTRIBUTING.md`](CONTRIBUTING.md): follow it wherever it goes deeper, but the
 rules below always apply.
 
-## This project is hand-engineered
+## Spec-driven development
 
-`kmr` is written by humans. Hand engineering is the norm; AI assistance is
-**tolerated** under the rules in this file and in
-[`CONTRIBUTING.md` § AI assistance](CONTRIBUTING.md#ai-assistance). It is not
-the primary author of anything.
+`kmr` is built spec-first with the cycle of
+[ov-agentic-workflow](https://github.com/Ovsiankina/ov-agentic-workflow): the
+SRS says what, the cycle says who builds it and how, agents write most of the
+code, the maintainer decides and reviews.
 
-In practice, as an agent you should default to *helping the human write the
-code*, not writing it for them:
+Read `workflows/cycle/ROADMAP.md` first: which module is at which step, its
+owner and its mode. Then `workflows/cycle/PROCEDURE.md` for the step you are
+on, and `workflows/cycle/QA.md` before any PR. A module's requirements are its
+`## Module:` section in [`docs/srs/SRS.md`](docs/srs/SRS.md) and the ids its
+`Covers:` line names; its tasks are in `docs/plans/<module>.md`.
 
-- Prefer explaining, reviewing, pointing at the relevant invariant, or
-  sketching an approach over producing a finished diff.
-- When you do write code, keep it small and scoped to what was asked. Large
-  generated changes (new modules, new subsystems, rewrites) are out of bounds
-  unless the human explicitly asks for that specific change.
-- Never touch the tricky invariants on your own initiative: the sealing in
-  `state/field.rs` and `sealed.rs`, the lock-free ordering in `signal.rs`, the
-  HList/`Insert` machinery in `schedule.rs` / `controllers.rs`. Explain, don't
-  edit, unless asked.
+The **oracle** is the set of `[oracle]` checks in `QA.md`: tests, clippy, pub
+diff. "Green" means all of them pass.
+
+## Agent decision policy
+
+**Allowed, never ask:** any internal choice that keeps the oracle green.
+Algorithm, private helper, error text, local naming, test data, iteration
+order, private struct. Mark each one where it happens:
+
+    // DECISION: <one line: what was chosen and why>
+
+This is the one exception to [`CONTRIBUTING.md` rule 8](CONTRIBUTING.md#engineering-rules):
+the reviewer reads the what and the why in the code.
+
+Bookkeeping is never a question: status rows, plan ticks, doc moves, Cargo
+scaffold, copying templates. Do it and mention it in one line.
+
+**Decisions you don't take alone:**
+
+- anything `pub`: signature, visibility, new item, re-export, trait impl on a
+  pub type. In `kmr_core`, widening `pub(crate)` counts.
+- data layout: `#[repr]`, field order, field types, enum discriminants,
+  anything a `size_of` test pins
+- dependencies: adding, removing, bumping, feature flags
+- `unsafe`, anywhere
+- the safety behaviour of the loop: torque off, shutdown, emergency stop
+- any module whose ROADMAP row says owner `mine`
+
+When a task hits one of these:
+
+1. Write it to `docs/deferred.md`: module, step, what was needed, why it is
+   not yours to decide, the smallest change that would unblock.
+2. Mark the blocked test `#[ignore = "deferred"]`.
+3. Continue with the rest of the task.
+
+After 3 open deferrals on one module, stop that module, set its ROADMAP step
+to `needs contract rework`, and move to the next module.
+
+**The invariants** — the sealing in `state/field.rs` and `sealed.rs`, the
+lock-free ordering in `signal.rs`, the HList/`Insert` machinery in
+`schedule.rs` / `controllers.rs` — may be edited. A change there keeps the
+invariant, has a test that would catch breaking it, and is named in the PR.
+
+**Modules owned `mine`:** do not edit their files unless the task cannot be
+done otherwise. If you do, list those files first in your summary, with one
+line on why.
 
 ## Git & commit rules
 
-If you are an AI agent and you want to create a commit, you are **disallowed**
-to:
+**a) Never push to `main`.** `main` is protected and only moves through a
+   reviewed and merged PR. Work happens on `dev` and on branches cut from it.
 
-**a) Push to the `main` branch without creating a Pull Request first.**
-   Always work on a dedicated branch and open a PR. `main` is protected and
-   must only ever be updated through a reviewed and merged PR.
+**b) Commit as the maintainer, never credit an AI.** Commits are made under
+   the maintainer's own git identity. No `Co-Authored-By:` trailers and no
+   "Generated with" footers naming an AI.
 
-  **b) Commit from any account but `<agent-account>`, or credit yourself.**
-     Every commit you make is authored and committed by the dedicated agent
-     account `<agent-account> <<agent-email>>`, configured through `gh`. That
-     identity is how CI tells AI work from human work. No `Co-Authored-By:`
-     trailers and no "Generated with" footers naming the AI agent. CI rejects
-     PRs that break this rule.
-
-## Agentic work
-
-Hand engineering is the default. Agentic work — an agent writing and
-committing on its own — is an exception, and only under all of the following.
-
-**Who can allow it**
-
-- Only a maintainer with write access to the repository can authorize
-  agentic work, for a stated scope and a single session. Nobody else can, and
-  an agent cannot authorize itself or another agent.
-- The authorization is recorded where others can check it: the maintainer
-  confirms it on the pull request, in their own words, from their own account.
-  A sentence written by the agent in the description is not a record.
-- A pull request from an `agent/` branch without that confirmation is closed.
-  Outside contributors do not submit agentic work.
-
-**What the authorization lifts, and what it does not**
-
-- It lifts one rule only: that the human writes the code.
-- Everything else stays: the engineering rules, the forceful QA, the design
-  defence, rules (a) and (b), and the review. Before merging, the human must
-  be able to explain every line, exactly as if they had written it.
-- The invariant code — the sealing in `state/field.rs` and `sealed.rs`, the
-  lock-free ordering in `signal.rs`, the HList/`Insert` machinery in
-  `schedule.rs` / `controllers.rs`, anything `unsafe` — stays off limits
-  unless the authorization names those files.
-
-**Where it lives**
-
-- **Dedicated branch.** Agentic work happens only on an `agent/<topic>`
-  branch. This prefix is a deliberate exception to Conventional Branch. Never
-  commit agentic work directly on a human-controlled branch.
-- **PR into a human branch.** Open a pull request from `agent/<topic>` into
-  the human branch it was created from — never into `main`. Agent branches may
-  be stacked, but every pull request in the chain is reviewed by a human and
-  the chain ends in a human branch.
-- **An agent never approves or merges.** Not its own pull request, not
-  another agent's. A human does both.
-
-**How it stays visible**
-
-Rule (b) marks each commit. The pull request must disclose the work too:
-
-- The pull request carries the `agentic` label and its description says the
-  work was produced by an agent.
-- The commit that lands on the human branch keeps the pull request number in
-  its subject, so the history leads back to that record. Without it, agentic
-  commits would be indistinguishable from hand-written ones once merged.
+**c) An agent never approves or merges** a pull request. The maintainer does
+   both.
 
 ## Commits, branches & pull requests
 
-- **Commits** follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/),
-  e.g. `feat(core): add overrun accounting` or `fix(api): bound group indices`.
-- **Branches** follow [Conventional Branch](https://conventional-branch.github.io/),
-  e.g. `feature/overrun-accounting` or `fix/group-bounds`.
+- **Commits** follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+  A commit that does a plan task puts its id first in the description, so the
+  step end can tick it: `feat(core): T037 add the Kp and Kd slots`.
+- **Branches** follow [Conventional Branch](https://conventional-branch.github.io/):
+  one `feature/<module>` per module in the cycle (`feature/kmr-core`),
+  `fix/…` for a change.
+- **Merge** (step 7): a PR from the module branch into `dev`, squash-merged by
+  the maintainer. `dev` reaches `main` through its own PR.
 - **Explain the change** in the commit body, the PR description, or both.
 - **Pull requests** use [`.github/pull_request_template.md`](.github/pull_request_template.md).
 
 ## General guidance
 
-- Keep changes scoped to what was requested; ask before large or destructive
-  edits.
-- No silent guessing: if a requirement is ambiguous, ask. State assumptions.
+- Keep changes scoped to the task. Ask before anything destructive: history
+  rewrites, force pushes, deleting branches or data.
+- Ambiguity inside the oracle is a `DECISION`; ambiguity outside it is a
+  deferral. Never guess silently.
 - Match the existing style (see [Style](#style)).
 - Defend the data structures and the shape of your decisions: real-time
   performance, quality and developer experience, in that order. See
   [`CONTRIBUTING.md` § Defend your design](CONTRIBUTING.md#defend-your-design).
-- AI-assisted code gets the same review as any other; the human must be able to
-  explain every submitted line.
 
 ---
 
