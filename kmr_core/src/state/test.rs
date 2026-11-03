@@ -639,3 +639,27 @@ fn cadence_is_one_until_set_and_refuses_an_out_of_range_index() {
         })
     );
 }
+
+#[test]
+fn every_field_type_names_its_own_field_id() {
+    use crate::state::{FieldId, field_id};
+    // No wildcard arm: a new variant fails this match.
+    let name = |id: FieldId| match id {
+        FieldId::Q => "q",
+        FieldId::Qd => "qd",
+        FieldId::Tau => "tau",
+        FieldId::Kp => "kp",
+        FieldId::Kd => "kd",
+    };
+    assert_eq!(
+        [
+            field_id::<Q>(),
+            field_id::<Qd>(),
+            field_id::<Tau>(),
+            field_id::<Kp>(),
+            field_id::<Kd>()
+        ]
+        .map(name),
+        ["q", "qd", "tau", "kp", "kd"]
+    );
+}

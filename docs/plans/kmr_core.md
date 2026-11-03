@@ -73,7 +73,7 @@ in [`specs/002-kmr-core/`](../../specs/002-kmr-core/).
 
 ## Phase 9: M7 FFI hook (US3), supports SRS delivery step 8
 
-- [ ] T057 [US3] HUMAN: K7.1 public `FieldId` (`Q`, `Qd`, `Tau`, `Kp`, `Kd`), or `const ID: FieldId` on `Slot`, in **kmr_core/src/state/field.rs (invariant)**; users cannot add one; only kmr_api names it, not re-exported to users. Test: an exhaustive `match` with no wildcard arm compiles. FR-062 (SRS FR-10.2, FR-2.2). Unblocks kmr_ffi C1 (part), C3
+- [x] T057 [US3] HUMAN: K7.1 public `FieldId` (`Q`, `Qd`, `Tau`, `Kp`, `Kd`), or `const ID: FieldId` on `Slot`, in **kmr_core/src/state/field.rs (invariant)**; users cannot add one; only kmr_api names it, not re-exported to users. Test: an exhaustive `match` with no wildcard arm compiles. FR-062 (SRS FR-10.2, FR-2.2). Unblocks kmr_ffi C1 (part), C3
 
 ## Phase 10: Polish and cross-cutting
 

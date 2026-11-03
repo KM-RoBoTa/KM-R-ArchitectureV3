@@ -30,6 +30,8 @@ pub(crate) use desired::Desired;
 mod field;
 pub use field::StateField;
 pub(crate) use field::sealed;
+#[doc(hidden)]
+pub use field::{FieldId, field_id};
 
 // ── robot: public read/write handle combining desired + history ────────────
 mod robot_state;

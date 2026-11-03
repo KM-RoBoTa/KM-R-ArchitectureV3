@@ -11,15 +11,43 @@ use crate::hal::{Mask, Written};
 /// and keeps the private `Desired` out of the public API, even though
 /// `StateField` itself bounds public methods.
 pub(crate) mod sealed {
-    use super::{Desired, JOINTS, State};
+    use super::{Desired, FieldId, JOINTS, State};
     use crate::hal::{Mask, Written};
 
     pub(crate) trait Slot: Sized + Copy + From<f32> {
+        /// Which field this is, for the crates that dispatch on it.
+        const ID: FieldId;
         fn slot(desired: &mut Desired) -> &mut [Self; JOINTS];
         fn field(state: &State<JOINTS>) -> &[Self; JOINTS];
         /// The write mask of this field.
         fn mask(written: &mut Written) -> &mut Mask;
     }
+}
+
+/// Names each field type, one variant per [`StateField`] implementor.
+///
+/// Plumbing for `kmr_api` and the FFI layer, not re-exported to users.
+// DECISION: not `#[non_exhaustive]`: the FFI layer matches it exhaustively, so
+// a new field breaks its build instead of falling into a wildcard arm.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FieldId {
+    /// [`Q`]
+    Q,
+    /// [`Qd`]
+    Qd,
+    /// [`Tau`]
+    Tau,
+    /// [`Kp`]
+    Kp,
+    /// [`Kd`]
+    Kd,
+}
+
+/// The [`FieldId`] of field type `T`.
+#[doc(hidden)]
+pub const fn field_id<T: StateField>() -> FieldId {
+    <T as sealed::Slot>::ID
 }
 
 /// Marks a type that can be stored in [`super::RobotState`]'s desired state.
@@ -47,6 +75,7 @@ pub(crate) mod sealed {
 pub trait StateField: sealed::Slot {}
 
 impl sealed::Slot for Q {
+    const ID: FieldId = FieldId::Q;
     fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
         &mut desired.q
     }
@@ -65,6 +94,7 @@ impl From<f32> for Q {
 }
 
 impl sealed::Slot for Qd {
+    const ID: FieldId = FieldId::Qd;
     fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
         &mut desired.qd
     }
@@ -83,6 +113,7 @@ impl From<f32> for Qd {
 }
 
 impl sealed::Slot for Tau {
+    const ID: FieldId = FieldId::Tau;
     fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
         &mut desired.tau
     }
@@ -103,6 +134,7 @@ impl From<f32> for Tau {
 }
 
 impl sealed::Slot for Kp {
+    const ID: FieldId = FieldId::Kp;
     fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
         &mut desired.kp
     }
@@ -123,6 +155,7 @@ impl From<f32> for Kp {
 }
 
 impl sealed::Slot for Kd {
+    const ID: FieldId = FieldId::Kd;
     fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
         &mut desired.kd
     }
