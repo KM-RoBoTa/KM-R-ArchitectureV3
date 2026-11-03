@@ -1,4 +1,3 @@
-// C3/C4 for kmr_adapters: written by /speckit-ov-c4-code
 //
 // kmr_adapters is a library linked into the control process: one member of
 // the robot's hardware list per brand, Dynamixel first. Its tables and

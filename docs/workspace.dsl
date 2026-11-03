@@ -52,7 +52,6 @@ workspace "kmr" "Real-time robot control framework by KM-RoBoTa." {
         kmr.control -> compute "Publishes History to, receives Desired from" "Zenoh encrypted, or any middleware in a controller"
 
         // C3/C4 per module (docs/c4/<module>.dsl)
-        // ov:includes:begin
         !include c4/bench.dsl
         !include c4/controllers.dsl
         !include c4/kmr_adapters.dsl
@@ -60,7 +59,6 @@ workspace "kmr" "Real-time robot control framework by KM-RoBoTa." {
         !include c4/kmr_core.dsl
         !include c4/kmr_ffi.dsl
         !include c4/kmr_model.dsl
-        // ov:includes:end
     }
 
     views {

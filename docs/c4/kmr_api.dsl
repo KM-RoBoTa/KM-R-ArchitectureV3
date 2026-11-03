@@ -1,4 +1,3 @@
-// C3/C4 for kmr_api: written by /speckit-ov-c4-code
 //
 // kmr_api is the library the control engineer writes against, linked into
 // the control process. It is a convenience layer over kmr_core: the value

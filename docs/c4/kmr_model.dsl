@@ -1,4 +1,3 @@
-// C3/C4 for kmr_model: written by /speckit-ov-c4-code
 //
 // kmr_model is a proc-macro crate: it runs inside rustc while the control
 // process is built, and the binary only receives constants. Its components
