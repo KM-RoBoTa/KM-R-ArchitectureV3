@@ -19,6 +19,7 @@
     apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, Mask, Limit, Policy, Envelope, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' presets and Dynamixel table types. Defined once, never copied." "Rust pub use"
     apiFfi = component "kmr_api: ffi" "Features ffi, ffi-build, ffi-python, ffi-lua: kmr_ffi's surface under kmr_api::ffi, the Python and Lua bridges under ffi::python and ffi::lua, foreign! and the build helper with HISTORY_DEPTH filled in, and call(f, time, state, ctx): fills the view from State and Time (every depth, faults, ages), runs the foreign body, applies each flagged entry through the field's setter, raises shutdown! or emergency_stop! for status 1 or 2 (SRS FR-10.1, FR-10.3, FR-2.5, FR-4.1, FR-4.2)." "Rust"
     apiTestUtil = component "kmr_api: test util" "Feature test-util: the core's scripted host and recording adapter, and run_scripted over a kmr_api Robot, for crates that depend on kmr_api only." "Rust"
+    apiSlot = component "kmr_api: latest-value slot" "Latest<T>: one writer thread puts, one reader takes each value once; an untaken value overwritten is counted superseded. No lock, no allocation after it is built (SRS section 4 Constraints, NFR-1). Over the triple_buffer crate." "Rust, triple_buffer"
     apiFake = component "kmr_api: fake brands" "Two test-only brands of fake members, so robot! expands over two brands in kmr_api's tests. Test builds only." "Rust, cfg(test)"
 
     apiMacro -> apiSpec "Emits the __Spec that implements"
@@ -130,6 +131,12 @@
             tags "Code"
         }
         apiStateError = component "kmr_api::StateError, StateErrorKind" "A handle's failed read or write, from the core's state error." "Rust enums" {
+            tags "Code"
+        }
+    }
+
+    group "kmr_api: latest-value slot" {
+        apiLatest = component "kmr_api::Latest, LatestWriter, LatestReader" "new().split() into the halves; put, take, superseded." "Rust structs" {
             tags "Code"
         }
     }

@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-use kmr_api::{Bus, EachTick, Init, Payload, Q, Sensors, StateErrorKind as StateError, Time};
+use kmr_api::{
+    Bus, EachTick, Init, Latest, LatestReader, LatestWriter, Payload, Q, Sensors,
+    StateErrorKind as StateError, Time,
+};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -453,7 +456,8 @@ fn main() -> color_eyre::Result<()> {
     type ArcMutTracker = Arc<Mutex<UserDefinedDataTracker>>;
 
     // Whatever a threaded controller wants to track. Here: latest gamepad input.
-    #[derive(Default)]
+    // `Copy`: the pad crosses threads by value, through a `Latest` slot.
+    #[derive(Clone, Copy, Default)]
     struct GamepadInput {
         x: f32,
         y: f32,
@@ -461,37 +465,41 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // The pad is written on the gamepad THREAD and read on the main loop by
-    // `use_gamepad`. That's two threads touching one value — the ONE situation
-    // where a lock is genuinely required. So the shared pad is an
-    // `Arc<Mutex<GamepadInput>>`. (Unlike the fake "share a flag between two
-    // main-loop controllers" case, this sharing is real, so the lock is earned.)
-    type SharedPad = Arc<Mutex<GamepadInput>>;
-
+    // `use_gamepad`: two threads, one value. A `Latest` slot carries it: the
+    // writer puts the newest reading, the reader takes it, and neither ever
+    // waits, locks or allocates. A reading the loop had no time to take is
+    // simply replaced by the next one (and counted in `superseded()`).
+    //
     // A controller that belongs on its OWN thread: a gamepad reader. It runs its
     // own blocking poll loop at its own rate — you don't want that stalling the
     // tick loop, and it must NOT touch robot state (that stays single-writer on
     // the main loop, so no actuator-write races are possible).
     //
-    // A threaded controller gets ONLY `&mut T`. Here `T = SharedPad`: it locks,
-    // writes the latest reading, unlocks. The main loop reads it via `use_gamepad`.
-    fn gamepad_controller(pad: &mut SharedPad, _time: &Time) {
+    // A threaded controller gets ONLY `&mut T`. Here `T` is the writing half.
+    fn gamepad_controller(pad: &mut LatestWriter<GamepadInput>, _time: &Time) {
         // let ev = read_gamepad();  // your blocking poll
-        let mut input = pad.lock().unwrap();
-        input.x = 0.0;
-        input.y = 0.0;
-        input.buttons = 0;
+        pad.put(GamepadInput {
+            x: 0.0,
+            y: 0.0,
+            buttons: 0,
+        });
+    }
+
+    // The main loop's side: the reading half, and the last reading taken, kept
+    // for the ticks where nothing new arrived.
+    struct Pad {
+        latest: LatestReader<GamepadInput>,
+        input: GamepadInput,
     }
 
     // The other half: a MAIN-LOOP controller that uses the gamepad to command
-    // the robot. It needs `&mut State`, so it can't be threaded — and that's
-    // fine: it reaches the pad through the same `SharedPad`. Lock, copy out what
-    // you need, unlock FAST (don't hold the lock while doing heavy work — that
-    // would stall the gamepad thread).
-    fn use_gamepad(pad: &mut SharedPad, _time: &Time, robot: &mut State, _sensors: &Sensors) {
-        // `try_lock` never waits: if the gamepad thread holds the pad, skip this tick.
-        let Ok(input) = pad.try_lock() else { return };
-        let (x, _y) = (input.x, input.y);
-        drop(input);
+    // the robot. It needs `&mut State`, so it can't be threaded.
+    fn use_gamepad(pad: &mut Pad, _time: &Time, robot: &mut State, _sensors: &Sensors) {
+        // One atomic load when nothing is new: the tick never waits on the pad.
+        if let Some(input) = pad.latest.take() {
+            pad.input = input;
+        }
+        let (x, _y) = (pad.input.x, pad.input.y);
 
         // Turn the stick into a robot command.
         // A run without hardware reads nothing: no sample to work from, skip the tick.
@@ -539,10 +547,13 @@ fn main() -> color_eyre::Result<()> {
     let mut own_tracker = UserDefinedDataTracker::default();
     own_tracker.write_flag(true); // your one-time init
 
-    // The shared gamepad. Built ONCE here. `Arc::clone` gives a cheap second
-    // handle to the SAME pad — one goes to the gamepad thread (writer), the
-    // other to `use_gamepad` on the main loop (reader).
-    let pad: SharedPad = Arc::new(Mutex::new(GamepadInput::default()));
+    // The gamepad slot, built ONCE here and split: the writer goes to the
+    // gamepad thread, the reader to `use_gamepad` on the main loop.
+    let (pad_writer, pad_reader) = Latest::new().split();
+    let pad = Pad {
+        latest: pad_reader,
+        input: GamepadInput::default(),
+    };
 
     // NOTE: `new()` should be `builder()` no ?
     let robot = Robot::new();
@@ -581,10 +592,10 @@ fn main() -> color_eyre::Result<()> {
         // Own-data controller: no closure, no Arc/Mutex. We move the already
         // initialized `own_tracker` in — the API keeps it alive across ticks.
         // Gamepad WRITER on its own thread. No robot state → can't race commands.
-        .add_controller_as_thread(EachTick, Arc::clone(&pad), gamepad_controller)
-        // Gamepad READER on the main loop: needs State, so not threaded. Same
-        // pad, other handle. This is the bridge from thread back to the robot.
-        .add_controller_with(EachTick, Arc::clone(&pad), use_gamepad)
+        .add_controller_as_thread(EachTick, pad_writer, gamepad_controller)
+        // Gamepad READER on the main loop: needs State, so not threaded. The
+        // other half of the same slot: the bridge from thread back to the robot.
+        .add_controller_with(EachTick, pad, use_gamepad)
         .add_controller(EachTick, use_sensors)
         .add_controller(EachTick, estop)
         .run()?;

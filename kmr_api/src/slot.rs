@@ -6,25 +6,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use triple_buffer::{Input, Output, triple_buffer};
 
-/// A latest-value slot for a `Copy` value, built once and split into its [`Writer`] and its
-/// [`Reader`]. A put never waits for the reader; a take returns each value once. A value
+/// A latest-value slot for a `Copy` value, built once and split into its [`LatestWriter`] and its
+/// [`LatestReader`]. A put never waits for the reader; a take returns each value once. A value
 /// overwritten before it was taken is counted as superseded.
 ///
 /// The writer costs one atomic swap per put. The reader costs one atomic load when nothing is
 /// new, one swap when something is. Neither side allocates, locks or waits.
 pub struct Latest<T: Copy + Send> {
-    writer: Writer<T>,
-    reader: Reader<T>,
+    writer: LatestWriter<T>,
+    reader: LatestReader<T>,
 }
 
 /// The writing half of a [`Latest`]: one thread puts.
-pub struct Writer<T: Copy + Send> {
+pub struct LatestWriter<T: Copy + Send> {
     input: Input<Option<T>>,
     superseded: Arc<AtomicU64>,
 }
 
 /// The reading half of a [`Latest`]: one thread takes.
-pub struct Reader<T: Copy + Send> {
+pub struct LatestReader<T: Copy + Send> {
     output: Output<Option<T>>,
     superseded: Arc<AtomicU64>,
 }
@@ -35,16 +35,16 @@ impl<T: Copy + Send> Latest<T> {
         let (input, output) = triple_buffer(&None);
         let superseded = Arc::new(AtomicU64::new(0));
         Self {
-            writer: Writer {
+            writer: LatestWriter {
                 input,
                 superseded: Arc::clone(&superseded),
             },
-            reader: Reader { output, superseded },
+            reader: LatestReader { output, superseded },
         }
     }
 
     /// The two halves, each for its own thread.
-    pub fn split(self) -> (Writer<T>, Reader<T>) {
+    pub fn split(self) -> (LatestWriter<T>, LatestReader<T>) {
         (self.writer, self.reader)
     }
 }
@@ -55,7 +55,7 @@ impl<T: Copy + Send> Default for Latest<T> {
     }
 }
 
-impl<T: Copy + Send> Writer<T> {
+impl<T: Copy + Send> LatestWriter<T> {
     /// Makes `value` the latest; an untaken earlier value is dropped and counted.
     pub fn put(&mut self, value: T) {
         *self.input.input_buffer_mut() = Some(value);
@@ -70,7 +70,7 @@ impl<T: Copy + Send> Writer<T> {
     }
 }
 
-impl<T: Copy + Send> Reader<T> {
+impl<T: Copy + Send> LatestReader<T> {
     /// The latest value if it was put since the last take, else `None`.
     pub fn take(&mut self) -> Option<T> {
         if self.output.update() {
