@@ -1,6 +1,5 @@
 use circular_buffer::FixedCircularBuffer;
 
-use super::JOINTS;
 use super::joint_state::{Kd, Kp, Q, Qd, Tau};
 use crate::error::StateError;
 
@@ -28,7 +27,7 @@ pub(crate) struct State<const N: usize> {
     pub(crate) kd: [Kd; N],
 }
 
-impl State<JOINTS> {
+impl<const N: usize> State<N> {
     /// The robot model's home state; its source is still open in the SRS.
     pub(crate) fn home_state() -> Result<Self, StateError> {
         Err(StateError::Undecided("SRS FR-2.7: home state source"))
@@ -40,24 +39,24 @@ impl State<JOINTS> {
     pub(crate) fn zeroed() -> Self {
         // WARN: default must depend on the robot model
         Self {
-            q: [Q(0.0); JOINTS],
-            qd: [Qd(0.0); JOINTS],
-            tau: [Tau(0.0); JOINTS],
-            kp: [Kp(0.0); JOINTS],
-            kd: [Kd(0.0); JOINTS],
+            q: [Q(0.0); N],
+            qd: [Qd(0.0); N],
+            tau: [Tau(0.0); N],
+            kp: [Kp(0.0); N],
+            kd: [Kd(0.0); N],
         }
     }
 
     /// Checks if the current [`State`] is zeroed.
     fn is_zeroed(&self) -> bool {
-        if *self == State::<JOINTS>::zeroed() {
+        if *self == Self::zeroed() {
             return true;
         }
         false
     }
 }
 
-impl Default for State<JOINTS> {
+impl<const N: usize> Default for State<N> {
     fn default() -> Self {
         // WARN: default must depend on the robot model
         Self::zeroed()
