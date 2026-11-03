@@ -31,7 +31,21 @@ pub use payload::{Payload, Tier};
 pub use kmr_core::{EachTick, First, Init, Last, PostInit, PreInit, Schedule};
 
 mod robot;
+/// What every built robot's schedule is: write `impl Drive` to return a robot
+/// from a helper function.
+pub use kmr_core::Drive;
+/// The empty schedule a new [`Robot`] starts from.
+pub use kmr_core::Scheduled;
 pub use robot::{Bound, Robot};
+
+/// Why the robot's hardware could not run: the members' claims, or one
+/// member's error. Reach it from [`UserError::BringUp`] with `downcast_ref`.
+pub use kmr_core::hal::HardwareError;
+/// One member's error inside a [`HardwareError`], by its position in the list.
+pub use kmr_core::hal::MemberError;
+/// The drivers of a robot without a bus plugin: it simulates, reading and
+/// writing nothing.
+pub use kmr_core::hal::NoHardware;
 
 mod brand;
 mod spec;
@@ -42,8 +56,10 @@ pub use kmr_adapters::{
     binding::Binding,
     dynamixel::{Placement, Table},
 };
-#[doc(hidden)]
-pub use kmr_core::{HCons, HNil};
+/// A list of drivers, as [`Bound::drivers`] hands it out: `HCons { head, tail }`.
+pub use kmr_core::HCons;
+/// The end of a list of drivers.
+pub use kmr_core::HNil;
 #[doc(hidden)]
 pub use spec::{__DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage, Spec};
 
@@ -57,6 +73,13 @@ pub use kmr_adapters::presets;
 
 /// The Dynamixel hardware table, for `robot!(model = .., hardware = { dynamixel: .. })`.
 pub mod dynamixel {
+    /// The `dxl_rs` backend of the Dynamixel driver.
+    #[cfg(feature = "dynamixel")]
+    pub use kmr_adapters::dynamixel::DxlRs;
+    /// The Dynamixel driver [`Bound::drivers`](crate::Bound::drivers) hands out.
+    pub use kmr_adapters::dynamixel::Dynamixel;
+    /// Why a Dynamixel bind or bring-up failed; reach it with `downcast_ref`.
+    pub use kmr_adapters::dynamixel::DynamixelError;
     pub use kmr_adapters::dynamixel::{
         Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
     };

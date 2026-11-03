@@ -170,7 +170,7 @@ fn a_missing_serial_is_a_bring_up_error_naming_it() {
 #[cfg(feature = "dynamixel")]
 mod two_buses {
     use super::*;
-    use kmr_adapters::dynamixel::{
+    use kmr_api::dynamixel::{
         Actuator, Bus as TableBus, DynamixelError, Mode, Model, Table, Torque, Zero,
     };
 

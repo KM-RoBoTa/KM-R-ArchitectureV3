@@ -216,9 +216,9 @@ impl<CS> Robot<CS> {
     /// `HCons { head: dxl, tail: HCons { head: cubemars, tail: HNil } }`.
     /// Pass `&mut adapter` as a member to keep it after the run.
     ///
-    /// The `Drive` bound is the schedule-walk trait: it's `pub` but
-    /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
-    /// so users never trip it. `kmr_api` forwards this same one bound from its
+    /// The `Drive` bound is the schedule-walk trait (its methods hidden):
+    /// every schedule the builder produces satisfies it, so users never trip
+    /// it. `kmr_api` forwards this same one bound from its
     /// own `run`.
     ///
     /// Returns once a signal ends the loop: `Ok` for a shutdown and for an

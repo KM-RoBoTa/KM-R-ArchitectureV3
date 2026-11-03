@@ -2,6 +2,8 @@ use crate::StateError;
 
 /// Number of actuators.
 pub const N: usize = kmr_core::state::JOINTS;
+/// Ticks of history kept: every `prev_*` depth is below it.
+pub use kmr_core::state::HISTORY_DEPTH;
 
 // ---------------------------------------------------------------------------
 // Field vocabulary (principle #2 + #3)

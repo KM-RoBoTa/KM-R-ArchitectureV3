@@ -12,8 +12,8 @@ error[E0308]: mismatched types
    | |_expected an array with a size of 4, found one with a size of 5
    |   expected because of the type of the constant
    |
-   = note: expected array `[Actuator; 4]`
-              found array `[Actuator; 5]`
+   = note: expected array `[kmr_api::dynamixel::Actuator; 4]`
+              found array `[kmr_api::dynamixel::Actuator; 5]`
    = note: this error originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider specifying the actual array length
   --> src/robot_macro.rs

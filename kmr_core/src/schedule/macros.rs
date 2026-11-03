@@ -44,11 +44,15 @@ macro_rules! schedules {
     // bucket via `RunPhase`. This is the bound `runtime` takes. The blanket impl
     // is the ONLY place the full bucket-param list is spelled — the macro writes
     // it, so adding a phase never means hand-writing `impl<A, B, C, …>`.
-    // `#[doc(hidden)] pub(crate)`: internal walk machinery, not a user extension
-    // point — no reason for it to be nameable or documented outside the crate.
-    #[doc(hidden)]
+    // Documented, its methods hidden: users name it (`impl Drive`) when a
+    // helper returns a built robot, but never call or implement it.
+    /// A schedule the runtime can walk: every robot the builder returns has
+    /// one. Name it as `impl Drive` to return a built robot from a function.
     pub trait Drive {
-        $( fn $field(&mut self, env: &mut Env<'_>); )+
+        $(
+            #[doc(hidden)]
+            fn $field(&mut self, env: &mut Env<'_>);
+        )+
     }
 
     #[doc(hidden)]

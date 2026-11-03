@@ -272,8 +272,8 @@ impl<H, C> Robot<H, C> {
     /// Finalizes the builder, binds the bus plugins to the robot's drivers, then runs on them;
     /// without a plugin, simulates on no hardware.
     ///
-    /// The `Drive` bound is `kmr_core`'s schedule-walk trait — `pub` but `#[doc(hidden)]`,
-    /// satisfied by every schedule the builder can produce, so users never see or trip it.
+    /// The [`Drive`](crate::Drive) bound is satisfied by every schedule the builder can
+    /// produce, so users never trip it.
     ///
     /// # Errors
     ///

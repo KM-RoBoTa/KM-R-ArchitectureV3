@@ -10,12 +10,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use kmr_api::{Binding, Brand, Bus, EachTick, HCons, HNil, Q, Refused, Sensors, Spec, State};
-use kmr_api::{Time, UserError};
+use kmr_api::{HardwareError, MemberError, N as JOINTS, Time, UserError};
+// The HAL contract: what a driver implements, not user API.
 use kmr_core::hal::{
-    Batch, Claim, Command, Coverage, Drivers, Faults, Group, Hal, HardwareError, Mask, Member,
-    MemberError, Overrides, Sample, seal,
+    Batch, Claim, Command, Coverage, Drivers, Faults, Group, Hal, Mask, Member, Overrides, Sample,
+    seal,
 };
-use kmr_core::state::JOINTS;
 
 // The scenarios name actuators 0 to 3.
 const _: () = assert!(JOINTS >= 4, "the driver tests need four actuators");
@@ -582,7 +582,7 @@ fn a_bus_label_two_brands_share_is_refused_before_any_bind() {
 /// Scenario `CASE` with a plugin per brand and a zero hold, bound but not run, from an empty
 /// log.
 fn bound<const CASE: u8>()
--> Result<kmr_api::Bound<TwoBrands<CASE>, impl kmr_core::Drive + use<CASE>>, UserError> {
+-> Result<kmr_api::Bound<TwoBrands<CASE>, impl kmr_api::Drive + use<CASE>>, UserError> {
     take();
     kmr_api::Robot::<TwoBrands<CASE>>::new()
         .set_dt(Duration::from_millis(1))

@@ -17,7 +17,7 @@ mod preset {
     #[cfg(not(feature = "dynamixel"))]
     #[test]
     fn without_the_feature_the_driver_is_no_hardware() {
-        let _: Option<HCons<kmr_core::hal::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
+        let _: Option<HCons<kmr_api::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
     }
 
     #[cfg(not(feature = "dynamixel"))]
@@ -35,7 +35,7 @@ mod preset {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_driver_is_dynamixel() {
-        use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
+        use kmr_api::dynamixel::{DxlRs, Dynamixel};
         let _: Option<HCons<Dynamixel<DxlRs, 1>, HNil>> = None::<<__Spec as Spec>::Drivers>;
     }
 
@@ -79,7 +79,7 @@ mod model {
 
     #[test]
     fn without_a_table_the_driver_is_no_hardware() {
-        let _: Option<HCons<kmr_core::hal::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
+        let _: Option<HCons<kmr_api::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod placed {
     #[cfg(not(feature = "dynamixel"))]
     #[test]
     fn without_the_feature_the_member_is_no_hardware_and_plugins_are_refused() {
-        let _: Option<HCons<kmr_core::hal::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
+        let _: Option<HCons<kmr_api::NoHardware, HNil>> = None::<<__Spec as Spec>::Drivers>;
         assert!(matches!(
             __Spec::bind(&LABELLED),
             Err(UserError::FeatureOff {
@@ -163,7 +163,7 @@ mod placed {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_member_is_dynamixel_and_a_plugin_binds() {
-        use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
+        use kmr_api::dynamixel::{DxlRs, Dynamixel};
         let _: Option<HCons<Dynamixel<DxlRs, 2>, HNil>> = None::<<__Spec as Spec>::Drivers>;
         assert!(__Spec::bind(&LABELLED).is_ok());
     }
