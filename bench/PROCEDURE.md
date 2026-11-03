@@ -147,6 +147,52 @@ and `gap_ceiling_p50_ns` (mostly sleep at that rate; the engine's own path is th
 `gap_floor_min_ns`, research R9). A failed or interrupted candidate ends the search; the summary
 then carries that status and names the candidate.
 
+## Budget and overhead (d)
+
+```sh
+sudo -E bench/scripts/budget.sh                # the probe writes nothing
+sudo -E bench/scripts/budget.sh --write all    # the probe writes every actuator each tick
+```
+
+The engine's time per tick is never seen directly (black-box, FR-003). Instead an `EachTick`
+probe spins a calibrated workload, and the script searches, at `dt` = 1 ms, for the largest
+workload the loop holds `HOLD_S` with zero overruns (FR-010 (SRS NFR-8 d, NFR-11); research
+R8):
+
+- one `tick` process per candidate (a failed window pollutes the next one), cell
+  `<nonrt|rt>-w<work_ns>`; bisection from 0 to 1 ms, to 1 µs (`BUDGET_STEP_NS`), about 11
+  candidates, 11 min;
+- the workload is integer arithmetic timed before and after `run()` (best of 5 × 10⁶
+  iterations); a drift above 2 % flags the run `uncalibrated` (the overhead is kept, marked);
+- then one run at `dt` = 10 µs, cell `<nonrt|rt>-floor-w0`: the smallest gap after a late tick is
+  the engine's own path from one tick to the next, with no sleep (research R9).
+
+The summary report, cell `<nonrt|rt>-<none|all>`, gives `budget_ns`, `overhead_ns` =
+`dt − budget_ns` (`method = "budget"`), the held candidate's calibration and `probe_cost_ns` in
+`[run]`, and `gap_floor_min_ns`. On a non-RT kernel the figure holds the worst wake-up of the
+window, so it is an upper bound. When workload 0 already overruns, `budget_ns` and `overhead_ns`
+are absent: the loop did not hold 1 kHz for `HOLD_S`.
+
+## Footprint (e)
+
+```sh
+sudo -E bench/scripts/footprint.sh
+```
+
+Size and memory of the engine alone and of the bench binary (FR-011 (SRS NFR-8 e); research
+R11), from the binaries built once. One report, `footprint-<nonrt|rt>-<n>.toml`:
+
+| Keys | Binary |
+|---|---|
+| `file_bytes`, `stripped_bytes`, `text`, `data`, `bss`, `vm_hwm_kb`, `stack_kb` | `minimal`: the engine with three no-op controllers, no bench storage |
+| the same with `tick_`, plus `tick_bench_storage_bytes` | `tick`, whose histograms sit in `.bss` |
+| `vm_hwm_baseline_kb`, `stack_baseline_kb` | `baseline`: a process that never builds a robot |
+
+Peak RSS is `VmHWM`; the stack high-water mark is the `Rss` of the `[stack]` mapping, to the
+4 KiB page. When `stack_kb` equals `stack_baseline_kb` the report says
+`stack_note = "below the first pages"`: the loop's stack fits in the pages the loader already
+touched. Each binary runs `FOOTPRINT_TICKS` (3 000) ticks at 1 ms; under a minute.
+
 ## Reports
 
 Every script writes under `bench/reports/<commit12>/<host_id>/<measurement>-<cell>-<n>.toml`,
