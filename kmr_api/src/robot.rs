@@ -578,6 +578,8 @@ mod scripted {
     /// What a `First` controller saw on each of the first ticks.
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     struct Seen {
+        stale: [bool; 4],
+        overrun_before: bool,
         age: Option<u32>,
         sample_age: Option<u32>,
         overruns: u64,
@@ -600,6 +602,8 @@ mod scripted {
             |time: &Time, state: &mut State<'_, 4>, _: &Sensors| {
                 if let Some(slot) = seen.borrow_mut().get_mut(tick.get()) {
                     *slot = Seen {
+                        stale: core::array::from_fn(|i| state.stale_at(i)),
+                        overrun_before: state.prev_faults(1).is_ok_and(|f| f.overrun()),
                         age: state.age_at(0).ok().flatten(),
                         sample_age: state.sample_age(),
                         overruns: time.overrun_count(),
@@ -645,6 +649,26 @@ mod scripted {
     }
 
     #[test]
+    fn a_failed_read_of_actuator_2_sets_stale_at_2_on_that_tick_only() {
+        let log = Log::new();
+        let mut faults = kmr_core::hal::Faults::default();
+        faults.stale.set(2);
+        let recorder = Recorder {
+            faults,
+            faults_on: Some(1),
+            ..Recorder::new(&log)
+        };
+
+        let (seen, _) = record::<3>(Scripted::new(Instant::now()), Some(recorder));
+
+        let none = [false; 4];
+        assert_eq!(
+            seen.map(|s| s.stale),
+            [none, [false, false, true, false], none]
+        );
+    }
+
+    #[test]
     fn a_run_without_hardware_has_no_age_and_no_sample() {
         let (seen, every) = record::<2>(Scripted::new(Instant::now()), None);
 
@@ -660,6 +684,7 @@ mod scripted {
         let (seen, _) = record::<3>(host, Some(Recorder::new(&Log::new())));
 
         assert_eq!(seen.map(|s| s.overruns), [0, 1, 1]);
+        assert_eq!(seen.map(|s| s.overrun_before), [false, true, false]);
         assert_eq!(seen[1].last_overrun, Some(DT / 2));
         assert_eq!(seen.map(|s| s.dt), [DT; 3]);
         assert_eq!(seen[0].elapsed, Duration::ZERO);

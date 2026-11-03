@@ -146,6 +146,14 @@ impl<'a, const N: usize, const K: usize> GroupView<'a, N, K> {
         })
     }
 
+    /// Whether this tick's read failed on any of the group's actuators (SRS FR-2.6).
+    #[inline]
+    pub fn stale(&self) -> bool {
+        self.indices
+            .into_iter()
+            .any(|index| self.robot.stale_at(index))
+    }
+
     // ---- Q (position) ----
 
     /// Newest sensed `Q` for each group actuator. `None` if a value is

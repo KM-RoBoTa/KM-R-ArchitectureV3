@@ -86,7 +86,10 @@
     }
 
     group "kmr_api: controller handles" {
-        apiState = component "kmr_api::State, N" "Whole-robot and per-index getters, prev_* history reads and setters for Q, Qd, Tau, Kp, Kd; initial_state and go_home do not build while SRS FR-2.7 is open." "Rust struct, const" {
+        apiState = component "kmr_api::State, N" "Whole-robot and per-index getters, prev_* history reads and setters for Q, Qd, Tau, Kp, Kd; age_at, sample_age, read_every, stale_at, faults and prev_faults; initial_state and go_home do not build while SRS FR-2.7 is open." "Rust struct, const" {
+            tags "Code"
+        }
+        apiFaults = component "kmr_api::Faults, Mask" "Read-only copy of one tick's fault masks (stale, bus_error, offline, rejected, joint_limit, envelope) and flags (overrun, sensor_missing, remote_timeout, unauthorized). No setter (SRS FR-13.4)." "Rust struct" {
             tags "Code"
         }
         apiGroupView = component "kmr_api::GroupView" "K chosen actuators by index; reads gather, set_all_* scatter, every index checked first." "Rust struct" {
@@ -139,6 +142,7 @@
     apiRoute -> apiBrandTrait "Hands each brand its plugins"
     apiBrandModule -> apiBrandTrait "Implements for the Dynamixel part"
     apiState -> apiGroupView "Creates"
+    apiState -> apiFaults "Hands out"
     apiState -> apiHomeDecided "Bounds the home calls on"
     apiFakeTypes -> apiBrandTrait "Implements"
 

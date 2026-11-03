@@ -13,6 +13,9 @@ pub use error::*;
 mod state;
 pub use state::*;
 
+mod faults;
+pub use faults::{Faults, Mask};
+
 mod home;
 pub use home::HomeDecided;
 

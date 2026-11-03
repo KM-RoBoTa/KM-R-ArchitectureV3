@@ -1,6 +1,6 @@
 use core::num::NonZeroU32;
 
-use crate::StateError;
+use crate::{Faults, StateError};
 
 /// Ticks of history kept: every `prev_*` depth is below it.
 pub use kmr_core::state::HISTORY_DEPTH;
@@ -339,6 +339,34 @@ impl<'a, const N: usize> State<'a, N> {
     #[inline]
     pub fn set_kd_at(&mut self, value: Kd, i: usize) -> Result<(), StateError> {
         self.inner.set_at(value, i).map_err(StateError::from)
+    }
+
+    // ---- Faults ----
+
+    /// This tick's fault bits and flags: the read's from `First` on. `None` before the first
+    /// tick. A write's faults, a limit's and `overrun` read on the next tick, through
+    /// [`prev_faults(1)`](Self::prev_faults).
+    #[inline]
+    pub fn faults(&self) -> Option<Faults<N>> {
+        self.prev_faults(0).ok()
+    }
+
+    /// The fault bits and flags of the tick `depth` back (`0` = this tick). `Err` for a depth
+    /// not recorded yet or at or past [`HISTORY_DEPTH`].
+    #[inline]
+    pub fn prev_faults(&self, depth: usize) -> Result<Faults<N>, StateError> {
+        let actuators = self.inner.faults(depth).map_err(StateError::from)?;
+        let tick = self.inner.tick_flags(depth).map_err(StateError::from)?;
+        Ok(Faults::new(*actuators, tick))
+    }
+
+    /// Whether this tick's read of actuator `i` failed, its previous value kept (SRS FR-2.6).
+    /// `false` before the first tick.
+    // DECISION: `false` for an index past N (U2 open): a `bool`, as the plan names it, and
+    // `faults()` shows the whole set.
+    #[inline]
+    pub fn stale_at(&self, i: usize) -> bool {
+        self.faults().is_some_and(|faults| faults.stale().get(i))
     }
 
     // ---- Sample age and read cadence ----
