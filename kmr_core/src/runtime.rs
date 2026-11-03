@@ -254,7 +254,7 @@ mod init_phase {
 
     /// Walks the user's `PreInit` controllers.
     pub(super) fn pre_init_controllers<const N: usize, CS: Drive<N>>(
-        robot: &mut Robot<N, CS>,
+        robot: &mut Robot<N, CS, crate::Filled>,
         state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
@@ -266,7 +266,7 @@ mod init_phase {
     /// Walks the user's `Init` controllers, once the engine has opened and
     /// zeroed the hardware.
     pub(super) fn init<const N: usize, CS: Drive<N>>(
-        robot: &mut Robot<N, CS>,
+        robot: &mut Robot<N, CS, crate::Filled>,
         state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
@@ -278,7 +278,7 @@ mod init_phase {
     /// Walks the user's `PostInit` controllers, once the engine has checked
     /// and configured the hardware, read it in full and turned torque on.
     pub(super) fn post_init<const N: usize, CS: Drive<N>>(
-        robot: &mut Robot<N, CS>,
+        robot: &mut Robot<N, CS, crate::Filled>,
         state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
@@ -301,7 +301,7 @@ mod ctrl_phase {
     /// User specified actions to undertake before calling the user defined
     /// controllers.
     pub(super) fn first<const N: usize, CS: Drive<N>>(
-        robot: &mut Robot<N, CS>,
+        robot: &mut Robot<N, CS, crate::Filled>,
         state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
@@ -311,7 +311,7 @@ mod ctrl_phase {
 
     /// The actual run of all the user defined controllers.
     pub(super) fn each_tick<const N: usize, CS: Drive<N>>(
-        robot: &mut Robot<N, CS>,
+        robot: &mut Robot<N, CS, crate::Filled>,
         state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
@@ -322,7 +322,7 @@ mod ctrl_phase {
 
     /// Actions to undertake after calling the user defined controllers.
     pub(super) fn last<const N: usize, CS: Drive<N>>(
-        robot: &mut Robot<N, CS>,
+        robot: &mut Robot<N, CS, crate::Filled>,
         state: &mut RobotState<N>,
         sensors: &Sensors,
     ) {
@@ -334,7 +334,7 @@ mod ctrl_phase {
 /// The tick loop: read, the three buckets, write. Returns the signal that
 /// ended it.
 fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
-    robot: &mut Robot<N, CS>,
+    robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
     sensors: &Sensors,
     host: &mut H,
@@ -405,7 +405,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 /// Startup phases with the bring-up calls, the tick loop, then the hold of a
 /// shutdown. Every exit after `open` leaves through [`Powered`].
 fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
-    robot: &mut Robot<N, CS>,
+    robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
     sensors: &Sensors,
     host: &mut H,
@@ -477,7 +477,7 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 /// ended the run, a configuration fault, a claim mismatch, or a member's
 /// error.
 pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
-    robot: &mut Robot<N, CS>,
+    robot: &mut Robot<N, CS, crate::Filled>,
     host: &mut H,
     hal: &mut D,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
@@ -512,7 +512,7 @@ pub(crate) fn run_with<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
 /// Returns the signal that ended the run, a claim mismatch, or a member's
 /// error.
 pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>>(
-    mut robot: Robot<N, CS>,
+    mut robot: Robot<N, CS, crate::Filled>,
     mut hal: D,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     Signal::reset();
@@ -585,7 +585,10 @@ mod tests {
     }
 
     /// A run on [`NoHardware`], which cannot fail.
-    fn simulated<CS: Drive<N>, H: Host>(robot: &mut Robot<N, CS>, host: &mut H) -> Signal {
+    fn simulated<CS: Drive<N>, H: Host>(
+        robot: &mut Robot<N, CS, crate::Filled>,
+        host: &mut H,
+    ) -> Signal {
         run_with(robot, host, &mut one(NoHardware)).expect("NoHardware owns every actuator")
     }
 
@@ -1904,7 +1907,9 @@ mod tests {
                     tail: HNil,
                 },
             };
-            let mut robot = Robot::new().set_dt(DT);
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .add_controller(crate::Last, |_t, _s, _se| {});
             let mut host = Scripted::new(Instant::now());
 
             let signal =

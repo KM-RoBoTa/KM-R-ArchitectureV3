@@ -5,8 +5,8 @@ use crate::spec::Lend;
 use crate::{Binding, Bus, Payload, Schedule, Sensors, Spec, State, Time, UserError};
 use kmr_core::hal::{Drivers, NoHardware};
 use kmr_core::{
-    ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
-    Threaded,
+    ControlFn, ControlFnWith, Empty, Filled, HCons, HNil, HasController, Inline, InlineWith,
+    Insert, Scheduled, ThreadFn, Threaded,
 };
 
 // The named api→core translation wrapper stored in place of the user's closure.
@@ -110,8 +110,12 @@ where
 // can neither forge a node nor drive a schedule themselves: the engine's
 // invariants cannot be bypassed and its internals can change without breaking
 // this crate's API.
-pub struct Robot<const N: usize, H, C = Scheduled> {
-    inner: kmr_core::Robot<N, C>,
+//
+// `E` is the core's controller type-state, `Empty` until the first `add_controller*`, then
+// `Filled`: `run()` needs `Filled`, so a robot without a controller does not build, with the
+// core's "kmr: this robot has no controller" (SRS NFR-4).
+pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
+    inner: kmr_core::Robot<N, C, E>,
     plugins: Vec<Bus>,
     payloads: Vec<Payload>,
     spec: PhantomData<fn() -> H>,
@@ -137,7 +141,7 @@ impl<const N: usize, H: Spec<N>> Default for Robot<N, H> {
 
 // Settings. These keep the SAME type-state `C`: tuning the config never adds or
 // removes a controller, so `Self` is returned unchanged.
-impl<const N: usize, H, C> Robot<N, H, C> {
+impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     /// Sets the tick period. Zero or outside [10 µs, 1 s], [`run`](Self::run) refuses it
     /// with [`UserError::DtOutOfRange`] before any I/O; never set, the run uses 1 ms with one
     /// warning (SRS FR-3.1).
@@ -161,8 +165,8 @@ impl<const N: usize, H, C> Robot<N, H, C> {
     /// Carries the builder data over to a robot whose controller set grew.
     fn grown<D>(
         self,
-        grow: impl FnOnce(kmr_core::Robot<N, C>) -> kmr_core::Robot<N, D>,
-    ) -> Robot<N, H, D> {
+        grow: impl FnOnce(kmr_core::Robot<N, C, E>) -> kmr_core::Robot<N, D, Filled>,
+    ) -> Robot<N, H, D, Filled> {
         Robot {
             inner: grow(self.inner),
             plugins: self.plugins,
@@ -198,7 +202,7 @@ impl<const N: usize, H, C> Robot<N, H, C> {
     // Controllers. Each of these GROWS the type-state: the returned `Robot`
     // carries `C::Output`, where the chosen schedule holds one more node, so
     // the builder must stay one chained expression. That is the price of the zero-cost, cap-free design.
-    pub fn add_controller<S: Schedule, F>(self, schedule: S, f: F) -> Robot<N, H, C::Output>
+    pub fn add_controller<S: Schedule, F>(self, schedule: S, f: F) -> Robot<N, H, C::Output, Filled>
     where
         C: Insert<S, Inline<ApiInline<F>>>,
         F: Fn(&Time, &mut State<'_, N>, &Sensors),
@@ -235,7 +239,7 @@ impl<const N: usize, H, C> Robot<N, H, C> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<N, H, C::Output>
+    ) -> Robot<N, H, C::Output, Filled>
     where
         C: Insert<S, InlineWith<ApiInlineWith<F>, T>>,
         F: Fn(&mut T, &Time, &mut State<'_, N>, &Sensors),
@@ -262,7 +266,7 @@ impl<const N: usize, H, C> Robot<N, H, C> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<N, H, C::Output>
+    ) -> Robot<N, H, C::Output, Filled>
     where
         C: Insert<S, Threaded<ApiThreaded<F>, T>>,
         T: Sync + Send,
@@ -285,6 +289,7 @@ impl<const N: usize, H, C> Robot<N, H, C> {
     where
         H: Spec<N>,
         C: kmr_core::Drive<N>,
+        E: HasController,
     {
         let Bound { inner, drivers } = self.bind()?;
         match drivers {
@@ -300,7 +305,7 @@ impl<const N: usize, H, C> Robot<N, H, C> {
     ///
     /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], then the binding errors of
     /// [`Spec::bind`]. The tick period is checked by the run.
-    pub fn bind(self) -> Result<Bound<N, H, C>, UserError>
+    pub fn bind(self) -> Result<Bound<N, H, C, E>, UserError>
     where
         H: Spec<N>,
     {
@@ -317,7 +322,7 @@ impl<const N: usize, H, C> Robot<N, H, C> {
     /// # Errors
     ///
     /// [`UserError::DuplicateBus`], then [`UserError::UnknownLink`].
-    fn finalize(self) -> Result<(kmr_core::Robot<N, C>, Vec<Binding>), UserError>
+    fn finalize(self) -> Result<(kmr_core::Robot<N, C, E>, Vec<Binding>), UserError>
     where
         H: Spec<N>,
     {
@@ -344,12 +349,12 @@ impl<const N: usize, H, C> Robot<N, H, C> {
 
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
 /// before the run and after it, never inside a tick (SRS FR-5.9).
-pub struct Bound<const N: usize, H: Spec<N>, C> {
-    inner: kmr_core::Robot<N, C>,
+pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
+    inner: kmr_core::Robot<N, C, E>,
     drivers: Option<H::Drivers>,
 }
 
-impl<const N: usize, H: Spec<N>, C> Bound<N, H, C> {
+impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
     /// The robot's drivers, `HCons<A, HCons<B, HNil>>`; `None` without a bus plugin, where the
     /// run simulates.
     pub fn drivers(&mut self) -> Option<&mut H::Drivers> {
@@ -369,6 +374,7 @@ impl<const N: usize, H: Spec<N>, C> Bound<N, H, C> {
     pub fn run(self) -> Result<Option<H::Drivers>, UserError>
     where
         C: kmr_core::Drive<N>,
+        E: HasController,
     {
         let Self { inner, mut drivers } = self;
         match &mut drivers {
@@ -389,9 +395,13 @@ fn simulated() -> HCons<NoHardware, HNil> {
 
 /// Runs `inner` on `drivers`: a refused configuration as its [`UserError`], a hardware error
 /// kept typed inside [`UserError::BringUp`].
-fn drive<const N: usize, C, D>(inner: kmr_core::Robot<N, C>, drivers: D) -> Result<(), UserError>
+fn drive<const N: usize, C, E, D>(
+    inner: kmr_core::Robot<N, C, E>,
+    drivers: D,
+) -> Result<(), UserError>
 where
     C: kmr_core::Drive<N>,
+    E: HasController,
     D: Drivers<N, Error: Send + Sync>,
 {
     inner.run_on(drivers).map_err(UserError::from)

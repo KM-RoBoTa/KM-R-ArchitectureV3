@@ -89,12 +89,6 @@ impl From<CoreStateError> for StateError {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[derive(thiserror::Error)]
 pub enum UserError {
-    /// The builder holds no controller.
-    #[error(
-        "Robot has no controllers — add at least one with `.add_controller(...)` before calling `.run()`"
-    )]
-    NoControllers,
-
     /// Two bus plugins bind the same port (SRS FR-6.4: a registration error).
     #[error("port `{port}` is bound by two bus plugins; bind each port once")]
     DuplicateBus { port: &'static str },
@@ -267,9 +261,8 @@ mod tests {
     #[error("port FT8ISZ6H not found under /dev/serial/by-id")]
     struct NotFound;
 
-    fn every_variant() -> [UserError; 10] {
+    fn every_variant() -> [UserError; 9] {
         [
-            UserError::NoControllers,
             UserError::DuplicateBus { port: "FT8ISZ6H" },
             UserError::UnknownBus {
                 label: "elbow",
@@ -307,7 +300,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn debug_shows_the_variant_and_its_fields() {
-        let [_, bus, _, _, _, _, _, bring_up, _, _] = every_variant();
+        let [bus, _, _, _, _, _, bring_up, _, _] = every_variant();
         assert_eq!(format!("{bus:?}"), r#"DuplicateBus { port: "FT8ISZ6H" }"#);
         assert_eq!(format!("{bring_up:?}"), "BringUp { source: NotFound }");
     }
@@ -414,7 +407,6 @@ mod tests {
     #[test]
     fn messages_name_the_fix() {
         let [
-            _,
             _,
             unknown,
             unlabelled,

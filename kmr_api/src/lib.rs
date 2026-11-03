@@ -36,6 +36,10 @@ mod robot;
 pub use kmr_core::Drive;
 /// The empty schedule a new [`Robot`] starts from.
 pub use kmr_core::Scheduled;
+/// The controller type-state of a [`Robot`]: `Empty` until the first controller, then
+/// `Filled`; `run()` needs [`HasController`]. Named only to return a robot from a helper.
+#[doc(hidden)]
+pub use kmr_core::{Empty, Filled, HasController};
 pub use robot::{Bound, Robot};
 
 /// Why the robot's hardware could not run: the members' claims, or one

@@ -104,7 +104,7 @@ mod tests {
     // The macro-generated `Drive` impl must be satisfied by a real, builder-grown
     // schedule — i.e. every bucket's node HList resolves `RunPhase`. Compile-level
     // guard: it never runs the loop.
-    fn assert_drivable<const N: usize, CS: Drive<N>>(_robot: &Robot<N, CS>) {}
+    fn assert_drivable<const N: usize, CS: Drive<N>, E>(_robot: &Robot<N, CS, E>) {}
 
     #[test]
     fn built_schedule_is_drivable() {

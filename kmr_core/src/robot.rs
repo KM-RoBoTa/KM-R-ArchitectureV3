@@ -25,6 +25,7 @@
 //! ```
 
 use core::convert::Infallible;
+use core::marker::PhantomData;
 use std::time::Duration;
 
 pub use frunk::{HCons, HNil};
@@ -46,12 +47,46 @@ use crate::{Scheduled, Sensors, runtime};
 /// means Core Scheduled. This is useful to differenciate between
 /// the user specified schedule label (named `S` in the impl blocks) and the
 /// generic representation within the core.
-pub struct Robot<const N: usize, CS = Scheduled> {
+///
+/// `E` is [`Empty`] until the first controller is added, [`Filled`] after:
+/// [`Robot::run`] and [`Robot::run_on`] need [`HasController`], so a robot
+/// without a controller does not build (SRS NFR-4).
+///
+/// ```compile_fail,E0277
+/// // kmr: this robot has no controller
+/// kmr_core::Robot::<4>::new().run().ok();
+/// ```
+pub struct Robot<const N: usize, CS = Scheduled, E = Empty> {
     pub(crate) config: RobotConfig,
     pub(crate) controllers: CS,
+    pub(crate) filled: PhantomData<E>,
 }
 
-impl<const N: usize> Robot<N, Scheduled> {
+/// Type-state of a [`Robot`] that has no controller yet.
+pub struct Empty;
+
+/// Type-state of a [`Robot`] that has at least one controller.
+pub struct Filled;
+
+/// The seal of [`HasController`].
+mod seal {
+    /// Implemented by [`super::Filled`] only.
+    pub trait Sealed {}
+}
+
+impl seal::Sealed for Filled {}
+
+/// The type-state of a [`Robot`] that may run: [`Filled`] only, sealed.
+#[diagnostic::on_unimplemented(
+    message = "kmr: this robot has no controller",
+    label = "`run()` needs at least one controller",
+    note = "add one with `.add_controller(EachTick, f)` before `.run()` (SRS NFR-4)"
+)]
+pub trait HasController: seal::Sealed {}
+
+impl HasController for Filled {}
+
+impl<const N: usize> Robot<N, Scheduled, Empty> {
     /// Returns a default Robot.
     ///
     /// This is the main entry point for the API User.
@@ -84,6 +119,7 @@ impl<const N: usize> Robot<N, Scheduled> {
         Robot {
             config: RobotConfig::default(),
             controllers: Scheduled::new(),
+            filled: PhantomData,
         }
     }
 }
@@ -95,7 +131,7 @@ impl<const N: usize> Robot<N, Scheduled> {
 //
 // E.g: To set the elapsed time, an action disallowed to the user, call
 // directly `robot.config.time.set_elapsed(t)`.
-impl<const N: usize, CS> Robot<N, CS> {
+impl<const N: usize, CS, E> Robot<N, CS, E> {
     /// Sets the tick period. Outside [10 µs, 1 s], zero included, `run` and
     /// `run_on` refuse it before any I/O; never set, the run uses 1 ms with
     /// one warning (SRS FR-3.1).
@@ -113,7 +149,7 @@ impl<const N: usize, CS> Robot<N, CS> {
     }
 
     /// Private generic method to insert any state.
-    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<N, CS::Output>
+    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<N, CS::Output, Filled>
     where
         C: Controller,
         S: Schedule,
@@ -123,6 +159,7 @@ impl<const N: usize, CS> Robot<N, CS> {
         Robot {
             config: self.config,
             controllers: self.controllers.insert(controller),
+            filled: PhantomData,
         }
     }
 
@@ -134,7 +171,7 @@ impl<const N: usize, CS> Robot<N, CS> {
     /// it can hide the core argument types behind api newtypes. Hence
     /// `pub(crate)`: outside the crate, `add_control_fn` is the single entry
     /// (it also takes a plain `fn`, through the blanket [`ControlFn`] impl).
-    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<N, CS::Output>
+    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Inline<F>>,
         F: Fn(&Time, &mut RobotState<N>, &Sensors),
@@ -150,7 +187,7 @@ impl<const N: usize, CS> Robot<N, CS> {
     /// an unnameable closure), the builder's type-state still threads through
     /// the return type, yet the public signature never names the core argument
     /// types the api is hiding.
-    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<N, CS::Output>
+    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Inline<C>>,
         C: ControlFn<N>,
@@ -166,7 +203,7 @@ impl<const N: usize, CS> Robot<N, CS> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<N, CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, InlineWith<F, T>>,
         F: Fn(&Time, &mut RobotState<N>, &Sensors, &mut T),
@@ -182,7 +219,7 @@ impl<const N: usize, CS> Robot<N, CS> {
         schedule: S,
         ctx: T,
         controller: C,
-    ) -> Robot<N, CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, InlineWith<C, T>>,
         C: ControlFnWith<T, N>,
@@ -202,7 +239,7 @@ impl<const N: usize, CS> Robot<N, CS> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<N, CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Threaded<F, T>>,
         T: Sync + Send,
@@ -218,7 +255,7 @@ impl<const N: usize, CS> Robot<N, CS> {
         schedule: S,
         ctx: T,
         controller: C,
-    ) -> Robot<N, CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Threaded<C, T>>,
         T: Sync + Send,
@@ -226,6 +263,15 @@ impl<const N: usize, CS> Robot<N, CS> {
         S: Schedule,
     {
         self.insert_controller(schedule, Threaded(controller, ctx))
+    }
+
+    /// The same robot, typed [`Filled`]; only called where `E` is.
+    fn filled(self) -> Robot<N, CS, Filled> {
+        Robot {
+            config: self.config,
+            controllers: self.controllers,
+            filled: PhantomData,
+        }
     }
 
     /// Runs the robot on `hal`, its hardware: a list of members,
@@ -245,8 +291,9 @@ impl<const N: usize, CS> Robot<N, CS> {
     pub fn run_on<D: Drivers<N>>(self, hal: D) -> Result<(), RunError<HardwareError<D::Error>>>
     where
         CS: Drive<N>,
+        E: HasController,
     {
-        runtime::runtime(self, hal).map(|_signal| ())
+        runtime::runtime(self.filled(), hal).map(|_signal| ())
     }
 
     /// Runs the robot on [`NoHardware`]: nothing is read or written. Only a
@@ -254,6 +301,7 @@ impl<const N: usize, CS> Robot<N, CS> {
     pub fn run(self) -> Result<(), RunError<Infallible>>
     where
         CS: Drive<N>,
+        E: HasController,
     {
         let hal = HCons {
             head: NoHardware,
@@ -271,7 +319,7 @@ impl<const N: usize, CS> Robot<N, CS> {
     }
 }
 
-impl<const N: usize> Default for Robot<N, Scheduled> {
+impl<const N: usize> Default for Robot<N, Scheduled, Empty> {
     fn default() -> Self {
         Self::new()
     }

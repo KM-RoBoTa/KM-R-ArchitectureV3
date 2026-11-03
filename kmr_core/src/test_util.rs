@@ -45,7 +45,7 @@ pub const PER_TICK: usize = 5;
 /// Runs `robot` on `drivers` with `host` as its clock, sleep and bus.
 /// Returns the signal that ended the run, like the real runtime.
 pub fn run_scripted<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>>(
-    robot: &mut Robot<N, CS>,
+    robot: &mut Robot<N, CS, crate::Filled>,
     host: &mut H,
     drivers: &mut D,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {

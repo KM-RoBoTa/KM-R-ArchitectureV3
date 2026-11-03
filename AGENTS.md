@@ -186,10 +186,12 @@ type by one `HCons` layer. The node types are `Inline` / `InlineWith` /
 `#[doc(hidden)]`: a user can hold an `HCons` but can neither forge a node nor
 read one out.
 
-`Robot::run()` uses a **runtime** `L::LEN == 0` check
-(→ `ApiError::NoControllers`) rather than a compile-time bound, because a
-trait-bound gate leaks internal type paths (`frunk_core::...`, core file
-layout) into `E0277` diagnostics at the user call site.
+An empty robot is a **compile error** by type-state (decision 0008):
+`Robot<N, CS, E = Empty>`, every `add_*` returns `E = Filled`, and
+`run()`/`run_on()` need `E: HasController` (sealed in `robot.rs`). Its
+`#[diagnostic::on_unimplemented]` puts "kmr: this robot has no controller"
+first, so the internal type paths stay in the notes below it. `kmr_api`
+threads the same `E` through its wrapper.
 
 ### Schedules — a pre-sorted fixed pipeline (`schedule.rs`)
 
@@ -234,8 +236,7 @@ returns `Ok(())` for a shutdown and for an emergency stop alike.
 The hardware layer does not exist yet: the init bodies, the
 `state_transition` step, the final write of a shutdown and the torque cut of
 an emergency stop are TODOs. `Threaded` controllers are stored but never
-spawned (hand-off open in the ROADMAP). `Robot::run()` does not check for an
-empty controller list yet, whatever the section above says.
+spawned (hand-off open in the ROADMAP).
 
 ### Signal bus (`signal.rs`) — the only channel from controllers back to the loop
 

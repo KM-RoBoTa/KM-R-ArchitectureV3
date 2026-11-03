@@ -147,11 +147,11 @@ layer. Everything is monomorphized: no `dyn`, no fat pointers, no heap. Node
 types (`Inline`, `InlineWith`, `Threaded`) are opaque: users can hold the list
 but can neither forge nor read a node.
 
-An empty controller list is not checked today: `run()` on a robot with no
-controller powers the hardware and commands nothing.
-[Decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md) makes
-it a compile error by type-state, with a readable `on_unimplemented` message
-in front of the internal type paths (core T035).
+A robot with no controller does not build:
+[decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md)'s
+type-state `E` is `Empty` until the first `add_*`, and `run()` needs
+`Filled`. The error reads "kmr: this robot has no controller", in front of
+the internal type paths.
 
 ## Runtime loop
 
