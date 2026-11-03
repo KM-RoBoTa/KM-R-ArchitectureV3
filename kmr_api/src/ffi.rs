@@ -60,6 +60,25 @@ pub mod build {
     }
 }
 
+/// A Python function as the foreign body (feature `ffi-python`): an embedded CPython, 0-based.
+///
+/// `Bridge::load(path, function)` in `main`, before `run()`; the bridge is the context of an
+/// `add_controller_with` forwarder that passes `&mut bridge` to [`call`]. The GIL and the
+/// interpreter's allocations are the user's cost (SRS FR-10.3).
+#[cfg(feature = "ffi-python")]
+pub mod python {
+    pub use kmr_ffi::python::Bridge;
+}
+
+/// A Lua function as the foreign body (feature `ffi-lua`): a vendored Lua 5.4, 1-based tables.
+///
+/// Loaded and called as the Python bridge is; the bridge is `Send`, so it can be
+/// the context of a threaded controller too (SRS FR-1.2).
+#[cfg(feature = "ffi-lua")]
+pub mod lua {
+    pub use kmr_ffi::lua::Bridge;
+}
+
 /// Declares the C and C++ controller bodies the build script compiled, once per crate, after
 /// `robot!`: `kmr_api::ffi::foreign! { fn swing; fn other; }`.
 ///

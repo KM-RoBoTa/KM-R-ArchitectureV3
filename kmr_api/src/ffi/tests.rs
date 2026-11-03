@@ -316,3 +316,58 @@ fn a_write_outside_the_envelope_is_clamped_as_a_rust_write() {
     let sent = log.write.get().expect("one write");
     assert_eq!(sent.q[1], Q(0.25));
 }
+
+/// Writes `body` to a fresh script file and returns its path.
+#[cfg(any(feature = "ffi-python", feature = "ffi-lua"))]
+fn script(name: &str, body: &str) -> String {
+    let path = std::env::temp_dir().join(format!("kmr_api_ffi_{}_{name}", std::process::id()));
+    std::fs::write(&path, body).expect("temp dir is writable");
+    path.to_string_lossy().into_owned()
+}
+
+/// Runs one tick whose `EachTick` calls `bridge`; returns what the adapter was sent.
+#[cfg(any(feature = "ffi-python", feature = "ffi-lua"))]
+fn bridge_tick<B: Foreign<4, HISTORY_DEPTH>>(bridge: B) -> Option<kmr_core::test_util::Sent<4>> {
+    let bridge = RefCell::new(bridge);
+    let robot = robot().add_controller(
+        EachTick,
+        |time: &Time, state: &mut State<'_, 4>, _: &Sensors| {
+            let got = call(&mut *bridge.borrow_mut(), time, state, None::<&mut ()>);
+            assert_eq!(got, Ok(Status::Continue));
+        },
+    );
+    let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END);
+    let log = Log::new();
+    let mut drivers = HCons {
+        head: Recorder::new(&log),
+        tail: HNil,
+    };
+    run_scripted(robot, &mut host, &mut drivers).expect("runs");
+    log.write.get()
+}
+
+#[cfg(feature = "ffi-python")]
+#[test]
+fn a_python_bridge_writes_through_the_glue() {
+    let path = script(
+        "step.py",
+        "def step(read, write, time):\n    if read.samples > 0:\n        write.set_q(1, 0.5)\n",
+    );
+    let bridge = python::Bridge::load(&path, "step").expect("loads");
+    let sent = bridge_tick(bridge).expect("one write");
+    assert_eq!(sent.q[1], Q(0.5));
+    assert_eq!(bits(sent.written.q), 1 << 1);
+}
+
+#[cfg(feature = "ffi-lua")]
+#[test]
+fn a_lua_bridge_writes_through_the_glue() {
+    let path = script(
+        "step.lua",
+        "function step(read, write, time)\n  if read.samples > 0 then write.set_q(2, 0.5) end\nend\n",
+    );
+    let bridge = lua::Bridge::load(&path, "step").expect("loads");
+    let sent = bridge_tick(bridge).expect("one write");
+    assert_eq!(sent.q[1], Q(0.5));
+    assert_eq!(bits(sent.written.q), 1 << 1);
+}

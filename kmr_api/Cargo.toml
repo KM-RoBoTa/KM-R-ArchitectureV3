@@ -20,6 +20,11 @@ dynamixel = ["kmr_adapters/dynamixel"]
 ffi = ["dep:kmr_ffi"]
 # For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
 ffi-build = ["ffi", "kmr_ffi/build"]
+# A Python function as the foreign body: `kmr_api::ffi::python::Bridge` (needs the Python
+# headers and library).
+ffi-python = ["ffi", "kmr_ffi/python"]
+# A Lua 5.4 function as the foreign body, Lua vendored: `kmr_api::ffi::lua::Bridge`.
+ffi-lua = ["ffi", "kmr_ffi/lua"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
 
