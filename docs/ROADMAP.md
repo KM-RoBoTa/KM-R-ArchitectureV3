@@ -29,8 +29,10 @@ a runtime entity registry — keep the 1kHz hot path static.
     - decide: should an emergency stop make `run()` return `Err`? Needs a new
       variant in `ApiError` and `UserError`
     - the `NoControllers` check in `Robot::run()`
-    - `complete_api_example` and `controllers/src/main.rs` now run until
-      Ctrl-C
+    - `controllers/src/main.rs` still runs until Ctrl-C; the swing reference
+      (controllers T006-T011) ends itself with `shutdown!` after 12 s of
+      `elapsed()`. Walkthrough in `controllers/README.md`
+    - `complete_api_example` panics in a `todo!()` (kmr_api T014)
 - [ ] Hardware layer (SRS delivery step 1), in progress. Design in
     [decision 0002](decisions/0002-hal-contract.md) and
     `specs/001-kmr-adapters/`:

@@ -43,6 +43,6 @@ in [`specs/005-controllers/`](../../specs/005-controllers/).
 
 ## Phase 8: Polish and cross-cutting
 
-- [ ] T031 [P] After T010. The root README.md shows the old `nudge_first_joint` example, with `go_home` and without `robot!`; docs/ROADMAP.md says `controllers/src/main.rs` runs "until Ctrl-C". Update both to the new reference, or point README.md at controllers/README.md (FR-010 (SRS NFR-6)). Outside `controllers/**`: the human accepts it in the PR
+- [x] T031 [P] After T010. The root README.md shows the old `nudge_first_joint` example, with `go_home` and without `robot!`; docs/ROADMAP.md says `controllers/src/main.rs` runs "until Ctrl-C". Update both to the new reference, or point README.md at controllers/README.md (FR-010 (SRS NFR-6)). Outside `controllers/**`: the human accepts it in the PR
 - [ ] T032 Update docs/c4/controllers.dsl with `/speckit-ov-c4-code` (constitution, Development Workflow)
 - [ ] T033 Run quickstart.md V1 to V3 in full and `cargo test --workspace --no-fail-fast`; all green (constitution, Technical Constraints)
