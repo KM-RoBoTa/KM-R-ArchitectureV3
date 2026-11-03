@@ -57,23 +57,16 @@ impl State<'_> {
     /// non-contiguous and in any order; reads and writes preserve that order.
     ///
     /// ```ignore
-    /// // Ignored: a `State` only exists inside a running controller, and
-    /// // `group` itself is not implemented yet.
+    /// // Ignored: a `State` only exists inside a running controller.
     /// const R_ARM: [usize; 3] = [3, 4, 5];
     /// let mut arm = robot.group(R_ARM);
     /// let desired = arm.q().unwrap().map(|q| q + Q(0.1));
     /// arm.set_all_q(desired).unwrap(); // touches only actuators 3, 4, 5
     /// ```
     #[inline]
-    #[expect(
-        unreachable_code,
-        unused_variables,
-        reason = "not implemented until the invariance issue is fixed"
-    )]
     pub fn group<const K: usize>(&mut self, indices: [usize; K]) -> GroupView<'_, K> {
-        todo!("Fix the invariance issue");
         GroupView {
-            robot: self,
+            robot: self.reborrow(),
             indices,
         }
     }
@@ -87,7 +80,9 @@ impl State<'_> {
 /// or scatters per index — so a group write never disturbs actuators outside the
 /// group.
 pub struct GroupView<'a, const K: usize> {
-    robot: &'a mut State<'a>,
+    // Owns a reborrowed `State` rather than `&'a mut State<'a>`: that form is
+    // invariant in `'a` and would lock the state for its whole tick.
+    robot: State<'a>,
     indices: [usize; K],
 }
 

@@ -48,6 +48,11 @@ impl<'a> State<'a> {
         State { inner }
     }
 
+    /// A shorter-lived `State` over the same core state.
+    pub(crate) fn reborrow(&mut self) -> State<'_> {
+        State { inner: self.inner }
+    }
+
     // ---------------------------------------------------------------------------
     // State accessors
     //
