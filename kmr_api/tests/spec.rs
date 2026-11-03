@@ -127,7 +127,7 @@ mod placed {
     };
 
     kmr_api::robot!(
-        model = "tests/fixtures/four.urdf",
+        model = "tests/fixtures/four_dxl.urdf",
         hardware = { dynamixel: ARM.at([3, 2, 1, 0]) }
     );
 
@@ -218,7 +218,7 @@ mod user_names {
     const PART: [usize; 4] = [1, 0, 3, 2];
 
     kmr_api::robot!(
-        model = "tests/fixtures/four.urdf",
+        model = "tests/fixtures/four_dxl.urdf",
         hardware = { dynamixel: SHAPE.at(PART) }
     );
 

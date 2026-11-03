@@ -525,7 +525,7 @@ mod table {
     }
 
     kmr_api::robot!(
-        model = "tests/fixtures/four.urdf",
+        model = "tests/fixtures/four_dxl.urdf",
         hardware = Table {
             buses: [Bus {
                 label: "arm",

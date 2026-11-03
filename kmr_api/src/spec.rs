@@ -157,6 +157,14 @@ pub mod __brand {
         ) -> &[usize] {
             hardware.indices()
         }
+
+        /// Fails the build when the model marks prismatic an index `hardware` drives.
+        pub const fn check_kinds<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+            prismatic: &[u64; crate::MASK_WORDS],
+        ) {
+            let _ = hardware.check_kinds(*prismatic);
+        }
     }
 
     #[cfg(test)]

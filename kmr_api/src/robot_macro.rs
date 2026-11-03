@@ -147,6 +147,11 @@ macro_rules! robot {
                         $crate::__brand::$brand::Hardware<{ __SHAPE.0 }, { __SHAPE.1 }>;
                     /// The part.
                     pub(in super::super) const __PART: __Part = $part;
+                    // No prismatic actuator on a brand without mm conversion (SRS FR-2.2).
+                    const _: () = $crate::__brand::$brand::check_kinds(
+                        &__PART,
+                        &super::super::model::PRISMATIC,
+                    );
                 }
             )+
         }
@@ -212,6 +217,8 @@ macro_rules! __robot_items {
     (@table) => {
         // The count check: one table row per actuator, in model order (FR-007 (SRS FR-6.4)).
         const _: [$crate::dynamixel::Actuator; N] = __TABLE.actuators;
+        // No prismatic row: a Dynamixel actuator has no mm conversion (SRS FR-2.2).
+        const _: $crate::Table<__NB, __M> = __TABLE.check_kinds(model::PRISMATIC);
         impl $crate::Spec<{ N }> for __Spec {
             type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB, { N }>, $crate::HNil>;
 

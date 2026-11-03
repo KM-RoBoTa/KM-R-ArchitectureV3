@@ -2,7 +2,7 @@ error[E0308]: mismatched types
   --> tests/ui/count_over.rs:16:1
    |
 16 | / kmr_api::robot!(
-17 | |     model = "../../../../kmr_api/tests/fixtures/four.urdf",
+17 | |     model = "../../../../kmr_api/tests/fixtures/four_dxl.urdf",
 18 | |     hardware = Table {
 19 | |         buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
 ...  |

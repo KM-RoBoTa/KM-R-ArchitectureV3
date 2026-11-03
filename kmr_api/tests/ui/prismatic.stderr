@@ -1,0 +1,34 @@
+error[E0080]: evaluation panicked: actuator 2: SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion
+  --> tests/ui/prismatic.rs:17:1
+   |
+17 | / kmr_api::robot!(
+18 | |     model = "../../../../kmr_api/tests/fixtures/four.urdf",
+19 | |     hardware = Table {
+20 | |         buses: [Bus { label: "arm", baud: 1_000_000, read_every: None }],
+...  |
+23 | | );
+   | |_^ evaluation of `_` failed inside this call
+   |
+note: inside `Table::<1, 4>::check_kinds`
+  --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
+   |
+   |             refuse_prismatic(row, &prismatic);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `kmr_adapters::dynamixel::config::refuse_prismatic`
+  --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
+   |
+   | /         fail(
+   | |             Message::actuator(index)
+   | |                 .text("SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"),
+   | |         );
+   | |_________^
+note: inside `kmr_adapters::dynamixel::config::fail`
+  --> $RUST/core/src/panic.rs
+   |
+   |         $crate::panicking::panic_display(&$arg);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
+   |
+   |     panic!("{}", message.as_str())
+   |     ------------------------------ in this macro invocation

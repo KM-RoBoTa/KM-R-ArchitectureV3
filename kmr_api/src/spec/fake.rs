@@ -33,6 +33,13 @@ pub(crate) const fn indices<const NB: usize, const M: usize>(
     &hardware.indices
 }
 
+/// Fake parts drive any kind of actuator.
+pub(crate) const fn check_kinds<const NB: usize, const M: usize>(
+    _hardware: &Hardware<NB, M>,
+    _prismatic: &[u64; crate::MASK_WORDS],
+) {
+}
+
 /// What a fake part binds to: it owns its indices and keeps the ports it was handed.
 #[derive(Debug, PartialEq)]
 pub struct Fake<const N: usize> {
@@ -121,10 +128,10 @@ impl<const N: usize> Hal<N> for Fake<N> {
 
 /// The arm brand of the tests.
 pub(crate) mod arm {
-    pub(crate) use super::{Hardware, indices, shape};
+    pub(crate) use super::{Hardware, check_kinds, indices, shape};
 }
 
 /// The leg brand of the tests.
 pub(crate) mod leg {
-    pub(crate) use super::{Hardware, indices, shape};
+    pub(crate) use super::{Hardware, check_kinds, indices, shape};
 }
