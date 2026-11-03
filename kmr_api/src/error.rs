@@ -174,6 +174,21 @@ pub enum UserError {
         "the envelope of actuator {actuator} is invalid; give each bound finite values with lower <= upper"
     )]
     InvalidEnvelope { actuator: usize },
+
+    /// The Zenoh gateway could not start: its settings, or its session (SRS FR-7.1).
+    #[cfg(feature = "zenoh")]
+    #[error("Zenoh gateway: {source}")]
+    Gateway {
+        #[source]
+        source: crate::zenoh::GatewayError,
+    },
+}
+
+#[cfg(feature = "zenoh")]
+impl From<crate::zenoh::GatewayError> for UserError {
+    fn from(source: crate::zenoh::GatewayError) -> Self {
+        Self::Gateway { source }
+    }
 }
 
 /// Prints the [`Display`](core::fmt::Display) text, so `fn main() -> Result<(), UserError>`

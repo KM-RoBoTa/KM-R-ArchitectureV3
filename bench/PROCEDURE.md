@@ -248,6 +248,42 @@ sudo -E bench/scripts/presort.sh --gain    # gain, on the reference chain: about
 The `presort-off` searches report under `bench/reports/presort-off/<commit12>/<host_id>/`, so the
 main set never holds two budget summaries of one cell.
 
+## Gateway build
+
+`tick` with kmr_api's Zenoh gateway plugged in, default deny: no endpoint, no remote source,
+no peer; the bench opens no endpoint of its own (constitution VI). A second build, in its own
+target dir (FR-026 (SRS FR-7.1)):
+
+```sh
+cargo build -p kmr_bench --release --bins --features zenoh --target-dir target/zenoh
+```
+
+For kmr_api SC-003 (0 allocations on the tick thread, 1 000 000 ticks after the warm-up), one
+idle cell, `KMR_BENCH_TICKS=1001000` (cell.sh passes `TICKS`), `BENCH_FEATURES` recorded in
+`[meta]` `features`:
+
+```sh
+sudo -E BENCH_BIN=target/zenoh/release BENCH_FEATURES=zenoh TICKS=1001000 \
+    bench/scripts/cell.sh idle
+```
+
+`results compare` against the same cell of the default build gives the gateway's cost on the
+tick.
+
+## FFI build
+
+`tick_ffi` is `tick` with an empty C function, `bench/ffi/empty.c`, as its second `EachTick`
+controller in place of the Rust no-op; `bench/build.rs` compiles that file and nothing else
+(assumed, pending human: D12 A). Needs a C compiler. Its own target dir:
+
+```sh
+cargo build -p kmr_bench --release --bin tick_ffi --features ffi --target-dir target/ffi
+```
+
+Run the cell with `bench_run` on `target/ffi/release/tick_ffi` and `BENCH_FEATURES=ffi`, then
+`results compare` against the same cell of `tick`: the difference is one foreign call per tick,
+the read view filled and the write buffer applied (kmr_ffi SC-003, FR-022 (SRS NFR-11)).
+
 ## Footprint (e)
 
 ```sh

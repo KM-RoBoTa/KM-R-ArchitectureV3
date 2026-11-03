@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
-use kmr_api::{Bus, EachTick, First, Last, Spec};
+use kmr_api::{Bus, EachTick, First, Last, Sensors, Spec, State, Time};
 
 use crate::buf::Buf;
 use crate::plan::{self, BadPlan, RunPlan};
@@ -37,6 +37,19 @@ const CONTROLLERS: &str = "probe+noop/first,each,last";
 
 /// Reads the plan, runs the probed robot of spec `H` and writes the report; 0 unless `failed`.
 pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
+    main_with::<N, H, _>(bench, CONTROLLERS, probe::noop::<N>)
+}
+
+/// [`main`], with `each` as the second `EachTick` controller in place of the no-op, and
+/// `controllers` as the report's `controllers` value.
+pub fn main_with<const N: usize, H: Spec<N>, F>(
+    bench: &Bench<'_>,
+    controllers: &str,
+    each: F,
+) -> ExitCode
+where
+    F: Fn(&Time, &mut State<'_, N>, &Sensors),
+{
     let plan = match RunPlan::from_env() {
         Ok(plan) => plan,
         Err(bad) => return failed_plan(bench.binary, bad),
@@ -50,11 +63,13 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
     for bus in bench.plugins {
         robot = robot.add_plugins(*bus);
     }
+    #[cfg(feature = "zenoh")]
+    let robot = robot.add_plugins(gateway());
     let result = robot
         .add_controller(First, probe::start)
         .add_controller(First, probe::noop)
         .add_controller(EachTick, probe::work)
-        .add_controller(EachTick, probe::noop)
+        .add_controller(EachTick, each)
         .add_controller(Last, probe::noop)
         .add_controller(Last, probe::end)
         .run();
@@ -117,7 +132,7 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
         r.text("robot", bench.robot)?;
         r.int("robot_n", u64::try_from(bench.robot_n).unwrap_or(u64::MAX))?;
         r.text("buses", bench.buses)?;
-        r.text("controllers", CONTROLLERS)?;
+        r.text("controllers", controllers)?;
         r.int_opt("timer_slack_ns", timer_slack_ns)?;
         if !simulated && probe::CADENCE_MAX.load(Relaxed) > 0 {
             r.text("read_cadence", cadence_text(&mut cadence).as_str())?;
@@ -164,6 +179,19 @@ pub fn main<const N: usize, H: Spec<N>>(bench: &Bench<'_>) -> ExitCode {
         Ok(())
     });
     exit(bench.binary, written, outcome)
+}
+
+/// kmr_api's gateway with nothing to talk to: loopback identity, no endpoint, no remote
+/// source, so every Desired would be refused; the bench opens no endpoint (constitution VI).
+// DECISION: "default-deny settings" read as no endpoint and no source: a certificate identity
+// would need files on the bench host, and with no endpoint its ACL never sees a peer.
+#[cfg(feature = "zenoh")]
+fn gateway() -> kmr_api::Gateway {
+    kmr_api::Gateway::new(kmr_api::GatewayConfig {
+        instance: "bench",
+        identity: kmr_api::Identity::loopback(),
+        read_history: &[],
+    })
 }
 
 /// The `read_cadence` value: `"<k>"` when every actuator is read every `k` ticks, else

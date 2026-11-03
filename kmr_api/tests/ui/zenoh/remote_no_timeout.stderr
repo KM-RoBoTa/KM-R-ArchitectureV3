@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+  --> tests/ui/zenoh/remote_no_timeout.rs:16:38
+   |
+16 |         .add_remote_source(EachTick, Remote::allow("ctl-2"), hold);
+   |          -----------------           ^^^^^^^^^^^^^^^^^^^^^^ expected `Remote`, found `Allowed`
+   |          |
+   |          arguments to this method are incorrect
+   |
+note: method defined here
+  --> src/robot.rs
+   |
+   |     pub fn add_remote_source<S: Schedule, G>(
+   |            ^^^^^^^^^^^^^^^^^

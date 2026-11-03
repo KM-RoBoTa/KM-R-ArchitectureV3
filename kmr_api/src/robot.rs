@@ -2,9 +2,10 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::fallback::Guarded;
+use crate::plugin::{Plugin, Plugins};
 use crate::spec::Lend;
 use crate::{
-    Binding, Bus, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
+    Binding, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
 };
 use kmr_core::hal::{Drivers, NoHardware};
 use kmr_core::{
@@ -119,9 +120,12 @@ where
 // core's "kmr: this robot has no controller" (SRS NFR-4).
 pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
     inner: kmr_core::Robot<N, C, E>,
-    plugins: Vec<Bus>,
+    plugins: Plugins,
     payloads: Vec<Payload>,
     guards: Guards<N>,
+    /// The remote sources, handed to the gateway at finalization.
+    #[cfg(feature = "zenoh")]
+    remotes: Vec<crate::zenoh::Remote>,
     spec: PhantomData<fn() -> H>,
 }
 
@@ -160,9 +164,11 @@ impl<const N: usize, H: Spec<N>> Robot<N, H> {
     pub fn new() -> Self {
         Self {
             inner: kmr_core::Robot::new(),
-            plugins: Vec::new(),
+            plugins: Plugins::default(),
             payloads: Vec::new(),
             guards: Guards::new(),
+            #[cfg(feature = "zenoh")]
+            remotes: Vec::new(),
             spec: PhantomData,
         }
     }
@@ -254,11 +260,14 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             plugins: self.plugins,
             payloads: self.payloads,
             guards: self.guards,
+            #[cfg(feature = "zenoh")]
+            remotes: self.remotes,
             spec: PhantomData,
         }
     }
 
-    /// Plugs in hardware, Bevy-style: one call per bus (SRS FR-6.3).
+    /// Plugs in hardware, Bevy-style: one call per bus (SRS FR-6.3); with the `zenoh` feature,
+    /// also the Zenoh gateway (SRS FR-7.1).
     ///
     /// ```ignore
     /// Robot::new().add_plugins(Bus::by_id("FT8ISZ6H"))
@@ -266,8 +275,8 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     ///
     /// Without any bus, `run()` simulates. Binding one port twice is a
     /// `run()` error.
-    pub fn add_plugins(mut self, bus: Bus) -> Self {
-        self.plugins.push(bus);
+    pub fn add_plugins(mut self, plugin: impl Plugin) -> Self {
+        plugin.plug(&mut self.plugins);
         self
     }
 
@@ -318,6 +327,31 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             controller: f,
             fallback,
             when,
+        };
+        self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
+    }
+
+    /// Lets `remote` publish Desired through the gateway, with its `fallback`: each tick a
+    /// source has been silent for its timeout, the remote-timeout flag is raised and the
+    /// fallback runs in `schedule` (SRS FR-13.3, FR-13.5), until the source speaks again. The
+    /// fallback is required: a source without one cannot be written (FR-059). Needs a
+    /// [`Gateway`](crate::Gateway) plugged in, or [`run`](Self::run) refuses.
+    #[cfg(feature = "zenoh")]
+    pub fn add_remote_source<S: Schedule, G>(
+        mut self,
+        schedule: S,
+        remote: crate::zenoh::Remote,
+        fallback: G,
+    ) -> Robot<N, H, C::Output, Filled>
+    where
+        C: Insert<S, Inline<ApiInline<Guarded<Idle<N>, G, Silent<N>>>>>,
+        G: Fn(&Time, &mut State<'_, N>, &Sensors),
+    {
+        self.remotes.push(remote);
+        let guarded = Guarded {
+            controller: idle::<N> as Idle<N>,
+            fallback,
+            when: silent::<N> as Silent<N>,
         };
         self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
     }
@@ -400,10 +434,20 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         C: kmr_core::Drive<N>,
         E: HasController,
     {
-        let Bound { inner, drivers } = self.bind()?;
+        let Bound {
+            inner,
+            drivers,
+            #[cfg(feature = "zenoh")]
+            gateway,
+        } = self.bind()?;
+        let net = Net {
+            #[cfg(feature = "zenoh")]
+            gateway: gateway.as_ref(),
+            _robot: PhantomData,
+        };
         match drivers {
-            Some(drivers) => drive(inner, drivers),
-            None => drive(inner, simulated()),
+            Some(drivers) => drive(inner, drivers, net),
+            None => drive(inner, simulated(), net),
         }
     }
 
@@ -418,12 +462,22 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     where
         H: Spec<N>,
     {
-        let (inner, plugins) = self.finalize()?;
-        let drivers = match plugins.as_slice() {
+        let Finalized {
+            inner,
+            bindings,
+            #[cfg(feature = "zenoh")]
+            gateway,
+        } = self.finalize()?;
+        let drivers = match bindings.as_slice() {
             [] => None,
-            plugins => Some(H::bind(plugins)?),
+            bindings => Some(H::bind(bindings)?),
         };
-        Ok(Bound { inner, drivers })
+        Ok(Bound {
+            inner,
+            drivers,
+            #[cfg(feature = "zenoh")]
+            gateway,
+        })
     }
 
     /// Checks the builder data, no I/O, and hands the limits, their policies and the envelopes
@@ -433,12 +487,13 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     ///
     /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], [`UserError::NoActuator`],
     /// then [`UserError::InvalidEnvelope`].
-    fn finalize(self) -> Result<(kmr_core::Robot<N, C, E>, Vec<Binding>), UserError>
+    fn finalize(self) -> Result<Finalized<N, C, E>, UserError>
     where
         H: Spec<N>,
     {
-        for (i, bus) in self.plugins.iter().enumerate() {
-            if self.plugins[..i].iter().any(|b| b.port() == bus.port()) {
+        let buses = &self.plugins.buses;
+        for (i, bus) in buses.iter().enumerate() {
+            if buses[..i].iter().any(|b| b.port() == bus.port()) {
                 return Err(UserError::DuplicateBus { port: bus.port() });
             }
         }
@@ -468,7 +523,12 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             .inner
             .set_limits(limits, self.guards.policy)
             .set_envelopes(self.guards.envelope);
-        Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
+        Ok(Finalized {
+            inner,
+            bindings: buses.iter().map(|bus| bus.binding).collect(),
+            #[cfg(feature = "zenoh")]
+            gateway: crate::zenoh::Plugged::new(self.plugins.gateways, self.remotes)?,
+        })
     }
 }
 
@@ -485,9 +545,47 @@ impl<const N: usize, H: Spec<N>, C: kmr_core::Drive<N>> Robot<N, H, C, Filled> {
         P: kmr_core::test_util::Host,
         D: Drivers<N, Error: Send + Sync>,
     {
-        let (mut inner, _plugins) = self.finalize()?;
+        let finalized = self.finalize()?;
+        let mut inner = finalized.inner;
+        #[cfg(feature = "zenoh")]
+        if let Some(gateway) = &finalized.gateway {
+            let (running, mut stages) = gateway.start::<N>()?;
+            let signal =
+                kmr_core::test_util::run_scripted_staged(&mut inner, host, drivers, &mut stages);
+            drop(running);
+            return signal.map_err(UserError::from);
+        }
         kmr_core::test_util::run_scripted(&mut inner, host, drivers).map_err(UserError::from)
     }
+}
+
+#[cfg(test)]
+impl<const N: usize, H: Spec<N>, C, E> Robot<N, H, C, E> {
+    /// The core robot `run()` would hand to the loop.
+    pub(crate) fn finalized(self) -> kmr_core::Robot<N, C, E> {
+        self.finalize().expect("a valid builder").inner
+    }
+}
+
+/// The controller half of a remote source's guarded node: the remote's Desired is applied by
+/// the gateway's stage, so nothing runs while the source speaks.
+#[cfg(feature = "zenoh")]
+#[doc(hidden)]
+pub type Idle<const N: usize> = fn(&Time, &mut State<'_, N>, &Sensors);
+
+/// The predicate of a remote source's guarded node: the tick's remote-timeout flag.
+#[cfg(feature = "zenoh")]
+#[doc(hidden)]
+pub type Silent<const N: usize> = fn(&crate::Faults<N>) -> bool;
+
+/// Does nothing: [`Idle`].
+#[cfg(feature = "zenoh")]
+fn idle<const N: usize>(_time: &Time, _state: &mut State<'_, N>, _sensors: &Sensors) {}
+
+/// [`Silent`]: the remote-timeout flag of the tick.
+#[cfg(feature = "zenoh")]
+fn silent<const N: usize>(faults: &crate::Faults<N>) -> bool {
+    faults.remote_timeout()
 }
 
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
@@ -495,6 +593,25 @@ impl<const N: usize, H: Spec<N>, C: kmr_core::Drive<N>> Robot<N, H, C, Filled> {
 pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
     inner: kmr_core::Robot<N, C, E>,
     drivers: Option<H::Drivers>,
+    /// The gateway plugged in, started by the run.
+    #[cfg(feature = "zenoh")]
+    gateway: Option<crate::zenoh::Plugged>,
+}
+
+/// The builder's data checked and handed over: the core robot and the bus bindings.
+struct Finalized<const N: usize, C, E> {
+    inner: kmr_core::Robot<N, C, E>,
+    bindings: Vec<Binding>,
+    /// The one gateway plugged in, if any.
+    #[cfg(feature = "zenoh")]
+    gateway: Option<crate::zenoh::Plugged>,
+}
+
+/// What a run starts next to the tick loop: the gateway, with the `zenoh` feature.
+struct Net<'a, const N: usize> {
+    #[cfg(feature = "zenoh")]
+    gateway: Option<&'a crate::zenoh::Plugged>,
+    _robot: PhantomData<&'a [(); N]>,
 }
 
 impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
@@ -519,10 +636,20 @@ impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
         C: kmr_core::Drive<N>,
         E: HasController,
     {
-        let Self { inner, mut drivers } = self;
+        let Self {
+            inner,
+            mut drivers,
+            #[cfg(feature = "zenoh")]
+            gateway,
+        } = self;
+        let net = Net {
+            #[cfg(feature = "zenoh")]
+            gateway: gateway.as_ref(),
+            _robot: PhantomData,
+        };
         match &mut drivers {
-            Some(drivers) => drive(inner, drivers.lend())?,
-            None => drive(inner, simulated())?,
+            Some(drivers) => drive(inner, drivers.lend(), net)?,
+            None => drive(inner, simulated(), net)?,
         }
         Ok(drivers)
     }
@@ -544,24 +671,36 @@ fn simulated() -> HCons<NoHardware, HNil> {
     }
 }
 
-/// Runs `inner` on `drivers`: a refused configuration as its [`UserError`], a hardware error
-/// kept typed inside [`UserError::BringUp`].
+/// Runs `inner` on `drivers`, the gateway of `net` around each tick when there is one: a
+/// refused configuration as its [`UserError`], a hardware error kept typed inside
+/// [`UserError::BringUp`]. The gateway stops when the run ends.
 fn drive<const N: usize, C, E, D>(
     inner: kmr_core::Robot<N, C, E>,
     drivers: D,
+    net: Net<'_, N>,
 ) -> Result<(), UserError>
 where
     C: kmr_core::Drive<N>,
     E: HasController,
     D: Drivers<N, Error: Send + Sync>,
 {
+    #[cfg(feature = "zenoh")]
+    if let Some(gateway) = net.gateway {
+        let (running, stages) = gateway.start::<N>()?;
+        let result = inner
+            .run_on_staged(drivers, stages)
+            .map_err(UserError::from);
+        drop(running);
+        return result;
+    }
+    let _ = net;
     inner.run_on(drivers).map_err(UserError::from)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::{EachTick, Q};
+    use crate::{Bus, EachTick, Q};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
 
@@ -569,7 +708,7 @@ mod tests {
     static BUS: Mutex<()> = Mutex::new(());
 
     /// Stands for the `__Spec` that `robot!` emits.
-    pub(super) struct TestSpec;
+    pub(crate) struct TestSpec;
 
     impl Spec<4> for TestSpec {
         type Drivers = HCons<crate::__NoHardware, HNil>;
@@ -652,7 +791,7 @@ mod tests {
         let robot = TestRobot::new()
             .add_plugins(Bus::by_id("FT8ISZ6H"))
             .add_plugins(Bus::by_dev("/dev/ttyACM0").bus("arm"));
-        let (_, plugins) = robot.finalize().expect("valid builder");
+        let plugins = robot.finalize().expect("valid builder").bindings;
         assert_eq!(
             plugins,
             [
@@ -669,7 +808,7 @@ mod tests {
             .set_dt(Duration::from_millis(1))
             .add_controller(EachTick, bump_q)
             .add_plugins(Bus::by_dev("/dev/ttyACM0"));
-        assert_eq!(robot.plugins.len(), 2);
+        assert_eq!(robot.plugins.buses.len(), 2);
     }
 
     // Proves all THREE builders compile with api types AND that `run()` drives
@@ -865,7 +1004,7 @@ mod guards {
         recorder: Recorder<'_, 4>,
         ticks: usize,
     ) {
-        let (mut inner, _) = robot.finalize().expect("a valid builder");
+        let mut inner = robot.finalized();
         let mut host =
             Scripted::new(Instant::now()).shutdown_from(TICK_END + (ticks - 1) * PER_TICK);
         let mut drivers = HCons {

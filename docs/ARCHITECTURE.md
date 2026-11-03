@@ -47,6 +47,38 @@ Zenoh carries messages between instances, not a control loop. A robot's
 controllers run in the `kmr` that owns its hardware layer, so an instance
 cannot drive a robot it only reaches over the network.
 
+### The gateway (kmr_api, feature `zenoh`)
+
+`Robot::add_plugins(Gateway::new(..))` plugs it in; off by default, a build
+without the feature compiles no Zenoh crate. `run()` opens the session and
+declares the keys before the loop, then a `kmr-gateway` thread owns the
+session. The tick and that thread share two `Latest<T>` slots (one writer,
+one reader, over `triple_buffer`: one atomic swap per put, one load per take
+when nothing is new, no lock, no allocation):
+
+- **History out**: `Stages::outbound` puts depth 0 (tick index, sample age,
+  values, faults) after the write; the thread publishes what it takes on
+  `kmr/<instance>/history` and keeps the last `HISTORY_DEPTH` for queries on
+  `kmr/<instance>/history/ring`. A sample overwritten before it was taken is
+  counted (`missed_samples`).
+- **Desired in**: a remote source publishes on
+  `kmr/<instance>/desired/<identity>`. The thread drops and counts what is
+  not from a source (`unauthorized`, plus the `UNAUTHORIZED` tick flag
+  through `ExternalFlags`), a `seq` at or below the last accepted
+  (`out_of_order`) and a wrong length (`malformed`), then puts the rest.
+  `Stages::inbound` takes the slot once per tick and writes the masked
+  fields through the state's setters, before `First`: a local controller
+  writing the same actuator later in the tick wins, and the limit stage
+  applies to both.
+- **Silence**: each source has a timeout; the inbound stage counts its
+  silence in ticks and raises `REMOTE_TIMEOUT` while it lasts, so the
+  fallback that `add_remote_source` requires runs from the next tick.
+
+Transport: `Identity::files(cert, key, ca)` is mutual TLS (paths only, the
+files are read at run start) with an ACL that denies every key by default;
+`Identity::loopback()` is plain TCP on loopback only, for one machine and the
+tests.
+
 ## Design principles
 
 ### 1. State is private

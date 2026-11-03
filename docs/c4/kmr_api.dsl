@@ -18,7 +18,9 @@
     apiErrors = component "kmr_api: errors" "UserError of run() and bind(), each saying how to fix it, the adapter's error typed inside BringUp; StateError of the handles (SRS FR-6.4, NFR-2, NFR-4)." "Rust, thiserror"
     apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, Mask, Limit, Policy, Envelope, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' presets and Dynamixel table types. Defined once, never copied." "Rust pub use"
     apiFfi = component "kmr_api: ffi" "Features ffi, ffi-build, ffi-python, ffi-lua: kmr_ffi's surface under kmr_api::ffi, the Python and Lua bridges under ffi::python and ffi::lua, foreign! and the build helper with HISTORY_DEPTH filled in, and call(f, time, state, ctx): fills the view from State and Time (every depth, faults, ages), runs the foreign body, applies each flagged entry through the field's setter, raises shutdown! or emergency_stop! for status 1 or 2 (SRS FR-10.1, FR-10.3, FR-2.5, FR-4.1, FR-4.2)." "Rust"
-    apiTestUtil = component "kmr_api: test util" "Feature test-util: the core's scripted host and recording adapter, and run_scripted over a kmr_api Robot, for crates that depend on kmr_api only." "Rust"
+    apiTestUtil = component "kmr_api: test util" "Feature test-util: the core's scripted hosts (Scripted, Ticking, RealTime) and recording adapter, the external flags, and run_scripted over a kmr_api Robot (the gateway started when plugged), for crates that depend on kmr_api only." "Rust"
+    apiSlot = component "kmr_api: latest-value slot" "Latest<T>: one writer thread puts, one reader takes each value once; an untaken value overwritten is counted superseded. No lock, no allocation after it is built (SRS section 4 Constraints, NFR-1). Over the triple_buffer crate." "Rust, triple_buffer"
+    apiGateway = component "kmr_api: Zenoh gateway" "Feature zenoh, off by default. The Gateway plugin: run() opens the session and declares kmr/<instance>/history, history/ring (queryable) and desired/<identity>, then a kmr-gateway thread owns them. The tick's stages put depth 0 into one Latest slot and take Desired from another; the thread publishes, keeps the ring, applies the Desired rule (sources only, seq, length) and counts every drop. Mutual TLS with a deny-by-default ACL, or loopback only (SRS FR-7.1, FR-13.2 to FR-13.5, NFR-12)." "Rust, zenoh"
     apiFake = component "kmr_api: fake brands" "Two test-only brands of fake members, so robot! expands over two brands in kmr_api's tests. Test builds only." "Rust, cfg(test)"
 
     apiMacro -> apiSpec "Emits the __Spec that implements"
@@ -30,6 +32,9 @@
     apiBuilder -> apiPayloads "Registers"
     apiBuilder -> apiHandles "Wraps the core handles in, for each controller call"
     apiBuilder -> apiErrors "Fails with"
+    apiBuilder -> apiGateway "Starts around the run, when plugged" "zenoh feature"
+    apiGateway -> apiSlot "Hands samples and Desired across threads through"
+    apiGateway -> apiHandles "Writes the remote Desired through the core state the handles wrap"
     apiSpec -> apiBrands "Binds each brand through"
     apiSpec -> adaptersMember "Binds the Dynamixel part to" "dynamixel feature"
     apiBrands -> adaptersBinding "Routes plugins by label, as"
@@ -51,7 +56,7 @@
     }
 
     group "kmr_api: builder" {
-        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins, register_payload, add_controller, add_controller_or, add_controller_with, add_controller_as_thread, run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
+        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins(impl Plugin), register_payload, add_controller, add_controller_or, add_controller_with, add_controller_as_thread, add_remote_source (zenoh), run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
             tags "Code"
         }
         apiBound = component "kmr_api::Bound" "A finalized robot with its drivers: drivers() before the run, run() hands them back after it." "Rust struct" {
@@ -84,6 +89,9 @@
     }
 
     group "kmr_api: bus plugins" {
+        apiPluginTrait = component "kmr_api::Plugin" "What add_plugins takes: Bus, and Gateway with the zenoh feature. Sealed by a hidden Plug supertrait that files the plugin in the builder's Plugins." "Rust trait" {
+            tags "Code"
+        }
         apiBusType = component "kmr_api::Bus" "by_id, by_dev, baud, bus over a kmr_adapters Binding." "Rust struct" {
             tags "Code"
         }
@@ -134,6 +142,33 @@
         }
     }
 
+    group "kmr_api: latest-value slot" {
+        apiLatest = component "kmr_api::Latest, LatestWriter, LatestReader" "new().split() into the halves; put, take, superseded." "Rust structs" {
+            tags "Code"
+        }
+    }
+
+    group "kmr_api: Zenoh gateway" {
+        apiGatewayType = component "kmr_api::Gateway, GatewayConfig, GatewayError" "new(config), listen, connect, counters; Plugged pairs it with the remote sources at finalization and start() opens the session and spawns the thread." "Rust structs, enum" {
+            tags "Code"
+        }
+        apiZenohMsg = component "kmr_api::zenoh::DesiredMsg, SampleMsg, decode_ring, keys" "Fixed little-endian wire forms sized by N; the key builders." "Rust structs, fns" {
+            tags "Code"
+        }
+        apiZenohThread = component "kmr_api::zenoh::gateway (Counters, Ring, spawn)" "The kmr-gateway thread: Desired in, samples out, the ring served as one reply, atomics read outside the tick." "Rust" {
+            tags "Code"
+        }
+        apiZenohSecurity = component "kmr_api::Identity, zenoh::security::Rule" "files(cert, key, ca) or loopback(); the TLS settings and the deny-by-default ACL; the Desired rule on the gateway thread (unauthorized, out_of_order, malformed; UNAUTHORIZED through ExternalFlags)." "Rust enum, struct" {
+            tags "Code"
+        }
+        apiZenohWatchdog = component "kmr_api::Remote, Allowed, zenoh::watchdog::Watchdog" "Remote::allow(id).timeout(d); the tick-side silence count that raises REMOTE_TIMEOUT through ExternalFlags." "Rust structs" {
+            tags "Code"
+        }
+        apiTickSide = component "kmr_api::zenoh::TickSide" "Implements the core's Stages: inbound takes Desired once and writes the masked fields, runs the watchdog; outbound puts depth 0. No heap, lock or wait." "Rust struct" {
+            tags "Code"
+        }
+    }
+
     group "kmr_api: fake brands" {
         apiFakeTypes = component "kmr_api::spec::fake::Hardware, Fake" "A fake part (bus labels, engine indices) and the member it binds to, which keeps the ports routed to it." "Rust structs" {
             tags "Code"
@@ -153,6 +188,15 @@
     apiFallback -> apiFaults "Picks the controller by"
     apiState -> apiHomeDecided "Bounds the home calls on"
     apiFakeTypes -> apiBrandTrait "Implements"
+    apiGatewayType -> apiPluginTrait "Implements"
+    apiBusType -> apiPluginTrait "Implements"
+    apiGatewayType -> apiZenohThread "Spawns"
+    apiGatewayType -> apiZenohSecurity "Configures the transport and the rule with"
+    apiZenohThread -> apiZenohMsg "Decodes and encodes"
+    apiZenohThread -> apiLatest "Puts Desired and takes samples through"
+    apiTickSide -> apiLatest "Takes Desired and puts samples through"
+    apiTickSide -> apiZenohWatchdog "Runs each tick"
+    apiRobot -> apiZenohWatchdog "Registers remote sources as guarded fallbacks with"
 
     // The user's crate (controllers.dsl is included before this file).
     ctrlMain -> apiMacro "Names the robot with"

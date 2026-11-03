@@ -225,6 +225,66 @@ impl Host for Ticking {
     }
 }
 
+/// A host on the real clock: sleeps for real until each deadline, takes the
+/// tick flags of `external`, raises a shutdown once `ticks` ticks have
+/// slept; never touches the global signal bus. For runs next to real
+/// threads, the gateway's.
+#[derive(Debug)]
+pub struct RealTime {
+    /// Ticks to run.
+    pub ticks: u64,
+    /// Calls to `sleep_until` so far: the ticks done.
+    pub slept: u64,
+    /// Where the loop takes its external tick flags from; none when `None`.
+    pub external: Option<&'static ExternalFlags>,
+    /// Called with `true` once tick 0 has slept and with `false` when the
+    /// stop is handed to the loop: the window of a counting allocator.
+    pub window: fn(bool),
+}
+
+impl RealTime {
+    /// A host that runs `ticks` ticks, no external flags, no window.
+    pub fn new(ticks: u64) -> Self {
+        Self {
+            ticks,
+            slept: 0,
+            external: None,
+            window: |_| {},
+        }
+    }
+}
+
+impl Host for RealTime {
+    fn now(&mut self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep_until(&mut self, deadline: Instant) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !left.is_zero() {
+            std::thread::sleep(left);
+        }
+        self.slept += 1;
+        if self.slept == 1 {
+            (self.window)(true);
+        }
+    }
+
+    fn poll(&mut self) -> Option<Signal> {
+        (self.slept >= self.ticks).then(|| {
+            (self.window)(false);
+            Signal {
+                kind: SignalKind::Shutdown,
+                meta: SignalMeta::new("real time: every tick done", file!(), line!()),
+            }
+        })
+    }
+
+    fn take_flags(&mut self) -> TickFlags {
+        self.external.map_or(TickFlags::NONE, ExternalFlags::take)
+    }
+}
+
 /// An adapter call or a bucket walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(missing_docs, reason = "one variant per call or walk of the same name")]

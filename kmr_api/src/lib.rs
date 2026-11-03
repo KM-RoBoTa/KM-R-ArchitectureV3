@@ -37,6 +37,9 @@ pub use units::*;
 mod payload;
 pub use payload::{Payload, Tier};
 
+mod slot;
+pub use slot::{Latest, LatestReader, LatestWriter};
+
 // Schedule labels + the sealed `Schedule` trait come straight from kmr_core: it
 // owns the phase set the control loop can actually run, and the seal stops users
 // inventing a phase that would silently do nothing.
@@ -88,6 +91,9 @@ pub use spec::{
 mod bus;
 pub use bus::Bus;
 
+mod plugin;
+pub use plugin::Plugin;
+
 mod robot_macro;
 
 /// The robots KM-RoBoTa ships, for [`robot!`].
@@ -129,6 +135,13 @@ pub use kmr_core::{emergency_stop, shutdown};
 
 #[cfg(feature = "ffi")]
 pub mod ffi;
+
+/// The Zenoh gateway (feature `zenoh`): keys, messages and counters; the plugin itself is
+/// re-exported at the root.
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
+#[cfg(feature = "zenoh")]
+pub use zenoh::{Gateway, GatewayConfig, GatewayError, Identity, Remote};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;

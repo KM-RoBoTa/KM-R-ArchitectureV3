@@ -11,7 +11,10 @@ kmr_core.workspace = true
 kmr_adapters.workspace = true
 kmr_model.workspace = true
 thiserror.workspace = true
+triple_buffer.workspace = true
 kmr_ffi = { workspace = true, optional = true }
+zenoh = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
@@ -31,6 +34,9 @@ ffi-lua = ["ffi", "kmr_ffi/lua"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
 cubemars = ["kmr_adapters/cubemars"]
+# The Zenoh gateway plugin, `kmr_api::Gateway` (SRS FR-7.1). Off by default: without it no
+# Zenoh crate is compiled (SC-004).
+zenoh = ["dep:zenoh", "dep:tracing"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated
@@ -39,9 +45,16 @@ kmr_core = { workspace = true, features = ["test-util"] }
 color-eyre.workspace = true
 # Compile-fail cases of kmr_api/tests/ui/ (SC-008 (SRS NFR-3)).
 trybuild.workspace = true
+# The remote peer of kmr_api/tests/zenoh.rs, in the test process.
+zenoh.workspace = true
 
 [[example]]
 name = "complete_api_example"
+
+# The gateway against an in-process peer on loopback.
+[[test]]
+name = "zenoh"
+required-features = ["zenoh", "test-util"]
 
 [lints]
 workspace = true

@@ -1,0 +1,15 @@
+error[E0061]: this method takes 3 arguments but 2 arguments were supplied
+  --> tests/ui/zenoh/remote_no_fallback.rs:16:10
+   |
+16 |         .add_remote_source(EachTick, Remote::allow("ctl-2").timeout(Duration::from_millis(20)));
+   |          ^^^^^^^^^^^^^^^^^--------------------------------------------------------------------- argument #3 is missing
+   |
+note: method defined here
+  --> src/robot.rs
+   |
+   |     pub fn add_remote_source<S: Schedule, G>(
+   |            ^^^^^^^^^^^^^^^^^
+help: provide the argument
+   |
+16 |         .add_remote_source(EachTick, Remote::allow("ctl-2").timeout(Duration::from_millis(20)), /* fallback */);
+   |                                                                                               ++++++++++++++++

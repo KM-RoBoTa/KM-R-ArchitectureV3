@@ -17,6 +17,15 @@ two-bus = ["hardware"]
 # Batches keep declaration order: the baseline of presort.sh (assumed, pending human: D11 B, the
 # one place with presort.sh). Built into its own target dir, see bench/PROCEDURE.md.
 presort-off = ["kmr_api/presort-off"]
+# kmr_api's Zenoh gateway plugged into `tick`: default deny, no peer, no endpoint (constitution
+# VI); the cost of the gateway's stages on the tick (kmr_api SC-003). Off by default.
+zenoh = ["kmr_api/zenoh"]
+# `tick_ffi`: an empty C function as an `EachTick` controller (kmr_ffi SC-003). Off by default.
+ffi = ["kmr_api/ffi", "dep:kmr_api"]
+
+[build-dependencies]
+# The build helper alone, for bench/build.rs: compiles bench/ffi/empty.c (D12 A).
+kmr_api = { workspace = true, features = ["ffi-build"], optional = true }
 
 [lints]
 workspace = true
@@ -25,3 +34,12 @@ workspace = true
 [[bin]]
 name = "tick_hw"
 required-features = ["hardware"]
+
+# The foreign-call run; needs a C compiler.
+[[bin]]
+name = "tick_ffi"
+required-features = ["ffi"]
+
+[[test]]
+name = "tick_ffi_runs"
+required-features = ["ffi"]
