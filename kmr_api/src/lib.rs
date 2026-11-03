@@ -37,6 +37,9 @@ pub use units::*;
 mod payload;
 pub use payload::{Payload, Tier};
 
+#[allow(dead_code, reason = "made public by T031")]
+mod slot;
+
 // Schedule labels + the sealed `Schedule` trait come straight from kmr_core: it
 // owns the phase set the control loop can actually run, and the seal stops users
 // inventing a phase that would silently do nothing.

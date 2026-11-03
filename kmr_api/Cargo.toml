@@ -11,6 +11,7 @@ kmr_core.workspace = true
 kmr_adapters.workspace = true
 kmr_model.workspace = true
 thiserror.workspace = true
+triple_buffer.workspace = true
 kmr_ffi = { workspace = true, optional = true }
 
 [features]
