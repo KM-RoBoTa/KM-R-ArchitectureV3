@@ -102,6 +102,9 @@ pub mod dynamixel {
     pub use kmr_adapters::dynamixel::Dynamixel;
     /// Why a Dynamixel bind or bring-up failed; reach it with `downcast_ref`.
     pub use kmr_adapters::dynamixel::DynamixelError;
+    /// Health limits a placement writes to its actuators at bring-up:
+    /// `TABLE.at([..]).health_limits(..)` (D18).
+    pub use kmr_adapters::dynamixel::HealthLimits;
     pub use kmr_adapters::dynamixel::{
         Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
     };
