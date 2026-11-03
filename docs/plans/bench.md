@@ -62,7 +62,7 @@ in [`specs/007-bench/`](../../specs/007-bench/).
 ## Phase 10: Phase B, engine cross-check (US1, US3) (plan B-1)
 
 - [x] T047 [US1] Waits on T046. bench/src/probe.rs `start`: reads `overrun_count()` and `accumulated_overrun()` each tick into `ENGINE_COUNT_PREV`, `ENGINE_ACC_PREV`; when the count grew by one, the slot replay takes the previous tick's `late` from the growth (research R4 phase B); `ENGINE_OVERRUNS_AT_W` at `First` of tick W, `ENGINE_OVERRUNS_AT_END` at `First` of tick K−1. bench/src/bin/tick.rs writes `engine_overruns` (their difference) and `time_surface = "engine"`; flag `inconsistent` when simulated and `engine_overruns ≠ bench_overruns`, both printed. FR-019 asks for all six getters: at `First` of tick K−1 the probe also stores the tick index, `dt`, elapsed time and last overrun, written raw as `engine_tick`, `engine_dt_ns`, `engine_elapsed_ns`, `engine_last_overrun_ns`; no figure depends on them, since `elapsed()`'s origin and `last_overrun()`'s meaning are open (core design open choices 5, 6; the plan reads two getters only: reported). A grid.rs unit test for the growth rule (FR-019 (SRS FR-3.3); SC-005)
-- [ ] T048 [US3] Waits on T047. bench/scripts/ceiling.sh: a candidate holds only when `bench_overruns` and `engine_overruns` are both 0 (research R10)
+- [x] T048 [US3] Waits on T047. bench/scripts/ceiling.sh: a candidate holds only when `bench_overruns` and `engine_overruns` are both 0 (research R10)
 - [x] T049 [US1] Waits on T047. bench/tests/tick_runs.rs: add the `dt` = 10 µs case; quickstart §10 at 1 ms and 10 µs: `engine_overruns = bench_overruns`, no `inconsistent` (SC-005)
 
 ## Phase 11: Phase B, `dt` range check (US3) (plan B-2)

@@ -17,7 +17,8 @@ tick=$(bench_bin tick)
 kernel=$(bench_kernel)
 last="" held=""
 
-# Runs candidate $1 (dt in ns); sets `last` to its report; true when it holds.
+# Runs candidate $1 (dt in ns); sets `last` to its report; true when it holds: complete, and
+# both the bench's and the engine's overrun counts are 0 (research R10).
 try() {
     local dt=$1 ticks status
     ticks=$((HOLD_S * 1000000000 / dt + WARMUP))
@@ -29,7 +30,8 @@ try() {
     complete) ;;
     *) stop "$status" "$(bench_key "$last" reason run)" ;;
     esac
-    [[ $(bench_key "$last" bench_overruns figures) == 0 ]]
+    [[ $(bench_key "$last" bench_overruns figures) == 0 &&
+        $(bench_key "$last" engine_overruns figures) == 0 ]]
 }
 
 # Writes the summary of a search that ended early with status $1, reason $2, and exits.
