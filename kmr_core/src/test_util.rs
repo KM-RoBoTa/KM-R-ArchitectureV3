@@ -156,6 +156,52 @@ impl Host for Scripted {
     }
 }
 
+/// A host for long runs: its clock moves half a [`DT`] per call, so every
+/// tick ends on its deadline; it never sleeps, logs nothing and raises a
+/// shutdown once `ticks` ticks have slept.
+#[derive(Debug)]
+pub struct Ticking {
+    /// Instant 0 of the run.
+    pub origin: Instant,
+    /// Ticks to run.
+    pub ticks: u64,
+    /// Calls to `now` so far.
+    pub now_calls: u32,
+    /// Calls to `sleep_until` so far: the ticks done.
+    pub slept: u64,
+}
+
+impl Ticking {
+    /// A host that runs `ticks` ticks from `origin`.
+    pub fn new(origin: Instant, ticks: u64) -> Self {
+        Self {
+            origin,
+            ticks,
+            now_calls: 0,
+            slept: 0,
+        }
+    }
+}
+
+impl Host for Ticking {
+    fn now(&mut self) -> Instant {
+        let now = self.origin + DT / 2 * self.now_calls;
+        self.now_calls = self.now_calls.wrapping_add(1);
+        now
+    }
+
+    fn sleep_until(&mut self, _deadline: Instant) {
+        self.slept += 1;
+    }
+
+    fn poll(&mut self) -> Option<Signal> {
+        (self.slept >= self.ticks).then(|| Signal {
+            kind: SignalKind::Shutdown,
+            meta: SignalMeta::new("ticking: every tick done", file!(), line!()),
+        })
+    }
+}
+
 /// An adapter call or a bucket walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(missing_docs, reason = "one variant per call or walk of the same name")]
