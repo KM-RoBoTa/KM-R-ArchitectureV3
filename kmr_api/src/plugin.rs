@@ -20,6 +20,9 @@ pub(crate) mod seal {
 pub struct Plugins {
     /// The bus plugins.
     pub(crate) buses: Vec<Bus>,
+    /// The gateways; more than one is refused at finalization.
+    #[cfg(feature = "zenoh")]
+    pub(crate) gateways: Vec<crate::zenoh::Gateway>,
 }
 
 impl seal::Plug for Bus {

@@ -32,14 +32,22 @@ pub struct LatestReader<T: Copy + Send> {
 impl<T: Copy + Send> Latest<T> {
     /// An empty slot: the first take returns `None` until a put.
     pub fn new() -> Self {
+        Self::counting(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// An empty slot whose superseded count is `counter`, shared with the caller.
+    #[cfg_attr(not(feature = "zenoh"), allow(dead_code))]
+    pub(crate) fn counting(counter: Arc<AtomicU64>) -> Self {
         let (input, output) = triple_buffer(&None);
-        let superseded = Arc::new(AtomicU64::new(0));
         Self {
             writer: LatestWriter {
                 input,
-                superseded: Arc::clone(&superseded),
+                superseded: Arc::clone(&counter),
             },
-            reader: LatestReader { output, superseded },
+            reader: LatestReader {
+                output,
+                superseded: counter,
+            },
         }
     }
 

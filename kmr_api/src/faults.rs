@@ -23,7 +23,7 @@ impl<const N: usize> Faults<N> {
 
     /// The whole-tick flags as bits, the core's `TickFlags` layout (the FFI view's
     /// `tick_flags`).
-    #[cfg_attr(not(feature = "ffi"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "ffi", feature = "zenoh")), allow(dead_code))]
     pub(crate) fn tick_bits(&self) -> u32 {
         self.tick.bits()
     }
