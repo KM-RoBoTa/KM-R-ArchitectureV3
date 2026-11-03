@@ -220,6 +220,34 @@ The summary report, cell `<nonrt|rt>-<none|all>`, gives `budget_ns`, `overhead_n
 window, so it is an upper bound. When workload 0 already overruns, `budget_ns` and `overhead_ns`
 are absent: the loop did not hold 1 kHz for `HOLD_S`.
 
+## Pre-sort
+
+The write batch is sorted by group before it goes out; the `presort-off` feature keeps
+declaration order instead (assumed, pending human: D11 B, the one place: this feature and
+`presort.sh`; FR-016 (SRS FR-5.3)). It is a second build, in its own target dir:
+
+```sh
+cargo build -p kmr_bench --release --bins --features presort-off --target-dir target/presort-off
+```
+
+```sh
+sudo -E bench/scripts/presort.sh           # cost, simulated: about 24 min
+sudo -E bench/scripts/presort.sh --gain    # gain, on the reference chain: about 45 min
+```
+
+- Cost: `budget.sh --write all` on the default build, then on the `presort-off` build. The
+  report `presort-<nonrt|rt>-cost-<n>.toml` gives `overhead_presort_ns`,
+  `overhead_presort_off_ns` and `presort_cost_ns`, their difference, to
+  `presort_cost_resolution_ns` (1 µs): a sort of a few actuators may read 0.
+- Gain: `budget.sh --hw` on both builds (the `presort-off` one also needs
+  `cargo build -p kmr_bench --release --bin tick_hw --features hardware,presort-off --target-dir
+  target/presort-off`). Each hardware summary is copied into `presort-gain-<n>/default` and
+  `presort-gain-<n>/presort-off`, and `results compare` of the two is kept as
+  `presort-gain-<n>/compare.txt`. Expected zero on XmBench (one bus, research R15).
+
+The `presort-off` searches report under `bench/reports/presort-off/<commit12>/<host_id>/`, so the
+main set never holds two budget summaries of one cell.
+
 ## Footprint (e)
 
 ```sh
