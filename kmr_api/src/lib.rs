@@ -46,6 +46,10 @@ pub use kmr_core::hal::MemberError;
 /// The drivers of a robot without a bus plugin: it simulates, reading and
 /// writing nothing.
 pub use kmr_core::hal::NoHardware;
+/// Words of a write mask and of the kind bit sets `robot!` emits
+/// (`model::PRISMATIC`, `model::CONTINUOUS`): the path kmr_model's output names.
+#[doc(hidden)]
+pub use kmr_core::hal::MASK_WORDS;
 
 mod brand;
 mod spec;
