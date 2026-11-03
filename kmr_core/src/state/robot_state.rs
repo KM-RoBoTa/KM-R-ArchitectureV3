@@ -13,23 +13,17 @@ use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 
 /// The robot state abstraction.
 ///
-/// It holds both the desired values, and the history of states.
-///
-/// `DEPTH` is the number of ticks kept in the history, NOT the joint count
-/// (that one is fixed by [`JOINTS`]). It defaults to [`HISTORY_DEPTH`] so that
-/// signatures write a bare `RobotState`: with nothing to pass, the joint count
-/// cannot be passed as the depth by mistake.
-///
-/// Transitional: `docs/decisions/0001-joint-count-and-history-depth.md`
-/// proposes to drop the parameter and keep both sizes as constants.
-pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
+/// It holds both the desired values, and the history of states. The history
+/// keeps [`HISTORY_DEPTH`] ticks, a fixed capacity (SRS section 8, decision
+/// 0001).
+pub struct RobotState {
     pub(in crate::state) desired: Desired<JOINTS>,
-    pub(in crate::state) history: History<JOINTS, DEPTH>,
+    pub(in crate::state) history: History<JOINTS, HISTORY_DEPTH>,
     /// Read cadence of each actuator in ticks, from the layout; 1 until set.
     pub(in crate::state) cadence: [NonZeroU32; JOINTS],
 }
 
-impl<const DEPTH: usize> Default for RobotState<DEPTH> {
+impl Default for RobotState {
     fn default() -> Self {
         Self {
             desired: Desired::default(),
@@ -45,7 +39,7 @@ impl<const DEPTH: usize> Default for RobotState<DEPTH> {
 /// let mut robot = <RobotState>::default();
 /// robot.desired.q[0] = 1.0;
 /// ```
-impl<const DEPTH: usize> RobotState<DEPTH> {
+impl RobotState {
     // ── Desired setters ─────────────────────────────────────────────────
 
     /// Write one desired value to `index` in the slot selected by `T`, and
@@ -147,7 +141,7 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
 }
 
 /// The engine's side: what it hands the adapter and resets once applied.
-impl<const DEPTH: usize> RobotState<DEPTH> {
+impl RobotState {
     /// Takes the read cadence of the finished layout.
     pub(crate) fn set_cadence(&mut self, cadence: [NonZeroU32; JOINTS]) {
         self.cadence = cadence;
@@ -223,7 +217,7 @@ fn overlay<T: Copy>(mut sample: [T; JOINTS], desired: &[T; JOINTS], mask: Mask) 
 // runtime's job, and the desired buffer stays write-only for users.
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
-impl<const DEPTH: usize> RobotState<DEPTH> {
+impl RobotState {
     /// Push one sensed sample as the newest history entry.
     pub fn record_sample(&mut self, q: [Q; JOINTS], qd: [Qd; JOINTS], tau: [Tau; JOINTS]) {
         let gains = State::default();

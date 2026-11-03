@@ -498,18 +498,21 @@ fn default_history_keeps_history_depth_ticks() {
 #[test]
 fn history_depth_is_independent_of_the_joint_count() {
     const DEPTH: usize = JOINTS + 5;
-    let mut robot = RobotState::<DEPTH> {
-        desired: zeroed_desired(),
-        ..RobotState::default()
-    };
+    let mut history = History::<JOINTS, DEPTH>::default();
 
     for _ in 0..DEPTH + 1 {
-        robot.history.buf.push_back(zeroed_state());
+        history.buf.push_back(zeroed_state());
     }
 
-    assert_eq!(robot.history.buf.len(), DEPTH);
-    assert_eq!(robot.set_at(Q(1.0), JOINTS - 1), Ok(()));
-    assert_eq!(robot.prev::<Q>(DEPTH - 1), Ok(&[Q(0.0); JOINTS]));
+    assert_eq!(history.buf.len(), DEPTH);
+    assert_eq!(
+        history.buf.nth_back(DEPTH - 1).map(|s| s.q),
+        Some([Q(0.0); JOINTS])
+    );
+    assert_eq!(
+        <RobotState>::default().history.buf.capacity(),
+        HISTORY_DEPTH
+    );
 }
 
 // --- write mask ---
