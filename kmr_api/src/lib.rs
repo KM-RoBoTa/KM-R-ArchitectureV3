@@ -20,6 +20,11 @@ pub use kmr_core::limits::{Envelope, Limit, Policy};
 mod faults;
 pub use faults::{Faults, Mask};
 
+mod fallback;
+#[doc(hidden)]
+pub use fallback::Guarded;
+pub use fallback::{any_of, remote_timeout, stale_in};
+
 mod home;
 pub use home::HomeDecided;
 

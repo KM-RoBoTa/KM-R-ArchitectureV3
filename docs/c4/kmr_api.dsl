@@ -47,7 +47,7 @@
     }
 
     group "kmr_api: builder" {
-        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins, register_payload, add_controller, add_controller_with, add_controller_as_thread, run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
+        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins, register_payload, add_controller, add_controller_or, add_controller_with, add_controller_as_thread, run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
             tags "Code"
         }
         apiBound = component "kmr_api::Bound" "A finalized robot with its drivers: drivers() before the run, run() hands them back after it." "Rust struct" {
@@ -87,6 +87,9 @@
 
     group "kmr_api: controller handles" {
         apiState = component "kmr_api::State, N" "Whole-robot and per-index getters, prev_* history reads and setters for Q, Qd, Tau, Kp, Kd; age_at, sample_age, read_every, stale_at, faults and prev_faults; initial_state and go_home do not build while SRS FR-2.7 is open." "Rust struct, const" {
+            tags "Code"
+        }
+        apiFallback = component "kmr_api::Guarded, stale_in, remote_timeout, any_of" "add_controller_or's node: each tick a predicate over the tick's Faults runs the controller or its fallback, exactly one. Named type, no dyn, no heap (SRS FR-13.5)." "Rust struct, fns" {
             tags "Code"
         }
         apiFaults = component "kmr_api::Faults, Mask" "Read-only copy of one tick's fault masks (stale, bus_error, offline, rejected, joint_limit, envelope) and flags (overrun, sensor_missing, remote_timeout, unauthorized). No setter (SRS FR-13.4)." "Rust struct" {
@@ -143,6 +146,7 @@
     apiBrandModule -> apiBrandTrait "Implements for the Dynamixel part"
     apiState -> apiGroupView "Creates"
     apiState -> apiFaults "Hands out"
+    apiFallback -> apiFaults "Picks the controller by"
     apiState -> apiHomeDecided "Bounds the home calls on"
     apiFakeTypes -> apiBrandTrait "Implements"
 

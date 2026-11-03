@@ -332,6 +332,11 @@ and one check: N ≤ 64, under `cargo check` at the `robot!` line (the core's
 and has none is `UserError::NoPolicy`, before any I/O (D2 B, assumed). A
 placeholder model hands no limit until its real descriptor lands.
 
+**Fallbacks.** `add_controller_or(phase, f, when, fallback)` stores one node
+that reads the tick's `Faults` and runs exactly one of `f` and `fallback`;
+`when` is any `Fn(&Faults<N>) -> bool`, built from `stale_in(&GROUP)`,
+`remote_timeout()` and `any_of`.
+
 ## Hardware layer
 
 The engine drives hardware through one contract, the `Hal` trait in

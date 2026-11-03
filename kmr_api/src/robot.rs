@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use crate::fallback::Guarded;
 use crate::spec::Lend;
 use crate::{
     Binding, Bus, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
@@ -31,7 +32,7 @@ use kmr_core::{
 // field is private — users can neither forge one nor read it. Same opaque
 // posture as `kmr_core::Inline`.
 #[doc(hidden)]
-pub struct ApiInline<F>(F);
+pub struct ApiInline<F>(pub(crate) F);
 
 impl<const N: usize, F> ControlFn<N> for ApiInline<F>
 where
@@ -293,6 +294,32 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         // the core's `ControlFn` entry. The core stores `Inline<ApiInline<F>>`
         // and calls back through `ControlFn::call` (above) each tick.
         self.grown(|inner| inner.add_control_fn(schedule, ApiInline(f)))
+    }
+
+    /// Adds `f` with its `fallback`: each tick, `when` reads the tick's [`Faults`](crate::Faults)
+    /// and exactly one of the two runs, `fallback` when `when` is true (SRS FR-13.5). Build
+    /// `when` from [`stale_in`](crate::stale_in), [`remote_timeout`](crate::remote_timeout) and
+    /// [`any_of`](crate::any_of), or any `Fn(&Faults<N>) -> bool`. No hold policy: a fallback
+    /// that writes nothing sends nothing (FR-050).
+    pub fn add_controller_or<S: Schedule, F, P, G>(
+        self,
+        schedule: S,
+        f: F,
+        when: P,
+        fallback: G,
+    ) -> Robot<N, H, C::Output, Filled>
+    where
+        C: Insert<S, Inline<ApiInline<Guarded<F, G, P>>>>,
+        F: Fn(&Time, &mut State<'_, N>, &Sensors),
+        G: Fn(&Time, &mut State<'_, N>, &Sensors),
+        P: Fn(&crate::Faults<N>) -> bool,
+    {
+        let guarded = Guarded {
+            controller: f,
+            fallback,
+            when,
+        };
+        self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
     }
 
     // Same as [`add_controller`], but for controllers that need their OWN
@@ -796,5 +823,122 @@ mod scripted {
         assert_eq!(seen.map(|s| s.dt), [DT; 3]);
         assert_eq!(seen[0].elapsed, Duration::ZERO);
         assert_eq!(seen[1].elapsed, DT * 2);
+    }
+}
+
+/// Fallbacks and envelopes on the core's scripted host and recording adapter (quickstart
+/// § Phase E). In the crate: the run needs the finalized core robot.
+// DECISION: here rather than kmr_api/tests/run.rs: the scripted host drives the core robot,
+// which only the crate can reach after `finalize`.
+#[cfg(test)]
+mod guards {
+    use core::cell::RefCell;
+    use std::time::Instant;
+
+    use kmr_core::test_util::{DT, Log, PER_TICK, Recorder, Scripted, TICK_END, run_scripted};
+
+    use super::tests::TestSpec;
+    use super::*;
+    use crate::{EachTick, Mask, Q, any_of, remote_timeout, stale_in};
+
+    /// Runs the finalized `robot` on `recorder` for `ticks` ticks.
+    fn run<C: kmr_core::Drive<4>>(
+        robot: Robot<4, TestSpec, C, Filled>,
+        recorder: Recorder<'_, 4>,
+        ticks: usize,
+    ) {
+        let (mut inner, _) = robot.finalize().expect("a valid builder");
+        let mut host =
+            Scripted::new(Instant::now()).shutdown_from(TICK_END + (ticks - 1) * PER_TICK);
+        let mut drivers = HCons {
+            head: recorder,
+            tail: HNil,
+        };
+        let signal = run_scripted(&mut inner, &mut host, &mut drivers);
+        assert!(signal.is_ok());
+    }
+
+    #[test]
+    fn us5_a_fallback_on_stale_in_a_runs_in_place_of_the_controller_for_that_tick() {
+        const A: [usize; 2] = [2, 3];
+        let log = Log::new();
+        let mut faults = kmr_core::hal::Faults::default();
+        faults.stale.set(3);
+        let recorder = Recorder {
+            faults,
+            faults_on: Some(1),
+            ..Recorder::new(&log)
+        };
+        let ran = RefCell::new(Vec::new());
+        let mark = |name: &'static str| {
+            let ran = &ran;
+            move |_t: &Time, _s: &mut State<'_, 4>, _se: &Sensors| ran.borrow_mut().push(name)
+        };
+        let robot = Robot::<4, TestSpec>::new()
+            .set_dt(DT)
+            .set_limit_policy_all(Policy::Clamp)
+            .add_controller_or(
+                EachTick,
+                mark("controller"),
+                any_of(stale_in(&A), remote_timeout()),
+                mark("fallback"),
+            );
+
+        run(robot, recorder, 3);
+
+        assert_eq!(*ran.borrow(), ["controller", "fallback", "controller"]);
+    }
+
+    /// The position the adapter was sent for `value` written to `targets`, and the
+    /// `envelope` bits of that tick, under `envelope` on `slice`.
+    fn sweep<const K: usize>(
+        slice: &[usize; K],
+        targets: &[usize],
+        value: f32,
+    ) -> ([Q; 4], Mask<4>) {
+        let log = Log::new();
+        let bits = RefCell::new(Mask::NONE);
+        let envelope = Envelope {
+            q: Some((Q(-0.5), Q(0.5))),
+            ..Envelope::NONE
+        };
+        let robot = Robot::<4, TestSpec>::new()
+            .set_dt(DT)
+            .set_limit_policy_all(Policy::Clamp)
+            .set_envelope_group(slice, envelope)
+            .add_controller(
+                EachTick,
+                |time: &Time, state: &mut State<'_, 4>, _: &Sensors| {
+                    if time.tick() == 0 {
+                        for &i in targets {
+                            state.set_q_at(Q(value), i).expect("in range");
+                        }
+                    } else if let Ok(faults) = state.prev_faults(1) {
+                        *bits.borrow_mut() = faults.envelope();
+                    }
+                },
+            );
+
+        run(robot, Recorder::new(&log), 2);
+
+        let sent = log.write.get().expect("tick 0 wrote");
+        (sent.q, bits.into_inner())
+    }
+
+    #[test]
+    fn sc_013_out_of_envelope_targets_reach_the_adapter_clamped_and_flagged() {
+        for (value, sent) in [(-2.0, -0.5), (0.2, 0.2), (3.0, 0.5)] {
+            let (q, bits) = sweep(&[0], &[0], value);
+            assert_eq!(q[0], Q(sent));
+            assert_eq!(bits.get(0), value != sent, "{value}");
+            assert!(!bits.get(1));
+        }
+    }
+
+    #[test]
+    fn us5_an_envelope_on_a_group_slice_reaches_every_actuator_of_the_slice() {
+        let (q, bits) = sweep(&[1, 3], &[0, 1, 2, 3], 0.9);
+        assert_eq!(q, [Q(0.9), Q(0.5), Q(0.9), Q(0.5)]);
+        assert_eq!(bits.iter().collect::<Vec<_>>(), [1, 3]);
     }
 }
