@@ -182,3 +182,50 @@ mod preset {
         assert_eq!(__TABLE.buses[0].label, "bus0");
     }
 }
+
+/// SC-009 (SRS FR-6.1): robots of 1, 4, 10 and 64 actuators build from one binary, each
+/// through `robot!`, and each runs on no hardware until a `shutdown!` at tick 1.
+mod sc_009 {
+    use std::sync::{Mutex, PoisonError};
+
+    /// The signal bus is process-global: the runs take this first.
+    static BUS: Mutex<()> = Mutex::new(());
+
+    /// A module with the robot of `$path`, of `$n` actuators, and its run test.
+    macro_rules! robot_of {
+        ($name:ident, $path:literal, $n:literal) => {
+            mod $name {
+                use std::time::Duration;
+
+                use kmr_api::{EachTick, Q, Sensors, Time};
+
+                kmr_api::robot!(model = $path);
+
+                fn stop_at_tick_1(time: &Time, robot: &mut State, _s: &Sensors) {
+                    robot.set_all_q([Q(0.0); N]);
+                    if time.tick() >= 1 {
+                        kmr_api::shutdown!("test: tick 1");
+                    }
+                }
+
+                #[test]
+                fn builds_and_runs_until_a_shutdown() {
+                    let _bus = super::BUS
+                        .lock()
+                        .unwrap_or_else(super::PoisonError::into_inner);
+                    assert_eq!(N, $n);
+                    let result = Robot::new()
+                        .set_dt(Duration::from_millis(1))
+                        .add_controller(EachTick, stop_at_tick_1)
+                        .run();
+                    assert!(result.is_ok(), "{result:?}");
+                }
+            }
+        };
+    }
+
+    robot_of!(n_1, "tests/fixtures/continuous.urdf", 1);
+    robot_of!(n_4, "tests/fixtures/four.urdf", 4);
+    robot_of!(n_10, "tests/fixtures/ten.urdf", 10);
+    robot_of!(n_64, "tests/fixtures/sixty_four.urdf", 64);
+}
