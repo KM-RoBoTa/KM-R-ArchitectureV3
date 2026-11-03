@@ -1,1 +1,0 @@
-../../../.specify/extensions/ov/.specify-dev/agent-commands/claude/speckit-ov-nogo/SKILL.md
