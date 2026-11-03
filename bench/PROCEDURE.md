@@ -198,6 +198,7 @@ then carries that status and names the candidate.
 ```sh
 sudo -E bench/scripts/budget.sh                # the probe writes nothing
 sudo -E bench/scripts/budget.sh --write all    # the probe writes every actuator each tick
+sudo -E bench/scripts/budget.sh --hw           # on the reference chain, see "Reference chain"
 ```
 
 The engine's time per tick is never seen directly (black-box, FR-003). Instead an `EachTick`
@@ -248,7 +249,7 @@ Assumed, pending human: D10. The hardware runs (`tick_hw`, `budget.sh --hw`, `pr
 |---|---|
 | Robot | preset `XmBench`: 4 × Dynamixel XM430-W210, ids 1 to 4, one bus, 1 Mbaud |
 | Adapter | one ROBOTIS U2D2, serial id `FT8ISZ6H` (`/dev/serial/by-id`) |
-| Supply | not fixed yet: the human records model and voltage here (D10) |
+| Supply | not fixed yet: the human records model and voltage here (D10); each report also carries `supply_mv` and `supply_meter` |
 | Source line | `const SERIAL` in `bench/src/bin/tick_hw.rs`, the only line two benches differ in |
 
 ```sh
@@ -267,7 +268,31 @@ lower bound of it.
 `[meta]` of a `tick_hw` report carries `read_cadence` (the cadence the engine exposes; the bench
 never sets it, D9 A) and `declared_read_ns`, `declared_write_ns` (`XmBench::READ_COST` and
 `WRITE_COST`, through `kmr_api::presets`). A `two-bus` build has no declared costs: its table is
-not a preset. The I/O figures wait on task T059.
+not a preset.
+
+### Hardware budget
+
+```sh
+sudo -E bench/scripts/budget.sh --hw    # about 22 min: the simulated search, then the chain's
+```
+
+`--hw` always writes every actuator (`--write all`): first the simulated search on `tick`, then
+the same search on `tick_hw`, cells `<nonrt|rt>-hw-w<work_ns>`. On the chain a candidate is held
+when its write-only ticks never overran (`write_only_bench_overruns = 0`) and there was at least
+one; read ticks are reported, not judged. No 10 µs floor run on the chain. The summary, cell
+`<nonrt|rt>-hw-all`, puts the engine next to the I/O, with no verdict (research R16; FR-015,
+FR-017):
+
+| Key | Meaning |
+|---|---|
+| `budget_ns`, `overhead_ns` | the chain's budget at 1 ms and `dt − budget_ns` |
+| `engine_overhead_ns` | `dt − budget_ns` of the simulated search (`tick`), same commit and robot |
+| `io_write_tick_ns` | budget(simulated) − budget(hardware): the write tick's I/O |
+| `io_read_ns` | `read_jitter_p50_ns − write_only_jitter_p50_ns` of the held candidate |
+| `read_ticks`, `write_only_ticks`, `read_bench_overruns` | the held candidate's split |
+
+A figure whose search held nothing is absent. Hand `io_write_tick_ns` and `io_read_ns` to
+kmr_adapters T063 for `DEFAULT_READ_EVERY` (D9 A).
 
 ## Reports
 
