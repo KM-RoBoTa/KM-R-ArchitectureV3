@@ -72,8 +72,15 @@ pub fn main<H: Spec>(bench: &Bench<'_>) -> ExitCode {
         Ok(()) => Outcome::Complete,
     };
     let complete = outcome == Outcome::Complete;
+    let simulated = bench.plugins.is_empty();
+    let bench_overruns = probe::BENCH_OVERRUNS.load(Relaxed);
+    let engine_overruns = probe::engine_overruns();
     let flags = Flags::empty()
-        .with_if(Flags::SIMULATED, bench.plugins.is_empty())
+        .with_if(Flags::SIMULATED, simulated)
+        .with_if(
+            Flags::INCONSISTENT,
+            complete && simulated && engine_overruns != bench_overruns,
+        )
         .with_if(
             Flags::UNCALIBRATED,
             complete && drift.is_some_and(calib::uncalibrated),
@@ -92,7 +99,7 @@ pub fn main<H: Spec>(bench: &Bench<'_>) -> ExitCode {
             outcome,
             flags,
             ticks_done: done,
-            time_surface: "absent",
+            time_surface: "engine",
             calibration: Some(Calibration {
                 ps_per_iter_before: ps_before,
                 ps_per_iter_after: ps_after,
@@ -111,12 +118,17 @@ pub fn main<H: Spec>(bench: &Bench<'_>) -> ExitCode {
             f.int_opt("jitter_p50_ns", probe::LATENESS.p50())?;
             f.int_opt("jitter_p99_ns", probe::LATENESS.p99())?;
             f.int_opt("jitter_max_ns", probe::LATENESS.max())?;
-            f.int("bench_overruns", probe::BENCH_OVERRUNS.load(Relaxed))?;
+            f.int("bench_overruns", bench_overruns)?;
+            f.int("engine_overruns", engine_overruns)?;
             f.int_opt("gap_on_time_min_ns", probe::GAP_ON_TIME.min())?;
             f.int_opt("gap_on_time_p50_ns", probe::GAP_ON_TIME.p50())?;
             f.int_opt("gap_after_late_min_ns", probe::GAP_AFTER_LATE.min())?;
             f.int_opt("vm_hwm_kb", vm_hwm_kb)?;
             f.int_opt("stack_kb", stack_kb)?;
+            f.int("engine_tick", probe::ENGINE_TICK.load(Relaxed))?;
+            f.int("engine_dt_ns", probe::ENGINE_DT_NS.load(Relaxed))?;
+            f.int("engine_elapsed_ns", probe::ENGINE_ELAPSED_NS.load(Relaxed))?;
+            f.int_opt("engine_last_overrun_ns", probe::engine_last_overrun_ns())?;
         }
         Ok(())
     });
