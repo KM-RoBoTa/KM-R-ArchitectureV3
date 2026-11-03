@@ -72,7 +72,10 @@ stop() {
 }
 
 budget=""
-if try "$dt" 0 "$kernel-w0"; then
+zero_held=no
+try "$dt" 0 "$kernel-w0" && zero_held=yes
+first=$last
+if [[ $zero_held == yes ]]; then
     lo=0 hi=$dt budget=0 held=$last
     while ((hi - lo > BUDGET_STEP_NS)); do
         mid=$(((lo + hi) / 2 / BUDGET_STEP_NS * BUDGET_STEP_NS))
@@ -87,7 +90,9 @@ fi
 try "$CEIL_DT_MIN_NS" 0 "$kernel-floor-w0" || true
 floor=$last
 
-head=${held:-$floor}
+# The head comes from the held candidate, else workload 0: never from the 10 us run, whose
+# flags (often inconsistent, see probe.rs ORIGIN) are not the budget's.
+head=${held:-$first}
 out=$(bench_next_report "$(dirname "$floor")" budget "$kernel-$write")
 {
     bench_head "$head" budget "$kernel-$write"
