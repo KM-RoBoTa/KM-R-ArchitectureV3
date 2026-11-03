@@ -43,7 +43,9 @@ scaffold, copying templates. Do it and mention it in one line.
 **Decisions you don't take alone:**
 
 - anything `pub`: signature, visibility, new item, re-export, trait impl on a
-  pub type. In `kmr_core`, widening `pub(crate)` counts.
+  pub type. In `kmr_core`, widening `pub(crate)` counts. A `pub` item that a
+  plan task or `specs/<module>/contracts/` spells out is already decided:
+  build it as written.
 - data layout: `#[repr]`, field order, field types, enum discriminants,
   anything a `size_of` test pins
 - dependencies: adding, removing, bumping, feature flags
