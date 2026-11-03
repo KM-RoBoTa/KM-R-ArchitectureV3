@@ -45,3 +45,16 @@ fn c_built_for_the_robot_of_robot_macro_links() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn c_built_for_another_n_fails_at_foreign() {
+    let out = cargo("check", "two.urdf");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("error[E0080]"), "{err}");
+    assert!(
+        err.contains("kmr_ffi: C sources were built for another N"),
+        "{err}"
+    );
+    assert!(err.contains("src/main.rs:5:1"), "{err}");
+}
