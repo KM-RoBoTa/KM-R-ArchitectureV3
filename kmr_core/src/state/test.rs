@@ -24,7 +24,7 @@ fn create_test_robot() -> RobotState {
     }
 }
 
-fn zeroed_desired() -> Desired {
+fn zeroed_desired() -> Desired<JOINTS> {
     Desired {
         q: [Q(0.0); JOINTS],
         qd: [Qd(0.0); JOINTS],
@@ -436,6 +436,23 @@ fn slot_returns_full_length_array() {
     assert_eq!(Q::slot(&mut desired).len(), JOINTS);
     assert_eq!(Qd::slot(&mut desired).len(), JOINTS);
     assert_eq!(Tau::slot(&mut desired).len(), JOINTS);
+}
+
+#[test]
+fn slot_routes_each_field_for_any_actuator_count() {
+    let mut desired = Desired::<7>::default();
+    <Kd as Slot>::slot(&mut desired)[6] = Kd(2.0);
+    <Q as Slot>::slot(&mut desired)[0] = Q(1.0);
+
+    assert_eq!(desired.kd[6], Kd(2.0));
+    assert_eq!(desired.q[0], Q(1.0));
+    assert_eq!(desired.kp, [Kp(0.0); 7]);
+    let state = State::<7> {
+        tau: [Tau(3.0); 7],
+        ..State::default()
+    };
+    assert_eq!(<Tau as Slot>::field(&state), &[Tau(3.0); 7]);
+    assert_eq!(<Qd as Slot>::field(&state), &[Qd(0.0); 7]);
 }
 
 #[cfg(not(feature = "joints-10"))]

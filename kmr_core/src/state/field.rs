@@ -1,4 +1,3 @@
-use super::JOINTS;
 use super::desired::Desired;
 use super::history::State;
 use super::joint_state::{Kd, Kp, Q, Qd, Tau};
@@ -11,14 +10,16 @@ use crate::hal::{Mask, Written};
 /// and keeps the private `Desired` out of the public API, even though
 /// `StateField` itself bounds public methods.
 pub(crate) mod sealed {
-    use super::{Desired, FieldId, JOINTS, State};
+    use super::{Desired, FieldId, State};
     use crate::hal::{Mask, Written};
 
     pub(crate) trait Slot: Sized + Copy + From<f32> {
         /// Which field this is, for the crates that dispatch on it.
         const ID: FieldId;
-        fn slot(desired: &mut Desired) -> &mut [Self; JOINTS];
-        fn field(state: &State<JOINTS>) -> &[Self; JOINTS];
+        /// The desired array of this field.
+        fn slot<const N: usize>(desired: &mut Desired<N>) -> &mut [Self; N];
+        /// The array of this field in one history slot.
+        fn field<const N: usize>(state: &State<N>) -> &[Self; N];
         /// The write mask of this field.
         fn mask(written: &mut Written) -> &mut Mask;
     }
@@ -76,10 +77,10 @@ pub trait StateField: sealed::Slot {}
 
 impl sealed::Slot for Q {
     const ID: FieldId = FieldId::Q;
-    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+    fn slot<const N: usize>(desired: &mut Desired<N>) -> &mut [Self; N] {
         &mut desired.q
     }
-    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+    fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.q
     }
     fn mask(written: &mut Written) -> &mut Mask {
@@ -100,10 +101,10 @@ impl From<Q> for f32 {
 
 impl sealed::Slot for Qd {
     const ID: FieldId = FieldId::Qd;
-    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+    fn slot<const N: usize>(desired: &mut Desired<N>) -> &mut [Self; N] {
         &mut desired.qd
     }
-    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+    fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.qd
     }
     fn mask(written: &mut Written) -> &mut Mask {
@@ -124,11 +125,11 @@ impl From<Qd> for f32 {
 
 impl sealed::Slot for Tau {
     const ID: FieldId = FieldId::Tau;
-    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+    fn slot<const N: usize>(desired: &mut Desired<N>) -> &mut [Self; N] {
         &mut desired.tau
     }
 
-    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+    fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.tau
     }
 
@@ -150,11 +151,11 @@ impl From<Tau> for f32 {
 
 impl sealed::Slot for Kp {
     const ID: FieldId = FieldId::Kp;
-    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+    fn slot<const N: usize>(desired: &mut Desired<N>) -> &mut [Self; N] {
         &mut desired.kp
     }
 
-    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+    fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.kp
     }
 
@@ -176,11 +177,11 @@ impl From<Kp> for f32 {
 
 impl sealed::Slot for Kd {
     const ID: FieldId = FieldId::Kd;
-    fn slot(desired: &mut Desired) -> &mut [Self; JOINTS] {
+    fn slot<const N: usize>(desired: &mut Desired<N>) -> &mut [Self; N] {
         &mut desired.kd
     }
 
-    fn field(state: &State<JOINTS>) -> &[Self; JOINTS] {
+    fn field<const N: usize>(state: &State<N>) -> &[Self; N] {
         &state.kd
     }
 

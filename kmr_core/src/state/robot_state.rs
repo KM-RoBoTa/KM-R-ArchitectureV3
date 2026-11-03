@@ -23,7 +23,7 @@ use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
 /// Transitional: `docs/decisions/0001-joint-count-and-history-depth.md`
 /// proposes to drop the parameter and keep both sizes as constants.
 pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
-    pub(in crate::state) desired: Desired,
+    pub(in crate::state) desired: Desired<JOINTS>,
     pub(in crate::state) history: History<JOINTS, DEPTH>,
     /// Read cadence of each actuator in ticks, from the layout; 1 until set.
     pub(in crate::state) cadence: [NonZeroU32; JOINTS],
