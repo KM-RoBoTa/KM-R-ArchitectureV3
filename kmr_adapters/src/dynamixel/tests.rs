@@ -5,9 +5,11 @@
 //! ports [`mark_open`] opened; `open` itself is tested on its error paths,
 //! and on pseudo-terminals where the system lends them.
 
+use core::cell::Cell;
 use core::num::NonZeroU32;
 use core::time::Duration;
 use core::{fmt, iter};
+use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -3749,4 +3751,112 @@ fn one_adapter_type_serves_a_ten_actuator_robot() {
         .check(Overrides::default())
         .expect("the preset is valid");
     assert_eq!(claim.owned, Mask::<10>::ALL);
+}
+
+// ── T059: no allocation per tick (SC-008 (SRS NFR-1)) ───────────────────────
+
+// DECISION: the counting allocator lives in the lib's test binary, not an
+// integration test: the scripted backend is test-only and crate-private. Its
+// counter is per thread, so the other tests running beside it count nothing.
+thread_local! {
+    /// Whether this thread counts its allocations: const, no destructor.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    /// Allocations this thread made while counting.
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// [`System`] plus a per-thread count of the allocations made while the
+/// thread counts.
+struct Counting;
+
+impl Counting {
+    /// Counts one allocation when this thread counts; a thread being torn
+    /// down counts nothing.
+    fn count() {
+        if COUNTING.try_with(Cell::get).unwrap_or(false) {
+            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+        }
+    }
+}
+
+// SAFETY: every method forwards its arguments unchanged to `System`, which
+// upholds the `GlobalAlloc` contract; the count touches neither the layout
+// nor the pointers and allocates nothing (two const thread-local `Cell`s).
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
+        Self::count();
+        // SAFETY: the caller's contract for `alloc` is passed on as is.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: AllocLayout) -> *mut u8 {
+        Self::count();
+        // SAFETY: the caller's contract for `alloc_zeroed` is passed on as is.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: AllocLayout, new_size: usize) -> *mut u8 {
+        Self::count();
+        // SAFETY: `ptr` came from this allocator, which is `System`; the
+        // caller's contract holds.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
+        // SAFETY: `ptr` came from this allocator, which is `System`; the
+        // caller's contract holds.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+/// The allocator of the lib's test binary.
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+/// Allocations `run` makes on this thread.
+fn allocations(run: impl FnOnce()) -> u64 {
+    let before = ALLOCATIONS.with(Cell::get);
+    COUNTING.with(|counting| counting.set(true));
+    run();
+    COUNTING.with(|counting| counting.set(false));
+    ALLOCATIONS.with(Cell::get) - before
+}
+
+/// Ticks of the no-allocation run.
+const TICKS: usize = 10_000;
+
+#[test]
+fn the_counter_sees_an_allocation_on_its_thread() {
+    let counted = allocations(|| drop(std::hint::black_box(vec![0_u8; 16])));
+    assert!(counted >= 1);
+}
+
+#[test]
+fn ten_thousand_read_and_write_ticks_allocate_nothing() -> Result<(), DynamixelError> {
+    let mut adapter = bound(MIX_TABLE, &MIX_PLUGINS);
+    let layout = powered(&mut adapter)?;
+    let mut slot = Slot::filled(0.0);
+    let desired = [Desired::ramp(), Desired::all_q()];
+    // One warm-up tick of each: lazy statics and log callsites settle first.
+    for written in &desired {
+        read(&mut adapter, &mut slot);
+        write(&mut adapter, &layout, written);
+    }
+
+    let counted = allocations(|| {
+        for tick in 0..TICKS {
+            let (_, read_faults) = read(&mut adapter, &mut slot);
+            let write_faults = write(&mut adapter, &layout, &desired[tick % 2]);
+            assert_eq!(
+                (read_faults, write_faults),
+                (Faults::default(), Faults::default())
+            );
+        }
+    });
+
+    assert_eq!(counted, 0, "{counted} allocations in {TICKS} ticks");
+    assert!(adapter.backend.count(Call::SyncReadState) >= TICKS);
+    assert!(adapter.backend.count(Call::ReadPosition) >= TICKS);
+    assert!(adapter.backend.count(Call::SyncWriteGoal) >= 2 * TICKS);
+    Ok(())
 }
