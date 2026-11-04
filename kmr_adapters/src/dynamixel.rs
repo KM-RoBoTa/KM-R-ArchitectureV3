@@ -20,7 +20,7 @@ mod tests;
 use core::fmt;
 use std::path::Path;
 
-use kmr_core::hal::{Batch, Command, Faults, Hal, Layout, Mask, Overrides, Sample, seal};
+use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
 use kmr_core::state::{JOINTS, Q};
 use tracing::{debug, warn};
 
@@ -32,7 +32,8 @@ use port::DevicePath;
 #[cfg(feature = "dynamixel")]
 pub use self::dxl_rs::DxlRs;
 pub use config::{
-    Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Protocol, Series, Table, Torque, Zero,
+    Actuator, Bus, DEFAULT_READ_EVERY, Declared, Mode, Model, Protocol, Series, Table, TableError,
+    Torque, Zero,
 };
 
 /// Ping attempts per actuator before it counts as missing (FR-007).
@@ -420,6 +421,8 @@ pub struct Dynamixel<B, const NB: usize> {
     table: Table<NB, JOINTS>,
     /// Port of each bus, from its bus plugin; `None` until bound.
     ports: [Option<Port>; NB],
+    /// Buses in use, from the first: `NB`, but fewer for a [`Declared`] table.
+    live: usize,
     /// Where serial ids are resolved; `None` is [`port::BY_ID`].
     by_id: Option<&'static Path>,
     /// Where latency timers live; `None` is [`port::USB_SERIAL_SYSFS`].
@@ -445,6 +448,7 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
             backend,
             table,
             ports: [None; NB],
+            live: NB,
             by_id: None,
             sysfs: None,
             groups: Groups::EMPTY,
@@ -471,6 +475,21 @@ impl<B, const NB: usize> Dynamixel<B, NB> {
         let mut adapter = Self::new(backend, table);
         adapter.attach(plugins)?;
         Ok(adapter)
+    }
+
+    /// An adapter for `declared`, its buses bound to their ports. No I/O.
+    pub fn declared(backend: B, declared: Declared<NB, JOINTS>) -> Self {
+        let mut adapter = Self::new(backend, declared.table);
+        adapter.live = declared.live;
+        for (slot, port) in adapter
+            .ports
+            .iter_mut()
+            .zip(declared.ports)
+            .take(declared.live)
+        {
+            *slot = Some(port);
+        }
+        adapter
     }
 
     /// Binds `plugins` to the buses and takes their bauds; changes nothing
@@ -614,10 +633,10 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     /// Groups per (bus, series); each bus is read every `read_every` ticks,
     /// else every [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no
     /// cadence: it is a table field (core K3.8).
-    fn check(&mut self, _overrides: Overrides) -> Result<Layout, DynamixelError> {
-        if NB > B::MAX_PORTS {
+    fn check(&mut self, _overrides: Overrides) -> Result<Claim, DynamixelError> {
+        if self.live > B::MAX_PORTS {
             return Err(DynamixelError::TooManyBuses {
-                buses: NB,
+                buses: self.live,
                 max: B::MAX_PORTS,
             });
         }
@@ -634,12 +653,15 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
             );
         }
         let (read_cost, write_cost) = self.groups.costs(&self.table.buses, B::STATE_READS);
-        Ok(Layout::new(
-            self.groups.numbers(),
-            self.groups.cadence(),
+        // Every engine index is a Dynamixel actuator until the table names
+        // its own indices (adapters T069).
+        Ok(Claim {
+            owned: Mask::ALL,
+            group: self.groups.numbers(),
+            read_every: self.groups.cadence(),
             read_cost,
             write_cost,
-        ))
+        })
     }
 
     /// Resolves and pre-flights the port of every bus, refuses two buses on
@@ -648,7 +670,7 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
     fn open(&mut self) -> Result<(), DynamixelError> {
         let by_id = self.by_id.unwrap_or(Path::new(port::BY_ID));
         let sysfs = self.sysfs.unwrap_or(Path::new(port::USB_SERIAL_SYSFS));
-        for bus in 0..NB {
+        for bus in 0..self.live {
             let label = self.label(bus);
             let Some(plugin) = self.ports.get(bus).copied().flatten() else {
                 return Err(DynamixelError::UnboundBus { bus: label });
@@ -698,8 +720,9 @@ impl<B: Backend, const NB: usize> Hal for Dynamixel<B, NB> {
                 };
             }
         }
+        let specs = specs.get(..self.live).unwrap_or_default();
         self.backend
-            .open_ports(&specs)
+            .open_ports(specs)
             .map_err(|failure| match failure.port {
                 Some(port) => DynamixelError::PortOpen {
                     bus: self.label(port),

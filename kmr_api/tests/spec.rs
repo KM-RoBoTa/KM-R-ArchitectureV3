@@ -14,6 +14,11 @@ mod preset {
 
     kmr_api::robot!(XmBench);
 
+    #[test]
+    fn a_preset_names_itself() {
+        assert_eq!(<__Spec as Spec>::PRESET, Some("XmBench"));
+    }
+
     #[cfg(not(feature = "dynamixel"))]
     #[test]
     fn without_the_feature_the_driver_is_no_hardware() {
@@ -78,8 +83,21 @@ mod model {
     kmr_api::robot!(model = "tests/fixtures/four.urdf");
 
     #[test]
-    fn without_a_table_the_driver_is_no_hardware() {
+    fn a_model_robot_names_no_preset() {
+        assert_eq!(<__Spec as Spec>::PRESET, None);
+    }
+
+    #[cfg(not(feature = "dynamixel"))]
+    #[test]
+    fn without_the_feature_the_driver_is_no_hardware() {
         let _: Option<kmr_core::hal::NoHardware> = None::<<__Spec as Spec>::Adapter>;
+    }
+
+    #[cfg(feature = "dynamixel")]
+    #[test]
+    fn with_the_feature_the_driver_is_dynamixel_on_n_bus_slots() {
+        use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
+        let _: Option<Dynamixel<DxlRs, N>> = None::<<__Spec as Spec>::Adapter>;
     }
 
     #[test]

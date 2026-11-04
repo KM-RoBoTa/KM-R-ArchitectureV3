@@ -2,8 +2,9 @@
 
 /// Names the robot this crate drives and gives it `N`, `State` and `Robot`.
 ///
-/// A KM-RoBoTa preset, or the path of a URDF descriptor (relative to the
-/// crate's `Cargo.toml`), read at compile time:
+/// A KM-RoBoTa preset, whose hardware table comes with it, or the path of a
+/// URDF descriptor (relative to the crate's `Cargo.toml`), read at compile
+/// time, whose actuators `Robot::add_actuator` declares:
 ///
 /// ```ignore
 /// kmr_api::robot!(XmBench);
@@ -37,23 +38,38 @@ macro_rules! robot {
         const __TABLE: $crate::Table<__NB, __M> = $crate::presets::$preset::HARDWARE;
         impl $crate::Spec for __Spec {
             type Adapter = $crate::__DxlAdapter<__NB>;
+            const PRESET: ::core::option::Option<&'static str> =
+                ::core::option::Option::Some(::core::stringify!($preset));
 
             fn bind(
                 plugins: &[$crate::Binding],
             ) -> ::core::result::Result<Self::Adapter, $crate::UserError> {
                 $crate::__bind_dynamixel(__TABLE, plugins)
             }
+
+            fn declare(
+                _declared: $crate::__Declared,
+            ) -> ::core::result::Result<Self::Adapter, $crate::UserError> {
+                $crate::__declare_none(::core::stringify!($preset))
+            }
         }
     };
     (model = $path:literal) => {
         $crate::robot!(@items $crate::__actuator_count!($path));
         impl $crate::Spec for __Spec {
-            type Adapter = $crate::__NoHardware;
+            type Adapter = $crate::__DxlAdapter<{ $crate::N }>;
+            const PRESET: ::core::option::Option<&'static str> = ::core::option::Option::None;
 
             fn bind(
                 plugins: &[$crate::Binding],
             ) -> ::core::result::Result<Self::Adapter, $crate::UserError> {
                 $crate::__bind_none(plugins)
+            }
+
+            fn declare(
+                declared: $crate::__Declared,
+            ) -> ::core::result::Result<Self::Adapter, $crate::UserError> {
+                $crate::__declare_dynamixel(declared)
             }
         }
     };

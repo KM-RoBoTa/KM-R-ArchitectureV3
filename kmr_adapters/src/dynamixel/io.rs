@@ -8,7 +8,7 @@ use core::num::NonZeroU32;
 use core::time::Duration;
 
 use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample};
-use kmr_core::state::{JOINTS, Q, Qd, Tau};
+use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 
 use super::backend::{Backend, BackendError, GoalRegister, RawState};
 use super::config::{Actuator, Bus, Mode, Model, Protocol, Torque};
@@ -557,7 +557,8 @@ fn read_present<B: Backend, const NB: usize>(
     present: &mut [Q; JOINTS],
 ) -> Result<(), DynamixelError> {
     let (mut qd, mut tau) = ([Qd::default(); JOINTS], [Tau::default(); JOINTS]);
-    let mut sample = Sample::new(present, &mut qd, &mut tau);
+    let (mut kp, mut kd) = ([Kp::default(); JOINTS], [Kd::default(); JOINTS]);
+    let mut sample = Sample::new(present, &mut qd, &mut tau, &mut kp, &mut kd);
     let actuators = &adapter.table.actuators;
     let mut failed = None;
     read_table(
@@ -636,7 +637,13 @@ mod tests {
     /// backend log is cleared.
     fn adapter() -> (Dynamixel<Scripted, 1>, Layout) {
         let mut adapter = Dynamixel::new(Scripted::new(), TABLE);
-        let layout = adapter.check(Overrides::default()).unwrap();
+        let claim = adapter.check(Overrides::default()).unwrap();
+        let layout = Layout::new(
+            claim.group,
+            claim.read_every,
+            claim.read_cost,
+            claim.write_cost,
+        );
         adapter.backend.open_ports(&[]).unwrap();
         adapter.open = true;
         adapter.torque_on().unwrap();
@@ -646,7 +653,11 @@ mod tests {
 
     fn read(adapter: &mut Dynamixel<Scripted, 1>, faults: &mut Faults) -> Mask {
         let (mut q, mut qd, mut tau) = ([Q(9.0); JOINTS], [Qd(0.0); JOINTS], [Tau(0.0); JOINTS]);
-        adapter.read(Sample::new(&mut q, &mut qd, &mut tau), faults)
+        let (mut kp, mut kd) = ([Kp(0.0); JOINTS], [Kd(0.0); JOINTS]);
+        adapter.read(
+            Sample::new(&mut q, &mut qd, &mut tau, &mut kp, &mut kd),
+            faults,
+        )
     }
 
     #[test]
@@ -669,8 +680,10 @@ mod tests {
         written.qd.set(2);
         let q = [Q(0.0); JOINTS];
         let (qd, tau) = ([Qd(0.0); JOINTS], [Tau(0.0); JOINTS]);
+        let (kp, kd) = ([Kp(0.0); JOINTS], [Kd(0.0); JOINTS]);
         let batch = Batch::new(&layout, &written);
-        adapter.write(Command::new(&q, &qd, &tau, &written), &batch, &mut faults);
+        let command = Command::new(&q, &qd, &tau, &kp, &kd, &written);
+        adapter.write(command, &batch, &mut faults);
         assert_eq!(adapter.backend.count(Call::SyncWriteGoal), 1);
         assert_eq!(adapter.backend.last_goals(), &[(2, 2048)]);
         assert!(faults.rejected.get(2) && !faults.rejected.get(1));

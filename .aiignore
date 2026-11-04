@@ -21,7 +21,7 @@
 docs/srs/SRS.md
 
 # project paths (added by /speckit-ov-nogo)
-kmr_core/
+# kmr_core/
 /clippy.toml
 /AGENTS.md
 /CONTRIBUTING.md

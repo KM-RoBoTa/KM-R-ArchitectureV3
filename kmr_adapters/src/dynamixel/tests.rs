@@ -17,8 +17,10 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use kmr_core::hal::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written};
-use kmr_core::state::{JOINTS, Q, Qd, Tau};
+use kmr_core::hal::{
+    Batch, Claim, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written,
+};
+use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
@@ -187,6 +189,8 @@ struct Slot {
     q: [Q; JOINTS],
     qd: [Qd; JOINTS],
     tau: [Tau; JOINTS],
+    kp: [Kp; JOINTS],
+    kd: [Kd; JOINTS],
 }
 
 impl Slot {
@@ -196,12 +200,20 @@ impl Slot {
             q: [Q(value); JOINTS],
             qd: [Qd(value); JOINTS],
             tau: [Tau(value); JOINTS],
+            kp: [Kp(value); JOINTS],
+            kd: [Kd(value); JOINTS],
         }
     }
 
     /// The slot as a `Sample`.
     fn sample(&mut self) -> Sample<'_> {
-        Sample::new(&mut self.q, &mut self.qd, &mut self.tau)
+        Sample::new(
+            &mut self.q,
+            &mut self.qd,
+            &mut self.tau,
+            &mut self.kp,
+            &mut self.kd,
+        )
     }
 }
 
@@ -210,6 +222,8 @@ struct Desired {
     q: [Q; JOINTS],
     qd: [Qd; JOINTS],
     tau: [Tau; JOINTS],
+    kp: [Kp; JOINTS],
+    kd: [Kd; JOINTS],
     written: Written,
 }
 
@@ -220,6 +234,8 @@ impl Desired {
             q: [Q(0.0); JOINTS],
             qd: [Qd(0.0); JOINTS],
             tau: [Tau(0.0); JOINTS],
+            kp: [Kp(0.0); JOINTS],
+            kd: [Kd(0.0); JOINTS],
             written: Written::default(),
         }
     }
@@ -240,18 +256,31 @@ impl Desired {
 
     /// The desired state as a `Command`.
     fn command(&self) -> Command<'_> {
-        Command::new(&self.q, &self.qd, &self.tau, &self.written)
+        Command::new(
+            &self.q,
+            &self.qd,
+            &self.tau,
+            &self.kp,
+            &self.kd,
+            &self.written,
+        )
     }
 }
 
 /// One `write` of `desired` as the engine sends it.
 fn write<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB>,
-    layout: &Layout,
+    claim: &Claim,
     desired: &Desired,
 ) -> Faults {
     let mut faults = Faults::default();
-    let batch = Batch::new(layout, &desired.written);
+    let layout = Layout::new(
+        claim.group,
+        claim.read_every,
+        claim.read_cost,
+        claim.write_cost,
+    );
+    let batch = Batch::new(&layout, &desired.written);
     adapter.write(desired.command(), &batch, &mut faults);
     faults
 }
@@ -279,7 +308,7 @@ fn mark_open<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB>) {
 /// marked open; the backend log is cleared afterwards.
 fn powered<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB>,
-) -> Result<Layout, DynamixelError> {
+) -> Result<Claim, DynamixelError> {
     let layout = adapter.check(Overrides::default())?;
     mark_open(adapter);
     adapter.zero()?;
@@ -2497,4 +2526,86 @@ fn open_of_two_buses_on_one_device_is_refused_before_any_flush() -> io::Result<(
     );
     assert!(adapter.backend.calls().is_empty());
     Ok(())
+}
+
+/// Bus slots of [`declared`]: more than the backend opens, one in use.
+const SLOTS: usize = 8;
+
+/// `X_TABLE` built at run time: its one bus on serial `ARM`, the other slots
+/// unused and unlabelled.
+fn declared() -> super::Declared<SLOTS, JOINTS> {
+    let mut buses = [Bus {
+        label: "",
+        baud: 0,
+        read_every: None,
+    }; SLOTS];
+    buses[0] = Bus {
+        label: ARM,
+        ..X_TABLE.buses[0]
+    };
+    let table = Table {
+        buses,
+        actuators: X_TABLE.actuators,
+    };
+    super::Declared::new(table, [Port::ById(ARM); SLOTS], 1).unwrap()
+}
+
+#[test]
+fn a_declared_table_counts_its_live_buses_only() -> Result<(), DynamixelError> {
+    let mut adapter = Dynamixel::declared(Scripted::new(), declared());
+    let claim = adapter.check(Overrides::default())?;
+    assert_eq!(claim.owned, Mask::ALL);
+    Ok(())
+}
+
+#[test]
+fn a_declared_table_resolves_its_live_buses_only() -> io::Result<()> {
+    let roots = Roots::new("declared_resolve")?;
+    let mut adapter = roots.rig(Dynamixel::declared(Scripted::new(), declared()));
+    assert!(adapter.check(Overrides::default()).is_ok());
+
+    assert_eq!(
+        adapter.open(),
+        Err(DynamixelError::PortNotFound {
+            bus: ARM,
+            port: Port::ById(ARM)
+        })
+    );
+    assert!(adapter.backend.calls().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_declared_table_opens_its_live_buses_only() -> io::Result<()> {
+    let Some(arm) = pty() else {
+        return Ok(());
+    };
+    let roots = Roots::new("declared_open")?;
+    roots.link(ARM, &arm.slave)?;
+    let mut adapter = roots.rig(Dynamixel::declared(Scripted::new(), declared()));
+    assert!(adapter.check(Overrides::default()).is_ok());
+
+    assert_eq!(adapter.open(), Ok(()));
+    assert_eq!(
+        adapter
+            .backend
+            .last(Call::OpenPorts)
+            .map(|record| record.count),
+        Some(1)
+    );
+    assert_eq!(adapter.backend.baud(0), Some(1_000_000));
+    adapter.torque_off();
+    adapter.close();
+    Ok(())
+}
+
+#[test]
+fn a_declared_table_breaking_a_check_rule_is_refused() {
+    let mut table = declared().table;
+    table.buses[0].baud = 500_000;
+    let error = super::Declared::new(table, [Port::ById(ARM); SLOTS], 1).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "actuator 0: XM430-W210 does not accept 500000 baud on bus ARM00001"
+    );
 }

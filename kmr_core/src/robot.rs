@@ -34,7 +34,7 @@ use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
 use crate::error::ApiError;
-use crate::hal::{Hal, NoHardware};
+use crate::hal::{Drivers, HardwareError, MemberError, NoHardware};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
 use crate::{Scheduled, Sensors, runtime};
@@ -90,6 +90,14 @@ impl<CS> Robot<CS> {
     /// Allows the user to set the value of [`Time::delta`].
     pub fn set_dt(mut self, dt: Duration) -> Self {
         self.config.time.set_delta(dt);
+        self
+    }
+
+    /// After a shutdown, holds the actuators for `duration` before torque off
+    /// (SRS FR-4.1). Without it, a shutdown cuts torque at once; with
+    /// `Duration::ZERO`, the hold command is sent, then torque is cut.
+    pub fn set_hold(mut self, duration: Duration) -> Self {
+        self.config.hold = Some(duration);
         self
     }
 
@@ -204,8 +212,9 @@ impl<CS> Robot<CS> {
         self.insert_controller(schedule, Threaded(controller, ctx))
     }
 
-    /// Runs the robot on `hal`, its hardware. Pass `&mut adapter` to keep the
-    /// adapter after the run.
+    /// Runs the robot on `hal`, its hardware: a list of members,
+    /// `HCons { head: dxl, tail: HCons { head: cubemars, tail: HNil } }`.
+    /// Pass `&mut adapter` as a member to keep it after the run.
     ///
     /// The `Drive` bound is the schedule-walk trait: it's `pub` but
     /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
@@ -213,9 +222,9 @@ impl<CS> Robot<CS> {
     /// own `run`.
     ///
     /// Returns once a signal ends the loop: `Ok` for a shutdown and for an
-    /// emergency stop alike. `Err` is the adapter's, from `check` or a
-    /// bring-up call.
-    pub fn run_on<A: Hal>(self, hal: A) -> Result<(), A::Error>
+    /// emergency stop alike. `Err` is a claim mismatch, found before any
+    /// I/O, or a member's error from `check` or a bring-up call.
+    pub fn run_on<D: Drivers>(self, hal: D) -> Result<(), HardwareError<D::Error>>
     where
         CS: Drive,
     {
@@ -228,9 +237,15 @@ impl<CS> Robot<CS> {
     where
         CS: Drive,
     {
-        match self.run_on(NoHardware) {
-            Ok(()) => Ok(()),
-            Err(never) => match never {},
+        let hal = HCons {
+            head: NoHardware,
+            tail: HNil,
+        };
+        match self.run_on(hal) {
+            Ok(()) | Err(HardwareError::Coverage(_)) => Ok(()),
+            Err(HardwareError::Member(
+                MemberError::Head { error: never, .. } | MemberError::Tail(never),
+            )) => match never {},
         }
     }
 }

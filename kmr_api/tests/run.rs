@@ -119,6 +119,189 @@ fn a_dt_of_10_us_or_1_s_runs() {
     }
 }
 
+#[test]
+fn actuators_on_a_preset_robot_are_refused_before_the_run() {
+    let spine = Bus::by_id("kmr-test-no-such-serial")
+        .baud(1_000_000)
+        .build();
+    for plugged in [false, true] {
+        let record = seen();
+        let robot = Robot::new().add_actuator(kmr_api::dynamixel::Xm430W210::ids(1..=4).on(spine));
+        let robot = if plugged {
+            robot.add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+        } else {
+            robot
+        };
+        let res = robot
+            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .run();
+        assert!(
+            matches!(res, Err(UserError::PresetHardware { preset: "XmBench" })),
+            "{res:?}"
+        );
+        assert!(ticks(&record).is_empty());
+    }
+}
+
+/// A `robot!(model = ..)` robot: its actuators are declared in main.rs.
+mod urdf {
+    use super::*;
+    use kmr_api::dynamixel::Xm430W210;
+
+    kmr_api::robot!(model = "tests/fixtures/four.urdf");
+
+    fn spine() -> kmr_api::BusHandle {
+        Bus::by_id("kmr-test-no-such-serial")
+            .baud(1_000_000)
+            .build()
+    }
+
+    #[test]
+    fn without_an_actuator_it_simulates() {
+        let _bus = bus();
+        let record = seen();
+        let res = Robot::new()
+            .set_dt(Duration::from_millis(1))
+            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<1>)
+            .run();
+        assert!(res.is_ok(), "{res:?}");
+        assert_eq!(ticks(&record).len(), 2);
+    }
+
+    #[test]
+    fn a_plugin_is_refused_actuators_carry_their_bus() {
+        let record = seen();
+        let res = Robot::new()
+            .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+            .add_actuator(Xm430W210::ids(1..=4).on(spine()))
+            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .run();
+        assert!(matches!(res, Err(UserError::NoHardwareDeclared)), "{res:?}");
+        assert!(ticks(&record).is_empty());
+    }
+
+    #[test]
+    fn a_count_other_than_n_is_refused_naming_both() {
+        let record = seen();
+        let res = Robot::new()
+            .add_actuator(Xm430W210::ids(1..=2).on(spine()))
+            .add_actuator(Xm430W210::id(3).on(spine()))
+            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .run();
+        let Err(e) = res else {
+            panic!("three actuators of four ran: {res:?}");
+        };
+        assert!(
+            matches!(
+                e,
+                UserError::ActuatorCount {
+                    declared: 3,
+                    expected: 4
+                }
+            ),
+            "{e:?}"
+        );
+        assert!(e.to_string().starts_with("3 actuators"), "{e}");
+        assert!(e.to_string().contains("has 4"), "{e}");
+        assert!(ticks(&record).is_empty());
+    }
+
+    #[test]
+    fn a_baud_the_model_lacks_is_refused_as_check_words_it() {
+        let slow = Bus::by_id("kmr-test-no-such-serial").baud(500_000).build();
+        let res = Robot::new()
+            .add_actuator(Xm430W210::ids(1..=4).on(slow))
+            .add_controller(EachTick, |_t: &Time, _r: &mut State, _s: &Sensors| {})
+            .run();
+        let Err(e) = res else {
+            panic!("a 500 kbit/s XM430 bus ran: {res:?}");
+        };
+        assert!(matches!(e, UserError::HardwareRejected { .. }), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "the declared actuators are refused: actuator 0: XM430-W210 does not accept 500000 \
+             baud on bus kmr-test-no-such-serial"
+        );
+    }
+
+    #[test]
+    fn a_bus_without_a_baud_is_refused() {
+        let bare = Bus::by_id("kmr-test-no-such-serial").build();
+        let res = Robot::new()
+            .add_actuator(Xm430W210::ids(1..=4).on(bare))
+            .add_controller(EachTick, |_t: &Time, _r: &mut State, _s: &Sensors| {})
+            .run();
+        assert!(
+            matches!(
+                res,
+                Err(UserError::BusWithoutBaud {
+                    port: "kmr-test-no-such-serial"
+                })
+            ),
+            "{res:?}"
+        );
+    }
+
+    #[test]
+    fn two_handles_on_one_port_are_refused() {
+        let fast = Bus::by_id("kmr-test-no-such-serial")
+            .baud(3_000_000)
+            .build();
+        let res = Robot::new()
+            .add_actuator(Xm430W210::ids(1..=2).on(spine()))
+            .add_actuator(Xm430W210::ids(3..=4).on(fast))
+            .add_controller(EachTick, |_t: &Time, _r: &mut State, _s: &Sensors| {})
+            .run();
+        assert!(
+            matches!(
+                res,
+                Err(UserError::DuplicateBus {
+                    port: "kmr-test-no-such-serial"
+                })
+            ),
+            "{res:?}"
+        );
+    }
+
+    #[cfg(not(feature = "dynamixel"))]
+    #[test]
+    fn actuators_without_the_feature_are_refused() {
+        let res = Robot::new()
+            .add_actuator(Xm430W210::ids(1..=4).on(spine()))
+            .add_controller(EachTick, |_t: &Time, _r: &mut State, _s: &Sensors| {})
+            .run();
+        assert!(
+            matches!(
+                res,
+                Err(UserError::FeatureOff {
+                    feature: "dynamixel"
+                })
+            ),
+            "{res:?}"
+        );
+    }
+
+    /// The real Dynamixel adapter: the serial resolves to no device, so no port is opened.
+    #[cfg(feature = "dynamixel")]
+    #[test]
+    fn actuators_bind_the_dynamixel_adapter_and_bring_up_names_the_serial() {
+        let _bus = bus();
+        let res = Robot::new()
+            .add_actuator(Xm430W210::ids(1..=4).on(spine()))
+            .add_controller(EachTick, |_t: &Time, _r: &mut State, _s: &Sensors| {})
+            .run();
+        let Err(UserError::BringUp { source }) = &res else {
+            panic!("no device, yet: {res:?}");
+        };
+        assert_eq!(
+            source.to_string(),
+            "member 0 (kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::dxl_rs::DxlRs, 4>): \
+             bus kmr-test-no-such-serial: serial kmr-test-no-such-serial names no single device; \
+             check the bus plugin and the cable"
+        );
+    }
+}
+
 /// The real Dynamixel adapter: the serial resolves to no device, so no port is ever opened.
 #[cfg(feature = "dynamixel")]
 #[test]
@@ -173,9 +356,14 @@ mod two_buses {
 
     impl kmr_api::Spec for TwoBuses {
         type Adapter = kmr_api::__DxlAdapter<2>;
+        const PRESET: Option<&'static str> = Some("TwoBuses");
 
         fn bind(plugins: &[kmr_api::Binding]) -> Result<Self::Adapter, UserError> {
             kmr_api::__bind_dynamixel(TABLE, plugins)
+        }
+
+        fn declare(_declared: kmr_api::__Declared) -> Result<Self::Adapter, UserError> {
+            kmr_api::__declare_none("TwoBuses")
         }
     }
 
@@ -209,9 +397,7 @@ mod recording {
     use super::*;
     use core::fmt;
     use kmr_api::{Q, Spec};
-    use kmr_core::hal::{
-        Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, seal,
-    };
+    use kmr_core::hal::{Batch, Claim, Command, Faults, Group, Hal, Mask, Overrides, Sample, seal};
     use kmr_core::state::JOINTS;
     use std::num::NonZeroU32;
 
@@ -249,14 +435,15 @@ mod recording {
     impl Hal for Recorder {
         type Error = NoAnswer;
 
-        fn check(&mut self, _overrides: Overrides) -> Result<Layout, NoAnswer> {
+        fn check(&mut self, _overrides: Overrides) -> Result<Claim, NoAnswer> {
             log("check");
-            Ok(Layout::new(
-                [Group(0); JOINTS],
-                [NonZeroU32::MIN; JOINTS],
-                Duration::ZERO,
-                Duration::ZERO,
-            ))
+            Ok(Claim {
+                owned: Mask::ALL,
+                group: [Group(0); JOINTS],
+                read_every: [NonZeroU32::MIN; JOINTS],
+                read_cost: Duration::ZERO,
+                write_cost: Duration::ZERO,
+            })
         }
 
         fn open(&mut self) -> Result<(), NoAnswer> {
@@ -325,8 +512,14 @@ mod recording {
 
     impl Spec for Records {
         type Adapter = Recorder;
+        const PRESET: Option<&'static str> = None;
 
         fn bind(_plugins: &[kmr_api::Binding]) -> Result<Recorder, UserError> {
+            Ok(Recorder { fail_open: false })
+        }
+
+        fn declare(_declared: kmr_api::__Declared) -> Result<Recorder, UserError> {
+            log("declare");
             Ok(Recorder { fail_open: false })
         }
     }
@@ -336,8 +529,14 @@ mod recording {
 
     impl Spec for FailsOpen {
         type Adapter = Recorder;
+        const PRESET: Option<&'static str> = None;
 
         fn bind(_plugins: &[kmr_api::Binding]) -> Result<Recorder, UserError> {
+            Ok(Recorder { fail_open: true })
+        }
+
+        fn declare(_declared: kmr_api::__Declared) -> Result<Recorder, UserError> {
+            log("declare");
             Ok(Recorder { fail_open: true })
         }
     }
@@ -356,6 +555,7 @@ mod recording {
         take();
         let res = kmr_api::Robot::<Records>::new()
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+            .set_hold(Duration::ZERO)
             .add_controller(EachTick, write_then_stop)
             .run();
         assert!(res.is_ok(), "{res:?}");
@@ -396,11 +596,30 @@ mod recording {
         };
         assert_eq!(
             e.to_string(),
-            "hardware bring-up failed: actuator 2 on serial kmr-test-no-such-serial: no answer"
+            "hardware bring-up failed: member 0 (run::recording::Recorder): actuator 2 on serial \
+             kmr-test-no-such-serial: no answer"
         );
-        let source = std::error::Error::source(&e).and_then(|s| s.downcast_ref::<NoAnswer>());
+        // UserError -> the hardware error -> the member's own.
+        let source = std::error::Error::source(&e)
+            .and_then(std::error::Error::source)
+            .and_then(|s| s.downcast_ref::<NoAnswer>());
         assert!(source.is_some(), "{e:?}");
         assert_eq!(take(), ["check", "open", "torque_off", "close"]);
+    }
+
+    #[test]
+    fn declared_actuators_run_on_the_declared_driver() {
+        let _bus = bus();
+        take();
+        let spine = Bus::by_dev("/dev/kmr-test-none").baud(1_000_000).build();
+        let res = kmr_api::Robot::<Records>::new()
+            .add_actuator(kmr_api::dynamixel::Rx28::id(7).on(spine))
+            .add_actuator(kmr_api::dynamixel::Rx28::ids(1..=3).on(spine))
+            .set_hold(Duration::ZERO)
+            .add_controller(EachTick, write_then_stop)
+            .run();
+        assert!(res.is_ok(), "{res:?}");
+        assert_eq!(take().get(..3), Some(&["declare", "check", "open"][..]));
     }
 
     #[test]

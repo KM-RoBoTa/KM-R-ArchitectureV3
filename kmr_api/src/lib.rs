@@ -37,12 +37,22 @@ pub use robot::Robot;
 
 mod spec;
 #[doc(hidden)]
+pub use actuator::DxlDeclared as __Declared;
+#[doc(hidden)]
 pub use kmr_adapters::{binding::Binding, dynamixel::Table};
 #[doc(hidden)]
-pub use spec::{__DxlAdapter, __NoHardware, __bind_dynamixel, __bind_none, Spec};
+pub use spec::{
+    __DxlAdapter, __NoHardware, __bind_dynamixel, __bind_none, __declare_dynamixel, __declare_none,
+    Spec,
+};
 
 mod bus;
-pub use bus::Bus;
+pub use bus::{Bus, BusHandle};
+
+mod actuator;
+pub use actuator::Actuators;
+
+pub mod dynamixel;
 
 mod robot_macro;
 

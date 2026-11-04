@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::time::Duration;
 
+use kmr_adapters::dynamixel::TableError;
 use kmr_core::error::{ApiError as CoreApiError, StateError as CoreStateError};
 
 /// Public error returned by [`State`](crate::State) accessors.
@@ -87,21 +88,48 @@ pub enum UserError {
     )]
     NoControllers,
 
-    /// Two bus plugins bind the same port (SRS FR-6.4: a registration error).
-    #[error("port `{port}` is bound by two bus plugins; bind each port once")]
+    /// Two bus plugins, or two different bus handles, name the same port (SRS FR-6.4: a
+    /// registration error).
+    #[error(
+        "port `{port}` is declared as two buses; declare each port once: one `.add_plugins(..)`, or one `Bus::..build()` handle shared by its actuators"
+    )]
     DuplicateBus { port: &'static str },
 
-    /// Bus plugins are declared, but the adapter they need is not compiled in.
+    /// Hardware is declared, but the adapter it needs is not compiled in.
     #[error(
-        "bus plugins are declared, but kmr_api was built without its `{feature}` feature; enable `kmr_api/{feature}`, or remove the plugins to simulate"
+        "hardware is declared, but kmr_api was built without its `{feature}` feature; enable `kmr_api/{feature}`, or remove the bus plugins and actuators to simulate"
     )]
     FeatureOff { feature: &'static str },
 
-    /// Bus plugins are declared, but `robot!` names no hardware for them.
+    /// Bus plugins are declared, but `robot!` names no preset hardware table for them.
     #[error(
-        "bus plugins are declared, but this robot has no hardware table; add `hardware = ..` to `robot!`, or remove the plugins to simulate"
+        "bus plugins are declared, but this robot has no preset hardware table; on a `robot!(model = ..)` robot, hand each actuator its bus with `.add_actuator(..on(bus))` instead of `.add_plugins(..)`, or remove the plugins to simulate"
     )]
     NoHardwareDeclared,
+
+    /// The actuators declared with `add_actuator` are not as many as the model's.
+    #[error(
+        "{declared} actuators are declared with `.add_actuator(..)`, but this robot's model has {expected}; declare one per non-fixed joint, in the model's joint order"
+    )]
+    ActuatorCount { declared: usize, expected: usize },
+
+    /// Actuators are declared on a preset robot, whose hardware table is the preset's.
+    #[error(
+        "`robot!({preset})` brings its own hardware table, so `.add_actuator(..)` is refused; bind its buses with `.add_plugins(..)`, or name the robot by `robot!(model = ..)` to declare its actuators"
+    )]
+    PresetHardware { preset: &'static str },
+
+    /// A bus handle carries no baud rate: without a hardware table, nothing else gives one.
+    #[error("bus `{port}` has no baud rate; give it `.baud(..)` before `.build()`")]
+    BusWithoutBaud { port: &'static str },
+
+    /// The declared actuators break a rule of the hardware table; actuator numbers are engine
+    /// indices, in `add_actuator` order.
+    #[error("the declared actuators are refused: {source}")]
+    HardwareRejected {
+        #[source]
+        source: Box<TableError>,
+    },
 
     /// The hardware failed to come up. `source` is the adapter's own error, typed: reach it
     /// with [`Error::source`] and `downcast_ref`.
@@ -151,7 +179,7 @@ mod tests {
     #[error("port FT8ISZ6H not found under /dev/serial/by-id")]
     struct NotFound;
 
-    fn every_variant() -> [UserError; 6] {
+    fn every_variant() -> [UserError; 9] {
         [
             UserError::NoControllers,
             UserError::DuplicateBus { port: "FT8ISZ6H" },
@@ -163,6 +191,12 @@ mod tests {
             UserError::DtOutOfRange {
                 dt: Duration::from_micros(5),
             },
+            UserError::ActuatorCount {
+                declared: 9,
+                expected: 10,
+            },
+            UserError::PresetHardware { preset: "XmBench" },
+            UserError::BusWithoutBaud { port: "AL02L1KL" },
         ]
     }
 
@@ -177,7 +211,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn debug_shows_the_variant_and_its_fields() {
-        let [_, bus, _, _, bring_up, _] = every_variant();
+        let [_, bus, _, _, bring_up, ..] = every_variant();
         assert_eq!(format!("{bus:?}"), r#"DuplicateBus { port: "FT8ISZ6H" }"#);
         assert_eq!(format!("{bring_up:?}"), "BringUp { source: NotFound }");
     }
@@ -202,9 +236,13 @@ mod tests {
 
     #[test]
     fn messages_name_the_fix() {
-        let [_, _, feature, hardware, bring_up, dt] = every_variant();
+        let [_, _, feature, hardware, bring_up, dt, count, preset, baud] = every_variant();
         assert!(feature.to_string().contains("`kmr_api/dynamixel`"));
-        assert!(hardware.to_string().contains("`hardware = ..`"));
+        assert!(hardware.to_string().contains("`.add_actuator(..on(bus))`"));
+        assert!(count.to_string().starts_with("9 actuators"));
+        assert!(count.to_string().contains("has 10"));
+        assert!(preset.to_string().contains("`robot!(XmBench)`"));
+        assert!(baud.to_string().contains("`.baud(..)`"));
         assert!(bring_up.to_string().contains("FT8ISZ6H"));
         assert!(dt.to_string().contains("5µs"));
         assert!(dt.to_string().contains("10 µs to 1 s"));

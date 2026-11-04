@@ -1,11 +1,18 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use crate::actuator::{self, Actuators};
 use crate::{Binding, Bus, Schedule, Sensors, Spec, State, Time, UserError, payload::Payload};
 use kmr_core::hal::NoHardware;
 use kmr_core::{
-    ControlFn, ControlFnWith, Inline, InlineWith, Insert, Scheduled, ThreadFn, Threaded,
+    ControlFn, ControlFnWith, HCons, HNil, Inline, InlineWith, Insert, Scheduled, ThreadFn,
+    Threaded,
 };
+
+/// The driver list of the one driver `head`. The driver set (kmr_api T069) replaces it.
+fn one<D>(head: D) -> HCons<D, HNil> {
+    HCons { head, tail: HNil }
+}
 
 // The named api→core translation wrapper stored in place of the user's closure.
 //
@@ -111,6 +118,7 @@ where
 pub struct Robot<H, C = Scheduled> {
     inner: kmr_core::Robot<C>,
     plugins: Vec<Bus>,
+    actuators: Vec<Actuators>,
     dt: Option<Duration>,
     spec: PhantomData<fn() -> H>,
 }
@@ -121,6 +129,7 @@ impl<H: Spec> Robot<H> {
         Self {
             inner: kmr_core::Robot::new(),
             plugins: Vec::new(),
+            actuators: Vec::new(),
             dt: None,
             spec: PhantomData,
         }
@@ -144,11 +153,22 @@ impl<H, C> Robot<H, C> {
         }
     }
 
+    /// After a shutdown, holds the actuators for `duration` before torque off. Without
+    /// it, a shutdown cuts torque at once; with `Duration::ZERO`, the hold command is
+    /// sent, then torque is cut.
+    pub fn set_hold(self, duration: Duration) -> Self {
+        Self {
+            inner: self.inner.set_hold(duration),
+            ..self
+        }
+    }
+
     /// Carries the builder data over to a robot whose controller set grew.
     fn grown<D>(self, grow: impl FnOnce(kmr_core::Robot<C>) -> kmr_core::Robot<D>) -> Robot<H, D> {
         Robot {
             inner: grow(self.inner),
             plugins: self.plugins,
+            actuators: self.actuators,
             dt: self.dt,
             spec: PhantomData,
         }
@@ -162,8 +182,25 @@ impl<H, C> Robot<H, C> {
     ///
     /// Without any bus, `run()` simulates. Binding one port twice is a
     /// `run()` error.
+    // DECISION: `add_plugins` stays, for preset robots only: their table names the buses, a
+    // plugin only says where each is plugged in. A `robot!(model = ..)` robot refuses it at
+    // `run()` (`NoHardwareDeclared`): its actuators carry their bus.
     pub fn add_plugins(mut self, bus: Bus) -> Self {
         self.plugins.push(bus);
+        self
+    }
+
+    /// Declares actuators of a `robot!(model = ..)` robot, each on its bus. Engine index `i` is
+    /// the `i`th actuator declared, matching the model's `i`th non-fixed joint.
+    ///
+    /// ```ignore
+    /// let spine = Bus::by_id("AL02L1KL").baud(1_000_000).build();
+    /// Robot::new().add_actuator(dynamixel::Rx28::ids(1..=10).on(spine))
+    /// ```
+    ///
+    /// Without any actuator, `run()` simulates. A preset robot refuses it at `run()`.
+    pub fn add_actuator(mut self, actuators: impl Into<Actuators>) -> Self {
+        self.actuators.push(actuators.into());
         self
     }
 
@@ -254,28 +291,40 @@ impl<H, C> Robot<H, C> {
         self.grown(|inner| inner.add_control_fn_as_thread(schedule, ctx, ApiThreaded(f)))
     }
 
-    /// Finalizes the builder, binds the bus plugins to the robot's driver, then runs on it;
-    /// without a plugin, simulates on no hardware.
+    /// Finalizes the builder, binds the bus plugins or the declared actuators to the robot's
+    /// driver, then runs on it; without either, simulates on no hardware.
     ///
     /// The `Drive` bound is `kmr_core`'s schedule-walk trait — `pub` but `#[doc(hidden)]`,
     /// satisfied by every schedule the builder can produce, so users never see or trip it.
     ///
     /// # Errors
     ///
-    /// Before any I/O: [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`], then the
-    /// binding errors of [`Spec::bind`]. After: the driver's bring-up error as
-    /// [`UserError::BringUp`]. A shutdown and an emergency stop both return `Ok(())`.
+    /// Before any I/O: [`UserError::DtOutOfRange`], [`UserError::DuplicateBus`],
+    /// [`UserError::PresetHardware`], then the binding errors of [`Spec::bind`], or those of
+    /// the declared actuators ([`UserError::ActuatorCount`], [`UserError::BusWithoutBaud`],
+    /// [`UserError::DuplicateBus`], [`UserError::HardwareRejected`], [`UserError::FeatureOff`]).
+    /// After: the driver's bring-up error as [`UserError::BringUp`]. A shutdown and an
+    /// emergency stop both return `Ok(())`.
     pub fn run(self) -> Result<(), UserError>
     where
         H: Spec,
         C: kmr_core::Drive,
     {
-        let (inner, plugins) = self.finalize()?;
-        if plugins.is_empty() {
-            return inner.run_on(NoHardware).map_err(|never| match never {});
+        let (inner, plugins, actuators) = self.finalize()?;
+        if !actuators.is_empty()
+            && let Some(preset) = H::PRESET
+        {
+            return Err(UserError::PresetHardware { preset });
         }
-        let adapter = H::bind(&plugins)?;
-        inner.run_on(adapter).map_err(UserError::bring_up)
+        if !plugins.is_empty() {
+            let adapter = H::bind(&plugins)?;
+            return inner.run_on(one(adapter)).map_err(UserError::bring_up);
+        }
+        if actuators.is_empty() {
+            return inner.run_on(one(NoHardware)).map_err(UserError::bring_up);
+        }
+        let adapter = H::declare(actuator::lower(actuators)?)?;
+        inner.run_on(one(adapter)).map_err(UserError::bring_up)
     }
 
     /// Checks the builder data, no I/O, and hands `dt` to the core.
@@ -283,7 +332,7 @@ impl<H, C> Robot<H, C> {
     /// # Errors
     ///
     /// [`UserError::DtOutOfRange`], then [`UserError::DuplicateBus`].
-    fn finalize(self) -> Result<(kmr_core::Robot<C>, Vec<Binding>), UserError> {
+    fn finalize(self) -> Result<Finalized<C>, UserError> {
         if let Some(dt) = self.dt
             && !(DT_MIN..=DT_MAX).contains(&dt)
         {
@@ -298,9 +347,13 @@ impl<H, C> Robot<H, C> {
             Some(dt) => self.inner.set_dt(dt),
             None => self.inner,
         };
-        Ok((inner, self.plugins.iter().map(|bus| bus.binding).collect()))
+        let plugins = self.plugins.iter().map(|bus| bus.binding).collect();
+        Ok((inner, plugins, self.actuators))
     }
 }
+
+/// The core robot, the bus plugins and the declared actuators, as `finalize` hands them on.
+type Finalized<C> = (kmr_core::Robot<C>, Vec<Binding>, Vec<Actuators>);
 
 /// Shortest tick period `run()` accepts (SRS FR-3.1); interim until the core checks it (T040).
 const DT_MIN: Duration = Duration::from_micros(10);
@@ -323,9 +376,14 @@ mod tests {
 
     impl Spec for TestSpec {
         type Adapter = crate::__NoHardware;
+        const PRESET: Option<&'static str> = None;
 
         fn bind(plugins: &[crate::Binding]) -> Result<Self::Adapter, UserError> {
             crate::__bind_none(plugins)
+        }
+
+        fn declare(_declared: crate::__Declared) -> Result<Self::Adapter, UserError> {
+            Ok(NoHardware)
         }
     }
 
@@ -407,7 +465,7 @@ mod tests {
         let robot = TestRobot::new()
             .add_plugins(Bus::by_id("FT8ISZ6H"))
             .add_plugins(Bus::by_dev("/dev/ttyACM0").bus("arm"));
-        let (_, plugins) = robot.finalize().expect("valid builder");
+        let (_, plugins, _) = robot.finalize().expect("valid builder");
         assert_eq!(
             plugins,
             [
