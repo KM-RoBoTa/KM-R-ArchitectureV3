@@ -4,11 +4,16 @@
 //! Model tables follow the ROBOTIS e-Manual. A bad table fails
 //! [`Table::check`] in const evaluation, so it does not build (SRS FR-6.4).
 
+// A rejection carries its message inline: no heap here, and it is built once, at setup.
+#![allow(clippy::result_large_err)]
+
+use core::fmt;
 use core::num::NonZeroU32;
 
 use kmr_core::hal::{MASK_WORDS, Mask};
 
 use super::units;
+use crate::binding::Port;
 
 /// Highest firmware id: Protocol 2 reserves 253, 254 is the broadcast id.
 const MAX_ID: u8 = 252;
@@ -385,18 +390,28 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     /// .check();
     /// ```
     pub const fn check(self) -> Self {
-        if NB == 0 {
-            fail(Message::new().text("no bus declared"));
-        }
-        check_labels(&self.buses);
-        let mut index = 0;
-        let mut rest: &[Actuator] = &self.actuators;
-        while let [actuator, later @ ..] = rest {
-            check_actuator(&self.buses, index, actuator, later);
-            index += 1;
-            rest = later;
+        if let Err(message) = verify(&self.buses, &self.actuators) {
+            fail(message);
         }
         self
+    }
+
+    /// [`Table::check`] at run time, on the first `live` buses only: the
+    /// others are unused slots. No panic.
+    ///
+    /// # Errors
+    ///
+    /// The first rule the table breaks, worded as [`Table::check`] words it;
+    /// a `live` above `NB` is no bus declared.
+    pub const fn verify(&self, live: usize) -> Result<(), TableError> {
+        let buses = match self.buses.split_at_checked(live) {
+            Some((buses, _)) => buses,
+            None => &[],
+        };
+        match verify(buses, &self.actuators) {
+            Ok(()) => Ok(()),
+            Err(message) => Err(TableError(message)),
+        }
     }
 }
 
@@ -1022,6 +1037,69 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
     }
 }
 
+/// A [`Table`] built at run time, of which only the first buses exist, each
+/// with its port, placed in order: what `kmr_api` lowers its actuator
+/// declarations to.
+#[derive(Clone, Copy, Debug)]
+pub struct Declared<const NB: usize, const M: usize> {
+    /// Buses and actuators, actuator `k` at engine index `k`; bus slots past
+    /// `live` are unused.
+    pub(crate) placement: Placement<NB, M>,
+    /// Port of each live bus.
+    pub(crate) ports: [Port; NB],
+    /// Buses in use, from the first.
+    pub(crate) live: usize,
+}
+
+impl<const NB: usize, const M: usize> Declared<NB, M> {
+    /// `table` on its first `live` buses, bus `b` on `ports[b]`, actuator `k`
+    /// at engine index `k`, once it passes [`Table::verify`].
+    ///
+    /// # Errors
+    ///
+    /// The rule of [`Table::check`] the table breaks.
+    pub const fn new(
+        table: Table<NB, M>,
+        ports: [Port; NB],
+        live: usize,
+    ) -> Result<Self, TableError> {
+        if let Err(error) = table.verify(live) {
+            return Err(error);
+        }
+        // DECISION: placed without `Table::in_order`, whose `check` would
+        // refuse the unused bus slots; `verify` ran the same rules on the
+        // live ones, and `robot!` caps N below the write mask's limit.
+        let mut at = [0; M];
+        let mut index = 0;
+        while index < M {
+            at[index] = index;
+            index += 1;
+        }
+        let placement = Placement {
+            table,
+            at,
+            limits: [None; M],
+        };
+        Ok(Self {
+            placement,
+            ports,
+            live,
+        })
+    }
+}
+
+/// A rule of [`Table::check`] a table built at run time breaks, worded as
+/// the compile error would be.
+#[derive(Clone, Copy, thiserror::Error)]
+#[error("{}", .0.as_str())]
+pub struct TableError(Message);
+
+impl fmt::Debug for TableError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("TableError").field(&self.0.as_str()).finish()
+    }
+}
+
 /// The actuators of a [`Placement`] by engine index, `None` at the indices
 /// the member does not own, out of the robot's `N`.
 #[derive(Clone, Copy, Debug)]
@@ -1115,26 +1193,45 @@ pub(crate) const fn position(indices: &[usize], index: usize) -> Option<usize> {
     None
 }
 
-/// Rejects an empty label, and a label a later bus takes again.
-const fn check_labels(buses: &[Bus]) {
+/// The first rule of [`Table::check`] `buses` and `actuators` break.
+const fn verify(buses: &[Bus], actuators: &[Actuator]) -> Result<(), Message> {
+    if buses.is_empty() {
+        return Err(Message::new().text("no bus declared"));
+    }
+    if let Err(message) = check_labels(buses) {
+        return Err(message);
+    }
     let mut index = 0;
-    let mut rest = buses;
-    while let [bus, later @ ..] = rest {
-        if bus.label.is_empty() {
-            fail(Message::bus(index).text("empty label"));
-        }
-        if let Some(offset) = find_label(later, bus.label) {
-            fail(
-                Message::bus(index + 1 + offset)
-                    .text("label ")
-                    .text(bus.label)
-                    .text(" already used by bus ")
-                    .number(index),
-            );
+    let mut rest = actuators;
+    while let [actuator, later @ ..] = rest {
+        if let Err(message) = check_actuator(buses, index, actuator, later) {
+            return Err(message);
         }
         index += 1;
         rest = later;
     }
+    Ok(())
+}
+
+/// Rejects an empty label, and a label a later bus takes again.
+const fn check_labels(buses: &[Bus]) -> Result<(), Message> {
+    let mut index = 0;
+    let mut rest = buses;
+    while let [bus, later @ ..] = rest {
+        if bus.label.is_empty() {
+            return Err(Message::bus(index).text("empty label"));
+        }
+        if let Some(offset) = find_label(later, bus.label) {
+            return Err(Message::bus(index + 1 + offset)
+                .text("label ")
+                .text(bus.label)
+                .text(" already used by bus ")
+                .number(index));
+        }
+        index += 1;
+        rest = later;
+    }
+    Ok(())
 }
 
 /// Position in `buses` of the first one labelled `label`.
@@ -1168,51 +1265,48 @@ pub(crate) const fn same(a: &[u8], b: &[u8]) -> bool {
 
 /// Checks actuator `index`; `later` are the actuators after it, where a
 /// repeated id is reported.
-const fn check_actuator(buses: &[Bus], index: usize, actuator: &Actuator, later: &[Actuator]) {
+const fn check_actuator(
+    buses: &[Bus],
+    index: usize,
+    actuator: &Actuator,
+    later: &[Actuator],
+) -> Result<(), Message> {
     let Some(bus) = bus_at(buses, actuator.bus) else {
-        fail(
-            Message::actuator(index)
-                .text("bus ")
-                .number(actuator.bus)
-                .text(" out of range, ")
-                .number(buses.len())
-                .text(" declared"),
-        );
+        return Err(Message::actuator(index)
+            .text("bus ")
+            .number(actuator.bus)
+            .text(" out of range, ")
+            .number(buses.len())
+            .text(" declared"));
     };
     if actuator.id > MAX_ID {
-        fail(
-            Message::actuator(index)
-                .text("id ")
-                .number(actuator.id as usize)
-                .text(" above 252"),
-        );
+        return Err(Message::actuator(index)
+            .text("id ")
+            .number(actuator.id as usize)
+            .text(" above 252"));
     }
     if let Some(offset) = find(later, actuator.bus, actuator.id) {
-        fail(
-            Message::actuator(index + 1 + offset)
-                .text("id ")
-                .number(actuator.id as usize)
-                .text(" already used on bus ")
-                .text(bus.label)
-                .text(" by actuator ")
-                .number(index),
-        );
+        return Err(Message::actuator(index + 1 + offset)
+            .text("id ")
+            .number(actuator.id as usize)
+            .text(" already used on bus ")
+            .text(bus.label)
+            .text(" by actuator ")
+            .number(index));
     }
     if !actuator.model.supports(actuator.mode) {
-        fail(Message::actuator(index).text("mode not supported by the model"));
+        return Err(Message::actuator(index).text("mode not supported by the model"));
     }
     if !actuator.model.accepts_baud(bus.baud) {
-        fail(
-            Message::actuator(index)
-                .text(actuator.model.name())
-                .text(" does not accept ")
-                .number(bus.baud as usize)
-                .text(" baud on bus ")
-                .text(bus.label),
-        );
+        return Err(Message::actuator(index)
+            .text(actuator.model.name())
+            .text(" does not accept ")
+            .number(bus.baud as usize)
+            .text(" baud on bus ")
+            .text(bus.label));
     }
     if !matches!(actuator.mode, Mode::Position) {
-        fail(Message::actuator(index).text(
+        return Err(Message::actuator(index).text(
             "SRS section 8: Dynamixel mode register cannot be written, dxl_rs has no write for it",
         ));
     }
@@ -1220,14 +1314,13 @@ const fn check_actuator(buses: &[Bus], index: usize, actuator: &Actuator, later:
     if let Zero::Raw(raw) = actuator.zero
         && (raw < 0 || raw as u32 > max)
     {
-        fail(
-            Message::actuator(index)
-                .text("zero outside 0..=")
-                .number(max as usize)
-                .text(", the position range of ")
-                .text(actuator.model.name()),
-        );
+        return Err(Message::actuator(index)
+            .text("zero outside 0..=")
+            .number(max as usize)
+            .text(", the position range of ")
+            .text(actuator.model.name()));
     }
+    Ok(())
 }
 
 /// The bus at `index`, if declared.
@@ -1259,6 +1352,7 @@ pub(crate) const fn fail(message: Message) -> ! {
 
 /// A panic message built in const evaluation, where `format!` is not
 /// available. Text past the capacity is dropped.
+#[derive(Clone, Copy)]
 pub(crate) struct Message {
     bytes: [u8; MESSAGE_LEN],
     len: usize,
@@ -1713,6 +1807,34 @@ mod tests {
     #[should_panic(expected = "actuator 2: zero outside 0..=1023")]
     fn a_group_zero_outside_the_range_is_rejected() {
         table(chain(Model::Ax12a)).zero_group(&[2, 3], 2048);
+    }
+
+    #[test]
+    fn verify_words_its_error_as_check_does() {
+        let mut table = table(chain(Model::Xm430W210));
+        assert!(table.verify(1).is_ok());
+        table.actuators[1].id = table.actuators[0].id;
+        let error = table.verify(1).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "actuator 1: id 1 already used on bus bus0 by actuator 0"
+        );
+    }
+
+    #[test]
+    fn verify_ignores_the_bus_slots_past_live() {
+        let empty = Bus { label: "", ..BUS };
+        let table = Table {
+            buses: [BUS, empty, empty],
+            actuators: chain(Model::Xm430W210),
+        };
+        assert!(table.verify(1).is_ok());
+        assert_eq!(
+            table.verify(2).unwrap_err().to_string(),
+            "bus 1: empty label"
+        );
+        assert_eq!(table.verify(0).unwrap_err().to_string(), "no bus declared");
+        assert_eq!(table.verify(4).unwrap_err().to_string(), "no bus declared");
     }
 
     #[test]

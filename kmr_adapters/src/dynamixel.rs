@@ -34,8 +34,8 @@ use port::DevicePath;
 pub use self::dxl_rs::DxlRs;
 use config::Placed;
 pub use config::{
-    Actuator, Bus, DEFAULT_READ_EVERY, HealthLimits, Mode, Model, Placement, Protocol, Series,
-    Table, Torque, Zero,
+    Actuator, Bus, DEFAULT_READ_EVERY, Declared, HealthLimits, Mode, Model, Placement, Protocol,
+    Series, Table, TableError, Torque, Zero,
 };
 pub(crate) use config::{Message, fail, position, same};
 
@@ -554,6 +554,8 @@ pub struct Dynamixel<B, const NB: usize, const N: usize> {
     actuators: Placed<N>,
     /// Port of each bus, from its bus plugin; `None` until bound.
     ports: [Option<Port>; NB],
+    /// Buses in use, from the first: `NB`, but fewer for a [`Declared`] table.
+    live: usize,
     /// Where serial ids are resolved; `None` is [`port::BY_ID`].
     by_id: Option<&'static Path>,
     /// Where latency timers live; `None` is [`port::USB_SERIAL_SYSFS`].
@@ -580,6 +582,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             buses: placement.table.buses,
             actuators: Placed::new(&placement),
             ports: [None; NB],
+            live: NB,
             by_id: None,
             sysfs: None,
             groups: Groups::EMPTY,
@@ -606,6 +609,22 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         let mut adapter = Self::new(backend, placement);
         adapter.attach(plugins)?;
         Ok(adapter)
+    }
+
+    /// An adapter owning the actuators of `declared`, its buses bound to
+    /// their ports. No I/O.
+    pub fn declared<const M: usize>(backend: B, declared: Declared<NB, M>) -> Self {
+        let mut adapter = Self::new(backend, declared.placement);
+        adapter.live = declared.live;
+        for (slot, port) in adapter
+            .ports
+            .iter_mut()
+            .zip(declared.ports)
+            .take(declared.live)
+        {
+            *slot = Some(port);
+        }
+        adapter
     }
 
     /// Binds `plugins` to the buses and takes their bauds; changes nothing
@@ -756,9 +775,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 actuators: N,
             });
         }
-        if NB > B::MAX_PORTS {
+        if self.live > B::MAX_PORTS {
             return Err(DynamixelError::TooManyBuses {
-                buses: NB,
+                buses: self.live,
                 max: B::MAX_PORTS,
             });
         }
@@ -797,7 +816,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     fn open(&mut self) -> Result<(), DynamixelError> {
         let by_id = self.by_id.unwrap_or(Path::new(port::BY_ID));
         let sysfs = self.sysfs.unwrap_or(Path::new(port::USB_SERIAL_SYSFS));
-        for bus in 0..NB {
+        for bus in 0..self.live {
             let label = self.label(bus);
             let Some(plugin) = self.ports.get(bus).copied().flatten() else {
                 return Err(DynamixelError::UnboundBus { bus: label });
@@ -847,8 +866,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 };
             }
         }
+        let specs = specs.get(..self.live).unwrap_or_default();
         self.backend
-            .open_ports(&specs)
+            .open_ports(specs)
             .map_err(|failure| match failure.port {
                 Some(port) => DynamixelError::PortOpen {
                     bus: self.label(port),

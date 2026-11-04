@@ -4087,3 +4087,87 @@ fn the_fake_refuses_limits_as_the_actuator_does() {
         Some(190)
     );
 }
+
+// ── A table built at run time ───────────────────────────────────────────────
+
+/// Bus slots of [`declared`]: more than the backend opens, one in use.
+const SLOTS: usize = 8;
+
+/// `X_TABLE` built at run time: its one bus on serial `ARM`, the other slots
+/// unused and unlabelled.
+fn declared() -> super::Declared<SLOTS, N> {
+    let mut buses = [Bus {
+        label: "",
+        baud: 0,
+        read_every: None,
+    }; SLOTS];
+    buses[0] = Bus {
+        label: ARM,
+        ..X_TABLE.buses[0]
+    };
+    let table = Table {
+        buses,
+        actuators: X_TABLE.actuators,
+    };
+    super::Declared::new(table, [Port::ById(ARM); SLOTS], 1).unwrap()
+}
+
+#[test]
+fn a_declared_table_counts_its_live_buses_only() -> Result<(), DynamixelError> {
+    let mut adapter = Dynamixel::<_, _, N>::declared(Scripted::new(), declared());
+    let claim = adapter.check(Overrides::default())?;
+    assert_eq!(claim.owned, Mask::ALL);
+    Ok(())
+}
+
+#[test]
+fn a_declared_table_resolves_its_live_buses_only() -> io::Result<()> {
+    let roots = Roots::new("declared_resolve")?;
+    let mut adapter = roots.rig(Dynamixel::<_, _, N>::declared(Scripted::new(), declared()));
+    assert!(adapter.check(Overrides::default()).is_ok());
+
+    assert_eq!(
+        adapter.open(),
+        Err(DynamixelError::PortNotFound {
+            bus: ARM,
+            port: Port::ById(ARM)
+        })
+    );
+    assert!(adapter.backend.calls().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_declared_table_opens_its_live_buses_only() -> io::Result<()> {
+    let Some(arm) = pty() else {
+        return Ok(());
+    };
+    let roots = Roots::new("declared_open")?;
+    roots.link(ARM, &arm.slave)?;
+    let mut adapter = roots.rig(Dynamixel::<_, _, N>::declared(Scripted::new(), declared()));
+    assert!(adapter.check(Overrides::default()).is_ok());
+
+    assert_eq!(adapter.open(), Ok(()));
+    assert_eq!(
+        adapter
+            .backend
+            .last(Call::OpenPorts)
+            .map(|record| record.count),
+        Some(1)
+    );
+    assert_eq!(adapter.backend.baud(0), Some(1_000_000));
+    adapter.torque_off();
+    adapter.close();
+    Ok(())
+}
+
+#[test]
+fn a_declared_table_breaking_a_check_rule_is_refused() {
+    let mut table = declared().placement.table;
+    table.buses[0].baud = 500_000;
+    let error = super::Declared::new(table, [Port::ById(ARM); SLOTS], 1).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "actuator 0: XM430-W210 does not accept 500000 baud on bus ARM00001"
+    );
+}
