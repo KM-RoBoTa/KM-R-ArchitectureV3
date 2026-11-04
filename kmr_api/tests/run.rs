@@ -332,11 +332,11 @@ mod urdf {
         let Err(e @ UserError::BringUp { .. }) = &res else {
             panic!("no device, yet: {res:?}");
         };
-        assert!(
-            e.to_string()
-                .starts_with("hardware bring-up failed: member 0 (Dynamixel): ")
-                && e.to_string().contains("kmr-test-no-such-serial"),
-            "{e}"
+        assert_eq!(
+            e.to_string(),
+            "hardware bring-up failed: member 0 (Dynamixel): \
+             bus kmr-test-no-such-serial: serial kmr-test-no-such-serial names no single device; \
+             check the bus plugin and the cable"
         );
     }
 
