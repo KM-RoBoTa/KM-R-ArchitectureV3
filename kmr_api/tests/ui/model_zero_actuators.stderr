@@ -1,0 +1,5 @@
+error: kmr: $WORKSPACE/target/tests/trybuild/kmr_api/../../../../kmr_api/tests/fixtures/bad_zero_actuators.urdf: no actuated joint
+ --> tests/ui/model_zero_actuators.rs:3:25
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/bad_zero_actuators.urdf");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,21 @@
+# A controller whose math is C: the four files a C user writes (kmr_ffi T014, SRS FR-10.4).
+[package]
+name = "kmr_ffi_example_c"
+description = "A kmr controller whose per-tick math is a C function."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+kmr_api = { workspace = true, features = ["ffi"] }
+
+[build-dependencies]
+kmr_api = { workspace = true, features = ["ffi-build"] }
+
+# The tests drive scripted ticks through kmr_api's test hooks.
+[dev-dependencies]
+kmr_api = { workspace = true, features = ["ffi", "test-util"] }
+
+[lints]
+workspace = true

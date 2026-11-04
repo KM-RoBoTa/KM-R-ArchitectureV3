@@ -1,0 +1,5 @@
+error: kmr: $WORKSPACE/target/tests/trybuild/kmr_api/../../../../kmr_api/tests/fixtures/bad_negative_effort.urdf:5: joint j1: effort < 0
+ --> tests/ui/model_negative_effort.rs:3:25
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/bad_negative_effort.urdf");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

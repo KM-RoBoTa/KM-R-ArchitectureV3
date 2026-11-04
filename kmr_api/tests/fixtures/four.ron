@@ -1,0 +1,44 @@
+// Test descriptor, the robot of four.urdf in the .ron schema: 4 actuators.
+// The fixed joint is not counted. Values are test data, not a robot.
+Robot(
+    name: "four",
+    links: [
+        (name: "base", mass: 0.5, com: (0.0, 0.0, 0.02)),
+        (name: "l1", mass: 0.35, com: (0.0, 0.0, 0.05)),
+        (name: "l2", mass: 0.3, com: (0.0, 0.0, 0.04)),
+        (name: "l3", mass: 0.2, com: (0.0, 0.0, 0.03)),
+        (name: "l4", mass: 0.1, com: (0.0, 0.0, 0.02)),
+        (name: "tool", mass: 0.05, com: (0.0, 0.0, 0.01)),
+    ],
+    joints: [
+        (
+            name: "j1",
+            kind: Revolute,
+            parent: "base",
+            child: "l1",
+            limit: Some((lower: -1.57, upper: 1.57, velocity: 3.0, effort: 1.5)),
+        ),
+        (
+            name: "j2",
+            kind: Continuous,
+            parent: "l1",
+            child: "l2",
+            limit: Some((velocity: 3.0, effort: 1.5)),
+        ),
+        (
+            name: "j3",
+            kind: Prismatic,
+            parent: "l2",
+            child: "l3",
+            limit: Some((lower: 0.0, upper: 0.1, velocity: 0.05, effort: 20.0)),
+        ),
+        (
+            name: "j4",
+            kind: Revolute,
+            parent: "l3",
+            child: "l4",
+            limit: Some((lower: -3.14, upper: 3.14, velocity: 4.0, effort: 2.0)),
+        ),
+        (name: "mount", kind: Fixed, parent: "l4", child: "tool"),
+    ],
+)

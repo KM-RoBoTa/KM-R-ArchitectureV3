@@ -1,0 +1,5 @@
+error: kmr: $WORKSPACE/target/tests/trybuild/kmr_api/../../../../kmr_api/tests/fixtures/bad_lower_above_upper.urdf:5: joint j1: lower > upper
+ --> tests/ui/model_lower_above_upper.rs:3:25
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/bad_lower_above_upper.urdf");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

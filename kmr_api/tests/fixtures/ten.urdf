@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<!-- Test descriptor: 10 revolute joints in one chain, for N = 10
+     (kmr_model T062). Values are test data, not a robot. -->
+<robot name="ten">
+  <link name="l0"/>
+  <link name="l1"/>
+  <link name="l2"/>
+  <link name="l3"/>
+  <link name="l4"/>
+  <link name="l5"/>
+  <link name="l6"/>
+  <link name="l7"/>
+  <link name="l8"/>
+  <link name="l9"/>
+  <link name="l10"/>
+  <joint name="j1" type="revolute"><parent link="l0"/><child link="l1"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j3" type="revolute"><parent link="l2"/><child link="l3"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j4" type="revolute"><parent link="l3"/><child link="l4"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j5" type="revolute"><parent link="l4"/><child link="l5"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j6" type="revolute"><parent link="l5"/><child link="l6"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j7" type="revolute"><parent link="l6"/><child link="l7"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j8" type="revolute"><parent link="l7"/><child link="l8"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j9" type="revolute"><parent link="l8"/><child link="l9"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j10" type="revolute"><parent link="l9"/><child link="l10"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+</robot>

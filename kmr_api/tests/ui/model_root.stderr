@@ -1,0 +1,5 @@
+error: kmr: $WORKSPACE/target/tests/trybuild/kmr_api/../../../../kmr_api/tests/fixtures/bad_root.urdf:3: the root element is <model>, expected <robot>
+ --> tests/ui/model_root.rs:3:25
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/bad_root.urdf");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

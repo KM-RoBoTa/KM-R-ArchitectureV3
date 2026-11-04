@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-use kmr_api::{Bus, EachTick, Init, Q, Sensors, StateErrorKind as StateError, Time};
+use kmr_api::{
+    Bus, EachTick, Init, Latest, LatestReader, LatestWriter, Payload, Q, Sensors,
+    StateErrorKind as StateError, Time,
+};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -24,34 +27,29 @@ fn main() -> color_eyre::Result<()> {
     // color_eyre just makes them more pleasing and easy to read.
     color_eyre::install()?;
 
-    fn initialization(_time: &Time, robot: &mut State, _sensors: &Sensors) {
-        // `home_state` returns ANY state. To ensure home_state() knows what
-        // to return you, you must specify the type you wish. In that case,
-        // this is done by the `let variable: Type` notation.
-        let _desired: [Q; N] = robot.initial_state();
-
-        // You can also write it with the "turbofish" notation if you desire.
-        let _desired = robot.initial_state::<Q>();
-
-        // But, since we call `set_all_q` at the end, the compiler is
-        // smart enough to know you want Q.
-        let desired = robot.initial_state();
-
-        // You can convince yourself of that fact by commenting out the next
-        // line. This is precisely why we learned about this now... Because
-        // you might get surprised by this error, which is in reality just
-        // the compiler being confused until you tell it "i want to set Q".
-        robot.set_all_q(desired);
-        // Note that set_all_q here is a bad practice. All joint will go
-        // instantinously to the desired position.
-
-        // Prefer this special case method for that specific scenario.
-        robot.go_home(90);
+    fn initialization(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
+        // The home state is not decided yet (SRS FR-2.7): `robot.initial_state()` and
+        // `robot.go_home(ramp)` exist, but a call to either does not build until it is.
     }
 
+    // How long this example runs before it stops itself.
+    const DEMO_LENGTH: Duration = Duration::from_millis(50);
+
     fn use_time(time: &Time, _robot: &mut State, _sensors: &Sensors) {
-        // You may have notices the `&Time` struct in the signature.
-        todo!()
+        // You may have noticed the `&Time` struct in the signature. It is the
+        // loop's clock, read-only: the time since the start, the tick period,
+        // the tick number and how late the loop ran.
+        let _period: Duration = time.dt();
+        let _tick: u64 = time.tick();
+        if let Some(late) = time.last_overrun() {
+            println!("tick {} finished {late:?} late", time.tick());
+        }
+
+        // Here, the example ends itself once it has run long enough. A shutdown
+        // is graceful: this tick finishes, then `run()` returns `Ok(())`.
+        if time.elapsed() >= DEMO_LENGTH {
+            kmr_api::shutdown!("demo over");
+        }
     }
 
     fn replace_all_q(_time: &Time, robot: &mut State, _sensors: &Sensors) {
@@ -67,6 +65,10 @@ fn main() -> color_eyre::Result<()> {
 
         // Here, we read the current value of q. By current, we understand
         // "the latest read value from the actuators themselves".
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let current_q = robot.q();
 
         // NOTE: the into() needs context to work.
@@ -94,6 +96,10 @@ fn main() -> color_eyre::Result<()> {
         // controlling the stem angle of a mounted camera separatly would
         // be complitely separate.
 
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let index: usize = 0;
         let current_q = robot.q_at(index);
 
@@ -117,12 +123,17 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // A group is a fixed set of joint indices — non-contiguous allowed, e.g.
-    // [1, 3, 4]. Here, the right arm: joints 3, 4, 5.
-    const R_ARM: [usize; 3] = [3, 4, 5];
+    // [1, 3, 4]. Here, the right arm: joints 1, 2, 3 of the 4-actuator bench.
+    // DECISION: was [3, 4, 5], past the XmBench's 4 actuators, so it never read.
+    const R_ARM: [usize; 3] = [1, 2, 3];
     fn use_groups(_time: &Time, robot: &mut State, _sensors: &Sensors) {
         // One other nice feature are groups. You can specify a dedicated group
         // in the form of an array of indexes, and work with them using the
         // exact same set of methods.
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let mut r_arm = robot.group(R_ARM);
 
         // Accessing `q()` on a group returns only the current for the chosen
@@ -144,7 +155,10 @@ fn main() -> color_eyre::Result<()> {
         let index: usize = 1;
         let history_depth = 2;
         // Read the next line as "I want to read the state from 2 ticks ago".
-        let prev = robot.prev_q_at(index, history_depth).unwrap();
+        // The first two ticks have no such state yet: skip them.
+        let Ok(prev) = robot.prev_q_at(index, history_depth) else {
+            return;
+        };
         // then simply multiply the value by 3.
         //
         // WARN: wait, why can i mult without wrapping nor converting the f32 ?
@@ -162,6 +176,10 @@ fn main() -> color_eyre::Result<()> {
     }
 
     fn error_handling(_time: &Time, robot: &mut State, _sensors: &Sensors) {
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let current: Option<[Q; N]> = robot.q();
         // `robot.q()` returns an Option<[Q;N]>.
         // This is because an internal bug can occure, let's say because of an I/O
@@ -214,7 +232,9 @@ fn main() -> color_eyre::Result<()> {
                 // your home controller logic
                 initialization(_time, robot, _sensors);
 
-                todo!("call graceful shutdown");
+                // Then stop gracefully, and leave this controller for this tick.
+                kmr_api::shutdown!("no sample to control from");
+                return;
             }
         };
 
@@ -237,9 +257,20 @@ fn main() -> color_eyre::Result<()> {
             // `e.kind()` is the bare, payload-free cause — match it without
             // `{ .. }`. The numbers are still in `e` (its `Display`) if you want them.
             Err(e) => match e.kind() {
-                StateError::OutOfRange => todo!(),
-                StateError::HistoryValueOutOfRange => todo!(),
-                StateError::CriticalValueMissing => todo!(),
+                // A wrong index is a bug in this controller: stop the robot.
+                StateError::OutOfRange => {
+                    kmr_api::shutdown!("index out of range");
+                    return;
+                }
+                // Not that far back yet: use the newest value instead.
+                StateError::HistoryValueOutOfRange => match robot.q_at(index) {
+                    Ok(q) => q,
+                    Err(_) => return,
+                },
+                // Nothing to control from this tick: skip it.
+                StateError::CriticalValueMissing | StateError::Undecided | StateError::NoSample => {
+                    return;
+                }
             },
         };
 
@@ -274,6 +305,10 @@ fn main() -> color_eyre::Result<()> {
     ) {
         // here, we simply read a flag the user defined and set all positions
         // if true.
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         if *tracker.read_flag() {
             let current = robot.q().unwrap();
             let desired = current.map(|q| q + 100.0.into());
@@ -339,17 +374,16 @@ fn main() -> color_eyre::Result<()> {
     //
     // (payload reference: https://dev.bostondynamics.com/docs/payload/readme)
     //
-    // So, this means the architecture doesn't really need to know about them.
-    // You can freely create them, but keep in mind that new sensors or new actuators
-    // can't be moved by the architecture. This is your responsability to create
-    // the integration layer (unless you want us to do it for you).
+    // A medium or heavy payload is registered once, through the builder:
+    // `.register_payload(Payload::medium(kg, "link"))` below, never from a
+    // controller. `run()` refuses a link the model does not have. A light
+    // payload is not registered at all.
     //
-    // Because it's new controller added via [`add_controller()`] creates
-    // automatically a new thread, you are free to use this method however you like.
-    // In that case, we will show a pseudo-implementation of a 3 DOF arm as a
-    // payload.
-    //
-    // WARN: this must be only used as initialization
+    // Its new sensors or actuators are not moved by the architecture: the
+    // integration layer is yours (unless you want us to do it for you). Below,
+    // a pseudo-implementation of a 3 DOF arm with a camera, brought up by an
+    // `Init` controller. Controllers run inline in the loop; only
+    // `add_controller_as_thread` gives one its own thread.
     //
     // A plain `fn` now — no closure, no returned `impl FnMut`, no `move`. The
     // shared tracker arrives as `&mut T` because we register it through
@@ -422,7 +456,8 @@ fn main() -> color_eyre::Result<()> {
     type ArcMutTracker = Arc<Mutex<UserDefinedDataTracker>>;
 
     // Whatever a threaded controller wants to track. Here: latest gamepad input.
-    #[derive(Default)]
+    // `Copy`: the pad crosses threads by value, through a `Latest` slot.
+    #[derive(Clone, Copy, Default)]
     struct GamepadInput {
         x: f32,
         y: f32,
@@ -430,39 +465,47 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // The pad is written on the gamepad THREAD and read on the main loop by
-    // `use_gamepad`. That's two threads touching one value — the ONE situation
-    // where a lock is genuinely required. So the shared pad is an
-    // `Arc<Mutex<GamepadInput>>`. (Unlike the fake "share a flag between two
-    // main-loop controllers" case, this sharing is real, so the lock is earned.)
-    type SharedPad = Arc<Mutex<GamepadInput>>;
-
+    // `use_gamepad`: two threads, one value. A `Latest` slot carries it: the
+    // writer puts the newest reading, the reader takes it, and neither ever
+    // waits, locks or allocates. A reading the loop had no time to take is
+    // simply replaced by the next one (and counted in `superseded()`).
+    //
     // A controller that belongs on its OWN thread: a gamepad reader. It runs its
     // own blocking poll loop at its own rate — you don't want that stalling the
     // tick loop, and it must NOT touch robot state (that stays single-writer on
     // the main loop, so no actuator-write races are possible).
     //
-    // A threaded controller gets ONLY `&mut T`. Here `T = SharedPad`: it locks,
-    // writes the latest reading, unlocks. The main loop reads it via `use_gamepad`.
-    fn gamepad_controller(pad: &mut SharedPad, _time: &Time) {
+    // A threaded controller gets ONLY `&mut T`. Here `T` is the writing half.
+    fn gamepad_controller(pad: &mut LatestWriter<GamepadInput>, _time: &Time) {
         // let ev = read_gamepad();  // your blocking poll
-        let mut input = pad.lock().unwrap();
-        input.x = 0.0;
-        input.y = 0.0;
-        input.buttons = 0;
+        pad.put(GamepadInput {
+            x: 0.0,
+            y: 0.0,
+            buttons: 0,
+        });
+    }
+
+    // The main loop's side: the reading half, and the last reading taken, kept
+    // for the ticks where nothing new arrived.
+    struct Pad {
+        latest: LatestReader<GamepadInput>,
+        input: GamepadInput,
     }
 
     // The other half: a MAIN-LOOP controller that uses the gamepad to command
-    // the robot. It needs `&mut State`, so it can't be threaded — and that's
-    // fine: it reaches the pad through the same `SharedPad`. Lock, copy out what
-    // you need, unlock FAST (don't hold the lock while doing heavy work — that
-    // would stall the gamepad thread).
-    fn use_gamepad(pad: &mut SharedPad, _time: &Time, robot: &mut State, _sensors: &Sensors) {
-        // `try_lock` never waits: if the gamepad thread holds the pad, skip this tick.
-        let Ok(input) = pad.try_lock() else { return };
-        let (x, _y) = (input.x, input.y);
-        drop(input);
+    // the robot. It needs `&mut State`, so it can't be threaded.
+    fn use_gamepad(pad: &mut Pad, _time: &Time, robot: &mut State, _sensors: &Sensors) {
+        // One atomic load when nothing is new: the tick never waits on the pad.
+        if let Some(input) = pad.latest.take() {
+            pad.input = input;
+        }
+        let (x, _y) = (pad.input.x, pad.input.y);
 
         // Turn the stick into a robot command.
+        // A run without hardware reads nothing: no sample to work from, skip the tick.
+        if robot.q().is_none() {
+            return;
+        }
         let current = robot.q();
         let desired = current.unwrap().map(|q| q + Q(x));
         robot.set_all_q(desired);
@@ -474,7 +517,11 @@ fn main() -> color_eyre::Result<()> {
     // 1) A humidity sensor
     // 2) A camera sensor
     fn estop(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
-        kmr_api::emergency_stop!("battery too low");
+        // Your battery reading here; an emergency stop cuts torque at once.
+        let battery_percent = 80;
+        if battery_percent < 10 {
+            kmr_api::emergency_stop!("battery too low");
+        }
     }
 
     fn use_sensors(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
@@ -500,18 +547,29 @@ fn main() -> color_eyre::Result<()> {
     let mut own_tracker = UserDefinedDataTracker::default();
     own_tracker.write_flag(true); // your one-time init
 
-    // The shared gamepad. Built ONCE here. `Arc::clone` gives a cheap second
-    // handle to the SAME pad — one goes to the gamepad thread (writer), the
-    // other to `use_gamepad` on the main loop (reader).
-    let pad: SharedPad = Arc::new(Mutex::new(GamepadInput::default()));
+    // The gamepad slot, built ONCE here and split: the writer goes to the
+    // gamepad thread, the reader to `use_gamepad` on the main loop.
+    let (pad_writer, pad_reader) = Latest::new().split();
+    let pad = Pad {
+        latest: pad_reader,
+        input: GamepadInput::default(),
+    };
 
     // NOTE: `new()` should be `builder()` no ?
-    Robot::new()
-        // Hardware, Bevy-style. The preset gives brand and baud; the id is this machine's USB adapter.
-        // Leave it out and run() simulates, with one warning.
-        .add_plugins(Bus::by_id("FT8ISZ6H"))
+    let robot = Robot::new();
+    // Hardware, Bevy-style. The preset gives brand and baud; the id is this machine's USB adapter.
+    // Without this line run() simulates, with the core's one warning: here, unless the example
+    // is built with the `dynamixel` feature.
+    let robot = if cfg!(feature = "dynamixel") {
+        robot.add_plugins(Bus::by_id("FT8ISZ6H"))
+    } else {
+        robot
+    };
+    robot
         // Settings
         .set_dt(Duration::from_millis(1u64)) // NOTE: or .dt_us(10000)
+        // The camera arm, mounted on the model's last link.
+        .register_payload(Payload::medium(1.2, "link4"))
         // .history_depth(1_usize) // with a maximum recommended of 5.
         // Controllers
         .add_controller(Init, initialization)
@@ -534,10 +592,10 @@ fn main() -> color_eyre::Result<()> {
         // Own-data controller: no closure, no Arc/Mutex. We move the already
         // initialized `own_tracker` in — the API keeps it alive across ticks.
         // Gamepad WRITER on its own thread. No robot state → can't race commands.
-        .add_controller_as_thread(EachTick, Arc::clone(&pad), gamepad_controller)
-        // Gamepad READER on the main loop: needs State, so not threaded. Same
-        // pad, other handle. This is the bridge from thread back to the robot.
-        .add_controller_with(EachTick, Arc::clone(&pad), use_gamepad)
+        .add_controller_as_thread(EachTick, pad_writer, gamepad_controller)
+        // Gamepad READER on the main loop: needs State, so not threaded. The
+        // other half of the same slot: the bridge from thread back to the robot.
+        .add_controller_with(EachTick, pad, use_gamepad)
         .add_controller(EachTick, use_sensors)
         .add_controller(EachTick, estop)
         .run()?;

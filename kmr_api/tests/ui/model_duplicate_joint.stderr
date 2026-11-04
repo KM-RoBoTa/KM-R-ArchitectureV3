@@ -1,0 +1,5 @@
+error: kmr: $WORKSPACE/target/tests/trybuild/kmr_api/../../../../kmr_api/tests/fixtures/bad_duplicate_joint.urdf:7: duplicate joint j1 (first at line 6)
+ --> tests/ui/model_duplicate_joint.rs:3:25
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/bad_duplicate_joint.urdf");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

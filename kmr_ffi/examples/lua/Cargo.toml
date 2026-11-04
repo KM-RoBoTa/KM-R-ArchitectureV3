@@ -1,0 +1,18 @@
+# A controller whose math is a Lua function (kmr_ffi T023, SRS FR-10.4).
+[package]
+name = "kmr_ffi_example_lua"
+description = "A kmr controller whose per-tick math is a Lua function."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+kmr_api = { workspace = true, features = ["ffi-lua"] }
+
+# The tests drive scripted ticks through kmr_api's test hooks.
+[dev-dependencies]
+kmr_api = { workspace = true, features = ["ffi-lua", "test-util"] }
+
+[lints]
+workspace = true

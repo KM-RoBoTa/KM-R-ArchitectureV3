@@ -1,0 +1,11 @@
+error: no rules expected `model`
+ --> tests/ui/preset_with_model.rs:3:26
+  |
+3 | kmr_api::robot!(XmBench, model = "../../../../kmr_api/tests/fixtures/four.urdf");
+  |                          ^^^^^ no rules expected this token in macro call
+  |
+note: while trying to match `hardware`
+ --> src/robot_macro.rs
+  |
+  |     ($preset:ident, hardware = |$hw:ident| $table:expr) => {
+  |                     ^^^^^^^^

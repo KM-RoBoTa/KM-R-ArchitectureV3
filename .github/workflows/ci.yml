@@ -21,16 +21,46 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # The FFI example crates are members: kmr_ffi_example_python embeds CPython (pyo3), the
+      # C and C++ examples need cc and c++, which the runner has.
+      - run: sudo apt-get update && sudo apt-get install -y python3-dev
       - run: cargo fmt --all --check
       - run: cargo build --workspace --all-targets
       - run: cargo clippy --workspace
       # --all-targets also lints tests and examples.
       - run: cargo clippy --workspace --all-targets
+      # The controllers crate compiles clean: a warning there fails CI (controllers SC-004).
+      - run: cargo clippy -p controllers --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
+
+  no-std:
+    name: no_std core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      # The engine without `std` and without `alloc` (core SC-007, SRS NFR-7).
+      - run: cargo build -p kmr_core --no-default-features --target thumbv7em-none-eabihf
+
+  srs-markers:
+    name: SRS markers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Counts the SRS markers and fails on an unwrap, expect or panic! outside
+      # them in kmr_core/src (core FR-055, SRS NFR-2 and § 5).
+      - run: .github/scripts/srs-markers.sh kmr_core/src
 
   cross:
     name: cross-build
     runs-on: ubuntu-latest
+    env:
+      # The bench binaries link: the two targets need their own linkers (bench FR-025).
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -39,3 +69,34 @@ jobs:
       # No `dynamixel` feature: the robot binary must build with no C SDK and no device.
       - run: cargo build -p kmr_adapters -p kmr_api --target aarch64-unknown-linux-gnu
       - run: cargo build -p kmr_adapters -p kmr_api --target armv7-unknown-linux-gnueabihf
+      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+      # The bench, no `hardware` feature: the same binary runs on both kernels of the Pi.
+      - run: cargo build -p kmr_bench --release --bins --target aarch64-unknown-linux-gnu
+      - run: cargo build -p kmr_bench --release --bins --target armv7-unknown-linux-gnueabihf
+
+  cross-dynamixel:
+    name: cross-build with dynamixel
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+      CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+      CXX_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-g++
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf
+      - uses: Swatinem/rust-cache@v2
+      # dxl_rs compiles the DynamixelSDK C sources and runs bindgen (libclang).
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y libclang-dev
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+      # The robot binary with the real SDK, on a runner with no serial device
+      # (kmr_adapters SC-007, SRS NFR-5). A build on the no-op stub bindings fails it.
+      - run: cargo build -p controllers --features kmr_api/dynamixel --target aarch64-unknown-linux-gnu 2>&1 | tee aarch64.log
+      - run: cargo build -p controllers --features kmr_api/dynamixel --target armv7-unknown-linux-gnueabihf 2>&1 | tee armv7.log
+      - run: "! grep -h 'Using stub DynamixelSDK bindings' aarch64.log armv7.log"

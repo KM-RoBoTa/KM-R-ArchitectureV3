@@ -28,6 +28,10 @@ fn main() -> Result<(), kmr_api::ffi::build::Error> {
 | Error | When |
 |---|---|
 | `UnknownPreset`, `Descriptor(..)` | robot not found or descriptor invalid; same message as `robot!` |
+| `ActuatorCount(n)` | N outside `1..=64`, one mask bit per actuator (D4 A) |
+| `UnknownSource(..)` | a source is neither `.c` nor `.cc`, `.cpp`, `.cxx` |
+| `NoOutDir` | `OUT_DIR` unset: called outside a build script |
+| `Write(path, io)` | a header or the ABI file could not be written |
 | `Compile(..)` | the C/C++ compiler failed |
 
 D12 A ([research.md](../research.md) R4).

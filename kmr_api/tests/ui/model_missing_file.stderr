@@ -1,0 +1,5 @@
+error: kmr: cannot read robot descriptor $WORKSPACE/target/tests/trybuild/kmr_api/../../../../kmr_api/tests/fixtures/no_such_robot.urdf: No such file or directory (os error 2)
+ --> tests/ui/model_missing_file.rs:3:25
+  |
+3 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/no_such_robot.urdf");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

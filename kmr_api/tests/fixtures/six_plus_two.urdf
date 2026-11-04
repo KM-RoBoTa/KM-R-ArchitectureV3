@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- Test descriptor: 6 actuators and 2 fixed joints in one chain. Values are test data. -->
+<robot name="six_plus_two">
+  <link name="base"/>
+  <link name="l1"/>
+  <link name="l2"/>
+  <link name="l3"/>
+  <link name="l4"/>
+  <link name="l5"/>
+  <link name="l6"/>
+  <link name="l7"/>
+  <link name="l8"/>
+  <joint name="a1" type="revolute"><parent link="base"/><child link="l1"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="f1" type="fixed"><parent link="l1"/><child link="l2"/></joint>
+  <joint name="a2" type="revolute"><parent link="l2"/><child link="l3"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="a3" type="prismatic"><parent link="l3"/><child link="l4"/><limit lower="0.0" upper="0.1" velocity="0.05" effort="20"/></joint>
+  <joint name="a4" type="continuous"><parent link="l4"/><child link="l5"/><limit velocity="3.0" effort="1.5"/></joint>
+  <joint name="f2" type="fixed"><parent link="l5"/><child link="l6"/></joint>
+  <joint name="a5" type="revolute"><parent link="l6"/><child link="l7"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="a6" type="revolute"><parent link="l7"/><child link="l8"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+</robot>

@@ -1,0 +1,45 @@
+[package]
+name = "kmr_bench"
+description = "The reference benchmark of kmr: measures the engine through kmr_api only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+kmr_api.workspace = true
+
+[features]
+# The Dynamixel SDK, for `tick_hw` on the reference chain.
+hardware = ["kmr_api/dynamixel"]
+# Optional: `tick_hw` over two U2D2, actuators alternating (research R15; D6, D7 A).
+two-bus = ["hardware"]
+# Batches keep declaration order: the baseline of presort.sh (assumed, pending human: D11 B, the
+# one place with presort.sh). Built into its own target dir, see bench/PROCEDURE.md.
+presort-off = ["kmr_api/presort-off"]
+# kmr_api's Zenoh gateway plugged into `tick`: default deny, no peer, no endpoint (constitution
+# VI); the cost of the gateway's stages on the tick (kmr_api SC-003). Off by default.
+zenoh = ["kmr_api/zenoh"]
+# `tick_ffi`: an empty C function as an `EachTick` controller (kmr_ffi SC-003). Off by default.
+ffi = ["kmr_api/ffi", "dep:kmr_api"]
+
+[build-dependencies]
+# The build helper alone, for bench/build.rs: compiles bench/ffi/empty.c (D12 A).
+kmr_api = { workspace = true, features = ["ffi-build"], optional = true }
+
+[lints]
+workspace = true
+
+# The hardware run on the reference chain; needs the Dynamixel SDK.
+[[bin]]
+name = "tick_hw"
+required-features = ["hardware"]
+
+# The foreign-call run; needs a C compiler.
+[[bin]]
+name = "tick_ffi"
+required-features = ["ffi"]
+
+[[test]]
+name = "tick_ffi_runs"
+required-features = ["ffi"]

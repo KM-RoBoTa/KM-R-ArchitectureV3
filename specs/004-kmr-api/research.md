@@ -178,7 +178,8 @@ Prototypes live in the scratchpad, never in the repo:
 ## R10. Home state markers. Assumed, pending human: D5
 
 - **Decision** (D5 option A, no `unimplemented!` after `open`): `initial_state()` and
-  `go_home(ramp)` keep their names and argument shapes, but carry a bound no type meets:
+  `go_home(ramp)` keep their names and arity (the ramp becomes a type parameter), but carry a
+  bound no type meets:
 
   ```rust
   #[diagnostic::on_unimplemented(message = "kmr: SRS FR-2.7: home state is open; ...")]

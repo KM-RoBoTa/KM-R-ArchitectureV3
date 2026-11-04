@@ -7,11 +7,11 @@
 use core::num::NonZeroU32;
 use core::time::Duration;
 
-use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample};
-use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
+use kmr_core::hal::{Batch, Command, Faults, Group, Mask, Sample, Written};
+use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 
 use super::backend::{Backend, BackendError, GoalRegister, RawState};
-use super::config::{Actuator, Bus, Mode, Model, Protocol, Torque};
+use super::config::{self, Actuator, Bus, Mode, Model, Placed, Protocol, Series, Torque};
 use super::units;
 use super::{Dynamixel, DynamixelError};
 
@@ -37,7 +37,7 @@ const BITS_PER_BYTE: u64 = 10;
 /// The actuators of one series on one bus: one transaction where the
 /// protocol allows it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Table {
+pub(crate) struct Table<const N: usize> {
     /// Bus index, the backend's port.
     pub(crate) bus: usize,
     /// Model of the first member; the others share its series.
@@ -45,21 +45,21 @@ pub(crate) struct Table {
     /// Read cadence of the bus, in ticks.
     pub(crate) every: NonZeroU32,
     /// Actuator indices, ascending, `len` of them used.
-    members: [usize; JOINTS],
+    members: [usize; N],
     /// Firmware id of each member.
-    ids: [u8; JOINTS],
+    ids: [u8; N],
     /// Members in use.
     len: usize,
 }
 
-impl Table {
+impl<const N: usize> Table<N> {
     /// A table with no member.
     const EMPTY: Self = Self {
         bus: 0,
         model: Model::Xm430W210,
         every: NonZeroU32::MIN,
-        members: [0; JOINTS],
-        ids: [0; JOINTS],
+        members: [0; N],
+        ids: [0; N],
         len: 0,
     };
 
@@ -87,53 +87,65 @@ impl Table {
     /// Bytes on the wire for one read of every member; `state_reads` are
     /// the data bytes of each Protocol 2 sync read of one state read.
     fn read_bytes(&self, state_reads: &[u16]) -> u64 {
-        let members = self.len as u64;
-        match self.model.protocol() {
-            Protocol::Two => state_reads
-                .iter()
-                .map(|&data| SYNC_READ_BYTES + members * (1 + STATUS_BYTES + u64::from(data)))
-                .sum(),
-            Protocol::One => members * READ_POSITION_BYTES,
-        }
+        read_bytes(self.model.protocol(), self.len as u64, state_reads)
     }
 
     /// Bytes on the wire for one goal write to every member.
     fn write_bytes(&self) -> u64 {
-        let members = self.len as u64;
-        match self.model.protocol() {
-            Protocol::Two => SYNC_WRITE_2_BYTES + members * GOAL_2_BYTES,
-            Protocol::One => SYNC_WRITE_1_BYTES + members * GOAL_1_BYTES,
+        write_bytes(self.model.protocol(), self.len as u64)
+    }
+}
+
+/// Bytes on the wire for one read of `members` actuators of one group on
+/// `protocol`; `state_reads` as in [`Table::read_bytes`].
+const fn read_bytes(protocol: Protocol, members: u64, state_reads: &[u16]) -> u64 {
+    match protocol {
+        Protocol::Two => {
+            let mut bytes = 0;
+            let mut rest = state_reads;
+            while let [data, later @ ..] = rest {
+                bytes += SYNC_READ_BYTES + members * (1 + STATUS_BYTES + *data as u64);
+                rest = later;
+            }
+            bytes
         }
+        Protocol::One => members * READ_POSITION_BYTES,
+    }
+}
+
+/// Bytes on the wire for one goal write to `members` actuators of one group
+/// on `protocol`.
+const fn write_bytes(protocol: Protocol, members: u64) -> u64 {
+    match protocol {
+        Protocol::Two => SYNC_WRITE_2_BYTES + members * GOAL_2_BYTES,
+        Protocol::One => SYNC_WRITE_1_BYTES + members * GOAL_1_BYTES,
     }
 }
 
 /// Every group, numbered as in the layout.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Groups {
+pub(crate) struct Groups<const N: usize> {
     /// Tables, `len` of them used; at most one per actuator.
-    tables: [Table; JOINTS],
+    tables: [Table<N>; N],
     /// Tables in use.
     len: usize,
     /// Table of each actuator.
-    of: [usize; JOINTS],
+    of: [usize; N],
 }
 
-impl Groups {
+impl<const N: usize> Groups<N> {
     /// No group: `check` was not called.
     pub(crate) const EMPTY: Self = Self {
-        tables: [Table::EMPTY; JOINTS],
+        tables: [Table::EMPTY; N],
         len: 0,
-        of: [0; JOINTS],
+        of: [0; N],
     };
 
-    /// Numbers the distinct (bus, series) pairs from 0 in first-seen
-    /// actuator order; `every` is the cadence of each bus.
-    pub(crate) fn build<const NB: usize>(
-        actuators: &[Actuator; JOINTS],
-        every: &[NonZeroU32; NB],
-    ) -> Self {
+    /// Numbers the distinct (bus, series) pairs of the owned actuators from
+    /// 0 in first-seen engine order; `every` is the cadence of each bus.
+    pub(crate) fn build<const NB: usize>(actuators: &Placed<N>, every: &[NonZeroU32; NB]) -> Self {
         let mut groups = Self::EMPTY;
-        for (index, actuator) in actuators.iter().enumerate() {
+        for (index, actuator) in actuators.iter() {
             let series = actuator.model.series();
             let found = groups
                 .tables()
@@ -166,20 +178,20 @@ impl Groups {
     }
 
     /// Tables in group order.
-    pub(crate) fn tables(&self) -> &[Table] {
+    pub(crate) fn tables(&self) -> &[Table<N>] {
         self.tables.get(..self.len).unwrap_or_default()
     }
 
     /// Group number of each actuator. A number past `u8::MAX` saturates:
     /// `write` looks up each actuator's own table, so a shared number never
     /// mixes two tables in one transaction.
-    pub(crate) fn numbers(&self) -> [Group; JOINTS] {
+    pub(crate) fn numbers(&self) -> [Group; N] {
         self.of
             .map(|table| Group(u8::try_from(table).unwrap_or(u8::MAX)))
     }
 
     /// Read cadence in force for each actuator.
-    pub(crate) fn cadence(&self) -> [NonZeroU32; JOINTS] {
+    pub(crate) fn cadence(&self) -> [NonZeroU32; N] {
         self.of.map(|table| {
             self.tables
                 .get(table)
@@ -207,10 +219,51 @@ impl Groups {
 
 /// Time `bytes` take on the wire at `baud`; zero for a zero baud.
 fn line_time(bytes: u64, baud: u64) -> Duration {
-    let nanos = (bytes * BITS_PER_BYTE * 1_000_000_000)
-        .checked_div(baud)
-        .unwrap_or(0);
-    Duration::from_nanos(nanos)
+    Duration::from_nanos(line_nanos(bytes, baud))
+}
+
+/// [`line_time`] in nanoseconds, for const evaluation.
+const fn line_nanos(bytes: u64, baud: u64) -> u64 {
+    match (bytes * BITS_PER_BYTE * 1_000_000_000).checked_div(baud) {
+        Some(nanos) => nanos,
+        None => 0,
+    }
+}
+
+/// The read and write cost `check` declares for `table` with every actuator
+/// owned, computed in const evaluation: one group per (bus, series), each
+/// at its bus's baud, as [`Groups::costs`] counts them (FR-035 (SRS NFR-11,
+/// FR-5.3)). A plugin baud set at `bind` is not in it.
+pub(crate) const fn declared_costs<const NB: usize, const N: usize>(
+    table: &config::Table<NB, N>,
+    state_reads: &[u16],
+) -> (Duration, Duration) {
+    let (mut read, mut write) = (0, 0);
+    let mut buses: &[Bus] = &table.buses;
+    let mut bus = 0;
+    while let [this, later @ ..] = buses {
+        let baud = this.baud as u64;
+        let mut series: &[Series] = &[Series::Ax, Series::X];
+        while let [kind, kinds @ ..] = series {
+            let (mut members, mut protocol) = (0, None);
+            let mut rest: &[Actuator] = &table.actuators;
+            while let [actuator, others @ ..] = rest {
+                if actuator.bus == bus && actuator.model.series() as u8 == *kind as u8 {
+                    members += 1;
+                    protocol = Some(actuator.model.protocol());
+                }
+                rest = others;
+            }
+            if let Some(protocol) = protocol {
+                read += line_nanos(read_bytes(protocol, members, state_reads), baud);
+                write += line_nanos(write_bytes(protocol, members), baud);
+            }
+            series = kinds;
+        }
+        bus += 1;
+        buses = later;
+    }
+    (Duration::from_nanos(read), Duration::from_nanos(write))
 }
 
 /// What became of one actuator in a group read.
@@ -229,24 +282,24 @@ pub(crate) enum Outcome {
 
 /// Up to one goal per member of one table, sent in one backend call.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Goals {
+pub(crate) struct Goals<const N: usize> {
     /// Table the goals go to.
     table: usize,
     /// `(id, raw)` entries, `len` of them used.
-    goals: [(u8, u32); JOINTS],
+    goals: [(u8, u32); N],
     /// Actuator index of each entry.
-    indices: [usize; JOINTS],
+    indices: [usize; N],
     /// Entries in use.
     len: usize,
 }
 
-impl Goals {
+impl<const N: usize> Goals<N> {
     /// No goal yet for `table`.
     pub(crate) const fn new(table: usize) -> Self {
         Self {
             table,
-            goals: [(0, 0); JOINTS],
-            indices: [0; JOINTS],
+            goals: [(0, 0); N],
+            indices: [0; N],
             len: 0,
         }
     }
@@ -268,7 +321,7 @@ impl Goals {
     }
 
     /// The table and the queued goals; `None` when none is queued.
-    fn queued<'a>(&'a self, groups: &'a Groups) -> Option<(&'a Table, &'a [(u8, u32)])> {
+    fn queued<'a>(&'a self, groups: &'a Groups<N>) -> Option<(&'a Table<N>, &'a [(u8, u32)])> {
         let goals = self.goals.get(..self.len).unwrap_or_default();
         let table = groups.tables().get(self.table)?;
         (!goals.is_empty()).then_some((table, goals))
@@ -279,7 +332,7 @@ impl Goals {
     pub(crate) fn send<B: Backend>(
         &self,
         backend: &mut B,
-        groups: &Groups,
+        groups: &Groups<N>,
     ) -> Result<(), BackendError> {
         self.queued(groups).map_or(Ok(()), |(table, goals)| {
             backend.sync_write_goal(table.bus, table.model, goals)
@@ -291,7 +344,7 @@ impl Goals {
     pub(crate) fn send_start<B: Backend>(
         &self,
         backend: &mut B,
-        groups: &Groups,
+        groups: &Groups<N>,
         register: GoalRegister,
     ) -> Result<(), BackendError> {
         self.queued(groups).map_or(Ok(()), |(table, goals)| {
@@ -304,7 +357,7 @@ impl Goals {
 /// position mode. `None` also outside the register range (research R11).
 pub(crate) fn position_goal(actuator: &Actuator, q: Q) -> Option<u32> {
     match (actuator.mode, actuator.torque) {
-        (Mode::Position, Torque::On) => units::position_to_raw(actuator.model, q),
+        (Mode::Position, Torque::On) => units::position_to_raw(actuator, q),
         _ => None,
     }
 }
@@ -336,18 +389,17 @@ fn start_goal(actuator: &Actuator, present: Q) -> Option<(GoalRegister, u32)> {
 ///
 /// Protocol 2 reads the group in one transaction; Protocol 1 reads each
 /// position on its own and leaves `Qd` and `Tau` as copied (research R12).
-pub(crate) fn read_table<B: Backend>(
+pub(crate) fn read_table<B: Backend, const N: usize>(
     backend: &mut B,
-    table: &Table,
-    actuators: &[Actuator; JOINTS],
-    sample: &mut Sample<'_>,
+    table: &Table<N>,
+    actuators: &Placed<N>,
+    sample: &mut Sample<'_, N>,
     mut report: impl FnMut(usize, Outcome),
 ) {
-    let model_of = |index: usize| actuators.get(index).map_or(table.model, |a| a.model);
     match table.model.protocol() {
         Protocol::Two => {
             let ids = table.ids();
-            let mut out = [Ok(RawState::default()); JOINTS];
+            let mut out = [Ok(RawState::default()); N];
             let out = out.get_mut(..ids.len()).unwrap_or_default();
             if let Err(error) = backend.sync_read_state(table.bus, table.model, ids, out) {
                 for &index in table.members() {
@@ -356,8 +408,11 @@ pub(crate) fn read_table<B: Backend>(
                 return;
             }
             for (&index, result) in table.members().iter().zip(out.iter()) {
+                let Some(actuator) = actuators.get(index) else {
+                    continue;
+                };
                 match result {
-                    Ok(raw) if store_state(sample, model_of(index), index, raw) => {
+                    Ok(raw) if store_state(sample, actuator, index, raw) => {
                         report(index, Outcome::Read);
                     }
                     Ok(raw) => report(index, Outcome::Invalid(i64::from(raw.position))),
@@ -367,12 +422,14 @@ pub(crate) fn read_table<B: Backend>(
         }
         Protocol::One => {
             for (&index, &id) in table.members().iter().zip(table.ids()) {
-                let model = model_of(index);
-                match backend.read_position(table.bus, model, id) {
+                let Some(actuator) = actuators.get(index) else {
+                    continue;
+                };
+                match backend.read_position(table.bus, actuator.model, id) {
                     Ok(raw) => {
                         let read = i32::try_from(raw)
                             .ok()
-                            .and_then(|raw| units::position_to_si(model, raw));
+                            .and_then(|raw| units::position_to_si(actuator, raw));
                         match (read, sample.q.get_mut(index)) {
                             (Some(read), Some(q)) => {
                                 *q = read;
@@ -392,9 +449,15 @@ pub(crate) fn read_table<B: Backend>(
 /// Overwrites the sample of actuator `index` with `raw`. `Tau` is kept when
 /// the model has no known torque constant. Stores nothing and returns
 /// `false` when the position is outside the register range.
-fn store_state(sample: &mut Sample<'_>, model: Model, index: usize, raw: &RawState) -> bool {
+fn store_state<const N: usize>(
+    sample: &mut Sample<'_, N>,
+    actuator: &Actuator,
+    index: usize,
+    raw: &RawState,
+) -> bool {
+    let model = actuator.model;
     let (Some(read), Some(q)) = (
-        units::position_to_si(model, raw.position),
+        units::position_to_si(actuator, raw.position),
         sample.q.get_mut(index),
     ) else {
         return false;
@@ -414,9 +477,9 @@ fn store_state(sample: &mut Sample<'_>, model: Model, index: usize, raw: &RawSta
 
 /// Actuators whose `Qd` and `Tau` are never read: Protocol 1 reads the
 /// position only (research R12).
-pub(crate) fn unread_rates(actuators: &[Actuator; JOINTS]) -> Mask {
+pub(crate) fn unread_rates<const N: usize>(actuators: &Placed<N>) -> Mask<N> {
     let mut unread = Mask::NONE;
-    for (index, actuator) in actuators.iter().enumerate() {
+    for (index, actuator) in actuators.iter() {
         if actuator.model.protocol() == Protocol::One {
             unread.set(index);
         }
@@ -426,11 +489,11 @@ pub(crate) fn unread_rates(actuators: &[Actuator; JOINTS]) -> Mask {
 
 /// The per-tick read: every group whose bus is due on this call, the first
 /// call included (FR-009). Faults go to `faults` (FR-014, FR-015).
-pub(super) fn read_due<B: Backend, const NB: usize>(
-    adapter: &mut Dynamixel<B, NB>,
-    mut sample: Sample<'_>,
-    faults: &mut Faults,
-) -> Mask {
+pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
+    adapter: &mut Dynamixel<B, NB, N>,
+    mut sample: Sample<'_, N>,
+    faults: &mut Faults<N>,
+) -> Mask<N> {
     let call = adapter.reads;
     adapter.reads = adapter.reads.wrapping_add(1);
     let mut refreshed = Mask::NONE;
@@ -441,7 +504,7 @@ pub(super) fn read_due<B: Backend, const NB: usize>(
         read_table(
             &mut adapter.backend,
             table,
-            &adapter.table.actuators,
+            &adapter.actuators,
             &mut sample,
             |index, outcome| match outcome {
                 Outcome::Read => refreshed.set(index),
@@ -460,25 +523,34 @@ pub(super) fn read_due<B: Backend, const NB: usize>(
     refreshed
 }
 
+/// Whether `index` has a write a Dynamixel register takes: `Q`, `Qd` or
+/// `Tau`. `Kp` and `Kd` have none, so a write of them alone is ignored.
+fn has_goal<const N: usize>(written: &Written<N>, index: usize) -> bool {
+    written.q.get(index) || written.qd.get(index) || written.tau.get(index)
+}
+
 /// The per-tick write: one transaction per run of one table. An actuator
 /// not sent is `rejected`; a failed transaction sets `bus_error` on what it
-/// carried (FR-012, FR-015).
-pub(super) fn write_batch<B: Backend, const NB: usize>(
-    adapter: &mut Dynamixel<B, NB>,
-    command: &Command<'_>,
-    batch: &Batch<'_>,
-    faults: &mut Faults,
+/// carried (FR-012, FR-015). An index the member does not own is another
+/// member's: skipped, its faults untouched. One written in `Kp` or `Kd` only
+/// is skipped too, without a fault.
+pub(super) fn write_batch<B: Backend, const NB: usize, const N: usize>(
+    adapter: &mut Dynamixel<B, NB, N>,
+    command: &Command<'_, N>,
+    batch: &Batch<'_, N>,
+    faults: &mut Faults<N>,
 ) {
     for (_, run) in batch.runs() {
-        let mut goals: Option<Goals> = None;
+        let mut goals: Option<Goals<N>> = None;
         for &index in run {
-            let (Some(&actuator), Some(&table)) = (
-                adapter.table.actuators.get(index),
-                adapter.groups.of.get(index),
-            ) else {
-                faults.rejected.set(index);
+            let (Some(&actuator), Some(&table)) =
+                (adapter.actuators.get(index), adapter.groups.of.get(index))
+            else {
                 continue;
             };
+            if !has_goal(command.written, index) {
+                continue;
+            }
             if goals.is_some_and(|goals| goals.table != table) {
                 flush_goals(adapter, goals.take(), faults);
             }
@@ -501,36 +573,32 @@ pub(super) fn write_batch<B: Backend, const NB: usize>(
 /// Writes, torque still off, the goal each powered actuator of group
 /// `number` holds once powered: its present position, read now, or a zero
 /// velocity or current. One `sync_write_start_goal` per goal register.
-pub(super) fn write_start_goals<B: Backend, const NB: usize>(
-    adapter: &mut Dynamixel<B, NB>,
+pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
+    adapter: &mut Dynamixel<B, NB, N>,
     number: usize,
 ) -> Result<(), DynamixelError> {
     let Some(&table) = adapter.groups.tables().get(number) else {
         return Ok(());
     };
-    let mut present = [Q::default(); JOINTS];
-    let reads = table.members().iter().any(|&index| {
-        adapter
-            .table
-            .actuators
-            .get(index)
-            .is_some_and(starts_at_present)
-    });
+    let mut present = [Q::default(); N];
+    let reads = table
+        .members()
+        .iter()
+        .any(|&index| adapter.actuators.get(index).is_some_and(starts_at_present));
     if reads {
         read_present(adapter, &table, &mut present)?;
     }
     let mut goals = GoalRegister::ALL.map(|_| Goals::new(number));
     for &index in table.members() {
-        let Some(actuator) = adapter.table.actuators.get(index) else {
+        let Some(actuator) = adapter.actuators.get(index) else {
             continue;
         };
         if actuator.torque == Torque::ReadOnly {
             continue;
         }
         let q = present.get(index).copied().unwrap_or_default();
-        let (register, raw) = start_goal(actuator, q).ok_or_else(|| {
-            adapter.position_range(index, units::nearest_position(actuator.model, q))
-        })?;
+        let (register, raw) = start_goal(actuator, q)
+            .ok_or_else(|| adapter.position_range(index, units::nearest_position(actuator, q)))?;
         if register == GoalRegister::Position && !adapter.within_limits(index, raw) {
             return Err(adapter.outside_limits(index, raw));
         }
@@ -551,15 +619,15 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize>(
 
 /// Reads the present position of every member of `table` into `present`;
 /// fails on the first one a start goal needs.
-fn read_present<B: Backend, const NB: usize>(
-    adapter: &mut Dynamixel<B, NB>,
-    table: &Table,
-    present: &mut [Q; JOINTS],
+fn read_present<B: Backend, const NB: usize, const N: usize>(
+    adapter: &mut Dynamixel<B, NB, N>,
+    table: &Table<N>,
+    present: &mut [Q; N],
 ) -> Result<(), DynamixelError> {
-    let (mut qd, mut tau) = ([Qd::default(); JOINTS], [Tau::default(); JOINTS]);
-    let (mut kp, mut kd) = ([Kp::default(); JOINTS], [Kd::default(); JOINTS]);
+    let (mut qd, mut tau) = ([Qd::default(); N], [Tau::default(); N]);
+    let (mut kp, mut kd) = ([Kp::default(); N], [Kd::default(); N]);
     let mut sample = Sample::new(present, &mut qd, &mut tau, &mut kp, &mut kd);
-    let actuators = &adapter.table.actuators;
+    let actuators = &adapter.actuators;
     let mut failed = None;
     read_table(
         &mut adapter.backend,
@@ -577,10 +645,10 @@ fn read_present<B: Backend, const NB: usize>(
 }
 
 /// Sends `goals`, `bus_error` on what they carried if it fails.
-fn flush_goals<B: Backend, const NB: usize>(
-    adapter: &mut Dynamixel<B, NB>,
-    goals: Option<Goals>,
-    faults: &mut Faults,
+fn flush_goals<B: Backend, const NB: usize, const N: usize>(
+    adapter: &mut Dynamixel<B, NB, N>,
+    goals: Option<Goals<N>>,
+    faults: &mut Faults<N>,
 ) {
     let Some(goals) = goals else {
         return;
@@ -603,12 +671,15 @@ mod tests {
     use kmr_core::state::{Qd, Tau};
 
     use super::super::scripted::{Call, Scripted};
+    use super::super::tests::layout_of;
     use super::super::{DynamixelError, Table, Torque, Zero};
     use super::*;
     use crate::binding::{Binding, Port};
 
+    /// Actuators of the smoke robot.
+    const N: usize = 4;
     const PORT: Port = Port::ById("SMOKE");
-    const TABLE: Table<1, JOINTS> = {
+    const TABLE: Table<1, N> = {
         let mut actuators = [Actuator {
             bus: 0,
             id: 0,
@@ -616,9 +687,9 @@ mod tests {
             mode: Mode::Position,
             torque: Torque::On,
             zero: Zero::DEFAULT,
-        }; JOINTS];
+        }; N];
         let mut index = 0;
-        while index < JOINTS {
+        while index < N {
             actuators[index].id = index as u8 + 1;
             index += 1;
         }
@@ -635,15 +706,10 @@ mod tests {
 
     /// The adapter checked, its ports open and its actuators powered; the
     /// backend log is cleared.
-    fn adapter() -> (Dynamixel<Scripted, 1>, Layout) {
-        let mut adapter = Dynamixel::new(Scripted::new(), TABLE);
+    fn adapter() -> (Dynamixel<Scripted, 1, N>, Layout<N>) {
+        let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), TABLE.in_order());
         let claim = adapter.check(Overrides::default()).unwrap();
-        let layout = Layout::new(
-            claim.group,
-            claim.read_every,
-            claim.read_cost,
-            claim.write_cost,
-        );
+        let layout = layout_of(&claim);
         adapter.backend.open_ports(&[]).unwrap();
         adapter.open = true;
         adapter.torque_on().unwrap();
@@ -651,9 +717,9 @@ mod tests {
         (adapter, layout)
     }
 
-    fn read(adapter: &mut Dynamixel<Scripted, 1>, faults: &mut Faults) -> Mask {
-        let (mut q, mut qd, mut tau) = ([Q(9.0); JOINTS], [Qd(0.0); JOINTS], [Tau(0.0); JOINTS]);
-        let (mut kp, mut kd) = ([Kp(0.0); JOINTS], [Kd(0.0); JOINTS]);
+    fn read(adapter: &mut Dynamixel<Scripted, 1, N>, faults: &mut Faults<N>) -> Mask<N> {
+        let (mut q, mut qd, mut tau) = ([Q(9.0); N], [Qd(0.0); N], [Tau(0.0); N]);
+        let (mut kp, mut kd) = ([Kp(0.0); N], [Kd(0.0); N]);
         adapter.read(
             Sample::new(&mut q, &mut qd, &mut tau, &mut kp, &mut kd),
             faults,
@@ -663,7 +729,7 @@ mod tests {
     #[test]
     fn one_group_reads_on_the_cadence_and_writes_once() {
         let (mut adapter, layout) = adapter();
-        assert_eq!(layout.group, [Group(0); JOINTS]);
+        assert_eq!(layout.group, [Group(0); N]);
         assert!(layout.read_cost > Duration::ZERO);
 
         let mut faults = Faults::default();
@@ -678,9 +744,9 @@ mod tests {
         let mut written = Written::default();
         written.q.set(1);
         written.qd.set(2);
-        let q = [Q(0.0); JOINTS];
-        let (qd, tau) = ([Qd(0.0); JOINTS], [Tau(0.0); JOINTS]);
-        let (kp, kd) = ([Kp(0.0); JOINTS], [Kd(0.0); JOINTS]);
+        let q = [Q(0.0); N];
+        let (qd, tau) = ([Qd(0.0); N], [Tau(0.0); N]);
+        let (kp, kd) = ([Kp(0.0); N], [Kd(0.0); N]);
         let batch = Batch::new(&layout, &written);
         let command = Command::new(&q, &qd, &tau, &kp, &kd, &written);
         adapter.write(command, &batch, &mut faults);
@@ -712,7 +778,8 @@ mod tests {
             baud: None,
             bus: None,
         };
-        let mut adapter = Dynamixel::bind(Scripted::new(), TABLE, &[plugin]).unwrap();
+        let mut adapter =
+            Dynamixel::<_, _, N>::bind(Scripted::new(), TABLE.in_order(), &[plugin]).unwrap();
         adapter.check(Overrides::default()).unwrap();
         let mut adapter = adapter.with_roots(root, root);
         let error = adapter.open();

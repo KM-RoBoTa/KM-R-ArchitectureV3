@@ -1,13 +1,11 @@
-//! Buses: where this machine's actuators are plugged in (SRS FR-6.3).
+//! Bus plugins: where this machine's actuators are plugged in (SRS FR-6.3).
 
 use kmr_adapters::binding::{Binding, Port};
 
 /// One serial bus, bound to this machine's port.
 ///
-/// On a preset robot, the hardware table gives brand, protocol and baud, a call here overrides
-/// the baud, and [`Robot::add_plugins`](crate::Robot::add_plugins) registers it. On a
-/// `robot!(model = ..)` robot, [`build`](Self::build) it and hand the handle to the actuators on
-/// it.
+/// The robot's hardware table gives brand, protocol and baud; a call here overrides the baud.
+/// Registered with [`Robot::add_plugins`](crate::Robot::add_plugins).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bus {
     pub(crate) binding: Binding,
@@ -38,13 +36,6 @@ impl Bus {
         self
     }
 
-    /// The handle of this bus, for the actuators on it: `Rx28::ids(1..=10).on(bus)`.
-    pub fn build(self) -> BusHandle {
-        BusHandle {
-            binding: self.binding,
-        }
-    }
-
     /// A plugin on `port`, with the table's baud and no label.
     fn at(port: Port) -> Self {
         Self {
@@ -61,23 +52,6 @@ impl Bus {
         match self.binding.port {
             Port::ById(s) | Port::ByDev(s) => s,
         }
-    }
-}
-
-/// A built [`Bus`], handed to each actuator on it. Copy it freely: the handles of one bus are
-/// one bus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BusHandle {
-    pub(crate) binding: Binding,
-}
-
-impl BusHandle {
-    /// The serial id or the path, as written.
-    pub(crate) fn port(&self) -> &'static str {
-        Bus {
-            binding: self.binding,
-        }
-        .port()
     }
 }
 

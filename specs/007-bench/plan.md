@@ -78,7 +78,7 @@ handler); `RUST_LOG` unset (research R12); reports never on stdout (research R3)
 | II. Real-time hot path | Pass | Probe controllers: no heap, no `dyn`, no lock, relaxed load and store only (research R6). The crate keeps the root heap ban (R2) |
 | III. No panics | Pass | Binaries return `ExitCode`; `#![deny(clippy::unwrap_used)]`; a failed run is a report, not a panic (FR-024) |
 | IV. Hand-engineered core | Pass | Depends on `kmr_api` only. No bench need touches an invariant file (`state/field.rs`, `sealed.rs`, `signal.rs`, `schedule.rs`, `controllers.rs`). The `unsafe` counting allocator is HUMAN (R7) |
-| V. Measured, not guessed | Pass | This module is the measurement. Method defended in `docs/decisions/0005-bench-method.md` (task A-8, SRS NFR-6) |
+| V. Measured, not guessed | Pass | This module is the measurement. Method defended in `docs/decisions/0006-bench-method.md` (task A-8, SRS NFR-6) |
 | VI. Secure by default | Pass | The bench opens no endpoint. The Zenoh run uses `kmr_api`'s default-deny gateway (R20) |
 | Technical constraints | Pass | Integer nanoseconds, no `f32`/`f64`. `bench/` maps to the SRS module `bench`. aarch64 proven, armv7 checked (R21 P11). Joins workspace fmt, clippy and test |
 | Development workflow | Pass, note | A new crate is "a new module": an agent writes it only under a maintainer's recorded authorization, on an `agent/` branch, PR into the human branch (AGENTS.md "Agentic work") |
@@ -127,7 +127,7 @@ bench/
 │                                   # budget.sh, footprint.sh, compile-time.sh, presort.sh, all.sh
 ├── gen/registrations.rs.in         # template of the FR-014 generated crates
 └── reports/<commit12>/<host_id>/   # committed by the human
-docs/decisions/0005-bench-method.md # A-8
+docs/decisions/0006-bench-method.md # A-8
 ```
 
 **Structure Decision**: one crate at the root, as the SRS module list says (`bench/**`). The
@@ -156,7 +156,7 @@ Task ids carry a hyphen (A-1); decision ids (Dn) do not. HUMAN rows are the main
 | A-5 | Agent | `results`: parser, `compare`, `summary`, refusal rules, tests | FR-022, FR-023 (SRS NFR-11, NFR-8) |
 | A-6 | Agent | Scripts: `profile.env`, `meta.sh`, `setup-check.sh`, `cell.sh`, `ceiling.sh`, `budget.sh`, `footprint.sh`, `compile-time.sh`, `presort.sh` (cost, D11 A fallback), `all.sh` | FR-001, FR-002, FR-007 to FR-011, FR-013, FR-014, FR-016 |
 | A-7 | Agent | `PROCEDURE.md`: image with both kernels, kernel config, governor, `chrt`, `taskset`, operator fields, load, run lengths, reboot | FR-021 (SRS NFR-8), SC-001 |
-| A-8 | Agent, HUMAN accepts | `docs/decisions/0005-bench-method.md` (next free number) | SRS NFR-6 |
+| A-8 | Agent, HUMAN accepts | `docs/decisions/0006-bench-method.md` (next free number) | SRS NFR-6 |
 | A-9 | Agent | CI: build `kmr_bench` for aarch64 and armv7 (needs `arm-linux-gnueabihf-gcc` in CI) | FR-025 (SRS NFR-5) |
 | A-10 | **HUMAN** | First reference set (a) to (e) on both kernels; commit the reports; answer the 10 µs floor | SC-001, SC-004, SC-008 (SRS FR-3.1) |
 

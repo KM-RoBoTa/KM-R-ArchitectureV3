@@ -1,14 +1,11 @@
+//! The robot state: value types, write-only desired values, read-only history.
+
 use crate::error::StateError;
 
-// todo: build time variable from model, not implemented yet — keep here, not in a submodule
-
-/// The compile-time generated joint const. Generated from kmr_model. WIP
-#[cfg(not(feature = "joints-10"))]
-pub const JOINTS: usize = 4;
-/// Ten actuators, for the `joints-10` feature: a dev bench stopgap until N
-/// is a const generic (core M2).
-#[cfg(feature = "joints-10")]
-pub const JOINTS: usize = 10;
+/// Actuators of the robot the core's own tests drive. The actuator count is
+/// a const generic everywhere else (decision 0007).
+#[cfg(test)]
+pub(crate) const N: usize = 4;
 /// Amount of ticks the history of the state is kept for. WIP
 pub const HISTORY_DEPTH: usize = 4;
 
@@ -28,6 +25,8 @@ pub(crate) use desired::Desired;
 mod field;
 pub use field::StateField;
 pub(crate) use field::sealed;
+#[doc(hidden)]
+pub use field::{FieldId, field_id};
 
 // ── robot: public read/write handle combining desired + history ────────────
 mod robot_state;

@@ -1,0 +1,15 @@
+error[E0107]: missing generics for struct `State`
+ --> tests/ui/no_robot_call.rs:6:33
+  |
+6 | fn hold(_t: &Time, _robot: &mut State, _s: &Sensors) {}
+  |                                 ^^^^^ expected 1 generic argument
+  |
+note: struct defined here, with 1 generic parameter: `N`
+ --> src/state.rs
+  |
+  | pub struct State<'a, const N: usize> {
+  |            ^^^^^     --------------
+help: add missing generic argument
+  |
+6 | fn hold(_t: &Time, _robot: &mut State<N>, _s: &Sensors) {}
+  |                                      +++

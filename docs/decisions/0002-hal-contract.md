@@ -1,9 +1,15 @@
 # 0002 — The hardware contract: one sealed trait, a set of drivers per build
 
-Status: **proposed**, waiting for the maintainer's decision. The contract is
-in the core; nothing calls it yet. See [Current state](#current-state).
-Six points depart from the SRS and need the maintainer's acceptance:
+Status: **proposed**, waiting for the maintainer's decision. The contract,
+the set of drivers and the runtime call points are in the core, and the
+Dynamixel member drives it; see [Current state](#current-state). Points that
+depart from the SRS and need the maintainer's acceptance:
 [SRS deviations](#srs-deviations-to-accept).
+
+This record is the one owner of the contract (core T060). The adapter items
+are handed here by kmr_adapters T061; the empty-robot check and the `run()`
+error are in their own record,
+[0008](0008-empty-robot-type-state-and-run-error.md).
 
 The research behind each point is in
 [`specs/001-kmr-adapters/research.md`](../../specs/001-kmr-adapters/research.md)
@@ -28,13 +34,22 @@ The engine must read and command actuators without knowing their vendor
 
 ## Current state
 
+Updated 2026-11-03.
+
 | Piece | State |
 |---|---|
 | `Hal`, its types and `NoHardware` (`kmr_core/src/hal.rs`) | written |
-| The set of drivers (`design-hal-set.md`) | designed 2026-10-29, not in the core |
-| `Robot::run_on`, the runtime call points, the per-field write mask | not in the core yet |
-| `kmr_adapters`, Dynamixel adapter on a scripted backend | in progress |
-| `Hardware` alias | `NoHardware` only: the `dxl_rs` dependency cannot be fetched yet |
+| The set of drivers, claims, coverage, debug ownership audit (`kmr_core/src/hal/set.rs`) | written |
+| `Robot::run_on(drivers)`, the runtime call points, five bus checks, `Powered` guard, hold target | written |
+| Per-field write mask (`Written`, with `Kp`, `Kd`) | written |
+| `impl Hal for &mut A` (lend the adapter, SRS FR-5.9) | written |
+| `Overrides` | still carries `read_every`; empties with core T039 |
+| `Stages` (inbound and outbound hooks for `kmr_api`) | written (core T049) |
+| Per-slot `Faults` and `TickFlags`, `ExternalFlags` | written (core T044, T045, T047) |
+| Limit and envelope stage before the batch (`kmr_core/src/limits.rs`) | written (core T050, T051) |
+| N as a const generic on the contract | decided in [0007](0007-actuator-count-const-generic.md), not built (core T021 to T030) |
+| Dynamixel member (`kmr_adapters`), strict scripted backend, bus plugins by label | written; bench run of the first motor open |
+| `force_torque_off` in `dxl_rs` | on the unpushed SDK branch the adapter builds against |
 
 ## Decision proposed
 
@@ -62,25 +77,101 @@ actuator indices; together they cover `0..N` exactly once, checked at
 - The seal is a `#[doc(hidden)] pub mod seal` supertrait: open to adapter
   crates, closed to `controllers`, which cannot depend on `kmr_core` (R3).
 
-**`run_on`.** `Robot::run_on(hal)` runs the robot on a list of drivers;
-`Robot::run()` is `run_on` over a one-driver list holding `NoHardware`.
-`kmr_core::Robot` keeps its single type parameter (R1).
+**`run_on`.** `Robot::run_on(drivers)` runs the robot on a list of drivers;
+`Robot::run()` is `run_on` over a one-driver list holding `NoHardware`. The
+driver list is an argument, never a type parameter of the builder (R1); the
+builder's parameters are N ([0007](0007-actuator-count-const-generic.md)),
+the schedules and the empty-robot marker ([0008](0008-empty-robot-type-state-and-run-error.md)).
+
+**Lending.** `impl<A: Hal> Hal for &mut A`: a caller passes `&mut adapter`
+and keeps it before and after the run (SRS FR-5.9). `kmr_api`'s `bind()`
+uses it.
 
 **`NoHardware`.** The core's own adapter, one driver owning every index:
 `Error = Infallible`, nothing read, nothing written, one warning at `open`.
 The existing tests keep running, and a build without hardware cannot pass
 silently for a robot.
 
-**`Hardware`, chosen by a feature.** `kmr_adapters` exports
-`pub type Hardware`: `Dynamixel<DxlRs>` with the `dynamixel` feature,
-`NoHardware` without. `kmr_api::Robot::run()` calls
-`run_on(Hardware::default())`. The integrator builds the robot binary with
-`--features kmr_api/dynamixel`; nothing enables it by default (R2).
+**Hardware from the robot and the plugins.** There is no `Hardware` alias
+any more. `kmr_api::robot!` names the robot's hardware table (a preset, or
+the user's table); `.add_plugins(Bus::by_id(..))` says where it is plugged
+in. `run()` binds the plugins to the table and calls `run_on` on the
+members; with no plugin it runs on `NoHardware` and says so once. The
+Dynamixel SDK is behind the `kmr_api/dynamixel` feature; nothing enables it
+by default (R2).
+
+**Overrides.** `Overrides` ends empty, a `#[non_exhaustive]` struct kept as
+the seam (core research R9): the read cadence lives in the hardware table,
+the plugin baud enters at `bind` (adapters research R6). Until core T039,
+`read_every` is still there and only `NoHardware` reads it.
 
 **The `Backend` seam.** Inside `kmr_adapters`, `Dynamixel<B: Backend>` talks
 to the SDK through a private trait. `dxl_rs` is behind it today, `dxl_rs_v2`
 replaces it when it has a bus, and a scripted backend counts transactions and
 injects faults in the tests (R7).
+
+## The engine side of the contract
+
+**Call points.** Finalization, no I/O: `claim` (each member's `check`),
+merged into the plan; overlaps and gaps fail here. Init: the `Powered` guard,
+then `open`, `zero`. PostInit: `ping`, `health`, `configure`, a pushed slot
+and `read_all`, `torque_on`. Each tick: bus check, `begin_tick`, a pushed
+slot and `read`; `First`, bus check; `EachTick`, bus check; `Last`, bus
+check; the `Batch` from this tick's write masks and `write` when it is not
+empty; `end_tick`; bus check; Desired cleared; sleep to the next grid point.
+
+**Five bus checks per tick**, each one atomic load (SRS NFR-1): tick start,
+after `First`, after `EachTick`, after `Last` (an emergency stop raised in
+`Last` skips the write), tick end.
+
+**The `Powered` guard.** Built just before `open`, so a failed `open` is
+closed too. From then on every exit, unwind included, ends with
+`torque_off` then `close` on every member, torque cut in reverse member
+order (SRS FR-5.6, NFR-2). Before it nothing is opened: a `check` error or an emergency stop
+in `PreInit` touches no hardware.
+
+**The hold target (first-motor OC1).** A shutdown holds before the guard
+drops: the target is the latest sample overlaid with this tick's writes,
+and `written` marks which values are this tick's. Desired is cleared after
+each write, so holding "the last command" would send zeros. An emergency
+stop skips the hold. The hold lasts the user's `set_hold` duration, in `dt`
+slices, and an emergency stop during it cuts torque at once; default: no
+hold wait.
+
+**`Stages` (written).** A public trait `Stages<N>` with
+`inbound(&mut RobotState<N>, &Time)` after `read`, before `First`, and
+`outbound(&RobotState<N>, &Time)` after the write and `end_tick`, `impl Stages<N> for ()`;
+`run_on` uses `()`, `run_on_staged` takes `kmr_api`'s. Static dispatch, no
+heap, no middleware named in the core (core research R15).
+
+## The adapter side (kmr_adapters T061)
+
+- **Torque off on every actuator.** The private `Backend` has
+  `force_torque_off`: `Torque_Enable` = 0 whether or not this run switched
+  the actuator on. `torque_off` sends it to every actuator of every opened
+  bus, read-only ones included; `torque_on` sends it to every read-only one
+  (SRS FR-5.2, FR-5.8). Failures are logged and the loop goes on (adapters
+  research R1).
+- **A strict fake.** The scripted backend refuses what `DxlRs` refuses, with
+  the same error, instead of accepting or asserting: the lenient fake hid
+  three real failures and its asserts double-panicked through `Powered`
+  (adapters research R2).
+- **The table is generic over N.** `Table<NB, N>`: the length of a preset's
+  table is its N, checked against `robot!`'s at compile time.
+- **Binding by label (D6, assumed B).** A plugin names its bus label;
+  optional when the table has one bus. Matched before any I/O.
+- **Plugin baud at `bind`.** `bind` copies the plugin's baud over the
+  table's and checks it against every model on that bus; the error names the
+  actuator, the bus label and the baud (adapters research R6).
+- **Zero offset (D8, assumed C).** Per actuator `Zero::Center` (default, the
+  model's centre) or `Zero::Raw(value)`, applied in software.
+- **Default read cadence (D9, assumed A).** A per-brand default,
+  `DEFAULT_READ_EVERY` = 4 ticks for Dynamixel, a placeholder until the
+  bench measures it (kmr_adapters T063, T064); a bus may override it in the
+  table.
+- **Protocol 1 health.** Read, not skipped, since `09ad611`: voltage and
+  temperature on Protocol 1 too, and the joint-mode check on the RX-28. The
+  "Protocol 1 health exemption" of earlier drafts is gone.
 
 ## Defence
 
@@ -92,7 +183,7 @@ injects faults in the tests (R7).
   round trips, which does not fit 1 kHz. A thread per bus is roadmap work;
   XmBench has one driver.
 - Every per-tick type is a fixed array. With `JOINTS = 4` a `Mask` is one
-  `u64`; `Written` is three, `Faults` four.
+  `u64`; `Written` is five, `Faults` six.
 - The pre-sort of SRS FR-5.3 is split: `Layout::new` sorts the actuators by
   group once, at `check`; per tick `Batch` filters that order by the write
   mask, one pass over `JOINTS`.
@@ -123,11 +214,12 @@ injects faults in the tests (R7).
 
 ### Developer experience
 
-- The control engineer sees no hardware. The builder is unchanged,
-  `complete_api_example.rs` is unchanged, and `kmr_api` exposes no adapter,
-  bus or port type. The one new knob is `set_read_every(ticks)`.
-- The integrator picks the hardware with one Cargo feature and describes the
-  chain in Rust consts that fail to compile when wrong (SRS FR-6.4).
+- The control engineer sees no hardware beyond one line per bus,
+  `.add_plugins(Bus::by_id(..))`; without it the robot simulates. The cadence
+  is in the hardware table, not a builder knob.
+- The integrator picks the hardware with `robot!` (a preset or a table) and
+  one Cargo feature, and describes the chain in Rust consts that fail to
+  compile when wrong (SRS FR-6.4).
 - `cargo test --workspace` needs no C SDK, no libclang and no serial port.
 
 ### Alternative rejected: `Robot<CS, H>`
@@ -173,14 +265,12 @@ a position-mode actuator marks it written, and the adapter sends its cleared
 `rejected` otherwise. Cost: three masks instead of one, and a routing method
 next to `sealed::Slot` in `state/field.rs`.
 
-### Port binding as a const, not a file (R8)
+### Port binding as a const (R8): dropped
 
-SRS FR-6.1: "The per-machine port binding (FR-6.3) is its own file."
-
-The binding is its own const, `PORTS`, kept apart from the topology in
-`kmr_adapters/src/robot.rs`. A file needs a parser, and a parser here needs
-the heap; `kmr_model` owns files later. The rest of FR-6.3 holds: one serial
-id per bus, resolved under `/dev/serial/by-id` at bring-up.
+This deviation is gone. The SRS rewrite of 2026-10-27 has no port-binding
+file: ports come from builder plugins, `Bus::by_id` preferred, `Bus::by_dev`
+allowed (SRS FR-6.3), which is what `kmr_api` and the adapter do. Nothing
+to accept.
 
 ### Zero rad at the model's center (R10)
 
@@ -198,8 +288,11 @@ SRS FR-4.5 leaves the joint-limit policy undecided and asks for
 The adapter does not enforce joint limits. It checks the model's register
 range, which is a different limit: a target outside it cannot be encoded. It
 is not sent and gets `rejected`. An `unimplemented!` there would panic the
-loop with torque on; v2 clamped and dropped the flag. Joint limits stay an
-engine decision, still open.
+loop with torque on; v2 clamped and dropped the flag. Joint limits are the
+engine's limit stage (`kmr_core/src/limits.rs`), before the batch: a breach
+sets `joint_limit` and the actuator's `Policy` clamps, warns or aborts; an
+actuator with a limit and no policy is refused at finalization (D2 B,
+assumed). An envelope breach clamps and sets `envelope` (D3 A, assumed).
 
 ### Protocol 1 has a sync write (R12)
 
@@ -209,7 +302,8 @@ That holds for reads only. Protocol 1 has a sync write, and v2 used it. The
 adapter sends one sync write per (bus, series) on both protocols. Protocol 1
 reads stay one per actuator, position only; `Qd` and `Tau` keep their last
 value. The contract cannot declare them unread yet: `check` warns, naming
-each Protocol 1 actuator.
+each Protocol 1 actuator. Health is read on Protocol 1 as on Protocol 2
+(see the adapter side).
 
 ### Adapter configuration stays out of `kmr_api` (SRS section 7)
 
@@ -217,6 +311,8 @@ SRS section 7, rows User API and Config: the builder takes "HAL adapters,
 per-machine port bindings", and the Config interface lives in `kmr_api`. The
 `kmr_api` module also covers FR-6.3.
 
-Per the 2026-10-26 clarification, adapter, buses, ports and cadence are
-configured in the adapter layer only. `kmr_api` gains `set_read_every` and
-nothing else. Both rows, and FR-6.3 in the `kmr_api` module, need rewording.
+Per the 2026-10-26 clarification, adapter, buses and cadence are configured
+in the adapter layer, in the hardware table. `kmr_api` names the table
+through `robot!` and takes the bus plugins (SRS FR-6.3, rewritten
+2026-10-27); it has no cadence knob. The "HAL adapters" wording of the User
+API row still needs the maintainer's rewording.

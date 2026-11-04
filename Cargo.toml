@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kmr_core", "kmr_adapters", "kmr_model", "kmr_api", "controllers"]
+members = ["kmr_core", "kmr_adapters", "kmr_model_core", "kmr_model", "kmr_api", "kmr_ffi", "kmr_ffi/examples/c", "kmr_ffi/examples/cpp", "kmr_ffi/examples/python", "kmr_ffi/examples/lua", "controllers", "bench"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,11 +8,21 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/KM-RoBoTa/KM-R-ArchitectureV3"
 
+[workspace.lints.clippy]
+# No mod.rs: a module is `foo.rs` with its children in `foo/`.
+mod_module_files = "deny"
+# A step-4 stub left behind fails the oracle (workflows/cycle/QA.md).
+# `unimplemented!` stays allowed: it is the SRS § 5 marker (NFR-2).
+todo = "warn"
+dbg_macro = "warn"
+
 [workspace.dependencies]
 kmr_core = { path = "kmr_core" }
 kmr_adapters = { path = "kmr_adapters" }
 kmr_api = { path = "kmr_api" }
 kmr_model = { path = "kmr_model" }
+kmr_model_core = { path = "kmr_model_core" }
+kmr_ffi = { path = "kmr_ffi" }
 
 thiserror = "2.0.18"
 rstest = "0.26.1"
@@ -22,12 +32,32 @@ derive_more = { version = "2.1.1", features = ["add", "mul"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 frunk = "0.5.0"
+# DECISION: the latest-value slot of kmr_api (`Latest<T>`, research R15): its writer tells an
+# untaken value (`publish` returns it), so kmr_api carries no `unsafe` of its own.
+triple_buffer = "9.0.0"
+# DECISION (maintainer-approved 2026-11-03): kmr_api's gateway (feature `zenoh`, off by default).
+# Default features trimmed to what the gateway uses: TCP for loopback, TLS for mutual TLS.
+zenoh = { version = "1.10.2", default-features = false, features = ["transport_tcp", "transport_tls"] }
 roxmltree = "0.20"
+# kmr_model's and kmr_model_core's build-time plumbing: none of these reaches a binary.
+syn = { version = "2.0", default-features = false, features = ["parsing", "proc-macro"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+ron = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+trybuild = "1.0"
 color-eyre = { version = "0.6", default-features = false }
 rustix = { version = "1", features = ["termios", "fs"] }
+cc = "1.10.0"
+pyo3 = { version = "0.30.1", features = ["auto-initialize"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
 # Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
-# dev bench: dxl_rs branch agent/force-torque-off
-dxl_rs = { path = "../dxl_rs-agent" }
+# agent/integration: dxl_rs branch agent/model-number (worktree ../dxl_rs-agent-mn); dev stays on ../dxl_rs-agent
+dxl_rs = { path = "../dxl_rs-agent-mn" }
+# DECISION: socketcan binds the CubeMars CAN_RAW sockets by interface name without our own
+# `unsafe` (maintainer-approved 2026-11-03). No default features: no netlink, no dump.
+socketcan = { version = "4.0.0", default-features = false }
 
 # Stated, not left to the default: the engine's torque-off guard runs while a
 # controller panic unwinds; `abort` would leave the actuators powered (SRS NFR-2).

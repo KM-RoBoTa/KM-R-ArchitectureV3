@@ -1,14 +1,28 @@
 # Architecture
 
-`kmr` is one Cargo workspace. Three crates make the framework, a fourth holds
+`kmr` is one Cargo workspace. Four crates make the framework, a fifth holds
 user code:
 
 - **`kmr_core`** (`kmr_core/`) — the engine. Owns state, schedules,
   the control loop, timing, the signal bus and the hardware contract.
+- **`kmr_model`** (`kmr_model/`) — the robot model. A thin proc macro that
+  emits the robot descriptor's constants at compile time; users reach it
+  only through `kmr_api::robot!`.
+- **`kmr_model_core`** (`kmr_model_core/`) — the library under `kmr_model`:
+  reads and checks a descriptor or a preset. A build script can call it
+  (kmr_ffi's build helper does), so it gets the same N as `robot!`.
 - **`kmr_adapters`** (`kmr_adapters/`) — the hardware adapters, one per
   vendor, behind the core's contract. Dynamixel first.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
   that re-exposes what users need and nothing else.
+- **`kmr_ffi`** (`kmr_ffi/`) — the plain C types, generated C/C++ headers and
+  Python/Lua bridges that let a Rust controller hand one tick's math to
+  foreign code. No engine dependency; users reach it only through
+  `kmr_api::ffi` (features `ffi`, `ffi-build`), whose `call` copies the
+  state into the view, calls, and applies the flagged writes through the
+  `State` setters. Its example crates, `kmr_ffi/examples/<language>/`, are
+  workspace members: a build of the workspace needs a C and C++ compiler and
+  the Python headers.
 - **`controllers`** (`controllers/`) — where controllers are written. It
   depends on `kmr_api` only.
 
@@ -32,6 +46,38 @@ hardware layer. Two topologies:
 Zenoh carries messages between instances, not a control loop. A robot's
 controllers run in the `kmr` that owns its hardware layer, so an instance
 cannot drive a robot it only reaches over the network.
+
+### The gateway (kmr_api, feature `zenoh`)
+
+`Robot::add_plugins(Gateway::new(..))` plugs it in; off by default, a build
+without the feature compiles no Zenoh crate. `run()` opens the session and
+declares the keys before the loop, then a `kmr-gateway` thread owns the
+session. The tick and that thread share two `Latest<T>` slots (one writer,
+one reader, over `triple_buffer`: one atomic swap per put, one load per take
+when nothing is new, no lock, no allocation):
+
+- **History out**: `Stages::outbound` puts depth 0 (tick index, sample age,
+  values, faults) after the write; the thread publishes what it takes on
+  `kmr/<instance>/history` and keeps the last `HISTORY_DEPTH` for queries on
+  `kmr/<instance>/history/ring`. A sample overwritten before it was taken is
+  counted (`missed_samples`).
+- **Desired in**: a remote source publishes on
+  `kmr/<instance>/desired/<identity>`. The thread drops and counts what is
+  not from a source (`unauthorized`, plus the `UNAUTHORIZED` tick flag
+  through `ExternalFlags`), a `seq` at or below the last accepted
+  (`out_of_order`) and a wrong length (`malformed`), then puts the rest.
+  `Stages::inbound` takes the slot once per tick and writes the masked
+  fields through the state's setters, before `First`: a local controller
+  writing the same actuator later in the tick wins, and the limit stage
+  applies to both.
+- **Silence**: each source has a timeout; the inbound stage counts its
+  silence in ticks and raises `REMOTE_TIMEOUT` while it lasts, so the
+  fallback that `add_remote_source` requires runs from the next tick.
+
+Transport: `Identity::files(cert, key, ca)` is mutual TLS (paths only, the
+files are read at run start) with an ACL that denies every key by default;
+`Identity::loopback()` is plain TCP on loopback only, for one machine and the
+tests.
 
 ## Design principles
 
@@ -144,20 +190,47 @@ layer. Everything is monomorphized: no `dyn`, no fat pointers, no heap. Node
 types (`Inline`, `InlineWith`, `Threaded`) are opaque: users can hold the list
 but can neither forge nor read a node.
 
-`Robot::run()` rejects an empty controller list with a **runtime** check
-rather than a trait bound, because a trait-bound failure would leak internal
-type paths into the user's compiler error.
+A robot with no controller does not build:
+[decision 0008](decisions/0008-empty-robot-type-state-and-run-error.md)'s
+type-state `E` is `Empty` until the first `add_*`, and `run()` needs
+`Filled`. The error reads "kmr: this robot has no controller", in front of
+the internal type paths.
 
 ## Runtime loop
 
 ```
-pre_init → init → post_init
-loop { first → each_tick → last → clock bookkeeping → sleep }
+finalization (claims, no I/O)
+pre_init → open, zero → init → ping, health, configure, read_all → torque_on → post_init
+loop { read → inbound → first → each_tick → last → limits → write → clock bookkeeping → outbound → clear desired → sleep }
+hold (shutdown with set_hold only) → torque_off → close
 ```
 
-The loop runs until a signal is raised. After the `Last` bucket the engine
-computes the overrun and the accumulated overrun, stamps the last update and
-sleeps until the next deadline.
+**One clock.** `robot.config.time` is the only clock. The engine writes it
+between two controller walks; controllers get `&Time` through each phase's
+short-lived `Env`. The clock never reads the system time: the runtime injects
+every instant (`arm` after the bring-up, so tick 0 is not charged with it,
+then `begin_tick`, `end_tick`), through a private `Host` seam that tests
+replace with a scripted host. A `dt` outside [10 µs, 1 s], zero included, is
+refused at finalization (`RunError::Config`), before any I/O; never set, it
+falls back to 1 ms with one warning.
+
+**One tick**, in order:
+
+| # | Step | Hardware |
+|---|---|---|
+| 1 | bus check, any signal | |
+| 2 | `begin_tick(now)` | |
+| 3 | push a History slot (a copy of the previous one, no fault set), `read` into it and its faults; fold in the tick flags raised from other threads (`ExternalFlags`) | the actuators due this tick |
+| 3b | `Stages::inbound` (kmr_api's gateway; `()` on `run_on`) | |
+| 4 | `First`, then an emergency-stop check | |
+| 5 | `EachTick`, then an emergency-stop check | |
+| 6 | `Last`, then an emergency-stop check | |
+| 6b | limit stage: clamp to the envelopes, check the limits per `Policy`; an `Abort` breach is an emergency stop, no write | |
+| 7 | `Batch` from this tick's write masks; `write` if not empty | one transaction per group |
+| 8 | `end_tick(now)`: tick count, overrun; a late tick sets `OVERRUN` in its slot; then `Stages::outbound` | |
+| 9 | bus check, any signal | |
+| 10 | clear Desired | |
+| 11 | sleep to the next grid point | |
 
 Deadlines are absolute: each one is `origin + k * dt`, with `dt` the value
 given to `set_dt`. Sleeping for `dt` after each tick would make the real
@@ -166,15 +239,33 @@ finishes after its deadline, the loop stays on the same grid: it skips the
 slots it missed and sleeps to the first grid point still ahead, so the next
 tick starts on the grid and has a whole `dt` to run. It never runs a burst of
 ticks to catch up, never moves the grid and never starts a tick in the middle
-of a slot.
+of a slot. A late tick is logged at `debug` and counted; one summary line
+at the end gives the accumulated overrun.
 
-Controllers read the clock, the engine writes it, and only between two
-controller walks.
+**Startup writes are dropped.** Desired values written in `PreInit`, `Init`
+or `PostInit` are never sent: only ticks command the hardware. One warning
+names the phases that wrote.
 
-Not implemented yet: the `state_transition` step (write the desired state,
-record the sensed sample), because the runtime does not call the
-[hardware layer](#hardware-layer) yet, and the startup of threaded
-controllers — see the [roadmap](ROADMAP.md).
+**Exits.** From `open` on, a guard (`Powered`) ends every exit, a controller
+panic included, with `torque_off` then `close` on every member.
+
+| Exit | Tick write | Hold | Torque off, close | `run_on` returns |
+|---|---|---|---|---|
+| `dt` out of range, a limit without a policy | no | no | no, nothing opened | `Err(Config)` |
+| claim mismatch or `check` error | no | no | no, nothing opened | `Err(Hal)` |
+| emergency stop in `PreInit` | no | no | no, nothing opened | `Ok` |
+| `open` .. `torque_on` error | no | no | yes, at once | `Err(Hal)` |
+| any signal before `torque_on` | no | no | yes, torque never on | `Ok` |
+| shutdown in a tick | yes, the tick completes | with `set_hold` only | yes, after the hold | `Ok` |
+| emergency stop in a tick | no, if raised before the write | no | yes, at once | `Ok` |
+| emergency stop during the hold | | cut short | yes, at once | `Ok` |
+| a member touching an index it does not own (debug builds) | no | no | yes, as an emergency stop | `Ok` |
+| a limit breach under `Policy::Abort` | no | no | yes, as an emergency stop | `Ok` |
+
+The sleep is an absolute `clock_nanosleep` on the monotonic clock (Linux,
+through `rustix`), with an optional spin tail before the deadline, off by
+default. Not implemented yet: the startup of threaded controllers (they are
+stored, never spawned) — see the [roadmap](ROADMAP.md).
 
 ## Signals: shutdown and emergency stop
 
@@ -188,60 +279,175 @@ allocates and the path is async-signal-safe. Escalation is monotonic — an
 emergency stop is never downgraded to a shutdown, and the first reason raised
 wins.
 
-The runtime checks the bus between the phases, four times per tick (one
-atomic load each on the happy path):
+The runtime checks the bus five times per tick (one atomic load each on the
+happy path): at tick start, after `First`, after `EachTick`, after `Last`
+and at tick end, and after each startup phase:
 
 - a **shutdown** lets the current tick finish, `Last` included, then `run()`
   returns;
 - an **emergency stop** ends the loop at the next check: the phases left in
-  the tick are skipped. Controllers registered after the raising one in the
-  same phase still run.
+  the tick are skipped, and one raised in `Last` skips the write. There is
+  no hold. Controllers registered after the raising one in the same phase
+  still run.
+- any signal pending before `torque_on` stops the bring-up: the actuators
+  are never powered.
 
-Both are logged with their reason and, in debug builds, their call site.
-`run()` returns `Ok(())` in both cases.
+Both are logged once, at exit, with their reason and, in debug builds, their
+call site: `info` for a shutdown, `error` for an emergency stop. `run()`
+returns `Ok(())` in both cases. Ctrl-C, SIGTERM and SIGHUP raise a shutdown;
+if the process already has a handler of its own, a warning says they will
+not stop the loop.
+
+## State
+
+`RobotState` holds two parts, never reachable as fields:
+
+- **Desired**, write-only for controllers: this tick's commanded `Q`, `Qd`,
+  `Tau`, `Kp`, `Kd` and one written mask per field. The write sends only
+  what was written; Desired is cleared after it, so nothing is assumed to
+  persist from one tick to the next.
+- **History**, read-only for controllers: a ring of `HISTORY_DEPTH` samples,
+  newest first. Each tick pushes a slot that starts as a copy of the
+  previous one; the adapter overwrites what it reads, so an actuator not
+  read this tick (cadence, or a failed read) keeps its last value.
+  `prev_*(0)` is this tick's sample. A slot from before an actuator's first
+  read is `StateError::NoSample`, never zeros: on a run without hardware,
+  every History read is. `age(i)` counts the ticks since actuator `i` was
+  last read (`None` before its first read), `sample_age()` is the oldest,
+  and `cadence(i)` is the read cadence the hardware table set.
+
+The field set is sealed: `Q`, `Qd`, `Tau`, `Kp`, `Kd`, routed to their
+storage by the private `Slot` trait. The shutdown hold target is the latest
+sample overlaid with this tick's writes.
+
+The actuator count is a const generic N set by `robot!`
+([decision 0007](decisions/0007-actuator-count-const-generic.md)): `RobotState<N>`,
+`Robot<N, CS, E>`, `Hal<N>`, `Mask<N>`, one word of mask, `MASK_WORDS = 1`, so
+N runs from 1 to 64.
+
+**Faults and tick flags.** Each History slot carries, next to its sample, the
+tick's per-actuator `Faults` (`stale`, `bus_error`, `offline`, `rejected` from
+the adapter, `joint_limit` and `envelope` from the limit stage) and its
+`TickFlags` (`OVERRUN`, `SENSOR_MISSING`, `REMOTE_TIMEOUT`, `UNAUTHORIZED`).
+A new slot starts with none set. `faults(depth)` and `tick_flags(depth)` read
+them; controllers cannot set or clear one. `read` faults show at depth 0 from
+`First` on; `write` and limit faults, and `OVERRUN`, at depth 1 on the next
+tick. The home state is `StateError::Undecided` (core T031).
+
+## Robot model
+
+`kmr_api::robot!` names the robot once, in `main.rs`: a preset
+(`robot!(XmBench)`) or a descriptor path (`robot!(model = "arm.urdf")`).
+Its front door calls the `kmr_model` proc macro, which reads the descriptor
+(URDF, `.ron` or JSON, one schema for the last two) inside the compiler,
+checks it, and emits constants at the call site:
+
+- `N`, the actuator count: every joint that is not fixed, in file order;
+- `model::NAMES`, `LOWER`, `UPPER`, `SPEED`, `EFFORT`, one array per fact,
+  indexed by actuator, in `Q`, `Qd`, `Tau` and SRS FR-2.2 units (prismatic in
+  mm);
+- `model::PRISMATIC`, `CONTINUOUS`, kind bit sets, and `PLACEHOLDER`, set when
+  the descriptor's first comment starts with `PLACEHOLDER` (test data);
+- `model::LINK_NAMES`, `LINK_PARENT`, `LINK_MASS`, `LINK_COM`, per link;
+- `actuator!("name")`, the index of a joint by name; another name does not
+  build.
+
+The binary gets constants only: no parser, no heap, no run-time code. A bad
+descriptor is a compile error naming the file, the element and the reason. A
+preset's model half ships in `kmr_model_core/presets/`, its hardware half in
+`kmr_adapters::presets`. `kmr_model` and `kmr_model_core` use the heap at
+build time, which their `clippy.toml` allows.
+
+`robot!` calls `model!` through the hidden `kmr_api::__model!`: a preset by
+name, a descriptor by path, the `hardware = ..` argument split off first.
+The front door adds the `State` and `Robot` aliases, bound to the model's N,
+and one check: N ≤ 64, under `cargo check` at the `robot!` line (the core's
+`Mask::<N>::CHECK` is the backstop under `cargo build`).
+
+**Limits.** At finalization `kmr_api` hands the core the model's limits as
+`[Limit; N]` (no position bound where `CONTINUOUS` is set, never the emitted
+`Q(0.0)`), with the policy the builder gave each actuator
+(`set_limit_policy`, `_group`, `_all`) and the envelopes (`set_envelope`,
+`_group`). There is no default policy: an actuator whose limit bounds anything
+and has none is `UserError::NoPolicy`, before any I/O (D2 B, assumed). A
+placeholder model hands no limit until its real descriptor lands.
+
+**Fallbacks.** `add_controller_or(phase, f, when, fallback)` stores one node
+that reads the tick's `Faults` and runs exactly one of `f` and `fallback`;
+`when` is any `Fn(&Faults<N>) -> bool`, built from `stale_in(&GROUP)`,
+`remote_timeout()` and `any_of`.
 
 ## Hardware layer
 
 The engine drives hardware through one contract, the `Hal` trait in
 `kmr_core/src/hal.rs`. It knows actuator indices, bit masks, opaque
 transaction groups and a read cadence in ticks. Buses, series, protocols,
-modes and raw units stay in the adapter; values cross as `Q`, `Qd`, `Tau` in
-SI units. `Hal` is public with a `#[doc(hidden)]` seal: adapter crates
-implement it, `controllers` cannot, since it does not depend on `kmr_core`.
-Dispatch is static: `run_on(hal)` runs the robot on an adapter, and `run()` is
-`run_on(NoHardware)`.
+modes and raw units stay in the adapter; values cross as `Q`, `Qd`, `Tau`,
+`Kp`, `Kd` in SI units. `Hal` is public with a `#[doc(hidden)]` seal: adapter
+crates implement it, `controllers` cannot, since it does not depend on
+`kmr_core`.
 
-| Moment | Engine calls |
+The robot's hardware is a list of members, one per brand, as an `HList`
+(`kmr_core/src/hal/set.rs`): `HCons { head: dynamixel, tail: HCons { .. } }`.
+Each member's `check` returns a `Claim`: the engine indices it owns, its own
+groups, read cadence and costs. Claims that do not cover every actuator
+exactly once fail before any I/O; after that each member is called with its
+own indices only. Dispatch is static: `run_on(drivers)` runs the robot on a
+list, and `run()` is `run_on` of `NoHardware` alone.
+
+| Moment | Engine calls, on every member |
 |---|---|
-| `run()` finalization, no I/O | `check` → `Layout`: groups, read cadence, cost |
+| `run()` finalization, no I/O | `check` → `Claim`: owned indices, groups, read cadence, costs |
 | Init, before user controllers | `open`, `zero` |
 | PostInit, before user controllers | `ping`, `health`, `configure`, `read_all`, `torque_on` |
 | Each tick, before `First` | `read` into a copy of the previous sample |
 | Each tick, after `Last` | `write` of the written actuators in group order, then Desired is cleared |
-| Shutdown | `hold`, `torque_off`, `close` |
+| Shutdown | `hold` (only after `set_hold`), `torque_off`, `close` |
 | Emergency stop | `torque_off`, `close` |
 
-Bring-up calls return the adapter's error and `run()` returns it. Once `open`
-was called, every exit ends with `torque_off` then `close`. `read` and `write`
-never fail: they set per-actuator fault bits (`stale`, `bus_error`, `offline`,
-`rejected`) and never allocate, lock, sleep or retry. The write mask is kept
-per field (`Written { q, qd, tau }`), so an adapter sends only the field its
-actuator's mode takes.
+Bring-up calls return the member's error and `run()` returns it. Once `open`
+was called, every exit, a controller panic included, ends with `torque_off`
+then `close`. `read` and `write` never fail: they set per-actuator fault bits
+(`stale`, `bus_error`, `offline`, `rejected`) and never allocate, lock, sleep
+or retry. The write mask is kept per field (`Written { q, qd, tau, kp, kd }`),
+so a member sends only the field its actuator's mode takes; a Dynamixel
+member ignores `Kp` and `Kd`.
 
-Adapters live in `kmr_adapters`. An adapter's configuration (buses,
-actuators, the serial id of each port) is Rust consts checked at compile time. The control
-engineer never sees it: `kmr_api` exposes no adapter, bus or port type, and
-its one hardware knob is the read cadence, `set_read_every(ticks)`.
-`kmr_api::Robot::run()` hands `kmr_adapters::Hardware` to the core: the
-Dynamixel adapter with the `dynamixel` feature, else `NoHardware`, which reads
-and writes nothing and warns once at `open`. The vendor SDK sits behind a
-private `Backend` trait, so the adapter is tested on a scripted backend and
-`dxl_rs_v2` can replace `dxl_rs` later.
+Adapters live in `kmr_adapters`. A robot's Dynamixel hardware is a
+`dynamixel::Table<NB, N>` const: buses by label, baud and read cadence; per
+actuator its bus, firmware id, model, mode, torque choice (powered or
+read-only) and zero. `Table::check` rejects a bad table in const evaluation,
+naming the actuator or the bus, so it does not build. `const fn` overrides
+(`baud`, `read_every`, `id`, `mode`, `read_only`, `zero`, and group forms)
+change a preset's defaults from `main.rs`. A preset such as
+`presets::XmBench` is the hardware half of a KM-RoBoTa robot (the model half
+is `kmr_model`'s): its `HARDWARE` table and the line time it declares,
+`READ_COST` and `WRITE_COST`. `Table::in_order` or `Table::at` places the
+table at the robot's engine indices; `robot!` names the robot and its
+hardware.
 
-Not wired yet: the runtime makes none of these calls, `run_on` and
-`set_read_every` are not in the core, and the `dynamixel` arm of `Hardware`
-waits for the `dxl_rs` dependency. The design and its departures from the SRS
-are argued in [decision 0002](decisions/0002-hal-contract.md).
+Ports are not consts. The user names each one with a bus plugin,
+`kmr_api::Bus::by_id(serial)` or `by_dev(path)`, with an optional `.baud(..)`
+and `.bus("label")`. `Dynamixel::bind` matches the plugins to the table's
+buses by label before any I/O; `open` resolves each port, checks it is a
+character device the user can read and write, refuses two buses on one
+device, flushes it and sets the 1 ms USB latency timer. With no bus plugin,
+`kmr_api::Robot::run()` runs `NoHardware`, which reads and writes nothing
+and warns once at `open`.
+
+Torque off reaches every actuator of an opened bus, read-only ones and ones
+an earlier run left powered included, through the backend's
+`force_torque_off`; a read-only actuator found powered is switched off in
+PostInit. The zero is a software offset: 0 rad sits at the model's centre
+or at the raw position the table names. The vendor SDK sits behind a private
+`Backend` trait, so the adapter is tested on a strict scripted backend that
+refuses what `dxl_rs` refuses, and `dxl_rs_v2` can replace `dxl_rs` later.
+
+Still open: Dynamixel velocity and current modes (`dxl_rs` cannot write the
+operating mode register, SRS section 8), one 10-byte sync read per group
+instead of three, `dxl_rs` as a pinned git dependency with a cross build in
+CI, and N as a const generic of the core. The contract and its departures
+from the SRS are argued in [decision 0002](decisions/0002-hal-contract.md).
 
 ## Real-time constraints
 
@@ -250,9 +456,10 @@ The control path targets ~1 kHz and must be deterministic:
 - no heap allocation (`Box`, `Vec`, `String`, `Rc`, `Arc`, `HashMap` are banned
   by clippy in `kmr_core`);
 - no `unwrap()` in the engine;
-- fixed sizes known at compile time (joint count, history depth); whether they are
-  constants or generic parameters is argued in
-  [decision 0001](decisions/0001-joint-count-and-history-depth.md).
+- fixed sizes known at compile time: the history depth is a constant
+  ([decision 0001](decisions/0001-joint-count-and-history-depth.md)), the
+  actuator count becomes a const generic set by `robot!`
+  ([decision 0007](decisions/0007-actuator-count-const-generic.md)).
 
 ## Not a full ECS — and why that stays open
 

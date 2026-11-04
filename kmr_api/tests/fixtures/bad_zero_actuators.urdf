@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- Bad test descriptor: fixed joints only. -->
+<robot name="bad">
+  <link name="base"/><link name="l1"/>
+  <link name="l2"/>
+  <joint name="f1" type="fixed"><parent link="base"/><child link="l1"/></joint>
+  <joint name="f2" type="fixed"><parent link="l1"/><child link="l2"/></joint>
+</robot>

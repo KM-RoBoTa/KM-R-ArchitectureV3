@@ -14,10 +14,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use super::backend::{
-    Backend, BackendError, GoalRegister, Health, OpenFailure, POSITION_MODE, PortSpec, RawState,
-    Setting, Wire,
+    Backend, BackendError, GoalRegister, Health, LimitRegisters, OpenFailure, POSITION_MODE,
+    PortSpec, RawState, Setting, Wire,
 };
-use super::config::{Model, Protocol};
+use super::config::{HealthLimits, Model, Protocol};
 
 /// Calls recorded; later ones are only counted.
 pub(crate) const CAPACITY: usize = 256;
@@ -28,7 +28,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 12;
+const KINDS: usize = 14;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Variants of [`GoalRegister`].
@@ -48,6 +48,12 @@ pub(crate) const HEALTHY: Health = Health {
     temperature_limit_c: 80,
 };
 
+/// Protocol 2 status error of a write the actuator refuses: Access Error,
+/// an EEPROM register written with the torque on.
+pub(crate) const ACCESS_ERROR: u8 = 0x07;
+/// Protocol 1 status error bit of a value outside the register's range.
+pub(crate) const RANGE_ERROR: u8 = 0x08;
+
 /// CW and CCW Angle Limit of a Protocol 1 actuator until scripted
 /// otherwise: the AX and RX factory values, joint mode over the whole range.
 const JOINT_MODE: (u32, u32) = (0, 1023);
@@ -59,6 +65,8 @@ pub(crate) enum Call {
     OpenPorts,
     /// [`Backend::ping`].
     Ping,
+    /// [`Backend::read_model_number`].
+    ReadModelNumber,
     /// [`Backend::read_position`].
     ReadPosition,
     /// [`Backend::sync_read_state`].
@@ -77,6 +85,8 @@ pub(crate) enum Call {
     ReadSetting,
     /// [`Backend::read_angle_limits`].
     ReadAngleLimits,
+    /// [`Backend::write_health_limits`].
+    WriteHealthLimits,
     /// [`Backend::close_ports`].
     ClosePorts,
 }
@@ -165,10 +175,18 @@ pub(crate) struct Scripted {
     vitals: [[Health; IDS]; PORTS],
     /// Per actuator, what Operating Mode reads return.
     modes: [[u8; IDS]; PORTS],
+    /// Per actuator, what Model Number reads return; `None` answers the
+    /// model named.
+    numbers: [[Option<u16>; IDS]; PORTS],
+    /// Per actuator, what Torque Ctrl Mode Enable reads return.
+    torque_modes: [[u8; IDS]; PORTS],
     /// Per actuator, what angle limit reads return.
     limits: [[(u32, u32); IDS]; PORTS],
     /// Per actuator, whether it never answers.
     missing: [[bool; IDS]; PORTS],
+    /// Per actuator, whether a limit write answers but leaves the
+    /// registers as they were.
+    stuck: [[bool; IDS]; PORTS],
     /// Errors the faults name, `errored` of them used: a fault holds a slot,
     /// so the per-actuator table stays small.
     errors: [BackendError; ERRORS],
@@ -210,8 +228,11 @@ impl Scripted {
             states: [[RawState::default(); IDS]; PORTS],
             vitals: [[HEALTHY; IDS]; PORTS],
             modes: [[POSITION_MODE; IDS]; PORTS],
+            numbers: [[None; IDS]; PORTS],
+            torque_modes: [[0; IDS]; PORTS],
             limits: [[JOINT_MODE; IDS]; PORTS],
             missing: [[false; IDS]; PORTS],
+            stuck: [[false; IDS]; PORTS],
             errors: [BackendError::Timeout; ERRORS],
             errored: 0,
             faults: [[[0; KINDS]; IDS]; PORTS],
@@ -219,6 +240,25 @@ impl Scripted {
             port_faults: [[None; KINDS]; PORTS],
             open_fault: None,
         }
+    }
+
+    /// Limit writes to actuator `id` answer but change nothing, as an
+    /// actuator clamping or ignoring them would.
+    pub(crate) fn stuck_limits(&mut self, port: usize, id: u8) -> &mut Self {
+        if let Some(stuck) = at(&mut self.stuck, port, id) {
+            *stuck = true;
+        }
+        self
+    }
+
+    /// Health limits actuator `id` holds now.
+    pub(crate) fn limits(&self, port: usize, id: u8) -> Option<HealthLimits> {
+        let health = self.vitals.get(port)?.get(usize::from(id))?;
+        Some(HealthLimits {
+            min_voltage_dv: health.min_voltage_dv,
+            max_voltage_dv: health.max_voltage_dv,
+            temperature_c: health.temperature_limit_c,
+        })
     }
 
     /// Actuator `id` never answers: `Timeout` from every call naming it.
@@ -351,6 +391,23 @@ impl Scripted {
     pub(crate) fn mode(&mut self, port: usize, id: u8, mode: u8) -> &mut Self {
         if let Some(slot) = at(&mut self.modes, port, id) {
             *slot = mode;
+        }
+        self
+    }
+
+    /// Model Number reads of actuator `id` return `number`, whatever model
+    /// they name: another actuator than the table declares.
+    pub(crate) fn model_number(&mut self, port: usize, id: u8, number: u16) -> &mut Self {
+        if let Some(slot) = at(&mut self.numbers, port, id) {
+            *slot = Some(number);
+        }
+        self
+    }
+
+    /// Torque Ctrl Mode Enable reads of actuator `id` return `value`.
+    pub(crate) fn torque_mode(&mut self, port: usize, id: u8, value: u8) -> &mut Self {
+        if let Some(slot) = at(&mut self.torque_modes, port, id) {
+            *slot = value;
         }
         self
     }
@@ -634,8 +691,7 @@ fn get(table: &[[bool; IDS]; PORTS], port: usize, id: u8) -> bool {
 
 impl Backend for Scripted {
     const MAX_PORTS: usize = PORTS;
-    /// As `DxlRs`: present current, velocity and position, one sync read each.
-    const STATE_READS: &'static [u16] = &[2, 4, 4];
+    const STATE_READS: &'static [u16] = super::backend::STATE_READS;
 
     fn open_ports(&mut self, ports: &[PortSpec<'_>]) -> Result<(), OpenFailure> {
         self.record(Call::OpenPorts, 0, None, ports.len(), false, iter::empty());
@@ -669,6 +725,16 @@ impl Backend for Scripted {
 
     fn ping(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
         self.one(Call::Ping, port, model, id, false)
+    }
+
+    fn read_model_number(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u16, BackendError> {
+        self.one(Call::ReadModelNumber, port, model, id, false)?;
+        Ok(self.numbers[port][usize::from(id)].unwrap_or(model.number()))
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
@@ -802,14 +868,23 @@ impl Backend for Scripted {
         setting: Setting,
     ) -> Result<u8, BackendError> {
         self.note(Call::ReadSetting, port, model, id, false);
-        if model.protocol() != Protocol::Two {
-            return Err(BackendError::NoSetting { setting });
+        match setting {
+            Setting::TorqueCtrlModeEnable if !model.has_torque_ctrl_mode() => {
+                return Err(BackendError::NoRegister {
+                    register: setting.name(),
+                });
+            }
+            Setting::OperatingMode | Setting::TorqueEnable if model.protocol() != Protocol::Two => {
+                return Err(BackendError::NoSetting { setting });
+            }
+            _ => {}
         }
         self.answer(Call::ReadSetting, port, id)?;
         let id = usize::from(id);
         Ok(match setting {
             Setting::OperatingMode => self.modes[port][id],
             Setting::TorqueEnable => u8::from(self.torque[port][id]),
+            Setting::TorqueCtrlModeEnable => self.torque_modes[port][id],
         })
     }
 
@@ -825,6 +900,34 @@ impl Backend for Scripted {
         }
         self.answer(Call::ReadAngleLimits, port, id)?;
         Ok(self.limits[port][usize::from(id)])
+    }
+
+    /// Refused as the actuator refuses it: with its torque on on Protocol 2
+    /// (Access Error), and a value wider than its register on Protocol 1
+    /// (Range Error).
+    fn write_health_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        limits: HealthLimits,
+    ) -> Result<(), BackendError> {
+        self.one(Call::WriteHealthLimits, port, model, id, false)?;
+        if model.protocol() == Protocol::Two && get(&self.torque, port, id) {
+            return Err(BackendError::Status(ACCESS_ERROR));
+        }
+        if !LimitRegisters::of(model).fit(limits) {
+            return Err(BackendError::Status(RANGE_ERROR));
+        }
+        if get(&self.stuck, port, id) {
+            return Ok(());
+        }
+        if let Some(health) = at(&mut self.vitals, port, id) {
+            health.min_voltage_dv = limits.min_voltage_dv;
+            health.max_voltage_dv = limits.max_voltage_dv;
+            health.temperature_limit_c = limits.temperature_c;
+        }
+        Ok(())
     }
 
     fn close_ports(&mut self) {
@@ -1172,6 +1275,34 @@ mod tests {
             Err(BackendError::SlotMismatch { ids: 1, slots: 2 })
         );
         assert_eq!(backend.sync_read_state(0, MODEL, &[1, 2], &mut out), Ok(()));
+    }
+
+    #[test]
+    fn the_fake_answers_the_named_models_number_until_scripted() {
+        let mut backend = Scripted::new();
+        backend.model_number(0, 2, Model::Ax12a.number());
+        backend.open_ports(&[]).unwrap();
+
+        assert_eq!(backend.read_model_number(0, Model::Mx64, 1), Ok(310));
+        assert_eq!(backend.read_model_number(0, MODEL, 1), Ok(1030));
+        assert_eq!(backend.read_model_number(0, Model::Mx64, 2), Ok(12));
+        assert_eq!(backend.count(Call::ReadModelNumber), 3);
+    }
+
+    #[test]
+    fn the_fake_reads_torque_ctrl_mode_enable_only_on_the_protocol_one_mx64() {
+        let mut backend = Scripted::new();
+        backend.torque_mode(0, 2, 1);
+        backend.open_ports(&[]).unwrap();
+        let setting = Setting::TorqueCtrlModeEnable;
+        let refused = Err(BackendError::NoRegister {
+            register: "Torque Ctrl Mode Enable",
+        });
+
+        assert_eq!(backend.read_setting(0, Model::Mx64, 1, setting), Ok(0));
+        assert_eq!(backend.read_setting(0, Model::Mx64, 2, setting), Ok(1));
+        assert_eq!(backend.read_setting(0, Model::Ax12a, 2, setting), refused);
+        assert_eq!(backend.read_setting(0, Model::Mx64V2, 2, setting), refused);
     }
 
     #[test]

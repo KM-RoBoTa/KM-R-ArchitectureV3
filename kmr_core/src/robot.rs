@@ -7,11 +7,11 @@
 //!
 //! ```no_run
 //! // `no_run`: `run()` enters the control loop and only returns on a signal.
-//! use std::time::Duration;
+//! use core::time::Duration;
 //!
 //! use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
 //!
-//! fn foo(_time: &Time, _state: &mut RobotState, _sensors: &Sensors) {
+//! fn foo(_time: &Time, _state: &mut RobotState<4>, _sensors: &Sensors) {
 //!     println!("hello world");
 //! }
 //!
@@ -24,32 +24,91 @@
 //!     .expect("the robot has a controller");
 //! ```
 
-use std::time::Duration;
+use core::convert::Infallible;
+use core::marker::PhantomData;
+use core::time::Duration;
 
-pub use frunk::{HCons, HNil};
+pub use frunk_core::hlist::{HCons, HNil};
 
 use crate::clock::Time;
 use crate::config::user_config::RobotConfig;
 use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
-use crate::error::ApiError;
-use crate::hal::{Drivers, HardwareError, MemberError, NoHardware};
+use crate::error::RunError;
+use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
+use crate::limits::{Envelope, Limit, Policy};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
 use crate::{Scheduled, Sensors, runtime};
 
 /// The primary librairy API.
 ///
-/// CS means Core Scheduled. This is useful to differenciate between
+/// `N` is the actuator count, from the robot's descriptor (SRS FR-6.1). CS
+/// means Core Scheduled. This is useful to differenciate between
 /// the user specified schedule label (named `S` in the impl blocks) and the
 /// generic representation within the core.
-pub struct Robot<CS = Scheduled> {
-    pub(crate) config: RobotConfig,
+///
+/// `E` is [`Empty`] until the first controller is added, [`Filled`] after:
+/// [`Robot::run`] and [`Robot::run_on`] need [`HasController`], so a robot
+/// without a controller does not build (SRS NFR-4).
+///
+/// ```compile_fail,E0277
+/// // kmr: this robot has no controller
+/// kmr_core::Robot::<4>::new().run().ok();
+/// ```
+pub struct Robot<const N: usize, CS = Scheduled, E = Empty> {
+    pub(crate) config: RobotConfig<N>,
     pub(crate) controllers: CS,
+    pub(crate) filled: PhantomData<E>,
 }
 
-impl Robot<Scheduled> {
+/// Type-state of a [`Robot`] that has no controller yet.
+pub struct Empty;
+
+/// Type-state of a [`Robot`] that has at least one controller.
+pub struct Filled;
+
+/// The seal of [`HasController`].
+mod seal {
+    /// Implemented by [`super::Filled`] only.
+    pub trait Sealed {}
+}
+
+impl seal::Sealed for Filled {}
+
+/// The type-state of a [`Robot`] that may run: [`Filled`] only, sealed.
+#[diagnostic::on_unimplemented(
+    message = "kmr: this robot has no controller",
+    label = "`run()` needs at least one controller",
+    note = "add one with `.add_controller(EachTick, f)` before `.run()` (SRS NFR-4)"
+)]
+pub trait HasController: seal::Sealed {}
+
+impl HasController for Filled {}
+
+/// Hooks around the controllers of each tick, for kmr_api's gateway (SRS
+/// FR-7.1): `inbound` after `read` and the external flags, before `First`;
+/// `outbound` after the write and the clock bookkeeping, so this tick's
+/// sample, its faults, flags and age are reachable. Static dispatch, called
+/// on the tick: no heap, lock, wait or I/O.
+#[doc(hidden)]
+pub trait Stages<const N: usize> {
+    /// Before `First`: may write Desired.
+    fn inbound(&mut self, state: &mut RobotState<N>, time: &Time) {
+        let _ = (state, time);
+    }
+
+    /// After the write: reads the tick.
+    fn outbound(&mut self, state: &RobotState<N>, time: &Time) {
+        let _ = (state, time);
+    }
+}
+
+/// No stage: what [`Robot::run_on`] runs with.
+impl<const N: usize> Stages<N> for () {}
+
+impl<const N: usize> Robot<N, Scheduled, Empty> {
     /// Returns a default Robot.
     ///
     /// This is the main entry point for the API User.
@@ -62,7 +121,7 @@ impl Robot<Scheduled> {
     /// // `no_run`: `run()` enters the control loop and only returns on a signal.
     /// use kmr_core::{EachTick, Robot, RobotState, Sensors, Time};
     ///
-    /// fn hello_world(_time: &Time, _robot: &mut RobotState, _sensors: &Sensors) {
+    /// fn hello_world(_time: &Time, _robot: &mut RobotState<4>, _sensors: &Sensors) {
     ///     println!("Hello World !");
     /// }
     ///
@@ -71,10 +130,18 @@ impl Robot<Scheduled> {
     ///     .run()
     ///     .expect("the robot has a controller");
     /// ```
+    ///
+    /// More actuators than the write mask holds fail the build:
+    ///
+    /// ```compile_fail
+    /// let _ = kmr_core::Robot::<65>::new();
+    /// ```
     pub fn new() -> Self {
+        let () = Mask::<N>::CHECK;
         Robot {
             config: RobotConfig::default(),
             controllers: Scheduled::new(),
+            filled: PhantomData,
         }
     }
 }
@@ -86,10 +153,12 @@ impl Robot<Scheduled> {
 //
 // E.g: To set the elapsed time, an action disallowed to the user, call
 // directly `robot.config.time.set_elapsed(t)`.
-impl<CS> Robot<CS> {
-    /// Allows the user to set the value of [`Time::delta`].
+impl<const N: usize, CS, E> Robot<N, CS, E> {
+    /// Sets the tick period. Outside [10 µs, 1 s], zero included, `run` and
+    /// `run_on` refuse it before any I/O; never set, the run uses 1 ms with
+    /// one warning (SRS FR-3.1).
     pub fn set_dt(mut self, dt: Duration) -> Self {
-        self.config.time.set_delta(dt);
+        self.config.dt = Some(dt);
         self
     }
 
@@ -101,8 +170,25 @@ impl<CS> Robot<CS> {
         self
     }
 
+    /// Sets each actuator's limit and the policy of its breach (SRS FR-4.5).
+    /// An actuator whose limit bounds anything needs a policy, or `run` and
+    /// `run_on` refuse it before any I/O ([`ConfigError::NoPolicy`]).
+    ///
+    /// [`ConfigError::NoPolicy`]: crate::error::ConfigError::NoPolicy
+    pub fn set_limits(mut self, limits: [Limit; N], policies: [Option<Policy>; N]) -> Self {
+        self.config.limits.set_limits(limits, policies);
+        self
+    }
+
+    /// Sets each actuator's envelope: a written value outside it is clamped
+    /// and flagged (SRS FR-13.5).
+    pub fn set_envelopes(mut self, envelopes: [Envelope; N]) -> Self {
+        self.config.limits.set_envelopes(envelopes);
+        self
+    }
+
     /// Private generic method to insert any state.
-    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<CS::Output>
+    fn insert_controller<C, S>(self, schedule: S, controller: C) -> Robot<N, CS::Output, Filled>
     where
         C: Controller,
         S: Schedule,
@@ -112,6 +198,7 @@ impl<CS> Robot<CS> {
         Robot {
             config: self.config,
             controllers: self.controllers.insert(controller),
+            filled: PhantomData,
         }
     }
 
@@ -123,10 +210,10 @@ impl<CS> Robot<CS> {
     /// it can hide the core argument types behind api newtypes. Hence
     /// `pub(crate)`: outside the crate, `add_control_fn` is the single entry
     /// (it also takes a plain `fn`, through the blanket [`ControlFn`] impl).
-    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<CS::Output>
+    pub(crate) fn add_controller<S, F>(self, schedule: S, f: F) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Inline<F>>,
-        F: Fn(&Time, &mut RobotState, &Sensors),
+        F: Fn(&Time, &mut RobotState<N>, &Sensors),
         S: Schedule,
     {
         self.insert_controller(schedule, Inline(f))
@@ -139,10 +226,10 @@ impl<CS> Robot<CS> {
     /// an unnameable closure), the builder's type-state still threads through
     /// the return type, yet the public signature never names the core argument
     /// types the api is hiding.
-    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<CS::Output>
+    pub fn add_control_fn<S, C>(self, schedule: S, controller: C) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Inline<C>>,
-        C: ControlFn,
+        C: ControlFn<N>,
         S: Schedule,
     {
         self.insert_controller(schedule, Inline(controller))
@@ -150,10 +237,15 @@ impl<CS> Robot<CS> {
 
     /// Adds a new plain user defined controller with a persistant context
     /// managed by the user. `pub(crate)`, see [`Robot::add_controller`].
-    pub(crate) fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Robot<CS::Output>
+    pub(crate) fn add_controller_with<S, T, F>(
+        self,
+        schedule: S,
+        ctx: T,
+        f: F,
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, InlineWith<F, T>>,
-        F: Fn(&Time, &mut RobotState, &Sensors, &mut T),
+        F: Fn(&Time, &mut RobotState<N>, &Sensors, &mut T),
         S: Schedule,
     {
         self.insert_controller(schedule, InlineWith(f, ctx))
@@ -166,15 +258,16 @@ impl<CS> Robot<CS> {
         schedule: S,
         ctx: T,
         controller: C,
-    ) -> Robot<CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, InlineWith<C, T>>,
-        C: ControlFnWith<T>,
+        C: ControlFnWith<T, N>,
         S: Schedule,
     {
         self.insert_controller(schedule, InlineWith(controller, ctx))
     }
 
+    #[cfg(feature = "std")]
     /// Adds a new plain user defined threaded controller with a persistant
     /// context managed by the user.
     ///
@@ -186,7 +279,7 @@ impl<CS> Robot<CS> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Threaded<F, T>>,
         T: Sync + Send,
@@ -196,13 +289,14 @@ impl<CS> Robot<CS> {
         self.insert_controller(schedule, Threaded(f, ctx))
     }
 
+    #[cfg(feature = "std")]
     /// Pre-wrapped `add_controller_as_thread` — the entry `kmr_api` uses.
     pub fn add_control_fn_as_thread<S, T, C>(
         self,
         schedule: S,
         ctx: T,
         controller: C,
-    ) -> Robot<CS::Output>
+    ) -> Robot<N, CS::Output, Filled>
     where
         CS: Insert<S, Threaded<C, T>>,
         T: Sync + Send,
@@ -212,45 +306,78 @@ impl<CS> Robot<CS> {
         self.insert_controller(schedule, Threaded(controller, ctx))
     }
 
+    /// The same robot, typed [`Filled`]; only called where `E` is.
+    fn filled(self) -> Robot<N, CS, Filled> {
+        Robot {
+            config: self.config,
+            controllers: self.controllers,
+            filled: PhantomData,
+        }
+    }
+
+    #[cfg(feature = "std")]
     /// Runs the robot on `hal`, its hardware: a list of members,
     /// `HCons { head: dxl, tail: HCons { head: cubemars, tail: HNil } }`.
     /// Pass `&mut adapter` as a member to keep it after the run.
     ///
-    /// The `Drive` bound is the schedule-walk trait: it's `pub` but
-    /// `#[doc(hidden)]`, and every schedule the builder produces satisfies it,
-    /// so users never trip it. `kmr_api` forwards this same one bound from its
+    /// The `Drive` bound is the schedule-walk trait (its methods hidden):
+    /// every schedule the builder produces satisfies it, so users never trip
+    /// it. `kmr_api` forwards this same one bound from its
     /// own `run`.
     ///
     /// Returns once a signal ends the loop: `Ok` for a shutdown and for an
-    /// emergency stop alike. `Err` is a claim mismatch, found before any
-    /// I/O, or a member's error from `check` or a bring-up call.
-    pub fn run_on<D: Drivers>(self, hal: D) -> Result<(), HardwareError<D::Error>>
+    /// emergency stop alike. Before any I/O: [`RunError::Config`] for a
+    /// refused configuration, then [`RunError::Hal`] for a claim mismatch.
+    /// After: [`RunError::Hal`] for a member's error from `check` or a
+    /// bring-up call.
+    pub fn run_on<D: Drivers<N>>(self, hal: D) -> Result<(), RunError<HardwareError<D::Error>>>
     where
-        CS: Drive,
+        CS: Drive<N>,
+        E: HasController,
     {
-        runtime::runtime(self, hal).map(|_signal| ())
+        self.run_on_staged(hal, ())
     }
 
-    /// Runs the robot on [`NoHardware`]: nothing is read or written. See
-    /// [`Robot::run_on`].
-    pub fn run(self) -> Result<(), ApiError>
+    #[cfg(feature = "std")]
+    /// [`Robot::run_on`], with `stages` around the controllers of each tick.
+    #[doc(hidden)]
+    pub fn run_on_staged<D: Drivers<N>, S: Stages<N>>(
+        self,
+        hal: D,
+        stages: S,
+    ) -> Result<(), RunError<HardwareError<D::Error>>>
     where
-        CS: Drive,
+        CS: Drive<N>,
+        E: HasController,
+    {
+        runtime::runtime(self.filled(), hal, stages).map(|_signal| ())
+    }
+
+    #[cfg(feature = "std")]
+    /// Runs the robot on [`NoHardware`]: nothing is read or written. Only a
+    /// [`RunError::Config`] can fail it. See [`Robot::run_on`].
+    pub fn run(self) -> Result<(), RunError<Infallible>>
+    where
+        CS: Drive<N>,
+        E: HasController,
     {
         let hal = HCons {
             head: NoHardware,
             tail: HNil,
         };
         match self.run_on(hal) {
-            Ok(()) | Err(HardwareError::Coverage(_)) => Ok(()),
-            Err(HardwareError::Member(
+            Ok(()) => Ok(()),
+            Err(RunError::Config(config)) => Err(RunError::Config(config)),
+            // `NoHardware` claims every actuator: no coverage gap.
+            Err(RunError::Hal(HardwareError::Coverage(_))) => Ok(()),
+            Err(RunError::Hal(HardwareError::Member(
                 MemberError::Head { error: never, .. } | MemberError::Tail(never),
-            )) => match never {},
+            ))) => match never {},
         }
     }
 }
 
-impl Default for Robot<Scheduled> {
+impl<const N: usize> Default for Robot<N, Scheduled, Empty> {
     fn default() -> Self {
         Self::new()
     }
