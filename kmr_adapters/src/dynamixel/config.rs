@@ -851,16 +851,22 @@ impl<const NB: usize, const M: usize> Placement<NB, M> {
 
 /// Fails, naming `index`, when bit `index` of `prismatic` is set.
 const fn refuse_prismatic(index: usize, prismatic: &[u64; MASK_WORDS]) {
+    if let Err(message) = kind(index, prismatic) {
+        fail(message);
+    }
+}
+
+/// Refuses `index`, naming it, when bit `index` of `prismatic` is set.
+const fn kind(index: usize, prismatic: &[u64; MASK_WORDS]) -> Result<(), Message> {
     let word = match prismatic.split_at_checked(index / 64) {
         Some((_, [word, ..])) => *word,
         _ => 0,
     };
     if word >> (index % 64) & 1 == 1 {
-        fail(
-            Message::actuator(index)
-                .text("SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"),
-        );
+        return Err(Message::actuator(index)
+            .text("SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"));
     }
+    Ok(())
 }
 
 impl<const NB: usize, const N: usize> Table<NB, N> {
@@ -1085,6 +1091,38 @@ impl<const NB: usize, const M: usize> Declared<NB, M> {
             ports,
             live,
         })
+    }
+
+    /// The declaration, refused when the model marks prismatic one of its
+    /// engine indices, as [`Placement::check_kinds`] refuses it. No panic.
+    ///
+    /// # Errors
+    ///
+    /// The first prismatic index, worded as the compile error would be.
+    pub const fn check_kinds(self, prismatic: [u64; MASK_WORDS]) -> Result<Self, TableError> {
+        let mut row = 0;
+        while row < M {
+            if let Err(message) = kind(self.placement.at[row], &prismatic) {
+                return Err(TableError(message));
+            }
+            row += 1;
+        }
+        Ok(self)
+    }
+
+    /// The table; bus slots past [`live`](Self::live) are unused.
+    pub const fn table(&self) -> &Table<NB, M> {
+        &self.placement.table
+    }
+
+    /// Port of each live bus, by bus index.
+    pub fn ports(&self) -> &[Port] {
+        self.ports.get(..self.live).unwrap_or_default()
+    }
+
+    /// Buses in use, from the first.
+    pub const fn live(&self) -> usize {
+        self.live
     }
 }
 

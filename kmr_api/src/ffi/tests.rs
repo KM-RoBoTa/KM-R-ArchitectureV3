@@ -22,9 +22,14 @@ impl Spec<4> for TestSpec {
     const UPPER: [Q; 4] = [Q(1.0); 4];
     const SPEED: [Qd; 4] = [Qd(1.0); 4];
     const EFFORT: [crate::Tau; 4] = [crate::Tau(1.0); 4];
+    const PRESET: Option<&'static str> = None;
 
     fn bind(plugins: &[crate::Binding]) -> Result<Self::Drivers, UserError> {
         crate::__bind_none(plugins)
+    }
+
+    fn declare(_declared: crate::__Declared<4>) -> Result<Self::Drivers, UserError> {
+        crate::__bind_none(&[])
     }
 }
 

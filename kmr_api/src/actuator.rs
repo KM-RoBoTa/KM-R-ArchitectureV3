@@ -1,0 +1,197 @@
+//! Actuators declared in `main.rs`, lowered to the hardware table at `run()` (SRS FR-6.1).
+
+use kmr_adapters::binding::Port;
+use kmr_adapters::dynamixel::{Actuator, Bus, Declared, Mode, Model, Table, Torque, Zero};
+
+use crate::{BusHandle, MASK_WORDS, UserError};
+
+/// Actuators of one model on one bus, firmware ids in engine order.
+///
+/// Built by a model type, e.g. [`dynamixel::Rx28`](crate::dynamixel::Rx28), and handed to
+/// [`Robot::add_actuator`](crate::Robot::add_actuator).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Actuators {
+    pub(crate) bus: BusHandle,
+    pub(crate) ids: core::ops::RangeInclusive<u8>,
+    pub(crate) driver: Driver,
+}
+
+/// The driver of a declaration, by brand, with its settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Driver {
+    /// A Dynamixel model.
+    Dynamixel {
+        model: Model,
+        mode: Mode,
+        torque: Torque,
+        zero: Zero,
+    },
+}
+
+impl Actuators {
+    /// How many actuators this declares.
+    fn len(&self) -> usize {
+        self.ids.clone().count()
+    }
+}
+
+/// The hardware the declarations of a robot of `N` actuators name, as the Dynamixel driver
+/// takes it: at most `N` buses, since every bus carries an actuator.
+pub type DxlDeclared<const N: usize> = Declared<N, N>;
+
+/// Lowers `declarations` to fixed arrays: engine index `i` is the `i`th actuator declared, and
+/// the buses are numbered in first-declared order. No I/O.
+///
+/// # Errors
+///
+/// [`UserError::ActuatorCount`], [`UserError::BusWithoutBaud`], [`UserError::DuplicateBus`],
+/// then [`UserError::HardwareRejected`]: a rule of the table, or an index the model's
+/// `prismatic` bits mark (SRS FR-2.2).
+pub(crate) fn lower<const N: usize>(
+    declarations: Vec<Actuators>,
+    prismatic: [u64; MASK_WORDS],
+) -> Result<DxlDeclared<N>, UserError> {
+    let declared = declarations.iter().map(Actuators::len).sum();
+    if declared != N {
+        return Err(UserError::ActuatorCount {
+            declared,
+            expected: N,
+        });
+    }
+    let mut handles: Vec<BusHandle> = Vec::new();
+    let mut actuators = Vec::with_capacity(N);
+    for declaration in &declarations {
+        let bus = match handles.iter().position(|seen| *seen == declaration.bus) {
+            Some(bus) => bus,
+            None => {
+                let handle = declaration.bus;
+                if handles.iter().any(|seen| seen.port() == handle.port()) {
+                    return Err(UserError::DuplicateBus {
+                        port: handle.port(),
+                    });
+                }
+                if handle.binding.baud.is_none() {
+                    return Err(UserError::BusWithoutBaud {
+                        port: handle.port(),
+                    });
+                }
+                handles.push(handle);
+                handles.len() - 1
+            }
+        };
+        let Driver::Dynamixel {
+            model,
+            mode,
+            torque,
+            zero,
+        } = declaration.driver;
+        actuators.extend(declaration.ids.clone().map(|id| Actuator {
+            bus,
+            id,
+            model,
+            mode,
+            torque,
+            zero,
+        }));
+    }
+    let unused = Bus {
+        label: "",
+        baud: 0,
+        read_every: None,
+    };
+    let mut buses = [unused; N];
+    let mut ports = [Port::ByDev(""); N];
+    for ((bus, port), handle) in buses.iter_mut().zip(&mut ports).zip(&handles) {
+        // DECISION: a declared bus is read every DEFAULT_READ_EVERY ticks, the adapter's default;
+        // `Bus` gets no cadence knob until the NFR-1 bench settles D9.
+        *bus = Bus {
+            label: handle.port(),
+            baud: handle.binding.baud.unwrap_or_default(),
+            read_every: None,
+        };
+        *port = handle.binding.port;
+    }
+    let actuators: [Actuator; N] =
+        actuators
+            .try_into()
+            .map_err(|_: Vec<Actuator>| UserError::ActuatorCount {
+                declared,
+                expected: N,
+            })?;
+    let rejected = |source| UserError::HardwareRejected {
+        source: Box::new(source),
+    };
+    Declared::new(Table { buses, actuators }, ports, handles.len())
+        .map_err(rejected)?
+        .check_kinds(prismatic)
+        .map_err(rejected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Bus as Plugin;
+    use crate::dynamixel::{Ax12a, Xm430W210};
+
+    /// No prismatic actuator.
+    const REVOLUTE: [u64; MASK_WORDS] = [0; MASK_WORDS];
+
+    #[test]
+    fn engine_order_is_declaration_order_and_buses_first_declared_order() {
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        let wrist = Plugin::by_dev("/dev/ttyUSB1").baud(57_600).build();
+        let declared = lower::<4>(
+            vec![
+                Ax12a::id(9).on(wrist),
+                Xm430W210::ids(1..=2).on(arm),
+                Ax12a::id(3).read_only().on(wrist),
+            ],
+            REVOLUTE,
+        )
+        .expect("valid declarations");
+        let table = declared.table();
+        let placed = table.actuators.map(|a| (a.bus, a.id, a.model, a.torque));
+        assert_eq!(
+            placed,
+            [
+                (0, 9, Model::Ax12a, Torque::On),
+                (1, 1, Model::Xm430W210, Torque::On),
+                (1, 2, Model::Xm430W210, Torque::On),
+                (0, 3, Model::Ax12a, Torque::ReadOnly),
+            ]
+        );
+        assert_eq!(declared.live(), 2);
+        assert_eq!(
+            declared.ports(),
+            [Port::ByDev("/dev/ttyUSB1"), Port::ById("ARM00001")]
+        );
+        assert_eq!(
+            table.buses.map(|b| (b.label, b.baud))[..2],
+            [("/dev/ttyUSB1", 57_600), ("ARM00001", 1_000_000)]
+        );
+    }
+
+    #[test]
+    fn an_empty_range_counts_no_actuator() {
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        #[expect(clippy::reversed_empty_ranges, reason = "the empty range is the case")]
+        let none = Xm430W210::ids(5..=1).on(arm);
+        let res = lower::<4>(vec![none, Xm430W210::ids(1..=4).on(arm)], REVOLUTE);
+        assert!(res.is_ok(), "{:?}", res.err());
+    }
+
+    #[test]
+    fn a_prismatic_index_is_refused_as_check_kinds_words_it() {
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        let mut prismatic = REVOLUTE;
+        prismatic[0] = 0b100;
+        let Err(e) = lower::<4>(vec![Xm430W210::ids(1..=4).on(arm)], prismatic) else {
+            panic!("a prismatic Dynamixel actuator was lowered");
+        };
+        assert_eq!(
+            e.to_string(),
+            "the declared actuators are refused: actuator 2: SRS FR-2.2: prismatic Dynamixel \
+             actuator has no mm conversion"
+        );
+    }
+}

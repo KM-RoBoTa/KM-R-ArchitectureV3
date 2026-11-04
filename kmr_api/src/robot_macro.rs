@@ -4,7 +4,8 @@
 ///
 /// A KM-RoBoTa preset, or the path of a `.urdf`, `.ron` or `.json` descriptor
 /// (relative to the crate's `Cargo.toml`), read at compile time by
-/// `kmr_model`, with or without its hardware:
+/// `kmr_model`, with or without its hardware; without it, `Robot::add_actuator`
+/// declares the actuators in `main.rs`:
 ///
 /// ```ignore
 /// kmr_api::robot!(XmBench);
@@ -111,20 +112,27 @@ macro_rules! robot {
             let $hw = $crate::presets::$preset::HARDWARE;
             $table
         };
-        $crate::__robot_items!(@table);
+        $crate::__robot_items!(@table ::core::stringify!($preset));
     };
     (model = $path:literal) => {
         $crate::__model!($crate; model = $path);
         $crate::__robot_items!();
         impl $crate::Spec<{ N }> for __Spec {
-            type Drivers = $crate::HCons<$crate::__NoHardware, $crate::HNil>;
+            type Drivers = $crate::HCons<$crate::__DxlAdapter<{ N }, { N }>, $crate::HNil>;
 
             $crate::__robot_items!(@consts);
+            const PRESET: ::core::option::Option<&'static str> = ::core::option::Option::None;
 
             fn bind(
                 plugins: &[$crate::Binding],
             ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
                 $crate::__bind_none(plugins)
+            }
+
+            fn declare(
+                declared: $crate::__Declared<{ N }>,
+            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
+                $crate::__declare_dynamixel(declared)
             }
         }
     };
@@ -166,11 +174,19 @@ macro_rules! robot {
                 <$crate::robot!(@parts $($brand),+) as $crate::Brands<{ N }>>::Drivers;
 
             $crate::__robot_items!(@consts);
+            const PRESET: ::core::option::Option<&'static str> =
+                ::core::option::Option::Some("model = .., hardware = { .. }");
 
             fn bind(
                 plugins: &[$crate::Binding],
             ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
                 $crate::__bind::<{ N }, _>($crate::robot!(@list $($brand),+), plugins)
+            }
+
+            fn declare(
+                _declared: $crate::__Declared<{ N }>,
+            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
+                $crate::__declare_none("model = .., hardware = { .. }")
             }
         }
     };
@@ -191,7 +207,7 @@ macro_rules! robot {
         #[doc(hidden)]
         #[allow(dead_code)]
         const __TABLE: $crate::Table<__NB, __M> = $table;
-        $crate::__robot_items!(@table);
+        $crate::__robot_items!(@table "model = .., hardware = ..");
     };
     (@parts $brand:ident $(, $rest:ident)*) => {
         $crate::HCons<__hardware::$brand::__Part, $crate::robot!(@parts $($rest),*)>
@@ -211,13 +227,14 @@ macro_rules! robot {
 }
 
 /// The items of `robot!` that do not come from the model: the aliases, `__Spec` and the
-/// checks on `N`; with `@table`, the count check and `Spec` of a one-table robot; with
+/// checks on `N`; with `@table`, the count check and `Spec` of a one-table robot, named by
+/// the `robot!` argument that gives the table; with
 /// `@consts`, the model's facts as `Spec`'s consts. Hidden, so
 /// a user cannot set `N` through it (003 review #7).
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __robot_items {
-    (@table) => {
+    (@table $hardware:expr) => {
         // The count check: one table row per actuator, in model order (FR-007 (SRS FR-6.4)).
         const _: [$crate::dynamixel::Actuator; N] = __TABLE.actuators;
         // No prismatic row: a Dynamixel actuator has no mm conversion (SRS FR-2.2).
@@ -226,6 +243,8 @@ macro_rules! __robot_items {
             type Drivers = $crate::HCons<$crate::__DxlAdapter<__NB, { N }>, $crate::HNil>;
 
             $crate::__robot_items!(@consts);
+            const PRESET: ::core::option::Option<&'static str> =
+                ::core::option::Option::Some($hardware);
 
             fn bind(
                 plugins: &[$crate::Binding],
@@ -235,6 +254,12 @@ macro_rules! __robot_items {
                     tail: $crate::HNil,
                 };
                 $crate::__bind::<{ N }, _>(hardware, plugins)
+            }
+
+            fn declare(
+                _declared: $crate::__Declared<{ N }>,
+            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
+                $crate::__declare_none($hardware)
             }
         }
     };

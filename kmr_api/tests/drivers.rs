@@ -316,6 +316,7 @@ impl<const CASE: u8> Spec<N> for TwoBrands<CASE> {
     const UPPER: [kmr_api::Q; N] = [kmr_api::Q(1.0); N];
     const SPEED: [kmr_api::Qd; N] = [kmr_api::Qd(1.0); N];
     const EFFORT: [kmr_api::Tau; N] = [kmr_api::Tau(1.0); N];
+    const PRESET: Option<&'static str> = Some("TwoBrands");
 
     fn bind(plugins: &[Binding]) -> Result<Members, UserError> {
         let arm = Part::<Arm>::new(evens());
@@ -335,6 +336,10 @@ impl<const CASE: u8> Spec<N> for TwoBrands<CASE> {
             },
         };
         kmr_api::__bind(hardware, plugins)
+    }
+
+    fn declare(_declared: kmr_api::__Declared<N>) -> Result<Members, UserError> {
+        kmr_api::__declare_none("TwoBrands")
     }
 }
 

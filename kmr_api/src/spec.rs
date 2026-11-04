@@ -8,6 +8,7 @@ use kmr_adapters::dynamixel::Placement;
 use kmr_core::hal::{Drivers, Hal, NoHardware};
 use kmr_core::{HCons, HNil};
 
+use crate::actuator::DxlDeclared;
 use crate::brand::{Brand, Refused};
 use crate::{Limit, Q, Qd, Tau, UserError};
 
@@ -46,6 +47,10 @@ pub trait Spec<const N: usize> {
     /// Top effort per actuator.
     const EFFORT: [Tau; N];
 
+    /// The `robot!` argument that names the robot's hardware, a preset or `hardware = ..`,
+    /// which refuses `add_actuator`; `None` on a `robot!(model = ..)` robot alone.
+    const PRESET: Option<&'static str>;
+
     /// The descriptor is a placeholder, test data: its limits never reach the engine.
     const PLACEHOLDER: bool = false;
 
@@ -66,6 +71,14 @@ pub trait Spec<const N: usize> {
     /// [`UserError::FeatureOff`], [`UserError::NoHardwareDeclared`], a plugin no member takes,
     /// or a member's binding error as [`UserError::BringUp`].
     fn bind(plugins: &[Binding]) -> Result<Self::Drivers, UserError>;
+
+    /// The drivers of the actuators `add_actuator` declared, lowered and checked, no I/O.
+    /// `run()` calls it only when actuators are declared and no plugin is.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::FeatureOff`], or [`UserError::PresetHardware`].
+    fn declare(declared: DxlDeclared<N>) -> Result<Self::Drivers, UserError>;
 }
 
 /// The limit of each actuator from the model's columns: `lower` and `upper` are `None` where
@@ -140,8 +153,51 @@ pub type __NoHardware = NoHardware;
 ///
 /// Always [`UserError::NoHardwareDeclared`].
 #[doc(hidden)]
-pub fn __bind_none(_plugins: &[Binding]) -> Result<HCons<__NoHardware, HNil>, UserError> {
+pub fn __bind_none<D>(_plugins: &[Binding]) -> Result<D, UserError> {
     Err(UserError::NoHardwareDeclared)
+}
+
+/// Refuses the declared actuators: `robot!` names the hardware, as `preset`.
+///
+/// # Errors
+///
+/// Always [`UserError::PresetHardware`].
+#[doc(hidden)]
+pub fn __declare_none<D>(preset: &'static str) -> Result<D, UserError> {
+    Err(UserError::PresetHardware { preset })
+}
+
+/// The Dynamixel driver of `declared`, on the Dynamixel SDK, as the one member of the robot.
+/// No I/O.
+///
+/// # Errors
+///
+/// None with the `dynamixel` feature; the `Result` is the shape of [`Spec::declare`].
+#[doc(hidden)]
+#[cfg(feature = "dynamixel")]
+pub fn __declare_dynamixel<const N: usize>(
+    declared: DxlDeclared<N>,
+) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
+    use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
+    Ok(HCons {
+        head: Dynamixel::declared(DxlRs::new(), declared),
+        tail: HNil,
+    })
+}
+
+/// Refuses the declared actuators: the Dynamixel adapter is not compiled in.
+///
+/// # Errors
+///
+/// Always [`UserError::FeatureOff`].
+#[doc(hidden)]
+#[cfg(not(feature = "dynamixel"))]
+pub fn __declare_dynamixel<const N: usize>(
+    _declared: DxlDeclared<N>,
+) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
+    Err(UserError::FeatureOff {
+        feature: "dynamixel",
+    })
 }
 
 /// The Dynamixel driver of a robot of `N` actuators with `NB` Dynamixel buses.
@@ -415,7 +471,7 @@ mod tests {
     #[test]
     fn without_a_table_plugins_are_refused() {
         assert!(matches!(
-            __bind_none(&[PLUGIN]),
+            __bind_none::<HCons<__NoHardware, HNil>>(&[PLUGIN]),
             Err(UserError::NoHardwareDeclared)
         ));
     }

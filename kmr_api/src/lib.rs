@@ -73,6 +73,8 @@ pub use kmr_core::hal::NoHardware;
 mod brand;
 mod spec;
 #[doc(hidden)]
+pub use actuator::DxlDeclared as __Declared;
+#[doc(hidden)]
 pub use brand::{__bind, Brand, Brands, Refused, Route};
 #[doc(hidden)]
 pub use kmr_adapters::{
@@ -85,11 +87,15 @@ pub use kmr_core::HCons;
 pub use kmr_core::HNil;
 #[doc(hidden)]
 pub use spec::{
-    __CubeMarsAdapter, __DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage, Spec,
+    __CubeMarsAdapter, __DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage,
+    __declare_dynamixel, __declare_none, Spec,
 };
 
 mod bus;
-pub use bus::Bus;
+pub use bus::{Bus, BusHandle};
+
+mod actuator;
+pub use actuator::Actuators;
 
 mod plugin;
 pub use plugin::Plugin;
@@ -99,22 +105,7 @@ mod robot_macro;
 /// The robots KM-RoBoTa ships, for [`robot!`].
 pub use kmr_adapters::presets;
 
-/// The Dynamixel hardware table, for `robot!(model = .., hardware = { dynamixel: .. })`.
-pub mod dynamixel {
-    /// The `dxl_rs` backend of the Dynamixel driver.
-    #[cfg(feature = "dynamixel")]
-    pub use kmr_adapters::dynamixel::DxlRs;
-    /// The Dynamixel driver [`Bound::drivers`](crate::Bound::drivers) hands out.
-    pub use kmr_adapters::dynamixel::Dynamixel;
-    /// Why a Dynamixel bind or bring-up failed; reach it with `downcast_ref`.
-    pub use kmr_adapters::dynamixel::DynamixelError;
-    /// Health limits a placement writes to its actuators at bring-up:
-    /// `TABLE.at([..]).health_limits(..)` (D18).
-    pub use kmr_adapters::dynamixel::HealthLimits;
-    pub use kmr_adapters::dynamixel::{
-        Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
-    };
-}
+pub mod dynamixel;
 
 /// The CubeMars hardware table, for `robot!(model = .., hardware = { cubemars: .. })`.
 pub mod cubemars {

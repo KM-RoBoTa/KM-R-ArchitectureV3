@@ -93,11 +93,8 @@ note: inside `kmr_api::dynamixel::Table::<1, 4>::check_kinds`
 note: inside `kmr_adapters::dynamixel::config::refuse_prismatic`
  --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
   |
-  | /         fail(
-  | |             Message::actuator(index)
-  | |                 .text("SRS FR-2.2: prismatic Dynamixel actuator has no mm conversion"),
-  | |         );
-  | |_________^
+  |         fail(message);
+  |         ^^^^^^^^^^^^^
 note: inside `kmr_adapters::dynamixel::config::fail`
  --> $RUST/core/src/panic.rs
   |

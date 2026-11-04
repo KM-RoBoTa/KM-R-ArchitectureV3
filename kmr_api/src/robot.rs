@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use crate::actuator::{self, Actuators};
 use crate::fallback::Guarded;
 use crate::plugin::{Plugin, Plugins};
 use crate::spec::Lend;
@@ -121,6 +122,7 @@ where
 pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
     inner: kmr_core::Robot<N, C, E>,
     plugins: Plugins,
+    actuators: Vec<Actuators>,
     payloads: Vec<Payload>,
     guards: Guards<N>,
     /// The remote sources, handed to the gateway at finalization.
@@ -160,11 +162,12 @@ impl<const N: usize> Guards<N> {
 }
 
 impl<const N: usize, H: Spec<N>> Robot<N, H> {
-    /// A robot with no controller, no plugin, no payload and no `dt` yet.
+    /// A robot with no controller, no plugin, no actuator, no payload and no `dt` yet.
     pub fn new() -> Self {
         Self {
             inner: kmr_core::Robot::new(),
             plugins: Plugins::default(),
+            actuators: Vec::new(),
             payloads: Vec::new(),
             guards: Guards::new(),
             #[cfg(feature = "zenoh")]
@@ -258,6 +261,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         Robot {
             inner: grow(self.inner),
             plugins: self.plugins,
+            actuators: self.actuators,
             payloads: self.payloads,
             guards: self.guards,
             #[cfg(feature = "zenoh")]
@@ -275,8 +279,27 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     ///
     /// Without any bus, `run()` simulates. Binding one port twice is a
     /// `run()` error.
+    // DECISION: `add_plugins` stays for robots whose `robot!` names a hardware table: the
+    // table names the buses, a plugin only says where each is plugged in. A
+    // `robot!(model = ..)` robot without one refuses it at `run()` (`NoHardwareDeclared`): its
+    // actuators carry their bus.
     pub fn add_plugins(mut self, plugin: impl Plugin) -> Self {
         plugin.plug(&mut self.plugins);
+        self
+    }
+
+    /// Declares actuators of a `robot!(model = ..)` robot, each on its bus. Engine index `i` is
+    /// the `i`th actuator declared, matching the model's `i`th non-fixed joint.
+    ///
+    /// ```ignore
+    /// let spine = Bus::by_id("AL02L1KL").baud(1_000_000).build();
+    /// Robot::new().add_actuator(dynamixel::Rx28::ids(1..=10).on(spine))
+    /// ```
+    ///
+    /// Without any actuator, `run()` simulates. A robot whose `robot!` names its hardware
+    /// refuses it at `run()`.
+    pub fn add_actuator(mut self, actuators: impl Into<Actuators>) -> Self {
+        self.actuators.push(actuators.into());
         self
     }
 
@@ -418,8 +441,8 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         self.grown(|inner| inner.add_control_fn_as_thread(schedule, ctx, ApiThreaded(f)))
     }
 
-    /// Finalizes the builder, binds the bus plugins to the robot's drivers, then runs on them;
-    /// without a plugin, simulates on no hardware.
+    /// Finalizes the builder, binds the bus plugins or the declared actuators to the robot's
+    /// drivers, then runs on them; without either, simulates on no hardware.
     ///
     /// The [`Drive`](crate::Drive) bound is satisfied by every schedule the builder can
     /// produce, so users never trip it.
@@ -451,13 +474,16 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         }
     }
 
-    /// Finalizes the builder and binds the bus plugins to the robot's drivers, no I/O: the
-    /// drivers are reachable before the run (SRS FR-5.9).
+    /// Finalizes the builder and binds the bus plugins, or the declared actuators, to the
+    /// robot's drivers, no I/O: the drivers are reachable before the run (SRS FR-5.9).
     ///
     /// # Errors
     ///
-    /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], then the binding errors of
-    /// [`Spec::bind`]. The tick period is checked by the run.
+    /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], [`UserError::PresetHardware`],
+    /// then the binding errors of [`Spec::bind`], or those of the declared actuators
+    /// ([`UserError::ActuatorCount`], [`UserError::BusWithoutBaud`],
+    /// [`UserError::DuplicateBus`], [`UserError::HardwareRejected`], [`UserError::FeatureOff`]).
+    /// The tick period is checked by the run.
     pub fn bind(self) -> Result<Bound<N, H, C, E>, UserError>
     where
         H: Spec<N>,
@@ -465,11 +491,18 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         let Finalized {
             inner,
             bindings,
+            actuators,
             #[cfg(feature = "zenoh")]
             gateway,
         } = self.finalize()?;
+        if !actuators.is_empty()
+            && let Some(preset) = H::PRESET
+        {
+            return Err(UserError::PresetHardware { preset });
+        }
         let drivers = match bindings.as_slice() {
-            [] => None,
+            [] if actuators.is_empty() => None,
+            [] => Some(H::declare(actuator::lower(actuators, H::PRISMATIC)?)?),
             bindings => Some(H::bind(bindings)?),
         };
         Ok(Bound {
@@ -526,6 +559,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         Ok(Finalized {
             inner,
             bindings: buses.iter().map(|bus| bus.binding).collect(),
+            actuators: self.actuators,
             #[cfg(feature = "zenoh")]
             gateway: crate::zenoh::Plugged::new(self.plugins.gateways, self.remotes)?,
         })
@@ -598,10 +632,12 @@ pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
     gateway: Option<crate::zenoh::Plugged>,
 }
 
-/// The builder's data checked and handed over: the core robot and the bus bindings.
+/// The builder's data checked and handed over: the core robot, the bus bindings and the
+/// declared actuators.
 struct Finalized<const N: usize, C, E> {
     inner: kmr_core::Robot<N, C, E>,
     bindings: Vec<Binding>,
+    actuators: Vec<Actuators>,
     /// The one gateway plugged in, if any.
     #[cfg(feature = "zenoh")]
     gateway: Option<crate::zenoh::Plugged>,
@@ -615,8 +651,8 @@ struct Net<'a, const N: usize> {
 }
 
 impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
-    /// The robot's drivers, `HCons<A, HCons<B, HNil>>`; `None` without a bus plugin, where the
-    /// run simulates.
+    /// The robot's drivers, `HCons<A, HCons<B, HNil>>`; `None` without a bus plugin or an
+    /// actuator, where the run simulates.
     pub fn drivers(&mut self) -> Option<&mut H::Drivers> {
         self.drivers.as_mut()
     }
@@ -720,9 +756,14 @@ pub(crate) mod tests {
         const UPPER: [crate::Q; 4] = [crate::Q(1.0); 4];
         const SPEED: [crate::Qd; 4] = [crate::Qd(1.0); 4];
         const EFFORT: [crate::Tau; 4] = [crate::Tau(1.0); 4];
+        const PRESET: Option<&'static str> = None;
 
         fn bind(plugins: &[crate::Binding]) -> Result<Self::Drivers, UserError> {
             crate::__bind_none(plugins)
+        }
+
+        fn declare(_declared: crate::__Declared<4>) -> Result<Self::Drivers, UserError> {
+            Ok(simulated())
         }
     }
 
