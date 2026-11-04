@@ -136,15 +136,30 @@ mod tests {
     /// No prismatic actuator.
     const REVOLUTE: [u64; MASK_WORDS] = [0; MASK_WORDS];
 
+    /// Actuators past the first four, up to `N`, at ids from 100.
+    fn filler<const N: usize>(bus: BusHandle) -> Actuators {
+        let last = u8::try_from(100 + N - 5).unwrap_or(u8::MAX);
+        #[allow(clippy::reversed_empty_ranges)]
+        Xm430W210::ids(100..=last).on(bus)
+    }
+
     #[test]
     fn engine_order_is_declaration_order_and_buses_first_declared_order() {
+        engine_order::<4>();
+        engine_order::<10>();
+        engine_order::<64>();
+    }
+
+    /// The order test on a robot of `N` actuators, the first four the case.
+    fn engine_order<const N: usize>() {
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
         let wrist = Plugin::by_dev("/dev/ttyUSB1").baud(57_600).build();
-        let declared = lower::<4>(
+        let declared = lower::<N>(
             vec![
                 Ax12a::id(9).on(wrist),
                 Xm430W210::ids(1..=2).on(arm),
                 Ax12a::id(3).read_only().on(wrist),
+                filler::<N>(arm),
             ],
             REVOLUTE,
         )
@@ -152,7 +167,7 @@ mod tests {
         let table = declared.table();
         let placed = table.actuators.map(|a| (a.bus, a.id, a.model, a.torque));
         assert_eq!(
-            placed,
+            placed[..4],
             [
                 (0, 9, Model::Ax12a, Torque::On),
                 (1, 1, Model::Xm430W210, Torque::On),
@@ -173,10 +188,19 @@ mod tests {
 
     #[test]
     fn an_empty_range_counts_no_actuator() {
+        empty_range::<4>();
+        empty_range::<10>();
+    }
+
+    /// The empty range test on a robot of `N` actuators.
+    fn empty_range<const N: usize>() {
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
         #[expect(clippy::reversed_empty_ranges, reason = "the empty range is the case")]
         let none = Xm430W210::ids(5..=1).on(arm);
-        let res = lower::<4>(vec![none, Xm430W210::ids(1..=4).on(arm)], REVOLUTE);
+        let res = lower::<N>(
+            vec![none, Xm430W210::ids(1..=4).on(arm), filler::<N>(arm)],
+            REVOLUTE,
+        );
         assert!(res.is_ok(), "{:?}", res.err());
     }
 
