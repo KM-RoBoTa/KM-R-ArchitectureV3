@@ -1,0 +1,56 @@
+error[E0080]: evaluation panicked: actuator 7: past the table's 4 actuators
+ --> tests/ui/bad_index.rs:3:42
+  |
+3 | kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(7));
+  |                                          ^^^^^^^^^^^^^^^ evaluation of `__TABLE` failed inside this call
+  |
+note: inside `kmr_api::dynamixel::Table::<1, 4>::read_only`
+ --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
+  |
+  |         actuator_mut(&mut self.actuators, actuator).torque = Torque::ReadOnly;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `kmr_adapters::dynamixel::config::actuator_mut`
+ --> $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
+  |
+  |           _ => fail(
+  |  ______________^
+  | |             Message::actuator(index)
+  | |                 .text("past the table's ")
+  | |                 .number(len)
+  | |                 .text(" actuators"),
+  | |         ),
+  | |_________^
+note: inside `kmr_adapters::dynamixel::config::fail`
+ --> $RUST/core/src/panic.rs
+  |
+  |         $crate::panicking::panic_display(&$arg);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+  |
+ ::: $WORKSPACE/kmr_adapters/src/dynamixel/config.rs
+  |
+  |     panic!("{}", message.as_str())
+  |     ------------------------------ in this macro invocation
+
+note: erroneous constant encountered
+ --> tests/ui/bad_index.rs:3:1
+  |
+3 | kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(7));
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this note originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+ --> tests/ui/bad_index.rs:3:1
+  |
+3 | kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(7));
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this note originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+ --> tests/ui/bad_index.rs:3:1
+  |
+3 | kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(7));
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this note originates in the macro `$crate::__robot_items` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)

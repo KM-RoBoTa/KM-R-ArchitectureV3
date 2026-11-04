@@ -1,0 +1,206 @@
+<?xml version="1.0"?>
+<!-- Test descriptor: 100 revolute joints in one chain, for the build-time cost
+     (tasks.md T052). Values are test data, not a robot. -->
+<robot name="hundred">
+  <link name="l0"/>
+  <link name="l1"/>
+  <link name="l2"/>
+  <link name="l3"/>
+  <link name="l4"/>
+  <link name="l5"/>
+  <link name="l6"/>
+  <link name="l7"/>
+  <link name="l8"/>
+  <link name="l9"/>
+  <link name="l10"/>
+  <link name="l11"/>
+  <link name="l12"/>
+  <link name="l13"/>
+  <link name="l14"/>
+  <link name="l15"/>
+  <link name="l16"/>
+  <link name="l17"/>
+  <link name="l18"/>
+  <link name="l19"/>
+  <link name="l20"/>
+  <link name="l21"/>
+  <link name="l22"/>
+  <link name="l23"/>
+  <link name="l24"/>
+  <link name="l25"/>
+  <link name="l26"/>
+  <link name="l27"/>
+  <link name="l28"/>
+  <link name="l29"/>
+  <link name="l30"/>
+  <link name="l31"/>
+  <link name="l32"/>
+  <link name="l33"/>
+  <link name="l34"/>
+  <link name="l35"/>
+  <link name="l36"/>
+  <link name="l37"/>
+  <link name="l38"/>
+  <link name="l39"/>
+  <link name="l40"/>
+  <link name="l41"/>
+  <link name="l42"/>
+  <link name="l43"/>
+  <link name="l44"/>
+  <link name="l45"/>
+  <link name="l46"/>
+  <link name="l47"/>
+  <link name="l48"/>
+  <link name="l49"/>
+  <link name="l50"/>
+  <link name="l51"/>
+  <link name="l52"/>
+  <link name="l53"/>
+  <link name="l54"/>
+  <link name="l55"/>
+  <link name="l56"/>
+  <link name="l57"/>
+  <link name="l58"/>
+  <link name="l59"/>
+  <link name="l60"/>
+  <link name="l61"/>
+  <link name="l62"/>
+  <link name="l63"/>
+  <link name="l64"/>
+  <link name="l65"/>
+  <link name="l66"/>
+  <link name="l67"/>
+  <link name="l68"/>
+  <link name="l69"/>
+  <link name="l70"/>
+  <link name="l71"/>
+  <link name="l72"/>
+  <link name="l73"/>
+  <link name="l74"/>
+  <link name="l75"/>
+  <link name="l76"/>
+  <link name="l77"/>
+  <link name="l78"/>
+  <link name="l79"/>
+  <link name="l80"/>
+  <link name="l81"/>
+  <link name="l82"/>
+  <link name="l83"/>
+  <link name="l84"/>
+  <link name="l85"/>
+  <link name="l86"/>
+  <link name="l87"/>
+  <link name="l88"/>
+  <link name="l89"/>
+  <link name="l90"/>
+  <link name="l91"/>
+  <link name="l92"/>
+  <link name="l93"/>
+  <link name="l94"/>
+  <link name="l95"/>
+  <link name="l96"/>
+  <link name="l97"/>
+  <link name="l98"/>
+  <link name="l99"/>
+  <link name="l100"/>
+  <joint name="j1" type="revolute"><parent link="l0"/><child link="l1"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j3" type="revolute"><parent link="l2"/><child link="l3"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j4" type="revolute"><parent link="l3"/><child link="l4"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j5" type="revolute"><parent link="l4"/><child link="l5"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j6" type="revolute"><parent link="l5"/><child link="l6"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j7" type="revolute"><parent link="l6"/><child link="l7"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j8" type="revolute"><parent link="l7"/><child link="l8"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j9" type="revolute"><parent link="l8"/><child link="l9"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j10" type="revolute"><parent link="l9"/><child link="l10"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j11" type="revolute"><parent link="l10"/><child link="l11"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j12" type="revolute"><parent link="l11"/><child link="l12"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j13" type="revolute"><parent link="l12"/><child link="l13"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j14" type="revolute"><parent link="l13"/><child link="l14"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j15" type="revolute"><parent link="l14"/><child link="l15"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j16" type="revolute"><parent link="l15"/><child link="l16"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j17" type="revolute"><parent link="l16"/><child link="l17"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j18" type="revolute"><parent link="l17"/><child link="l18"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j19" type="revolute"><parent link="l18"/><child link="l19"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j20" type="revolute"><parent link="l19"/><child link="l20"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j21" type="revolute"><parent link="l20"/><child link="l21"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j22" type="revolute"><parent link="l21"/><child link="l22"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j23" type="revolute"><parent link="l22"/><child link="l23"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j24" type="revolute"><parent link="l23"/><child link="l24"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j25" type="revolute"><parent link="l24"/><child link="l25"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j26" type="revolute"><parent link="l25"/><child link="l26"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j27" type="revolute"><parent link="l26"/><child link="l27"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j28" type="revolute"><parent link="l27"/><child link="l28"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j29" type="revolute"><parent link="l28"/><child link="l29"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j30" type="revolute"><parent link="l29"/><child link="l30"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j31" type="revolute"><parent link="l30"/><child link="l31"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j32" type="revolute"><parent link="l31"/><child link="l32"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j33" type="revolute"><parent link="l32"/><child link="l33"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j34" type="revolute"><parent link="l33"/><child link="l34"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j35" type="revolute"><parent link="l34"/><child link="l35"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j36" type="revolute"><parent link="l35"/><child link="l36"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j37" type="revolute"><parent link="l36"/><child link="l37"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j38" type="revolute"><parent link="l37"/><child link="l38"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j39" type="revolute"><parent link="l38"/><child link="l39"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j40" type="revolute"><parent link="l39"/><child link="l40"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j41" type="revolute"><parent link="l40"/><child link="l41"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j42" type="revolute"><parent link="l41"/><child link="l42"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j43" type="revolute"><parent link="l42"/><child link="l43"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j44" type="revolute"><parent link="l43"/><child link="l44"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j45" type="revolute"><parent link="l44"/><child link="l45"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j46" type="revolute"><parent link="l45"/><child link="l46"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j47" type="revolute"><parent link="l46"/><child link="l47"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j48" type="revolute"><parent link="l47"/><child link="l48"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j49" type="revolute"><parent link="l48"/><child link="l49"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j50" type="revolute"><parent link="l49"/><child link="l50"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j51" type="revolute"><parent link="l50"/><child link="l51"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j52" type="revolute"><parent link="l51"/><child link="l52"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j53" type="revolute"><parent link="l52"/><child link="l53"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j54" type="revolute"><parent link="l53"/><child link="l54"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j55" type="revolute"><parent link="l54"/><child link="l55"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j56" type="revolute"><parent link="l55"/><child link="l56"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j57" type="revolute"><parent link="l56"/><child link="l57"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j58" type="revolute"><parent link="l57"/><child link="l58"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j59" type="revolute"><parent link="l58"/><child link="l59"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j60" type="revolute"><parent link="l59"/><child link="l60"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j61" type="revolute"><parent link="l60"/><child link="l61"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j62" type="revolute"><parent link="l61"/><child link="l62"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j63" type="revolute"><parent link="l62"/><child link="l63"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j64" type="revolute"><parent link="l63"/><child link="l64"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j65" type="revolute"><parent link="l64"/><child link="l65"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j66" type="revolute"><parent link="l65"/><child link="l66"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j67" type="revolute"><parent link="l66"/><child link="l67"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j68" type="revolute"><parent link="l67"/><child link="l68"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j69" type="revolute"><parent link="l68"/><child link="l69"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j70" type="revolute"><parent link="l69"/><child link="l70"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j71" type="revolute"><parent link="l70"/><child link="l71"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j72" type="revolute"><parent link="l71"/><child link="l72"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j73" type="revolute"><parent link="l72"/><child link="l73"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j74" type="revolute"><parent link="l73"/><child link="l74"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j75" type="revolute"><parent link="l74"/><child link="l75"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j76" type="revolute"><parent link="l75"/><child link="l76"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j77" type="revolute"><parent link="l76"/><child link="l77"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j78" type="revolute"><parent link="l77"/><child link="l78"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j79" type="revolute"><parent link="l78"/><child link="l79"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j80" type="revolute"><parent link="l79"/><child link="l80"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j81" type="revolute"><parent link="l80"/><child link="l81"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j82" type="revolute"><parent link="l81"/><child link="l82"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j83" type="revolute"><parent link="l82"/><child link="l83"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j84" type="revolute"><parent link="l83"/><child link="l84"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j85" type="revolute"><parent link="l84"/><child link="l85"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j86" type="revolute"><parent link="l85"/><child link="l86"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j87" type="revolute"><parent link="l86"/><child link="l87"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j88" type="revolute"><parent link="l87"/><child link="l88"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j89" type="revolute"><parent link="l88"/><child link="l89"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j90" type="revolute"><parent link="l89"/><child link="l90"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j91" type="revolute"><parent link="l90"/><child link="l91"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j92" type="revolute"><parent link="l91"/><child link="l92"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j93" type="revolute"><parent link="l92"/><child link="l93"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j94" type="revolute"><parent link="l93"/><child link="l94"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j95" type="revolute"><parent link="l94"/><child link="l95"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j96" type="revolute"><parent link="l95"/><child link="l96"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j97" type="revolute"><parent link="l96"/><child link="l97"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j98" type="revolute"><parent link="l97"/><child link="l98"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j99" type="revolute"><parent link="l98"/><child link="l99"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j100" type="revolute"><parent link="l99"/><child link="l100"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+</robot>

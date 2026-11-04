@@ -1,38 +1,55 @@
+use core::num::NonZeroU32;
+
+use super::HISTORY_DEPTH;
 use super::desired::Desired;
 use super::field::{StateField, sealed};
-use super::history::History;
 #[cfg(feature = "test-util")]
 use super::history::State;
+use super::history::{Flags, History};
 #[cfg(feature = "test-util")]
 use super::joint_state::{Q, Qd, Tau};
-use super::{HISTORY_DEPTH, JOINTS};
 use crate::error::StateError;
-use crate::hal::{Command, HoldTarget, Mask, Sample, Written};
+use crate::hal::{Command, Faults, HoldTarget, Mask, Sample, TickFlags, Written};
+use crate::limits::Staged;
 
-#[derive(Default)]
 /// The robot state abstraction.
 ///
-/// It holds both the desired values, and the history of states.
-///
-/// `DEPTH` is the number of ticks kept in the history, NOT the joint count
-/// (that one is fixed by [`JOINTS`]). It defaults to [`HISTORY_DEPTH`] so that
-/// signatures write a bare `RobotState`: with nothing to pass, the joint count
-/// cannot be passed as the depth by mistake.
-///
-/// Transitional: `docs/decisions/0001-joint-count-and-history-depth.md`
-/// proposes to drop the parameter and keep both sizes as constants.
-pub struct RobotState<const DEPTH: usize = HISTORY_DEPTH> {
-    pub(in crate::state) desired: Desired,
-    pub(in crate::state) history: History<JOINTS, DEPTH>,
+/// It holds both the desired values, and the history of states. The history
+/// keeps [`HISTORY_DEPTH`] ticks, a fixed capacity (SRS section 8, decision
+/// 0001). `N` is the actuator count.
+pub struct RobotState<const N: usize> {
+    pub(in crate::state) desired: Desired<N>,
+    pub(in crate::state) history: History<N, HISTORY_DEPTH>,
+    /// Read cadence of each actuator in ticks, from the layout; 1 until set.
+    pub(in crate::state) cadence: [NonZeroU32; N],
+    /// Ticks since each actuator was last read; meaningless while unsampled.
+    pub(in crate::state) age: [u32; N],
+    /// History slots, newest first, that hold a sample of each actuator:
+    /// 0 until its first read, then up to [`HISTORY_DEPTH`].
+    // DECISION: a count per actuator rather than a mask per slot, so the
+    // slot layout of T038 stays as it is.
+    pub(in crate::state) sampled: [u32; N],
+}
+
+impl<const N: usize> Default for RobotState<N> {
+    fn default() -> Self {
+        Self {
+            desired: Desired::default(),
+            history: History::default(),
+            cadence: [NonZeroU32::MIN; N],
+            age: [0; N],
+            sampled: [0; N],
+        }
+    }
 }
 
 /// Direct writes to desired state are not allowed:
 /// ```compile_fail
 /// # use kmr_core::RobotState;
-/// let mut robot = <RobotState>::default();
+/// let mut robot = RobotState::<4>::default();
 /// robot.desired.q[0] = 1.0;
 /// ```
-impl<const DEPTH: usize> RobotState<DEPTH> {
+impl<const N: usize> RobotState<N> {
     // ── Desired setters ─────────────────────────────────────────────────
 
     /// Write one desired value to `index` in the slot selected by `T`, and
@@ -46,13 +63,13 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
                 <T as sealed::Slot>::mask(&mut self.desired.written).set(index);
                 Ok(())
             }
-            None => Err(StateError::OutOfRange { index, len: JOINTS }),
+            None => Err(StateError::OutOfRange { index, len: N }),
         }
     }
 
     /// Overwrite the entire slot selected by `T` (inferred from `values`),
     /// and mark every actuator of it written.
-    pub fn set_all<T: StateField>(&mut self, values: [T; JOINTS]) {
+    pub fn set_all<T: StateField>(&mut self, values: [T; N]) {
         *<T as sealed::Slot>::slot(&mut self.desired) = values;
         *<T as sealed::Slot>::mask(&mut self.desired.written) = Mask::ALL;
     }
@@ -60,33 +77,39 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     // ── State getters ───────────────────────────────────────────────────
     /// Returns the array [`StateField`] defined as the home position for the
     /// current robot model.
-    pub(crate) fn home_state<T: StateField>(&self) -> [T; JOINTS] {
-        todo!("return home state for specified state field")
+    pub(crate) fn home_state<T: StateField>(&self) -> Result<[T; N], StateError> {
+        Err(StateError::Undecided("SRS FR-2.7: home state source"))
     }
 
-    /// Newest entry's slot for field type `T`. None if history is empty.
-    pub fn current<T: StateField>(&self) -> Option<&[T; JOINTS]> {
-        self.history.buf.back().map(T::field)
+    /// Newest entry's slot for field type `T`. None if history is empty or
+    /// an actuator has no sample yet.
+    pub fn current<T: StateField>(&self) -> Option<&[T; N]> {
+        self.prev(0).ok()
     }
 
     /// Newest value at `index` for field type `&T`.
     pub fn current_at<T: StateField>(&self, index: usize) -> Result<&T, StateError> {
-        let slice = self
-            .current::<T>()
-            .ok_or(StateError::OutOfRange { index, len: 0 })?;
-
-        slice.get(index).ok_or(StateError::OutOfRange {
-            index,
-            len: slice.len(),
-        })
+        self.prev_at(0, index)
     }
 
     /// Field slot for type `T` at `history_depth` steps back (0 = current).
-    /// Err if the requested depth isn't present in the buffer.
-    pub fn prev<T>(&self, history_depth: usize) -> Result<&[T; JOINTS], StateError>
+    /// Err if the requested depth isn't present in the buffer, or if an
+    /// actuator had no sample yet at that depth ([`StateError::NoSample`]).
+    pub fn prev<T>(&self, history_depth: usize) -> Result<&[T; N], StateError>
     where
         T: StateField,
     {
+        let slot = self.slot::<T>(history_depth)?;
+        if self.sampled.iter().any(|&held| !holds(held, history_depth)) {
+            return Err(StateError::NoSample {
+                depth: history_depth,
+            });
+        }
+        Ok(slot)
+    }
+
+    /// The slot `history_depth` back, sampled or not.
+    fn slot<T: StateField>(&self, history_depth: usize) -> Result<&[T; N], StateError> {
         self.history
             .buf
             .nth_back(history_depth)
@@ -94,7 +117,7 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
             .ok_or(StateError::HistoryValueOutOfRange {
                 provided_depth: history_depth,
                 // Deepest depth currently available (`nth_back` accepts 0..len).
-                // NOT `JOINTS` — that only matched by coincidence (JOINTS == DEPTH).
+                // NOT `N`: that only matched while N and the depth were both 4.
                 max_depth: self.history.buf.len().saturating_sub(1),
             })
     }
@@ -115,26 +138,88 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     where
         T: StateField,
     {
-        let slice = self.prev::<T>(history_depth)?;
-
-        slice.get(index).ok_or(StateError::OutOfRange {
-            index,
-            len: slice.len(),
-        })
+        let slice = self.slot::<T>(history_depth)?;
+        let value = slice
+            .get(index)
+            .ok_or(StateError::OutOfRange { index, len: N })?;
+        match self.sampled.get(index) {
+            Some(&held) if holds(held, history_depth) => Ok(value),
+            _ => Err(StateError::NoSample {
+                depth: history_depth,
+            }),
+        }
     }
 
-    // ── Public state setters ────────────────────────────────────────────
+    /// Ticks since actuator `index` was last read: 0 on the tick it was read.
+    /// `None` until its first read, and always on a run without hardware.
+    pub fn age(&self, index: usize) -> Result<Option<u32>, StateError> {
+        match (self.age.get(index), self.sampled.get(index)) {
+            (Some(&age), Some(&held)) => Ok((held > 0).then_some(age)),
+            _ => Err(StateError::OutOfRange { index, len: N }),
+        }
+    }
+
+    /// Age of the oldest sample over all actuators. `None` while one of them
+    /// was never read.
+    // DECISION: an actuator never read makes the whole sample age unknown,
+    // not the maximum of the others.
+    pub fn sample_age(&self) -> Option<u32> {
+        self.age
+            .iter()
+            .zip(&self.sampled)
+            .try_fold(0, |oldest, (&age, &held)| {
+                (held > 0).then(|| oldest.max(age))
+            })
+    }
+
+    /// The fault bits of the tick `history_depth` back (0 = this tick). A
+    /// tick's `read` faults show at depth 0 from `First` on; its `write` and
+    /// limit faults from the next tick on, at depth 1 (SRS FR-13.4).
+    pub fn faults(&self, history_depth: usize) -> Result<&Faults<N>, StateError> {
+        self.flags(history_depth).map(|flags| &flags.faults)
+    }
+
+    /// The whole-tick flags of the tick `history_depth` back (0 = this
+    /// tick). `OVERRUN` is set once the tick ended, so it reads at depth 1.
+    pub fn tick_flags(&self, history_depth: usize) -> Result<TickFlags, StateError> {
+        self.flags(history_depth).map(|flags| flags.tick)
+    }
+
+    /// The flags of the slot `history_depth` back.
+    fn flags(&self, history_depth: usize) -> Result<&Flags<N>, StateError> {
+        self.history
+            .flags
+            .nth_back(history_depth)
+            .ok_or(StateError::HistoryValueOutOfRange {
+                provided_depth: history_depth,
+                max_depth: self.history.flags.len().saturating_sub(1),
+            })
+    }
+
+    /// Read cadence of actuator `index`: it is read every `cadence` ticks.
+    /// Set by the adapter at bring-up, read-only here.
+    pub fn cadence(&self, index: usize) -> Result<NonZeroU32, StateError> {
+        self.cadence
+            .get(index)
+            .copied()
+            .ok_or(StateError::OutOfRange { index, len: N })
+    }
 }
 
 /// The engine's side: what it hands the adapter and resets once applied.
-impl<const DEPTH: usize> RobotState<DEPTH> {
+impl<const N: usize> RobotState<N> {
+    /// Takes the read cadence of the finished layout.
+    pub(crate) fn set_cadence(&mut self, cadence: [NonZeroU32; N]) {
+        self.cadence = cadence;
+    }
+
     /// Fields written since the last apply.
-    pub(crate) fn written(&self) -> &Written {
+    pub(crate) fn written(&self) -> &Written<N> {
         &self.desired.written
     }
 
     /// Borrows Desired as the command `write` sends.
-    pub(crate) fn command(&self) -> Command<'_> {
+    pub(crate) fn command(&self) -> Command<'_, N> {
         Command::new(
             &self.desired.q,
             &self.desired.qd,
@@ -151,23 +236,78 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     }
 
     /// Pushes a copy of `prev(0)` (zeros when empty) and lends it to the
-    /// adapter: what it does not read keeps its last value (SRS FR-2.6).
-    pub(crate) fn push_slot(&mut self) -> Option<Sample<'_>> {
+    /// adapter: what it does not read keeps its last value (SRS FR-2.6). Every
+    /// sampled actuator ages one tick.
+    pub(crate) fn push_slot(&mut self) -> Option<Sample<'_, N>> {
+        self.push_tick().map(|(sample, _faults)| sample)
+    }
+
+    /// [`Self::push_slot`], plus the new slot's faults, empty, for `read` to
+    /// fill.
+    pub(crate) fn push_tick(&mut self) -> Option<(Sample<'_, N>, &mut Faults<N>)> {
+        for (age, held) in self.age.iter_mut().zip(&mut self.sampled) {
+            if *held > 0 {
+                *age = age.saturating_add(1);
+                *held = held.saturating_add(1).min(DEPTH);
+            }
+        }
         let next = self.history.buf.back().copied().unwrap_or_default();
         self.history.buf.push_back(next);
+        self.history.flags.push_back(Flags::default());
         let slot = self.history.buf.back_mut()?; // None only with a depth of 0
-        Some(Sample::new(
-            &mut slot.q,
-            &mut slot.qd,
-            &mut slot.tau,
-            &mut slot.kp,
-            &mut slot.kd,
+        let flags = self.history.flags.back_mut()?;
+        Some((
+            Sample::new(
+                &mut slot.q,
+                &mut slot.qd,
+                &mut slot.tau,
+                &mut slot.kp,
+                &mut slot.kd,
+            ),
+            &mut flags.faults,
         ))
+    }
+
+    /// The written `Q`, `Qd` and `Tau` with their masks, and the newest
+    /// slot's faults: what the limit stage checks and marks.
+    pub(crate) fn guarded(&mut self) -> (Staged<'_, N>, Option<&mut Faults<N>>) {
+        let desired = &mut self.desired;
+        (
+            Staged {
+                q: &mut desired.q,
+                qd: &mut desired.qd,
+                tau: &mut desired.tau,
+                written: &mut desired.written,
+            },
+            self.history.flags.back_mut().map(|flags| &mut flags.faults),
+        )
+    }
+
+    /// The newest slot's faults, for the limit stage and `write`.
+    pub(crate) fn faults_mut(&mut self) -> Option<&mut Faults<N>> {
+        self.history.flags.back_mut().map(|flags| &mut flags.faults)
+    }
+
+    /// Sets `flags` in the newest slot.
+    pub(crate) fn raise(&mut self, flags: TickFlags) {
+        if let Some(slot) = self.history.flags.back_mut() {
+            slot.tick = slot.tick.union(flags);
+        }
+    }
+
+    /// The actuators of `read` were refreshed in the newest slot: age 0.
+    pub(crate) fn refreshed(&mut self, read: Mask<N>) {
+        for (index, (age, held)) in self.age.iter_mut().zip(&mut self.sampled).enumerate() {
+            if read.get(index) {
+                *age = 0;
+                *held = (*held).max(1);
+            }
+        }
     }
 
     /// The latest sample overlaid with this tick's writes, never the cleared
     /// Desired. `None` before the first sample.
-    pub(crate) fn hold_target(&self) -> Option<HoldTarget> {
+    pub(crate) fn hold_target(&self) -> Option<HoldTarget<N>> {
         let sample = self.history.buf.back()?;
         let written = self.desired.written;
         Some(HoldTarget {
@@ -181,8 +321,20 @@ impl<const DEPTH: usize> RobotState<DEPTH> {
     }
 }
 
+/// [`HISTORY_DEPTH`] as a sample count.
+const DEPTH: u32 = if HISTORY_DEPTH < u32::MAX as usize {
+    HISTORY_DEPTH as u32
+} else {
+    u32::MAX
+};
+
+/// Whether an actuator holding `held` sampled slots has one `depth` back.
+fn holds(held: u32, depth: usize) -> bool {
+    usize::try_from(held).is_ok_and(|held| depth < held)
+}
+
 /// `sample` with the values of `desired` whose bit is set in `mask`.
-fn overlay<T: Copy>(mut sample: [T; JOINTS], desired: &[T; JOINTS], mask: Mask) -> [T; JOINTS] {
+fn overlay<T: Copy, const N: usize>(mut sample: [T; N], desired: &[T; N], mask: Mask<N>) -> [T; N] {
     for (index, (value, wanted)) in sample.iter_mut().zip(desired).enumerate() {
         if mask.get(index) {
             *value = *wanted;
@@ -198,21 +350,20 @@ fn overlay<T: Copy>(mut sample: [T; JOINTS], desired: &[T; JOINTS], mask: Mask) 
 // runtime's job, and the desired buffer stays write-only for users.
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
-impl<const DEPTH: usize> RobotState<DEPTH> {
+impl<const N: usize> RobotState<N> {
     /// Push one sensed sample as the newest history entry.
-    pub fn record_sample(&mut self, q: [Q; JOINTS], qd: [Qd; JOINTS], tau: [Tau; JOINTS]) {
-        let gains = State::default();
-        self.history.buf.push_back(State {
-            q,
-            qd,
-            tau,
-            ..gains
-        });
+    pub fn record_sample(&mut self, q: [Q; N], qd: [Qd; N], tau: [Tau; N]) {
+        if let Some(slot) = self.push_slot() {
+            *slot.q = q;
+            *slot.qd = qd;
+            *slot.tau = tau;
+        }
+        self.refreshed(Mask::ALL);
     }
 
     /// Copy of the desired buffer selected by `T`.
     // `&mut self` because the sealed `Slot::slot` only hands out `&mut`.
-    pub fn staged<T: StateField>(&mut self) -> [T; JOINTS] {
+    pub fn staged<T: StateField>(&mut self) -> [T; N] {
         *<T as sealed::Slot>::slot(&mut self.desired)
     }
 }

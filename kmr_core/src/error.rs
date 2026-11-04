@@ -41,13 +41,36 @@ pub enum StateError {
 
     #[error("Value requested is unavailable.")]
     CriticalValueMissing,
+
+    /// The behaviour is not decided yet; the text names the open SRS item.
+    #[error("not decided yet: {0}")]
+    Undecided(&'static str),
+
+    /// No sample of the actuator exists `depth` ticks back: it was not read
+    /// yet then, or never (a run without hardware).
+    #[error("no sample {depth} ticks back: the actuator had not been read yet")]
+    NoSample { depth: usize },
 }
 
+/// A configuration fault found at finalization, before any I/O (SRS FR-3.1, FR-6.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    /// The tick period is zero or outside [10 µs, 1 s].
+    #[error("dt of {dt:?} is out of range: it must be from 10 µs to 1 s")]
+    DtOutOfRange { dt: core::time::Duration },
+    /// Actuator `actuator` has a limit and no policy for its breach (SRS
+    /// FR-4.5).
+    #[error("actuator {actuator} has a limit and no policy for its breach")]
+    NoPolicy { actuator: usize },
+}
+
+/// Why a run failed: its configuration, found before any I/O, or its hardware (`E`).
 #[derive(Debug, PartialEq, thiserror::Error)]
-/// Defined as a simple mistake during the usage of the API.
-pub enum ApiError {
-    #[error(
-        "Robot has no controllers — add at least one with `.add_controller(...)` before calling `.run()`"
-    )]
-    NoControllers,
+pub enum RunError<E> {
+    /// The builder's configuration is refused; nothing was opened.
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    /// The hardware failed: a claim mismatch or a member's bring-up error.
+    #[error(transparent)]
+    Hal(E),
 }

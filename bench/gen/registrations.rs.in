@@ -1,0 +1,15 @@
+//! A generated user crate: @COUNT@ registrations in one phase (FR-014 (SRS NFR-11)).
+//!
+//! Written by bench/scripts/compile-time.sh from bench/gen/registrations.rs.in;
+//! only its build is timed, it never runs. 123 is today's ceiling, 124 fails
+//! with `E0275` (research R14, R21 P8).
+
+use kmr_api::{EachTick, Sensors, Time, UserError};
+
+kmr_api::robot!(XmBench);
+
+@FNS@
+fn main() -> Result<(), UserError> {
+    Robot::new()
+@REGS@        .run()
+}

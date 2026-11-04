@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: SRS write mask: more than 64 actuators
+ --> tests/ui/n_65.rs:4:1
+  |
+4 | kmr_api::robot!(model = "../../../../kmr_api/tests/fixtures/sixty_five.urdf");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here
+  |
+  = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `kmr_api::robot` (in Nightly builds, run with -Z macro-backtrace for more info)

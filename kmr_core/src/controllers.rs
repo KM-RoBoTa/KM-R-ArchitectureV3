@@ -26,14 +26,15 @@ use crate::{Sensors, clock::Time, state::RobotState};
 // at the crate root, so downstream code can neither name, read nor build one.
 // `#[doc(hidden)]` keeps it out of the docs.
 #[doc(hidden)]
-pub struct Env<'a> {
+pub struct Env<'a, const N: usize> {
     pub(crate) time: &'a Time,
-    pub(crate) state: &'a mut RobotState,
+    pub(crate) state: &'a mut RobotState<N>,
     pub(crate) sensors: &'a Sensors,
 }
 
-impl<'a> Env<'a> {
-    pub(crate) fn new(time: &'a Time, state: &'a mut RobotState, sensors: &'a Sensors) -> Self {
+impl<'a, const N: usize> Env<'a, N> {
+    /// Bundles one phase's borrows.
+    pub(crate) fn new(time: &'a Time, state: &'a mut RobotState<N>, sensors: &'a Sensors) -> Self {
         Self {
             time,
             state,
@@ -50,12 +51,13 @@ impl<'a> Env<'a> {
 /// WITHOUT the core ever naming the api's closure signature, and keeps the
 /// stored node type nameable (a closure type is not) so the builder's
 /// type-state still threads through.
-pub trait ControlFn {
-    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors);
+pub trait ControlFn<const N: usize> {
+    /// Runs the controller once.
+    fn call(&self, time: &Time, state: &mut RobotState<N>, sensors: &Sensors);
 }
 
-impl<F: Fn(&Time, &mut RobotState, &Sensors)> ControlFn for F {
-    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors) {
+impl<const N: usize, F: Fn(&Time, &mut RobotState<N>, &Sensors)> ControlFn<N> for F {
+    fn call(&self, time: &Time, state: &mut RobotState<N>, sensors: &Sensors) {
         self(time, state, sensors)
     }
 }
@@ -64,12 +66,15 @@ impl<F: Fn(&Time, &mut RobotState, &Sensors)> ControlFn for F {
 /// (added via `add_controller_with`). Blanket-implemented for the core-native
 /// `Fn(&Time, &mut RobotState, &Sensors, &mut T)`; `kmr_api` implements it on
 /// its own wrapper so it can present the api argument order/types instead.
-pub trait ControlFnWith<T> {
-    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors, ctx: &mut T);
+pub trait ControlFnWith<T, const N: usize> {
+    /// Runs the controller once with its context.
+    fn call(&self, time: &Time, state: &mut RobotState<N>, sensors: &Sensors, ctx: &mut T);
 }
 
-impl<T, F: Fn(&Time, &mut RobotState, &Sensors, &mut T)> ControlFnWith<T> for F {
-    fn call(&self, time: &Time, state: &mut RobotState, sensors: &Sensors, ctx: &mut T) {
+impl<T, const N: usize, F: Fn(&Time, &mut RobotState<N>, &Sensors, &mut T)> ControlFnWith<T, N>
+    for F
+{
+    fn call(&self, time: &Time, state: &mut RobotState<N>, sensors: &Sensors, ctx: &mut T) {
         self(time, state, sensors, ctx)
     }
 }
@@ -79,6 +84,7 @@ impl<T, F: Fn(&Time, &mut RobotState, &Sensors, &mut T)> ControlFnWith<T> for F 
 /// Blanket-implemented for `Fn(&Time, &mut T)`; `kmr_api` wraps it to present
 /// `Fn(&mut T, &Time)`.
 pub trait ThreadFn<T> {
+    /// Runs the threaded controller once with its context.
     fn call(&self, time: &Time, ctx: &mut T);
 }
 
@@ -107,18 +113,18 @@ impl<F, T: Sync + Send> Controller for Threaded<F, T> {}
 // Schedule implementation — the leaf of the `RunPhase` walk. Each kind knows how
 // to call its own `F`; the context `T` (when present) comes out of the node.
 
-impl<F: ControlFn> RunPhase for Inline<F> {
-    fn run_phase(&mut self, env: &mut Env<'_>) {
+impl<const N: usize, F: ControlFn<N>> RunPhase<N> for Inline<F> {
+    fn run_phase(&mut self, env: &mut Env<'_, N>) {
         self.0.call(env.time, env.state, env.sensors);
     }
 }
-impl<F: ControlFnWith<T>, T> RunPhase for InlineWith<F, T> {
-    fn run_phase(&mut self, env: &mut Env<'_>) {
+impl<const N: usize, F: ControlFnWith<T, N>, T> RunPhase<N> for InlineWith<F, T> {
+    fn run_phase(&mut self, env: &mut Env<'_, N>) {
         self.0.call(env.time, env.state, env.sensors, &mut self.1);
     }
 }
 // A threaded controller runs on its OWN thread (spawned before the loop), so it
 // does nothing on the inline tick walk.
-impl<F, T: Sync + Send> RunPhase for Threaded<F, T> {
-    fn run_phase(&mut self, _env: &mut Env<'_>) {}
+impl<const N: usize, F, T: Sync + Send> RunPhase<N> for Threaded<F, T> {
+    fn run_phase(&mut self, _env: &mut Env<'_, N>) {}
 }

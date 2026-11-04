@@ -1,0 +1,5 @@
+error: kmr: no preset named Xmbench; presets: XmBench, Rx28Chain
+ --> tests/ui/unknown_preset.rs:3:17
+  |
+3 | kmr_api::robot!(Xmbench);
+  |                 ^^^^^^^

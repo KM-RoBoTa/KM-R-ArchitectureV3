@@ -7,7 +7,7 @@ use core::fmt;
 use std::io::ErrorKind;
 use std::path::Path;
 
-use super::config::Model;
+use super::config::{HealthLimits, Model, Protocol};
 
 /// Why a backend call failed: one variant per cause, with its data. `Io`
 /// is a failed serial transaction, nothing else.
@@ -150,7 +150,7 @@ pub(crate) enum BackendError {
     /// A sync read asked of Protocol 1, which has none.
     #[error("Protocol 1 has no sync read")]
     NoSyncRead,
-    /// A setting asked of Protocol 1.
+    /// A Protocol 2 setting asked of Protocol 1.
     #[error("{setting} is not read on Protocol 1")]
     NoSetting {
         /// The setting.
@@ -186,6 +186,12 @@ pub(crate) enum BackendError {
     NoRegister {
         /// ROBOTIS name of the register.
         register: &'static str,
+    },
+    /// What the SDK offers no call for.
+    #[error("{operation}: the SDK offers no call for it")]
+    Unsupported {
+        /// What was asked.
+        operation: &'static str,
     },
     /// A register value wider than the type it is read into.
     #[error("{register} read {value}, wider than the register")]
@@ -271,13 +277,90 @@ pub(crate) struct Health {
     pub(crate) temperature_limit_c: u8,
 }
 
-/// A one-byte Protocol 2 register checked at bring-up.
+/// Address and width of one register.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+    )
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Register {
+    /// Address in the control table.
+    pub(crate) address: u16,
+    /// Width, in bytes.
+    pub(crate) size: u16,
+}
+
+/// The three health limit registers of a model, all EEPROM: written with
+/// the torque off only on Protocol 2.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+    )
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LimitRegisters {
+    /// Temperature Limit; Highest Limit Temperature on Protocol 1.
+    pub(crate) temperature: Register,
+    /// Min Voltage Limit; Lowest Limit Voltage on Protocol 1.
+    pub(crate) min_voltage: Register,
+    /// Max Voltage Limit; Highest Limit Voltage on Protocol 1.
+    pub(crate) max_voltage: Register,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+    )
+)]
+impl LimitRegisters {
+    /// The registers of `model`: AX, RX and Protocol 1 MX at 11, 12 and 13,
+    /// one byte each; X series and MX(2.0) at 31, 34 and 32, the voltages
+    /// two bytes (ROBOTIS e-Manual).
+    pub(crate) const fn of(model: Model) -> Self {
+        const fn at(address: u16, size: u16) -> Register {
+            Register { address, size }
+        }
+        match model.protocol() {
+            Protocol::One => Self {
+                temperature: at(11, 1),
+                min_voltage: at(12, 1),
+                max_voltage: at(13, 1),
+            },
+            Protocol::Two => Self {
+                temperature: at(31, 1),
+                min_voltage: at(34, 2),
+                max_voltage: at(32, 2),
+            },
+        }
+    }
+
+    /// Whether every value of `limits` fits its register.
+    pub(crate) const fn fit(self, limits: HealthLimits) -> bool {
+        const fn fits(register: Register, value: u16) -> bool {
+            register.size >= 2 || value <= u8::MAX as u16
+        }
+        fits(self.min_voltage, limits.min_voltage_dv)
+            && fits(self.max_voltage, limits.max_voltage_dv)
+    }
+}
+
+/// A one-byte register checked at bring-up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Setting {
-    /// Operating Mode; 3 is position mode.
+    /// Operating Mode, Protocol 2; 3 is position mode.
     OperatingMode,
-    /// Torque Enable; 1 is powered.
+    /// Torque Enable, Protocol 2; 1 is powered.
     TorqueEnable,
+    /// Torque Ctrl Mode Enable (70), Protocol 1 MX-64 only; 1 drives Goal
+    /// Torque and ignores Goal Position.
+    TorqueCtrlModeEnable,
 }
 
 impl Setting {
@@ -286,6 +369,7 @@ impl Setting {
         match self {
             Self::OperatingMode => "Operating Mode",
             Self::TorqueEnable => "Torque Enable",
+            Self::TorqueCtrlModeEnable => "Torque Ctrl Mode Enable",
         }
     }
 }
@@ -346,6 +430,12 @@ pub(crate) struct PortSpec<'a> {
     pub(crate) baud: u32,
 }
 
+/// Data bytes of each Protocol 2 sync read one state read sends: present
+/// current, velocity and position, one sync read each, as `dxl_rs` reads
+/// them until its 10-byte block read (research R12). Both backends and the
+/// presets' declared costs read it, so one change moves all three.
+pub(crate) const STATE_READS: &[u16] = &[2, 4, 4];
+
 /// What the adapter needs from an SDK.
 ///
 /// `port` indexes the slice given to `open_ports`; `model` is the model of
@@ -363,6 +453,10 @@ pub(crate) trait Backend {
 
     /// Whether actuator `id` answers.
     fn ping(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
+
+    /// Model Number (address 0) of one actuator, on any protocol.
+    fn read_model_number(&mut self, port: usize, model: Model, id: u8)
+    -> Result<u16, BackendError>;
 
     /// Present position of one actuator.
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError>;
@@ -407,7 +501,8 @@ pub(crate) trait Backend {
     /// backend switched it on; clears any handle kept for it.
     fn force_torque_off(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
-    /// One setting of one Protocol 2 actuator.
+    /// One setting of one actuator: Operating Mode and Torque Enable on
+    /// Protocol 2, Torque Ctrl Mode Enable on the Protocol 1 MX-64.
     fn read_setting(
         &mut self,
         port: usize,
@@ -419,6 +514,17 @@ pub(crate) trait Backend {
     /// Error status, voltage and temperature of one actuator, and its
     /// voltage and temperature limits.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError>;
+
+    /// Writes the Min and Max Voltage Limit and the Temperature Limit of one
+    /// actuator ([`LimitRegisters`]). On Protocol 2 the actuator refuses it
+    /// while its torque is on; reading them back is `read_health`.
+    fn write_health_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        limits: HealthLimits,
+    ) -> Result<(), BackendError>;
 
     /// CW and CCW Angle Limit of one Protocol 1 actuator, raw: both 0 is
     /// wheel mode, anything else joint mode, its goals in `cw..=ccw`.

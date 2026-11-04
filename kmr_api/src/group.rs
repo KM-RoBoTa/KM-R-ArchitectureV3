@@ -1,4 +1,4 @@
-//! Joint *groups*: an api-only view over a fixed set of joint indices.
+//! Actuator *groups*: an api-only view over a fixed set of actuator indices.
 //!
 //! A group is **not** a slice and **not** a range — it is a fixed-size index
 //! set `[usize; K]` with `K` baked in at the call site. Indices may be
@@ -11,7 +11,7 @@
 //!   `[T; K]`.
 //! * Writes **scatter** — the per-index setter ([`RobotState::set_q_at`], …) is
 //!   looped over the same indices. A group never calls `set_all` on the core:
-//!   that overwrites the *whole* desired buffer and would clobber joints staged
+//!   that overwrites the *whole* desired buffer and would clobber actuators staged
 //!   by other groups in the same tick. Per-index writes touch only this group.
 //!
 //! Groups are additive — code that never calls [`RobotState::group`] sees the
@@ -44,7 +44,7 @@
 //!   written — never a half-applied group command. (A whole-robot `set_all_*`
 //!   cannot half-apply; the per-index group scatter could, hence the up-front
 //!   check.)
-//! * **Duplicates are not de-duplicated.** `[1, 3, 3]` gathers joint 3 twice
+//! * **Duplicates are not de-duplicated.** `[1, 3, 3]` gathers actuator 3 twice
 //!   and, on a write, scatters to it twice (last value wins). Harmless for
 //!   reads, merely redundant for writes *within* one group; cross-group overlap
 //!   in a single tick is the job of the deferred per-tick write-mask, not this
@@ -52,37 +52,37 @@
 
 use crate::{Kd, Kp, Q, Qd, State, StateError, Tau};
 
-impl State<'_> {
-    /// View a fixed set of joint `indices` as a [`GroupView`]. Indices may be
+impl<const N: usize> State<'_, N> {
+    /// View a fixed set of actuator `indices` as a [`GroupView`]. Indices may be
     /// non-contiguous and in any order; reads and writes preserve that order.
     ///
     /// ```ignore
-    /// // Ignored: a `State` only exists inside a running controller, and
-    /// // `group` itself is not implemented yet.
+    /// // Ignored: a `State` only exists inside a running controller.
     /// const R_ARM: [usize; 3] = [3, 4, 5];
     /// let mut arm = robot.group(R_ARM);
     /// let desired = arm.q().unwrap().map(|q| q + Q(0.1));
-    /// arm.set_all_q(desired).unwrap(); // touches only joints 3, 4, 5
+    /// arm.set_all_q(desired).unwrap(); // touches only actuators 3, 4, 5
     /// ```
     #[inline]
-    pub fn group<const K: usize>(&mut self, indices: [usize; K]) -> GroupView<'_, K> {
-        todo!("Fix the invariance issue");
+    pub fn group<const K: usize>(&mut self, indices: [usize; K]) -> GroupView<'_, N, K> {
         GroupView {
-            robot: self,
+            robot: self.reborrow(),
             indices,
         }
     }
 }
 
-/// A view over `K` chosen joints of a [`RobotState`], created by
+/// A view over `K` chosen actuators of a [`RobotState`], created by
 /// [`RobotState::group`].
 ///
 /// Mirrors the whole-robot accessors, but every array is sized to the group
-/// (`K`) instead of the whole robot ([`crate::N`]), and each operation gathers
-/// or scatters per index — so a group write never disturbs joints outside the
+/// (`K`) instead of the whole robot (`N`), and each operation gathers
+/// or scatters per index — so a group write never disturbs actuators outside the
 /// group.
-pub struct GroupView<'a, const K: usize> {
-    robot: &'a mut State<'a>,
+pub struct GroupView<'a, const N: usize, const K: usize> {
+    // Owns a reborrowed `State` rather than `&'a mut State<'a>`: that form is
+    // invariant in `'a` and would lock the state for its whole tick.
+    robot: State<'a, N>,
     indices: [usize; K],
 }
 
@@ -116,32 +116,47 @@ fn try_gather<T, const K: usize>(
     Ok(staged.map(|slot| slot.expect("todo; proper error handling")))
 }
 
-impl<'a, const K: usize> GroupView<'a, K> {
-    /// Validate every group index against the joint count ([`crate::N`], which
-    /// equals `kmr_core`'s `JOINTS`), returning the first that is out of range.
+impl<'a, const N: usize, const K: usize> GroupView<'a, N, K> {
+    /// Validate every group index against the actuator count `N`, returning the
+    /// first that is out of range.
     ///
     /// This is the *sole* reason the `set_all_*` scatter is atomic — and it is
     /// only sufficient because `kmr_core::RobotState::set_at` fails
     /// **exclusively** on out-of-range (verified: its one `Err` is `OutOfRange`
-    /// when `index >= JOINTS`; there is no other failure path). If a future
+    /// when `index >= N`; there is no other failure path). If a future
     /// core change lets `set_at` fail for another reason, this up-front pass no
     /// longer covers it and the "atomic" guarantee on `set_all_*` silently
-    /// breaks — revisit here, and the `N == JOINTS` assumption, if the core
-    /// gains a runtime joint length.
+    /// breaks — revisit here.
     #[inline]
     fn check_indices(&self) -> Result<(), StateError> {
-        match self.indices.into_iter().find(|&index| index >= crate::N) {
-            Some(index) => Err(StateError::OutOfRange {
-                index,
-                len: crate::N,
-            }),
+        match self.indices.into_iter().find(|&index| index >= N) {
+            Some(index) => Err(StateError::OutOfRange { index, len: N }),
             None => Ok(()),
         }
     }
 
+    // ---- Sample age ----
+
+    /// Age of the oldest sample over the group's actuators, in ticks. `None` while one of
+    /// them was never read, or for an index out of range.
+    #[inline]
+    pub fn sample_age(&self) -> Option<u32> {
+        self.indices.into_iter().try_fold(0, |oldest, index| {
+            Some(oldest.max(self.robot.age_at(index).ok()??))
+        })
+    }
+
+    /// Whether this tick's read failed on any of the group's actuators (SRS FR-2.6).
+    #[inline]
+    pub fn stale(&self) -> bool {
+        self.indices
+            .into_iter()
+            .any(|index| self.robot.stale_at(index))
+    }
+
     // ---- Q (position) ----
 
-    /// Newest sensed `Q` for each group joint. `None` if a value is
+    /// Newest sensed `Q` for each group actuator. `None` if a value is
     /// unavailable — no sample yet, or an index out of range (an `Option`
     /// cannot carry the cause; see module docs). Mirrors [`RobotState::q`].
     #[inline]
@@ -155,14 +170,14 @@ impl<'a, const K: usize> GroupView<'a, K> {
         self.q()
     }
 
-    /// `Q` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// `Q` for each group actuator, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
     pub fn prev_q(&self, depth: usize) -> Result<[Q; K], StateError> {
         try_gather(self.indices, |i| self.robot.prev_q_at(i, depth))
     }
 
-    /// Stage `Q` for each group joint, scattering one value per index. Joints
+    /// Stage `Q` for each group actuator, scattering one value per index. Actuators
     /// outside the group are untouched.
     ///
     /// Atomic: all indices are validated before any value is staged, so an
@@ -178,7 +193,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
 
     // ---- Qd (velocity) ----
 
-    /// Newest sensed `Qd` for each group joint. `None` if a value is
+    /// Newest sensed `Qd` for each group actuator. `None` if a value is
     /// unavailable — no sample yet, or an index out of range (an `Option`
     /// cannot carry the cause; see module docs). Mirrors [`RobotState::qd`].
     #[inline]
@@ -192,14 +207,14 @@ impl<'a, const K: usize> GroupView<'a, K> {
         self.qd()
     }
 
-    /// `Qd` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// `Qd` for each group actuator, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
     pub fn prev_qd(&self, depth: usize) -> Result<[Qd; K], StateError> {
         try_gather(self.indices, |i| self.robot.prev_qd_at(i, depth))
     }
 
-    /// Stage `Qd` for each group joint, scattering one value per index. Joints
+    /// Stage `Qd` for each group actuator, scattering one value per index. Actuators
     /// outside the group are untouched.
     ///
     /// Atomic: all indices are validated before any value is staged, so an
@@ -215,7 +230,7 @@ impl<'a, const K: usize> GroupView<'a, K> {
 
     // ---- Tau (torque / effort) ----
 
-    /// Newest sensed `Tau` for each group joint. `None` if a value is
+    /// Newest sensed `Tau` for each group actuator. `None` if a value is
     /// unavailable — no sample yet, or an index out of range (an `Option`
     /// cannot carry the cause; see module docs). Mirrors [`RobotState::tau`].
     #[inline]
@@ -235,14 +250,14 @@ impl<'a, const K: usize> GroupView<'a, K> {
         self.tau()
     }
 
-    /// `Tau` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// `Tau` for each group actuator, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
     pub fn prev_tau(&self, depth: usize) -> Result<[Tau; K], StateError> {
         try_gather(self.indices, |i| self.robot.prev_tau_at(i, depth))
     }
 
-    /// Stage `Tau` for each group joint, scattering one value per index. Joints
+    /// Stage `Tau` for each group actuator, scattering one value per index. Actuators
     /// outside the group are untouched.
     ///
     /// Atomic: all indices are validated before any value is staged, so an
@@ -258,21 +273,21 @@ impl<'a, const K: usize> GroupView<'a, K> {
 
     // ---- Kp (position gain) ----
 
-    /// Newest `Kp` for each group joint. `None` if a value is unavailable.
+    /// Newest `Kp` for each group actuator. `None` if a value is unavailable.
     /// Mirrors [`RobotState::kp`].
     #[inline]
     pub fn kp(&self) -> Option<[Kp; K]> {
         gather(self.indices, |i| self.robot.kp_at(i).ok())
     }
 
-    /// `Kp` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// `Kp` for each group actuator, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
     pub fn prev_kp(&self, depth: usize) -> Result<[Kp; K], StateError> {
         try_gather(self.indices, |i| self.robot.prev_kp_at(i, depth))
     }
 
-    /// Stage `Kp` for each group joint, scattering one value per index. Joints
+    /// Stage `Kp` for each group actuator, scattering one value per index. Actuators
     /// outside the group are untouched.
     ///
     /// Atomic: all indices are validated before any value is staged, so an
@@ -288,21 +303,21 @@ impl<'a, const K: usize> GroupView<'a, K> {
 
     // ---- Kd (velocity gain) ----
 
-    /// Newest `Kd` for each group joint. `None` if a value is unavailable.
+    /// Newest `Kd` for each group actuator. `None` if a value is unavailable.
     /// Mirrors [`RobotState::kd`].
     #[inline]
     pub fn kd(&self) -> Option<[Kd; K]> {
         gather(self.indices, |i| self.robot.kd_at(i).ok())
     }
 
-    /// `Kd` for each group joint, `depth` steps back (`0` = newest). Propagates
+    /// `Kd` for each group actuator, `depth` steps back (`0` = newest). Propagates
     /// the first out-of-range index or history depth.
     #[inline]
     pub fn prev_kd(&self, depth: usize) -> Result<[Kd; K], StateError> {
         try_gather(self.indices, |i| self.robot.prev_kd_at(i, depth))
     }
 
-    /// Stage `Kd` for each group joint, scattering one value per index. Joints
+    /// Stage `Kd` for each group actuator, scattering one value per index. Actuators
     /// outside the group are untouched.
     ///
     /// Atomic: all indices are validated before any value is staged, so an

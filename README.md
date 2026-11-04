@@ -8,33 +8,36 @@ loop, state, timing and hardware. The model is borrowed from
 query system: a robot has one fixed-shape state, not an open world of
 entities.
 
-> **Status: early development.** The public API is taking shape; the runtime
-> control loop is not implemented yet. Expect breaking changes. See the
-> [roadmap](docs/ROADMAP.md).
+> **Status: early development.** The control loop runs, simulated or on
+> Dynamixel actuators; the hardware layer is being brought up on the bench.
+> Expect breaking changes. See the [roadmap](docs/ROADMAP.md).
+
+Name the robot once, register functions on schedules, run:
 
 ```rust
-use kmr_api::{EachTick, Init, Q, Robot, Sensors, State, Time};
+use kmr_api::{EachTick, Q, Sensors, Time, UserError};
 use std::time::Duration;
 
-fn home(_t: &Time, robot: &mut State, _s: &Sensors) {
-    robot.go_home(90);
-}
+kmr_api::robot!(XmBench);
 
-fn nudge_first_joint(_t: &Time, robot: &mut State, _s: &Sensors) {
+fn nudge_first_joint(_time: &Time, robot: &mut State, _sensors: &Sensors) {
     if let Ok(q) = robot.q_at(0) {
         let _ = robot.set_q_at(q + Q(0.01), 0);
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), UserError> {
     Robot::new()
         .set_dt(Duration::from_millis(1))
-        .add_controller(Init, home)
         .add_controller(EachTick, nudge_first_joint)
-        .run()?;
-    Ok(())
+        .run()
 }
 ```
+
+`robot!` takes the actuator count and limits from a preset or a robot
+descriptor at build time. Without a bus plugin `run()` simulates. The
+reference example, how to drive the bench with it and what to watch out for
+are in [`controllers/README.md`](controllers/README.md).
 
 ## Why
 
@@ -52,7 +55,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-------------------------|----------------------------------------------------------------|
 | `kmr_core/`             | The engine (`kmr_core` crate).                                 |
 | `kmr_api/`              | Public user API (`kmr_api` crate).                             |
-| `controllers/`          | Write your controllers here. Depends on `kmr_api` only.        |
+| `kmr_adapters/`         | Hardware adapters, Dynamixel first.                            |
+| `kmr_model/`            | Robot model: the `robot!` proc macro over `kmr_model_core`.    |
+| `kmr_model_core/`       | Robot model library: reads and checks a descriptor at build time. |
+| `kmr_ffi/`              | C, C++, Python and Lua controller math (in progress).          |
+| `bench/`                | The reference benchmark of the engine.                         |
+| `controllers/`          | Write your controllers here. Depends on `kmr_api` only. See its README. |
 | `docs/`                 | Architecture, roadmap and product brief.                       |
 
 ## Building
@@ -68,8 +76,8 @@ cargo run -p kmr_api --example complete_api_example
 
 ## Contributing
 
-This project is hand-engineered; AI assistance is tolerated under strict
-rules. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR. AI agents
+This project is built spec-first, with agents writing most of the code.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR. AI agents
 start at [`AGENTS.md`](AGENTS.md).
 
 ## License

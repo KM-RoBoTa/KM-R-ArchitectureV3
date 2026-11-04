@@ -70,6 +70,8 @@ counted (as `io::Groups::costs`).
 | Model | Protocol | Series | Raw position | Centre | Current register |
 |---|---|---|---|---|---|
 | `Ax12a`, `Rx28` | 1 | AX | 0..1023 over 300° | 512 | none |
+| `Mx64` (MX-64, Protocol 1 firmware) | 1 | AX | 0..4095 per turn | 2048 | none |
+| `Mx64V2` (MX-64(2.0)) | 2 | X | 0..4095 per turn | 2048 | yes (3.36 mA) |
 | `Xm430W210`, `Xw430T200`, `Xw540T140`, `Xw540T260` | 2 | X | 0..4095 per turn | 2048 | yes |
 
 ## Port binding (FR-029 to FR-031 (SRS FR-6.3, FR-6.4))

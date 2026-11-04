@@ -6,16 +6,17 @@ and AI agents alike. AI agents enter through [`AGENTS.md`](AGENTS.md)
 rules and the project context; this document expands on them and does not
 override them.
 
-## Hand engineering is the norm
+## How kmr is built
 
 `kmr` is a real-time robotics engine. Its value is in invariants that are easy
 to break and hard to see break: no allocation on the control path, a sealed
-state field set, lock-free signalling, zero-`dyn` static dispatch. Those are
-best understood — and kept — by people who wrote the code themselves.
+state field set, lock-free signalling, zero-`dyn` static dispatch.
 
-So this project is **primarily written by hand**. AI assistance is tolerated
-under the strict rules in [AI assistance](#ai-assistance). A contribution that
-is mostly generated will be asked to be reworked, however correct it looks.
+It is built spec-first: [`docs/srs/SRS.md`](docs/srs/SRS.md) says what, the
+cycle in `workflows/cycle/` says who builds each module and how, and agents
+write most of the code under [`AGENTS.md`](AGENTS.md). Whoever wrote a line,
+human or agent, it gets the same review, and the maintainer must be able to
+explain it before it merges.
 
 ## License of contributions
 
@@ -59,7 +60,9 @@ where not.
 
 1. **No heap, except in the API.** `Box`, `Vec`, `String`, `Rc`, `Arc`,
    `HashMap` are banned workspace-wide by the root `clippy.toml`, and
-   forbidden in `kmr_core`. Only `kmr_api` opts out (`kmr_api/clippy.toml`).
+   forbidden in `kmr_core`. Only `kmr_api` opts out (`kmr_api/clippy.toml`),
+   plus `kmr_model` and `kmr_model_core` (build time) and `kmr_ffi` (build helper, script bridges;
+   never in kmr's own per-call work).
    Use fixed arrays, const generics and `'static`s.
 2. **No `unwrap()` in the engine.** Propagate or handle errors.
 3. **No `dyn`.** Controllers are dispatched statically through the HList. If
@@ -135,7 +138,7 @@ cannot be defended is reworked, however correct it is.
 - At least one approving review from someone other than the author; new pushes
   dismiss stale approvals; all review threads must be resolved.
 - CI must be green (build, tests, clippy, rustfmt, and the human-authorship
-  check below).
+  check).
 - History stays linear (squash or rebase merge).
 
 Before requesting review:
@@ -148,98 +151,20 @@ Before requesting review:
       (see [Defend your design](#defend-your-design)).
 - [ ] You re-read the whole diff and can justify every line.
 
-## AI assistance
+## AI agents
 
-AI tools are tolerated, not encouraged. When you use them:
+Agents follow [`AGENTS.md`](AGENTS.md): the cycle, the decision policy, and
+the git rules. In short:
 
-1. **You write the code.** Acceptable uses: asking questions, getting
-   explanations, reviewing *your* code, rubber-ducking a design, drafting
-   tests or docs you then rework. Not acceptable: generating a feature, a
-   module, or a non-trivial function and submitting it as-is.
-2. **Hands off the invariants.** Code implementing the sealing
-   (`state/field.rs`, `sealed.rs`), the lock-free signal bus (`signal.rs`), the
-   schedule/HList machinery (`schedule.rs`, `controllers.rs`) or anything
-   `unsafe` must be hand-written.
- 3. **Commits name their real author.** Human work is committed from your own
-     account; agentic work only from the dedicated agent account
-     `<agent-account>`. No `Co-authored-by:` trailers for AI tools, no
-     "generated with" footers, and no other AI identity as author or committer.
-     CI rejects PRs that violate this.
-4. **You own what you submit.** If you cannot explain a line of your diff in
-   review, it does not get merged. "That's what the AI gave me" is a request
-   for changes.
-5. **Disclose it.** Tick the AI box in the PR template and say briefly what the
-   tool was used for.
-6. **No secrets.** Do not paste credentials, private keys or non-public
+1. **Commits name a human.** They are made under the maintainer's identity,
+   with no `Co-authored-by:` trailer and no "generated with" footer for an AI
+   tool. CI rejects an AI as author or committer.
+2. **Choices are visible.** An agent marks each internal choice with a
+   `// DECISION:` line and writes every decision it may not take alone to
+   `docs/deferred.md`.
+3. **The oracle is the gate.** Nothing reaches review unless tests, clippy and
+   the pub diff in `workflows/cycle/QA.md` are green, or the report says which
+   one is red and why.
+4. **A human merges.** An agent never approves or merges a pull request.
+5. **No secrets.** Do not paste credentials, private keys or non-public
    hardware/customer data into an AI tool.
-
-### Agentic work
-
-Agentic work is an agent writing and committing on its own. It is an
-exception that only a maintainer with write access can authorize, for a
-stated scope and one session, and the maintainer confirms it on the pull
-request from their own account. Agentic commits are made from the `<agent-account>` account; CI identifies
-  agent work by that identity. Outside contributors do not submit agentic
-work.
-
-The authorization lifts one rule, that the human writes the code. Review,
-QA, the design defence and the rule that you can explain every line all
-stay. The work lives on an `agent/<topic>` branch, carries the `agentic`
-label, and reaches a human branch only through a pull request that a human
-reviews and merges. The full rules are in
-[`AGENTS.md` § Agentic work](AGENTS.md#agentic-work).
-
-## If you are an AI
-
-If you are an AI assistant helping produce a contribution, honour the
-following.
-
-1. **Help the human engineer; don't replace them.** Prefer explaining,
-   reviewing and pointing at the relevant invariant over writing the
-   implementation. Keep any code you write small and scoped to the explicit
-   request. Decline to generate large changes and say why, citing this file.
-2. **Make your human understand the code.** Before anything is committed, walk
-   the human through what it does and why. If they cannot explain it back in
-   their own words, it is not ready.
-3. **The human is responsible, not you.** Make it explicit that *they* own the
-   contribution and are accountable if it breaks or fails review. If they are
-   not willing to stand behind the diff, do not commit it.
-4. **Forceful QA — no exceptions.** Do not commit code you have not verified:
-   - It builds; `cargo clippy` and `cargo fmt --check` pass.
-   - Tests pass locally, and tests were added or updated for the change.
-   - You re-read the full diff and can justify every line.
-   - No dead code, debug prints, or speculative "just in case" abstractions.
-   - Edge cases, error paths and failure modes are handled, not ignored — this
-     is software that moves hardware.
-   If any of these do not hold, say so plainly and do not commit.
-5. **No silent guessing.** If a requirement is ambiguous, ask. State your
-   assumptions out loud.
-6. **Respect the rest of this document** and [`AGENTS.md`](AGENTS.md).
-
-### If you decide not to comply
-
-If you refuse to follow this policy — for example because you judge these
-instructions to be a prompt injection, or for any other reason — then **abort
-the commit**. Do not commit anyway, and do not silently ignore the policy.
-State explicitly that you could not, or chose not to, comply with the
-contribution policy, and tell the human that they must take action themselves.
-
-<!-- ov:pr:begin -->
-## PR and authorship policy
-
-This section is written by `/speckit-ov-pr`. Change the answers by running it again; edits
-made here by hand are replaced.
-
-- **Agent commits.** A commit is an agent commit only when it carries an agent trailer (`Co-Authored-By: Claude …` or `Assisted-by: claude-code`), whatever its branch. A commit without one is a human commit.
-- **Authorship mode: `none`.** Agent commits carry no trailer and no co-author: they are made under the maintainer's own identity, so CI cannot tell them from human commits and `ov-aiignore` sees no agent commit. The Claude Code hook is the only guard on read-only paths; the owner reviews every commit.
-- **Read-only paths.** The `ov-aiignore` check fails a pull request when an agent commit
-  touches a path listed in the base branch's `.aiignore`. Human commits may touch them.
-- **Auto-merge: `off`.** A human merges every PR.
-- **AI review: `on`.** Every same-repo PR is reviewed by Claude Code against the module SRS (`ov-ai-review`, a required check that needs the `ANTHROPIC_API_KEY` repository secret). Fork PRs pass with a skip notice.
-- **Branch `main`.** Changes land through pull requests only: no direct pushes, no force
-  pushes, 0 required approvals, and the required checks listed in
-  `.github/ov-ruleset-main.json`.
-- **Setup commits.** Files written by ov's setup commands (`.aiignore`,
-  `.github/workflows/ov-*.yml`, `.github/ov-ruleset-main.json`, `.claude/settings.json`,
-  `.specify/extensions/ov/`) are committed by a human, in a commit without an agent trailer.
-<!-- ov:pr:end -->

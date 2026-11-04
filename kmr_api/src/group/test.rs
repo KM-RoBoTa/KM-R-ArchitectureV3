@@ -1,26 +1,27 @@
-//! `State::group` is still `todo!()`, so the views are built here from the
-//! private fields. The normal core surface neither records a sample nor reads
+//! The views are built here from the private fields. The normal core surface neither records a sample nor reads
 //! the desired buffer back: the populated cases go through the core's
 //! `test-util` hooks, enabled for this crate's tests only.
 
 use super::{GroupView, gather, try_gather};
-use crate::{Kd, Kp, N, Q, Qd, State, StateError, Tau};
+use crate::{Kd, Kp, Q, Qd, State, StateError, Tau};
 
-// A macro, not a fn: the view borrows `State` for the state's own lifetime
-// (`&'a mut State<'a>`), so both owners have to live in the caller's frame.
+/// Actuators of the test robot.
+const N: usize = 4;
+
+// A macro, not a fn: the view borrows the core state, which has to live in
+// the caller's frame.
 //
 // The `on $core` form takes a core state owned by the test, which can then
 // fill it before the view exists and inspect it once the view is dead.
 macro_rules! view {
     ($name:ident, $indices:expr) => {
-        let mut core = <kmr_core::RobotState>::default();
+        let mut core = kmr_core::RobotState::<N>::default();
         view!($name, $indices, on core);
     };
     ($name:ident, $indices:expr, on $core:ident) => {
-        let mut state = State::new(&mut $core);
         #[allow(unused_mut)]
         let mut $name = GroupView {
-            robot: &mut state,
+            robot: State::new(&mut $core),
             indices: $indices,
         };
     };
@@ -32,8 +33,8 @@ fn ramp<T: From<f32>>(start: f32) -> [T; N] {
     std::array::from_fn(|joint| T::from(start + joint as f32))
 }
 
-fn staged_core() -> kmr_core::RobotState {
-    let mut core = <kmr_core::RobotState>::default();
+fn staged_core() -> kmr_core::RobotState<N> {
+    let mut core = kmr_core::RobotState::<N>::default();
     core.set_all(ramp::<Q>(10.0));
     core.set_all(ramp::<Qd>(20.0));
     core.set_all(ramp::<Tau>(30.0));
@@ -202,7 +203,7 @@ fn writes_scatter_to_the_group_joints_only() {
 
 #[test]
 fn gains_scatter_to_the_group_joints_only() {
-    let mut core = <kmr_core::RobotState>::default();
+    let mut core = kmr_core::RobotState::<N>::default();
     {
         view!(group, [N - 1, 1], on core);
 
@@ -254,7 +255,7 @@ fn a_rejected_write_stages_nothing() {
 
 #[test]
 fn current_reads_gather_the_newest_sample_in_group_order() {
-    let mut core = <kmr_core::RobotState>::default();
+    let mut core = kmr_core::RobotState::<N>::default();
     core.record_sample(ramp(10.0), ramp(20.0), ramp(30.0));
     core.record_sample(ramp(40.0), ramp(50.0), ramp(60.0));
     view!(group, [N - 1, 0, N - 1], on core);
@@ -278,7 +279,7 @@ fn current_reads_gather_the_newest_sample_in_group_order() {
 
 #[test]
 fn history_reads_gather_the_requested_depth_in_group_order() {
-    let mut core = <kmr_core::RobotState>::default();
+    let mut core = kmr_core::RobotState::<N>::default();
     core.record_sample(ramp(10.0), ramp(20.0), ramp(30.0));
     core.record_sample(ramp(40.0), ramp(50.0), ramp(60.0));
     view!(group, [2, 0], on core);
@@ -298,7 +299,7 @@ fn history_reads_gather_the_requested_depth_in_group_order() {
 
 #[test]
 fn reads_on_a_populated_history_still_reject_an_out_of_range_index() {
-    let mut core = <kmr_core::RobotState>::default();
+    let mut core = kmr_core::RobotState::<N>::default();
     core.record_sample(ramp(10.0), ramp(20.0), ramp(30.0));
     view!(group, [0, N], on core);
 
@@ -307,4 +308,14 @@ fn reads_on_a_populated_history_still_reject_an_out_of_range_index() {
         group.prev_q(0),
         Err(StateError::OutOfRange { index: N, len: N })
     );
+}
+
+#[test]
+fn two_groups_and_a_whole_robot_write_share_one_tick() {
+    let mut core = kmr_core::RobotState::<N>::default();
+    let mut state = State::new(&mut core);
+    assert_eq!(state.group([0, 1]).set_all_q([Q(1.0), Q(2.0)]), Ok(()));
+    assert_eq!(state.group([3]).set_all_q([Q(4.0)]), Ok(()));
+    assert_eq!(state.set_q_at(Q(3.0), 2), Ok(()));
+    assert_eq!(core.staged::<Q>()[..4], [Q(1.0), Q(2.0), Q(3.0), Q(4.0)]);
 }

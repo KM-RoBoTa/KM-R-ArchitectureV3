@@ -4,10 +4,8 @@
 //!
 //! ```sh
 //! cargo run -p kmr_adapters --features dynamixel --example xm_bench_smoke -- <U2D2 serial or device path> [--torque]
-//! cargo run -p kmr_adapters --features dynamixel,kmr_core/joints-10 --example xm_bench_smoke -- --preset rx28 <serial or device path> [--torque]
+//! cargo run -p kmr_adapters --features dynamixel --example xm_bench_smoke -- --preset rx28 <serial or device path> [--torque]
 //! ```
-//!
-//! Rx28Chain has ten actuators: it needs the core built with `joints-10`.
 //!
 //! Runs `bind`, `check`, `open`, `ping`, `health`, `configure` and
 //! `read_all`, then `torque_off` and `close`. `--torque` adds `torque_on` and
@@ -26,10 +24,11 @@ use kmr_adapters::binding::{Binding, Port};
 use kmr_adapters::dynamixel::{DxlRs, Dynamixel, DynamixelError, Table};
 use kmr_adapters::presets::{Rx28Chain, XmBench};
 use kmr_core::hal::{Hal, Overrides, Sample};
-use kmr_core::state::{JOINTS, Kd, Kp, Q, Qd, Tau};
+use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 
-/// The adapter on the `dxl_rs` SDK for the one bus of the preset.
-type Hardware = Dynamixel<DxlRs, 1>;
+/// The adapter on the `dxl_rs` SDK for the one bus of a preset of `N`
+/// actuators.
+type Hardware<const N: usize> = Dynamixel<DxlRs<N>, 1, N>;
 
 /// Time between two reads while the torque is on.
 const PERIOD: Duration = Duration::from_millis(100);
@@ -50,29 +49,29 @@ enum Early {
 
 /// The adapter once `open` was called: dropping it, on any exit or panic,
 /// cuts the torque and closes the port.
-struct Opened(Hardware);
+struct Opened<const N: usize>(Hardware<N>);
 
-impl Deref for Opened {
-    type Target = Hardware;
+impl<const N: usize> Deref for Opened<N> {
+    type Target = Hardware<N>;
 
-    fn deref(&self) -> &Hardware {
+    fn deref(&self) -> &Hardware<N> {
         &self.0
     }
 }
 
-impl DerefMut for Opened {
-    fn deref_mut(&mut self) -> &mut Hardware {
+impl<const N: usize> DerefMut for Opened<N> {
+    fn deref_mut(&mut self) -> &mut Hardware<N> {
         &mut self.0
     }
 }
 
-impl Drop for Opened {
+impl<const N: usize> Drop for Opened<N> {
     fn drop(&mut self) {
         self.0.torque_off();
         println!("torque_off: done (an actuator that failed is logged as a warning)");
         self.0.close();
         println!("close: done");
-        println!("Check Torque_Enable = 0 on all {JOINTS} servos in Dynamixel Wizard.");
+        println!("Check Torque_Enable = 0 on all {N} servos in Dynamixel Wizard.");
     }
 }
 
@@ -86,22 +85,6 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(2);
     };
-    let table = if rx28 {
-        sized(Rx28Chain::HARDWARE)
-    } else {
-        sized(XmBench::HARDWARE)
-    };
-    let Some(table) = table else {
-        eprintln!(
-            "this preset needs {} actuators, the core is built for {JOINTS}: rx28 needs --features dynamixel,kmr_core/joints-10, xm_bench neither",
-            if rx28 {
-                Rx28Chain::HARDWARE.actuators.len()
-            } else {
-                XmBench::HARDWARE.actuators.len()
-            }
-        );
-        return ExitCode::from(2);
-    };
     let handler = ctrlc::set_handler(|| {
         STOP.store(true, Ordering::SeqCst);
         eprintln!("Ctrl-C: stopping after this step");
@@ -110,7 +93,12 @@ fn main() -> ExitCode {
         eprintln!("Ctrl-C handler not installed, nothing opened: {error}");
         return ExitCode::FAILURE;
     }
-    match run(table, port, torque) {
+    let result = if rx28 {
+        run(Rx28Chain::HARDWARE, port, torque)
+    } else {
+        run(XmBench::HARDWARE, port, torque)
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(Early::Failed) => ExitCode::FAILURE,
         Err(Early::Interrupted) => ExitCode::from(130),
@@ -145,23 +133,17 @@ fn parse() -> Option<(Port, bool, bool)> {
     port.map(|port| (port, torque, rx28))
 }
 
-/// `table` as the adapter takes it: `None` unless it has `JOINTS` actuators.
-fn sized<const N: usize>(table: Table<1, N>) -> Option<Table<1, JOINTS>> {
-    let actuators = table.actuators.as_slice().try_into().ok()?;
-    Some(Table {
-        buses: table.buses,
-        actuators,
-    })
-}
-
 /// The steps in `Hal` order on `table`. Nothing is powered without `torque`.
-fn run(table: Table<1, JOINTS>, port: Port, torque: bool) -> Result<(), Early> {
+fn run<const N: usize>(table: Table<1, N>, port: Port, torque: bool) -> Result<(), Early> {
     let plugin = Binding {
         port,
         baud: None,
         bus: None,
     };
-    let mut hardware = step("bind", Hardware::bind(DxlRs::new(), table, &[plugin]))?;
+    let mut hardware = step(
+        "bind",
+        Hardware::<N>::bind(DxlRs::new(), table.in_order(), &[plugin]),
+    )?;
     let layout = step("check", hardware.check(Overrides::default()))?;
     println!(
         "  wire time: {:?} per full read, {:?} per full write",
@@ -172,9 +154,9 @@ fn run(table: Table<1, JOINTS>, port: Port, torque: bool) -> Result<(), Early> {
     step("ping", hal.ping())?;
     step("health", hal.health())?;
     step("configure", hal.configure())?;
-    let mut q = [Q::default(); JOINTS];
-    let (mut qd, mut tau) = ([Qd::default(); JOINTS], [Tau::default(); JOINTS]);
-    let (mut kp, mut kd) = ([Kp::default(); JOINTS], [Kd::default(); JOINTS]);
+    let mut q = [Q::default(); N];
+    let (mut qd, mut tau) = ([Qd::default(); N], [Tau::default(); N]);
+    let (mut kp, mut kd) = ([Kp::default(); N], [Kd::default(); N]);
     step(
         "read_all",
         hal.read_all(Sample::new(&mut q, &mut qd, &mut tau, &mut kp, &mut kd)),
@@ -216,7 +198,7 @@ fn step<T>(name: impl Display, result: Result<T, DynamixelError>) -> Result<T, E
 
 /// Prints the position of every actuator of `table` on one line, in rad and
 /// degrees.
-fn print_positions(table: &Table<1, JOINTS>, q: &[Q; JOINTS]) {
+fn print_positions<const N: usize>(table: &Table<1, N>, q: &[Q; N]) {
     print!(" ");
     for (actuator, q) in table.actuators.iter().zip(q) {
         print!(

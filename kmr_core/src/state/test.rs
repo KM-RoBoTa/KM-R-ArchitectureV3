@@ -5,43 +5,44 @@ use crate::{
     error::StateError,
     hal::{Mask, Written},
     state::{
-        Desired, HISTORY_DEPTH, History, JOINTS, Kd, Kp, Q, Qd, State, StateField, Tau,
-        sealed::Slot,
+        Desired, HISTORY_DEPTH, History, Kd, Kp, N, Q, Qd, State, StateField, Tau, sealed::Slot,
     },
 };
 use rstest::rstest;
 
-// The tests off under `joints-10` spell four actuators in their literals.
-
-// `RobotState::default()` routes through `home_state()` which is `todo!()`, so we
+// The home state is undecided (`StateError::Undecided`, SRS FR-2.7), so we
 // build the test fixtures directly from zeroed fields instead. The plumbing under
 // test (slot routing, history reads, desired writes) is independent of the home
 // state, so a zeroed start is a valid, panic-free baseline.
-fn create_test_robot() -> RobotState {
+//
+// Every actuator counts as read for the whole history, so the reads under test
+// see the slots pushed straight into the buffer.
+fn create_test_robot() -> RobotState<N> {
     RobotState {
         desired: zeroed_desired(),
-        history: History::default(),
+        sampled: [u32::try_from(HISTORY_DEPTH).unwrap_or(u32::MAX); N],
+        ..RobotState::default()
     }
 }
 
-fn zeroed_desired() -> Desired {
+fn zeroed_desired() -> Desired<N> {
     Desired {
-        q: [Q(0.0); JOINTS],
-        qd: [Qd(0.0); JOINTS],
-        tau: [Tau(0.0); JOINTS],
-        kp: [Kp(0.0); JOINTS],
-        kd: [Kd(0.0); JOINTS],
+        q: [Q(0.0); N],
+        qd: [Qd(0.0); N],
+        tau: [Tau(0.0); N],
+        kp: [Kp(0.0); N],
+        kd: [Kd(0.0); N],
         written: Written::default(),
     }
 }
 
-fn zeroed_state() -> State<JOINTS> {
+fn zeroed_state() -> State<N> {
     State {
-        q: [Q(0.0); JOINTS],
-        qd: [Qd(0.0); JOINTS],
-        tau: [Tau(0.0); JOINTS],
-        kp: [Kp(0.0); JOINTS],
-        kd: [Kd(0.0); JOINTS],
+        q: [Q(0.0); N],
+        qd: [Qd(0.0); N],
+        tau: [Tau(0.0); N],
+        kp: [Kp(0.0); N],
+        kd: [Kd(0.0); N],
     }
 }
 
@@ -69,18 +70,17 @@ fn write_single_desired_state<T: StateField + PartialEq + core::fmt::Debug>(#[ca
 #[case(Kd(2.0))]
 fn out_of_range_write_single_desired(#[case] value: impl StateField) {
     let mut robot = create_test_robot();
-    let index: usize = JOINTS + 1; // guarantee OOR
+    let index: usize = N + 1; // guarantee OOR
 
     assert_eq!(
         robot.set_at(value, index),
         Err(StateError::OutOfRange {
             index,
-            len: crate::state::JOINTS
+            len: crate::state::N
         }),
     );
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_current_q() {
     let mut robot = create_test_robot();
@@ -93,7 +93,6 @@ fn read_single_current_q() {
     assert_eq!(*read_value, Q(11.0));
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_current_qd() {
     let mut robot = create_test_robot();
@@ -106,7 +105,6 @@ fn read_single_current_qd() {
     assert_eq!(*read_value, Qd(11.0));
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_current_tau() {
     let mut robot = create_test_robot();
@@ -119,7 +117,6 @@ fn read_single_current_tau() {
     assert_eq!(*read_value, Tau(11.0));
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_previous_q() {
     let mut robot = create_test_robot();
@@ -138,7 +135,6 @@ fn read_single_previous_q() {
     assert_eq!(*read_value, Q(11.0));
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_previous_qd() {
     let mut robot = create_test_robot();
@@ -155,7 +151,6 @@ fn read_single_previous_qd() {
     assert_eq!(*read_value, Qd(11.0));
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_single_previous_tau() {
     let mut robot = create_test_robot();
@@ -183,7 +178,7 @@ fn out_of_range_read_single_current_q() {
         robot.current_at::<Q>(index),
         Err(StateError::OutOfRange {
             index,
-            len: crate::state::JOINTS
+            len: crate::state::N
         }),
     );
 }
@@ -199,7 +194,7 @@ fn out_of_range_read_single_current_qd() {
         robot.current_at::<Qd>(index),
         Err(StateError::OutOfRange {
             index,
-            len: crate::state::JOINTS
+            len: crate::state::N
         }),
     );
 }
@@ -215,17 +210,16 @@ fn out_of_range_read_single_current_tau() {
         robot.current_at::<Tau>(index),
         Err(StateError::OutOfRange {
             index,
-            len: crate::state::JOINTS
+            len: crate::state::N
         }),
     );
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[rstest]
 #[case([Q(1_f32), Q(2_f32), Q(3_f32), Q(4_f32)])]
 #[case([Qd(1_f32), Qd(2_f32), Qd(3_f32), Qd(4_f32)])]
 #[case([Tau(1_f32), Tau(2_f32), Tau(3_f32), Tau(4_f32)])]
-fn write_all_desired<T: StateField + PartialEq + Debug>(#[case] desired: [T; JOINTS]) {
+fn write_all_desired<T: StateField + PartialEq + Debug>(#[case] desired: [T; N]) {
     let mut robot = create_test_robot();
 
     robot.set_all(desired);
@@ -233,7 +227,6 @@ fn write_all_desired<T: StateField + PartialEq + Debug>(#[case] desired: [T; JOI
     assert_eq!(*<T as Slot>::slot(&mut robot.desired), desired);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_all_desired_at_the_same_time() {
     let mut robot = create_test_robot();
@@ -253,7 +246,6 @@ fn write_all_desired_at_the_same_time() {
 
 // Copy the current value at `index` into a desired array, write it, and confirm
 // the desired slot matches what was written at that index.
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_some_desired_q() {
     let mut robot = create_test_robot();
@@ -271,7 +263,6 @@ fn write_some_desired_q() {
     assert_eq!(robot.desired.q[index], current);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_some_desired_qd() {
     let mut robot = create_test_robot();
@@ -289,7 +280,6 @@ fn write_some_desired_qd() {
     assert_eq!(robot.desired.qd[index], current);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn write_some_desired_tau() {
     let mut robot = create_test_robot();
@@ -307,7 +297,6 @@ fn write_some_desired_tau() {
     assert_eq!(robot.desired.tau[index], current);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_all_current_q() {
     let mut robot = create_test_robot();
@@ -321,7 +310,6 @@ fn read_all_current_q() {
     assert_eq!(*read_value, q);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_all_current_qd() {
     let mut robot = create_test_robot();
@@ -335,7 +323,6 @@ fn read_all_current_qd() {
     assert_eq!(*read_value, qd);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn read_all_current_tau() {
     let mut robot = create_test_robot();
@@ -349,12 +336,11 @@ fn read_all_current_tau() {
     assert_eq!(*read_value, tau);
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[rstest]
 #[case([Q(1_f32), Q(2_f32), Q(3_f32), Q(4_f32)])]
 #[case([Qd(1_f32), Qd(2_f32), Qd(3_f32), Qd(4_f32)])]
 #[case([Tau(1_f32), Tau(2_f32), Tau(3_f32), Tau(4_f32)])]
-fn write_all_desired_with_closure<T: StateField + PartialEq + Debug>(#[case] desired: [T; JOINTS]) {
+fn write_all_desired_with_closure<T: StateField + PartialEq + Debug>(#[case] desired: [T; N]) {
     let mut robot = create_test_robot();
 
     robot.set_all(core::array::from_fn(|i| T::from(i as f32 + 1_f32)));
@@ -397,53 +383,69 @@ fn generic_slot_routes_to_corresponding_generic_array<T: StateField + PartialEq 
 fn slot_q_routes_to_qd_array() {
     let mut desired = zeroed_desired();
 
-    let slot: &mut [Q; JOINTS] = <Q as Slot>::slot(&mut desired);
+    let slot: &mut [Q; N] = <Q as Slot>::slot(&mut desired);
     slot[2] = Q(7.0);
 
     assert_eq!(desired.q[2], Q(7.0));
-    assert_eq!(desired.qd, [Qd(0.0); JOINTS]);
-    assert_eq!(desired.tau, [Tau(0.0); JOINTS]);
+    assert_eq!(desired.qd, [Qd(0.0); N]);
+    assert_eq!(desired.tau, [Tau(0.0); N]);
 }
 
 #[test]
 fn slot_qd_routes_to_qd_array() {
     let mut desired = zeroed_desired();
 
-    let slot: &mut [Qd; JOINTS] = <Qd as Slot>::slot(&mut desired);
+    let slot: &mut [Qd; N] = <Qd as Slot>::slot(&mut desired);
     slot[2] = Qd(7.0);
 
     assert_eq!(desired.qd[2], Qd(7.0));
-    assert_eq!(desired.q, [Q(0.0); JOINTS]);
-    assert_eq!(desired.tau, [Tau(0.0); JOINTS]);
+    assert_eq!(desired.q, [Q(0.0); N]);
+    assert_eq!(desired.tau, [Tau(0.0); N]);
 }
 
 #[test]
 fn slot_tau_routes_to_tau_array() {
     let mut desired = zeroed_desired();
 
-    let slot: &mut [Tau; JOINTS] = <Tau as Slot>::slot(&mut desired);
-    slot[JOINTS - 1] = Tau(7.0);
+    let slot: &mut [Tau; N] = <Tau as Slot>::slot(&mut desired);
+    slot[N - 1] = Tau(7.0);
 
-    assert_eq!(desired.tau[JOINTS - 1], Tau(7.0));
-    assert_eq!(desired.q, [Q(0.0); JOINTS]);
-    assert_eq!(desired.qd, [Qd(0.0); JOINTS]);
+    assert_eq!(desired.tau[N - 1], Tau(7.0));
+    assert_eq!(desired.q, [Q(0.0); N]);
+    assert_eq!(desired.qd, [Qd(0.0); N]);
 }
 
 #[test]
 fn slot_returns_full_length_array() {
     let mut desired = zeroed_desired();
 
-    assert_eq!(Q::slot(&mut desired).len(), JOINTS);
-    assert_eq!(Qd::slot(&mut desired).len(), JOINTS);
-    assert_eq!(Tau::slot(&mut desired).len(), JOINTS);
+    assert_eq!(Q::slot(&mut desired).len(), N);
+    assert_eq!(Qd::slot(&mut desired).len(), N);
+    assert_eq!(Tau::slot(&mut desired).len(), N);
 }
 
-#[cfg(not(feature = "joints-10"))]
+#[test]
+fn slot_routes_each_field_for_any_actuator_count() {
+    let mut desired = Desired::<7>::default();
+    <Kd as Slot>::slot(&mut desired)[6] = Kd(2.0);
+    <Q as Slot>::slot(&mut desired)[0] = Q(1.0);
+
+    assert_eq!(desired.kd[6], Kd(2.0));
+    assert_eq!(desired.q[0], Q(1.0));
+    assert_eq!(desired.kp, [Kp(0.0); 7]);
+    let state = State::<7> {
+        tau: [Tau(3.0); 7],
+        ..State::default()
+    };
+    assert_eq!(<Tau as Slot>::field(&state), &[Tau(3.0); 7]);
+    assert_eq!(<Qd as Slot>::field(&state), &[Qd(0.0); 7]);
+}
+
 #[test]
 fn slot_mutation_persists_after_borrow_ends() {
     let mut desired = zeroed_desired();
 
-    for i in 0..JOINTS {
+    for i in 0..N {
         <Q as Slot>::slot(&mut desired)[i] = Q(i as f32);
     }
 
@@ -451,7 +453,7 @@ fn slot_mutation_persists_after_borrow_ends() {
 }
 
 // The two tests below guard the history depth against the joint count: the
-// depth used to be fed `JOINTS` and only worked because both consts were 4.
+// depth used to be fed the actuator count and only worked because both were 4.
 
 #[test]
 fn default_history_keeps_history_depth_ticks() {
@@ -480,19 +482,22 @@ fn default_history_keeps_history_depth_ticks() {
 
 #[test]
 fn history_depth_is_independent_of_the_joint_count() {
-    const DEPTH: usize = JOINTS + 5;
-    let mut robot = RobotState::<DEPTH> {
-        desired: zeroed_desired(),
-        history: History::default(),
-    };
+    const DEPTH: usize = N + 5;
+    let mut history = History::<N, DEPTH>::default();
 
     for _ in 0..DEPTH + 1 {
-        robot.history.buf.push_back(zeroed_state());
+        history.buf.push_back(zeroed_state());
     }
 
-    assert_eq!(robot.history.buf.len(), DEPTH);
-    assert_eq!(robot.set_at(Q(1.0), JOINTS - 1), Ok(()));
-    assert_eq!(robot.prev::<Q>(DEPTH - 1), Ok(&[Q(0.0); JOINTS]));
+    assert_eq!(history.buf.len(), DEPTH);
+    assert_eq!(
+        history.buf.nth_back(DEPTH - 1).map(|s| s.q),
+        Some([Q(0.0); N])
+    );
+    assert_eq!(
+        <RobotState<N>>::default().history.buf.capacity(),
+        HISTORY_DEPTH
+    );
 }
 
 // --- write mask ---
@@ -522,16 +527,16 @@ fn a_write_sets_the_bit_of_its_field_only<T: StateField>(#[case] value: T) {
 fn an_out_of_range_write_sets_no_bit<T: StateField>(#[case] value: T) {
     let mut robot = create_test_robot();
 
-    assert!(robot.set_at(value, JOINTS).is_err());
+    assert!(robot.set_at(value, N).is_err());
 
     assert_eq!(robot.desired.written, Written::default());
 }
 
 #[rstest]
-#[case([Q(1.0); JOINTS])]
-#[case([Qd(1.0); JOINTS])]
-#[case([Tau(1.0); JOINTS])]
-fn set_all_marks_every_actuator_of_its_field<T: StateField>(#[case] values: [T; JOINTS]) {
+#[case([Q(1.0); N])]
+#[case([Qd(1.0); N])]
+#[case([Tau(1.0); N])]
+fn set_all_marks_every_actuator_of_its_field<T: StateField>(#[case] values: [T; N]) {
     let mut robot = create_test_robot();
     let mut expected = Written::default();
     *<T as Slot>::mask(&mut expected) = Mask::ALL;
@@ -565,7 +570,7 @@ fn each_pushed_slot_starts_as_a_copy_of_the_last() {
     let mut robot = create_test_robot();
 
     let first = robot.push_slot().unwrap();
-    assert_eq!(*first.q, [Q(0.0); JOINTS]);
+    assert_eq!(*first.q, [Q(0.0); N]);
     first.q[1] = Q(2.0);
     first.tau[3] = Tau(0.5);
 
@@ -578,7 +583,6 @@ fn each_pushed_slot_starts_as_a_copy_of_the_last() {
     assert_eq!(robot.prev_at::<Q>(1, 1), Ok(&Q(2.0)));
 }
 
-#[cfg(not(feature = "joints-10"))]
 #[test]
 fn the_hold_target_is_the_sample_overlaid_with_this_ticks_writes() {
     let mut robot = create_test_robot();
@@ -586,7 +590,7 @@ fn the_hold_target_is_the_sample_overlaid_with_this_ticks_writes() {
 
     let mut sample = zeroed_state();
     sample.q = [Q(1.0), Q(2.0), Q(3.0), Q(4.0)];
-    sample.qd = [Qd(0.5); JOINTS];
+    sample.qd = [Qd(0.5); N];
     robot.history.buf.push_back(sample);
     robot.set_at(Q(9.0), 2).unwrap();
     robot.set_at(Tau(0.25), 0).unwrap();
@@ -597,4 +601,173 @@ fn the_hold_target_is_the_sample_overlaid_with_this_ticks_writes() {
     assert_eq!(target.qd, sample.qd);
     assert_eq!(target.tau, [Tau(0.25), Tau(0.0), Tau(0.0), Tau(0.0)]);
     assert_eq!(&target.written, robot.written());
+}
+
+#[test]
+fn the_home_state_is_undecided_not_a_panic() {
+    let robot = create_test_robot();
+    let undecided = Err(StateError::Undecided("SRS FR-2.7: home state source"));
+    assert_eq!(robot.home_state::<Q>(), undecided);
+    assert!(matches!(
+        State::<N>::home_state(),
+        Err(StateError::Undecided(_))
+    ));
+}
+
+#[test]
+fn value_types_are_one_f32_and_a_slot_starts_a_cache_line() {
+    use core::mem::{align_of, size_of};
+    assert_eq!(size_of::<Q>(), 4);
+    assert_eq!(size_of::<Qd>(), 4);
+    assert_eq!(size_of::<Tau>(), 4);
+    assert_eq!(size_of::<Kp>(), 4);
+    assert_eq!(size_of::<Kd>(), 4);
+    assert_eq!(align_of::<Q>(), align_of::<f32>());
+    assert_eq!(align_of::<State<4>>(), 64);
+    assert_eq!(size_of::<State<4>>() % 64, 0);
+}
+
+#[test]
+fn cadence_is_one_until_set_and_refuses_an_out_of_range_index() {
+    use core::num::NonZeroU32;
+    let mut robot = create_test_robot();
+    assert_eq!(robot.cadence(0), Ok(NonZeroU32::MIN));
+    let three = NonZeroU32::new(3).unwrap();
+    robot.set_cadence([three; N]);
+    assert_eq!(robot.cadence(N - 1), Ok(three));
+    assert_eq!(
+        robot.cadence(N),
+        Err(StateError::OutOfRange { index: N, len: N })
+    );
+}
+
+#[test]
+fn every_field_type_names_its_own_field_id() {
+    use crate::state::{FieldId, field_id};
+    // No wildcard arm: a new variant fails this match.
+    let name = |id: FieldId| match id {
+        FieldId::Q => "q",
+        FieldId::Qd => "qd",
+        FieldId::Tau => "tau",
+        FieldId::Kp => "kp",
+        FieldId::Kd => "kd",
+    };
+    assert_eq!(
+        [
+            field_id::<Q>(),
+            field_id::<Qd>(),
+            field_id::<Tau>(),
+            field_id::<Kp>(),
+            field_id::<Kd>()
+        ]
+        .map(name),
+        ["q", "qd", "tau", "kp", "kd"]
+    );
+}
+
+#[test]
+fn every_value_type_converts_both_ways_with_f32() {
+    assert_eq!(f32::from(Q::from(1.5)), 1.5);
+    assert_eq!(f32::from(Qd::from(2.5)), 2.5);
+    assert_eq!(f32::from(Tau::from(3.5)), 3.5);
+    assert_eq!(f32::from(Kp::from(4.5)), 4.5);
+    let kd: f32 = Kd(5.5).into();
+    assert_eq!(kd, 5.5);
+}
+
+#[test]
+fn a_state_of_any_actuator_count_bounds_its_own_indices() {
+    let mut robot = RobotState::<7>::default();
+
+    assert_eq!(robot.set_at(Q(1.0), 6), Ok(()));
+    assert_eq!(
+        robot.set_at(Q(1.0), 7),
+        Err(StateError::OutOfRange { index: 7, len: 7 })
+    );
+    robot.set_all([Kp(2.0); 7]);
+    assert_eq!(robot.desired.kp, [Kp(2.0); 7]);
+    assert_eq!(
+        robot.cadence(7),
+        Err(StateError::OutOfRange { index: 7, len: 7 })
+    );
+}
+
+/// Actuator 0 alone, as a read mask.
+fn first_only() -> Mask<N> {
+    let mut mask = Mask::NONE;
+    mask.set(0);
+    mask
+}
+
+#[test]
+fn an_actuator_read_every_third_tick_ages_0_1_2_0() {
+    let mut robot = RobotState::<N>::default();
+    let mut ages = [None; 4];
+    for (tick, age) in ages.iter_mut().enumerate() {
+        let _ = robot.push_slot();
+        if tick % 3 == 0 {
+            robot.refreshed(first_only());
+        }
+        *age = robot.age(0).ok().flatten();
+    }
+    assert_eq!(ages, [Some(0), Some(1), Some(2), Some(0)]);
+}
+
+#[test]
+fn an_actuator_never_read_has_no_age_and_no_sample() {
+    let mut robot = RobotState::<N>::default();
+    for _ in 0..3 {
+        let _ = robot.push_slot();
+        robot.refreshed(Mask::NONE);
+    }
+    assert_eq!(robot.age(0), Ok(None));
+    assert_eq!(robot.sample_age(), None);
+    assert_eq!(robot.current::<Q>(), None);
+    for depth in 0..3 {
+        assert_eq!(robot.prev::<Q>(depth), Err(StateError::NoSample { depth }));
+        assert_eq!(
+            robot.prev_at::<Q>(depth, 0),
+            Err(StateError::NoSample { depth })
+        );
+    }
+    assert_eq!(
+        robot.age(N),
+        Err(StateError::OutOfRange { index: N, len: N })
+    );
+}
+
+#[test]
+fn a_slot_before_the_first_read_holds_no_sample() {
+    let mut robot = RobotState::<N>::default();
+    let _ = robot.push_slot();
+    robot.refreshed(Mask::NONE);
+    let _ = robot.push_slot();
+    robot.refreshed(first_only());
+
+    assert_eq!(robot.prev_at::<Q>(0, 0), Ok(&Q(0.0)));
+    assert_eq!(
+        robot.prev_at::<Q>(1, 0),
+        Err(StateError::NoSample { depth: 1 })
+    );
+    assert_eq!(
+        robot.prev_at::<Q>(0, 1),
+        Err(StateError::NoSample { depth: 0 })
+    );
+    assert_eq!(robot.prev::<Q>(0), Err(StateError::NoSample { depth: 0 }));
+}
+
+#[test]
+fn the_sample_age_is_the_oldest_actuator_s() {
+    let mut robot = RobotState::<N>::default();
+    let _ = robot.push_slot();
+    robot.refreshed(Mask::ALL);
+    let _ = robot.push_slot();
+    robot.refreshed(first_only());
+    let _ = robot.push_slot();
+    robot.refreshed(first_only());
+
+    assert_eq!(robot.age(0), Ok(Some(0)));
+    assert_eq!(robot.age(1), Ok(Some(2)));
+    assert_eq!(robot.sample_age(), Some(2));
+    assert!(robot.prev::<Q>(2).is_ok());
 }

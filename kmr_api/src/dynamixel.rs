@@ -1,17 +1,33 @@
-//! The Dynamixel models, for [`Robot::add_actuator`](crate::Robot::add_actuator).
+//! The Dynamixel hardware: the table, for `robot!(model = .., hardware = { dynamixel: .. })`,
+//! and the models, for [`Robot::add_actuator`](crate::Robot::add_actuator).
 //!
 //! ```ignore
 //! let spine = kmr_api::Bus::by_id("AL02L1KL").baud(1_000_000).build();
 //! Robot::new().add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(spine))
 //! ```
 //!
-//! Each actuator is powered, in position mode, zero at the model's centre, unless set otherwise
-//! before [`on`](Ids::on). Declaring needs no feature; driving them needs `kmr_api/dynamixel`.
+//! Each declared actuator is powered, in position mode, zero at the model's centre, unless set
+//! otherwise before [`on`](Ids::on). Declaring needs no feature; driving them needs
+//! `kmr_api/dynamixel`.
 
 use core::ops::RangeInclusive;
 
-use kmr_adapters::dynamixel::Model;
-pub use kmr_adapters::dynamixel::{Mode, Torque, Zero};
+/// The `dxl_rs` backend of the Dynamixel driver.
+#[cfg(feature = "dynamixel")]
+pub use kmr_adapters::dynamixel::DxlRs;
+/// The Dynamixel driver [`Bound::drivers`](crate::Bound::drivers) hands out.
+pub use kmr_adapters::dynamixel::Dynamixel;
+/// Why a Dynamixel bind or bring-up failed; reach it with `downcast_ref`.
+pub use kmr_adapters::dynamixel::DynamixelError;
+/// Health limits a placement writes to its actuators at bring-up:
+/// `TABLE.at([..]).health_limits(..)` (D18).
+pub use kmr_adapters::dynamixel::HealthLimits;
+/// The rule of the hardware table the declared actuators break, inside
+/// [`UserError::HardwareRejected`](crate::UserError::HardwareRejected).
+pub use kmr_adapters::dynamixel::TableError;
+pub use kmr_adapters::dynamixel::{
+    Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
+};
 
 use crate::BusHandle;
 use crate::actuator::{Actuators, Driver};
@@ -97,6 +113,10 @@ models! {
     Ax12a => Ax12a,
     /// RX-28, Protocol 1.
     Rx28 => Rx28,
+    /// MX-64 on its Protocol 1 firmware.
+    Mx64 => Mx64,
+    /// MX-64(2.0): the MX-64 on its Protocol 2.0 firmware.
+    Mx64V2 => Mx64V2,
     /// XM430-W210, Protocol 2.
     Xm430W210 => Xm430W210,
     /// XW430-T200, Protocol 2.

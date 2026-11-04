@@ -4,41 +4,143 @@
 //! features, not kmr_api's.
 
 use kmr_adapters::binding::Binding;
-use kmr_adapters::dynamixel::Table;
-use kmr_core::hal::{Hal, NoHardware};
+use kmr_adapters::dynamixel::Placement;
+use kmr_core::hal::{Drivers, Hal, NoHardware};
+use kmr_core::{HCons, HNil};
 
 use crate::actuator::DxlDeclared;
-use crate::{N, UserError};
+use crate::brand::{Brand, Refused};
+use crate::{Limit, Q, Qd, Tau, UserError};
 
-/// The robot this binary drives, as the type parameter of [`Robot`](crate::Robot).
+#[cfg(test)]
+pub(crate) mod fake;
+
+/// The robot this binary drives, of `N` actuators, as the type parameter of
+/// [`Robot`](crate::Robot). `N` is a parameter, not an associated const: an associated const
+/// cannot size an array.
 ///
 /// `robot!` implements it on the `__Spec` it emits; users never implement it.
 #[doc(hidden)]
-pub trait Spec {
-    /// The robot's hardware driver. One driver for now; becomes the driver set in T069. Its
-    /// error crosses threads inside [`UserError::BringUp`].
-    type Adapter: Hal<Error: Send + Sync>;
+pub trait Spec<const N: usize> {
+    /// The robot's hardware: the list of its drivers, one member per brand,
+    /// `HCons<A, HCons<B, HNil>>`. Its error crosses threads inside [`UserError::BringUp`].
+    type Drivers: Lend<N>;
 
-    /// The preset `robot!` names, whose hardware table refuses `add_actuator`; `None` on a
-    /// `robot!(model = ..)` robot.
+    /// The model's link names, in file order: the mounts a payload may name (SRS FR-8.1).
+    const LINK_NAMES: &'static [&'static str];
+
+    /// Prismatic actuators, bit `i` in word `i / 64` as the core's mask (SRS FR-2.2).
+    const PRISMATIC: [u64; crate::MASK_WORDS];
+
+    /// Continuous actuators, laid out as [`Spec::PRISMATIC`]: no position limit.
+    const CONTINUOUS: [u64; crate::MASK_WORDS];
+
+    /// Lowest position per actuator; no bound where [`Spec::CONTINUOUS`] is set (SRS FR-4.5).
+    const LOWER: [Q; N];
+
+    /// Highest position per actuator; no bound where [`Spec::CONTINUOUS`] is set.
+    const UPPER: [Q; N];
+
+    /// Top speed per actuator.
+    const SPEED: [Qd; N];
+
+    /// Top effort per actuator.
+    const EFFORT: [Tau; N];
+
+    /// The `robot!` argument that names the robot's hardware, a preset or `hardware = ..`,
+    /// which refuses `add_actuator`; `None` on a `robot!(model = ..)` robot alone.
     const PRESET: Option<&'static str>;
 
-    /// Binds the bus plugins to the driver, no I/O. One driver for now; becomes the driver set
-    /// in T069. `run()` calls it only when plugins are declared.
+    /// The descriptor is a placeholder, test data: its limits never reach the engine.
+    const PLACEHOLDER: bool = false;
+
+    /// The model's limit of each actuator, typed (SRS FR-4.5).
+    const LIMITS: [Limit; N] = limits(
+        Self::LOWER,
+        Self::UPPER,
+        Self::SPEED,
+        Self::EFFORT,
+        Self::CONTINUOUS,
+    );
+
+    /// Binds the bus plugins to the members, no I/O. `run()` calls it only when plugins are
+    /// declared.
     ///
     /// # Errors
     ///
-    /// [`UserError::FeatureOff`], [`UserError::NoHardwareDeclared`], or the driver's binding
-    /// error as [`UserError::BringUp`].
-    fn bind(plugins: &[Binding]) -> Result<Self::Adapter, UserError>;
+    /// [`UserError::FeatureOff`], [`UserError::NoHardwareDeclared`], a plugin no member takes,
+    /// or a member's binding error as [`UserError::BringUp`].
+    fn bind(plugins: &[Binding]) -> Result<Self::Drivers, UserError>;
 
-    /// The driver of the actuators `add_actuator` declared, lowered and checked, no I/O.
+    /// The drivers of the actuators `add_actuator` declared, lowered and checked, no I/O.
     /// `run()` calls it only when actuators are declared and no plugin is.
     ///
     /// # Errors
     ///
     /// [`UserError::FeatureOff`], or [`UserError::PresetHardware`].
-    fn declare(declared: DxlDeclared) -> Result<Self::Adapter, UserError>;
+    fn declare(declared: DxlDeclared<N>) -> Result<Self::Drivers, UserError>;
+}
+
+/// The limit of each actuator from the model's columns: `lower` and `upper` are `None` where
+/// bit `i` of `continuous` is set, never the `Q(0.0)` the model emits there (SRS FR-4.5).
+pub const fn limits<const N: usize>(
+    lower: [Q; N],
+    upper: [Q; N],
+    speed: [Qd; N],
+    effort: [Tau; N],
+    continuous: [u64; crate::MASK_WORDS],
+) -> [Limit; N] {
+    let mut out = [Limit::NONE; N];
+    let mut i = 0;
+    while i < N {
+        let free = continuous[i / 64] & (1 << (i % 64)) != 0;
+        out[i] = Limit {
+            lower: if free { None } else { Some(lower[i]) },
+            upper: if free { None } else { Some(upper[i]) },
+            speed: speed[i],
+            effort: effort[i],
+        };
+        i += 1;
+    }
+    out
+}
+
+/// A list of drivers that lends its members to a run, so [`Bound::run`](crate::Bound::run)
+/// hands the list back (SRS FR-5.9).
+///
+/// Implemented for every list of members whose errors cross threads; `Drivers` is sealed by
+/// the core, so nothing else can implement it.
+#[doc(hidden)]
+pub trait Lend<const N: usize>: Drivers<N, Error: Send + Sync> {
+    /// The list of `&mut` members, a list of drivers itself.
+    type Lent<'a>: Drivers<N, Error: Send + Sync>
+    where
+        Self: 'a;
+
+    /// Each member, borrowed, in order.
+    fn lend(&mut self) -> Self::Lent<'_>;
+}
+
+impl<const N: usize> Lend<N> for HNil {
+    type Lent<'a> = HNil;
+
+    fn lend(&mut self) -> HNil {
+        HNil
+    }
+}
+
+impl<const N: usize, A: Hal<N, Error: Send + Sync>, T: Lend<N>> Lend<N> for HCons<A, T> {
+    type Lent<'a>
+        = HCons<&'a mut A, T::Lent<'a>>
+    where
+        Self: 'a;
+
+    fn lend(&mut self) -> Self::Lent<'_> {
+        HCons {
+            head: &mut self.head,
+            tail: self.tail.lend(),
+        }
+    }
 }
 
 /// The driver of a robot without a hardware table.
@@ -51,30 +153,36 @@ pub type __NoHardware = NoHardware;
 ///
 /// Always [`UserError::NoHardwareDeclared`].
 #[doc(hidden)]
-pub fn __bind_none<A>(_plugins: &[Binding]) -> Result<A, UserError> {
+pub fn __bind_none<D>(_plugins: &[Binding]) -> Result<D, UserError> {
     Err(UserError::NoHardwareDeclared)
 }
 
-/// Refuses the declared actuators: the hardware table is preset `preset`'s.
+/// Refuses the declared actuators: `robot!` names the hardware, as `preset`.
 ///
 /// # Errors
 ///
 /// Always [`UserError::PresetHardware`].
 #[doc(hidden)]
-pub fn __declare_none<A>(preset: &'static str) -> Result<A, UserError> {
+pub fn __declare_none<D>(preset: &'static str) -> Result<D, UserError> {
     Err(UserError::PresetHardware { preset })
 }
 
-/// The Dynamixel driver of `declared`, on the Dynamixel SDK. No I/O.
+/// The Dynamixel driver of `declared`, on the Dynamixel SDK, as the one member of the robot.
+/// No I/O.
 ///
 /// # Errors
 ///
 /// None with the `dynamixel` feature; the `Result` is the shape of [`Spec::declare`].
 #[doc(hidden)]
 #[cfg(feature = "dynamixel")]
-pub fn __declare_dynamixel(declared: DxlDeclared) -> Result<__DxlAdapter<N>, UserError> {
+pub fn __declare_dynamixel<const N: usize>(
+    declared: DxlDeclared<N>,
+) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
     use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
-    Ok(Dynamixel::declared(DxlRs::new(), declared))
+    Ok(HCons {
+        head: Dynamixel::declared(DxlRs::new(), declared),
+        tail: HNil,
+    })
 }
 
 /// Refuses the declared actuators: the Dynamixel adapter is not compiled in.
@@ -84,57 +192,265 @@ pub fn __declare_dynamixel(declared: DxlDeclared) -> Result<__DxlAdapter<N>, Use
 /// Always [`UserError::FeatureOff`].
 #[doc(hidden)]
 #[cfg(not(feature = "dynamixel"))]
-pub fn __declare_dynamixel(_declared: DxlDeclared) -> Result<__DxlAdapter<N>, UserError> {
+pub fn __declare_dynamixel<const N: usize>(
+    _declared: DxlDeclared<N>,
+) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
     Err(UserError::FeatureOff {
         feature: "dynamixel",
     })
 }
 
-/// The Dynamixel driver of a robot with `NB` Dynamixel buses.
+/// The Dynamixel driver of a robot of `N` actuators with `NB` Dynamixel buses.
 #[doc(hidden)]
 #[cfg(feature = "dynamixel")]
-pub type __DxlAdapter<const NB: usize> =
-    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, NB>;
+pub type __DxlAdapter<const NB: usize, const N: usize> =
+    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs<N>, NB, N>;
 
 /// No Dynamixel driver: kmr_api is built without its `dynamixel` feature.
 #[doc(hidden)]
 #[cfg(not(feature = "dynamixel"))]
-pub type __DxlAdapter<const NB: usize> = kmr_core::hal::NoHardware;
+pub type __DxlAdapter<const NB: usize, const N: usize> = kmr_core::hal::NoHardware;
 
-/// Binds `plugins` to the buses of `table`, on the Dynamixel SDK. No I/O.
-///
-/// # Errors
-///
-/// The adapter's binding error (label, baud) as [`UserError::BringUp`].
-#[doc(hidden)]
-#[cfg(feature = "dynamixel")]
-pub fn __bind_dynamixel<const NB: usize>(
-    table: Table<NB, N>,
-    plugins: &[Binding],
-) -> Result<__DxlAdapter<NB>, UserError> {
-    use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
-    Dynamixel::bind(DxlRs::new(), table, plugins).map_err(UserError::bring_up)
+/// The Dynamixel part of a robot: its buses bind to the Dynamixel SDK.
+impl<const NB: usize, const M: usize, const N: usize> Brand<N> for Placement<NB, M> {
+    type Member = __DxlAdapter<NB, N>;
+
+    fn labels(&self) -> Vec<&'static str> {
+        self.table().buses.iter().map(|bus| bus.label).collect()
+    }
+
+    /// Binds `plugins` to the buses of the table, on the Dynamixel SDK; without kmr_api's
+    /// `dynamixel` feature, refuses them.
+    #[cfg(feature = "dynamixel")]
+    fn bind(
+        self,
+        plugins: &[Binding],
+    ) -> Result<Self::Member, Refused<kmr_adapters::dynamixel::DynamixelError>> {
+        use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
+        Dynamixel::bind(DxlRs::new(), self, plugins).map_err(Refused::Member)
+    }
+
+    /// Binds `plugins` to the buses of the table, on the Dynamixel SDK; without kmr_api's
+    /// `dynamixel` feature, refuses them.
+    #[cfg(not(feature = "dynamixel"))]
+    fn bind(
+        self,
+        _plugins: &[Binding],
+    ) -> Result<Self::Member, Refused<core::convert::Infallible>> {
+        Err(Refused::FeatureOff("dynamixel"))
+    }
 }
 
-/// Refuses the plugins: the Dynamixel adapter is not compiled in.
-///
-/// # Errors
-///
-/// Always [`UserError::FeatureOff`].
+/// The CubeMars driver of a robot of `N` actuators on `NB` CAN interfaces.
 #[doc(hidden)]
-#[cfg(not(feature = "dynamixel"))]
-pub fn __bind_dynamixel<const NB: usize>(
-    _table: Table<NB, N>,
-    _plugins: &[Binding],
-) -> Result<__DxlAdapter<NB>, UserError> {
-    Err(UserError::FeatureOff {
-        feature: "dynamixel",
-    })
+#[cfg(feature = "cubemars")]
+pub type __CubeMarsAdapter<const NB: usize, const N: usize> =
+    kmr_adapters::cubemars::CubeMars<kmr_adapters::cubemars::SocketCan<NB>, NB, N>;
+
+/// No CubeMars driver: kmr_api is built without its `cubemars` feature.
+#[doc(hidden)]
+#[cfg(not(feature = "cubemars"))]
+pub type __CubeMarsAdapter<const NB: usize, const N: usize> = kmr_core::hal::NoHardware;
+
+/// The CubeMars part of a robot: its buses bind to SocketCAN interfaces.
+impl<const NB: usize, const M: usize, const N: usize> Brand<N>
+    for kmr_adapters::cubemars::Placement<NB, M>
+{
+    type Member = __CubeMarsAdapter<NB, N>;
+
+    fn labels(&self) -> Vec<&'static str> {
+        self.table().buses.iter().map(|bus| bus.label).collect()
+    }
+
+    /// Binds `plugins` to the CAN interfaces of the table; without kmr_api's `cubemars`
+    /// feature, refuses them.
+    #[cfg(feature = "cubemars")]
+    fn bind(
+        self,
+        plugins: &[Binding],
+    ) -> Result<Self::Member, Refused<kmr_adapters::cubemars::CubeMarsError>> {
+        use kmr_adapters::cubemars::{CubeMars, SocketCan};
+        CubeMars::bind(SocketCan::new(), self, plugins).map_err(Refused::Member)
+    }
+
+    /// Binds `plugins` to the CAN interfaces of the table; without kmr_api's `cubemars`
+    /// feature, refuses them.
+    #[cfg(not(feature = "cubemars"))]
+    fn bind(
+        self,
+        _plugins: &[Binding],
+    ) -> Result<Self::Member, Refused<core::convert::Infallible>> {
+        Err(Refused::FeatureOff("cubemars"))
+    }
+}
+
+/// The brands `robot!` knows, by the name its `hardware = { brand: .. }` argument gives them.
+///
+/// Each module gives the type of the brand's part, `Hardware<NB, M>`, and `shape`, its bus and
+/// actuator counts, read in const evaluation from the user's expression.
+#[doc(hidden)]
+pub mod __brand {
+    /// The Dynamixel part: a placed hardware table, `Table { .. }.at([..])`.
+    pub mod dynamixel {
+        use kmr_adapters::dynamixel::Placement;
+
+        /// The type of the Dynamixel part.
+        pub type Hardware<const NB: usize, const M: usize> = Placement<NB, M>;
+
+        /// Bus and actuator counts of `hardware`.
+        pub const fn shape<const NB: usize, const M: usize>(
+            _hardware: &Placement<NB, M>,
+        ) -> (usize, usize) {
+            (NB, M)
+        }
+
+        /// Engine indices `hardware` drives.
+        pub const fn indices<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+        ) -> &[usize] {
+            hardware.indices()
+        }
+
+        /// Fails the build when the model marks prismatic an index `hardware` drives.
+        pub const fn check_kinds<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+            prismatic: &[u64; crate::MASK_WORDS],
+        ) {
+            let _ = hardware.check_kinds(*prismatic);
+        }
+    }
+
+    /// The CubeMars part: a placed hardware table, `Table { .. }.at([..])`.
+    pub mod cubemars {
+        use kmr_adapters::cubemars::Placement;
+
+        /// The type of the CubeMars part.
+        pub type Hardware<const NB: usize, const M: usize> = Placement<NB, M>;
+
+        /// Bus and actuator counts of `hardware`.
+        pub const fn shape<const NB: usize, const M: usize>(
+            _hardware: &Placement<NB, M>,
+        ) -> (usize, usize) {
+            (NB, M)
+        }
+
+        /// Engine indices `hardware` drives.
+        pub const fn indices<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+        ) -> &[usize] {
+            hardware.indices()
+        }
+
+        /// Fails the build when the model marks prismatic an index `hardware` drives: an
+        /// AK60-6 is rotary.
+        pub const fn check_kinds<const NB: usize, const M: usize>(
+            hardware: &Placement<NB, M>,
+            prismatic: &[u64; crate::MASK_WORDS],
+        ) {
+            let _ = hardware.check_kinds(*prismatic);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) use super::fake::{arm as fake_arm, leg as fake_leg};
+}
+
+/// Checks that `parts`, the engine indices each brand's part drives, cover `0..n` exactly
+/// once (SRS FR-5.1, FR-6.4).
+///
+/// # Panics
+///
+/// On an index past `n`, an index no part drives, or one two parts drive; in const
+/// evaluation, that is the compile error.
+#[doc(hidden)]
+pub const fn __check_coverage(parts: &[&[usize]], n: usize) {
+    let mut rest = parts;
+    while let [part, later @ ..] = rest {
+        let mut indices = *part;
+        while let [index, tail @ ..] = indices {
+            if *index >= n {
+                fail(
+                    "a hardware part drives engine index ",
+                    *index,
+                    ", past the robot's actuators",
+                );
+            }
+            indices = tail;
+        }
+        rest = later;
+    }
+    let mut index = 0;
+    while index < n {
+        match drivers_of(parts, index) {
+            0 => fail("no hardware part drives engine index ", index, ""),
+            1 => {}
+            _ => fail("two hardware parts drive engine index ", index, ""),
+        }
+        index += 1;
+    }
+}
+
+/// How many entries of `parts` drive engine index `index`.
+const fn drivers_of(parts: &[&[usize]], index: usize) -> usize {
+    let mut count = 0;
+    let mut rest = parts;
+    while let [part, later @ ..] = rest {
+        let mut indices = *part;
+        while let [first, tail @ ..] = indices {
+            if *first == index {
+                count += 1;
+            }
+            indices = tail;
+        }
+        rest = later;
+    }
+    count
+}
+
+/// Capacity of a coverage message.
+const MESSAGE_LEN: usize = 128;
+
+/// Stops const evaluation with `kmr: {before}{index}{after}`; `format!` is not available there.
+const fn fail(before: &str, index: usize, after: &str) -> ! {
+    let mut bytes = [0u8; MESSAGE_LEN];
+    let mut len = push(&mut bytes, 0, b"kmr: ");
+    len = push(&mut bytes, len, before.as_bytes());
+    let mut scale = 1;
+    while index / scale >= 10 {
+        scale *= 10;
+    }
+    while scale > 0 {
+        len = push(&mut bytes, len, &[b'0' + (index / scale % 10) as u8]);
+        scale /= 10;
+    }
+    len = push(&mut bytes, len, after.as_bytes());
+    let text = match bytes.split_at_checked(len) {
+        Some((text, _)) => text,
+        None => &[],
+    };
+    match core::str::from_utf8(text) {
+        Ok(text) => panic!("{}", text),
+        Err(_) => panic!("kmr: the hardware parts do not cover the robot's actuators"),
+    }
+}
+
+/// Appends `text` to `bytes` at `len`, dropping what does not fit; returns the new length.
+const fn push(bytes: &mut [u8; MESSAGE_LEN], mut len: usize, text: &[u8]) -> usize {
+    let mut rest = text;
+    while let [byte, tail @ ..] = rest {
+        if let Some((_, [slot, ..])) = bytes.split_at_mut_checked(len) {
+            *slot = *byte;
+            len += 1;
+        }
+        rest = tail;
+    }
+    len
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::brand::__bind;
     use kmr_adapters::binding::Port;
     use kmr_adapters::presets::XmBench;
 
@@ -144,18 +460,56 @@ mod tests {
         bus: None,
     };
 
+    /// XmBench as the one member of its robot.
+    fn xm_bench() -> HCons<Placement<1, 4>, HNil> {
+        HCons {
+            head: XmBench::HARDWARE.in_order(),
+            tail: HNil,
+        }
+    }
+
     #[test]
     fn without_a_table_plugins_are_refused() {
         assert!(matches!(
-            __bind_none::<__NoHardware>(&[PLUGIN]),
+            __bind_none::<HCons<__NoHardware, HNil>>(&[PLUGIN]),
             Err(UserError::NoHardwareDeclared)
         ));
+    }
+
+    #[test]
+    fn parts_that_cover_every_index_once_pass() {
+        __check_coverage(&[&[2, 0], &[1, 3]], 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "kmr: no hardware part drives engine index 2")]
+    fn a_gap_is_rejected() {
+        __check_coverage(&[&[0, 1], &[3]], 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "kmr: two hardware parts drive engine index 1")]
+    fn an_overlap_is_rejected() {
+        __check_coverage(&[&[0, 1], &[1, 2, 3]], 4);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "kmr: a hardware part drives engine index 4, past the robot's actuators"
+    )]
+    fn an_index_past_the_robot_is_rejected() {
+        __check_coverage(&[&[0, 1, 2, 3, 4]], 4);
+    }
+
+    #[test]
+    fn a_table_names_its_bus_labels() {
+        assert_eq!(Brand::<4>::labels(&XmBench::HARDWARE.in_order()), ["bus0"]);
     }
 
     #[cfg(not(feature = "dynamixel"))]
     #[test]
     fn without_the_feature_plugins_are_refused() {
-        let res = __bind_dynamixel(XmBench::HARDWARE, &[PLUGIN]);
+        let res = __bind::<4, _>(xm_bench(), &[PLUGIN]);
         assert!(matches!(
             res,
             Err(UserError::FeatureOff {
@@ -166,14 +520,14 @@ mod tests {
 
     #[cfg(feature = "dynamixel")]
     #[test]
-    fn a_binding_error_is_a_bring_up_error() {
+    fn a_binding_error_is_a_bring_up_error_naming_the_member() {
         let wrong = Binding {
             bus: Some("nope"),
             ..PLUGIN
         };
-        let res = __bind_dynamixel(XmBench::HARDWARE, &[wrong]);
+        let res = __bind::<4, _>(xm_bench(), &[wrong]);
         assert!(
-            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("nope")),
+            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().starts_with("member 0 (kmr_adapters::dynamixel::Dynamixel<") && source.to_string().contains("nope")),
             "{:?}",
             res.err()
         );
@@ -182,6 +536,92 @@ mod tests {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn a_matching_plugin_binds() {
-        assert!(__bind_dynamixel(XmBench::HARDWARE, &[PLUGIN]).is_ok());
+        assert!(__bind::<4, _>(xm_bench(), &[PLUGIN]).is_ok());
+    }
+
+    /// A GeckoLeg on one CAN interface, as the one member of its robot.
+    fn gecko_leg() -> HCons<kmr_adapters::cubemars::Placement<1, 3>, HNil> {
+        use kmr_adapters::cubemars::{Actuator, Bus, Table};
+        HCons {
+            head: Table {
+                buses: [Bus { label: "leg" }],
+                actuators: [
+                    Actuator::ak60_6(0, 1),
+                    Actuator::ak60_6(0, 2),
+                    Actuator::ak60_6(0, 3),
+                ],
+            }
+            .in_order(),
+            tail: HNil,
+        }
+    }
+
+    /// The bus plugin of a CAN interface no machine has: binding does no I/O.
+    const CAN: Binding = Binding {
+        port: Port::ByDev("kmr-test-can"),
+        baud: None,
+        bus: None,
+    };
+
+    #[test]
+    fn a_cubemars_table_names_its_bus_labels() {
+        assert_eq!(Brand::<3>::labels(&gecko_leg().head), ["leg"]);
+    }
+
+    #[cfg(not(feature = "cubemars"))]
+    #[test]
+    fn without_the_cubemars_feature_plugins_are_refused() {
+        let res = __bind::<3, _>(gecko_leg(), &[CAN]);
+        assert!(matches!(
+            res,
+            Err(UserError::FeatureOff {
+                feature: "cubemars"
+            })
+        ));
+    }
+
+    #[cfg(feature = "cubemars")]
+    #[test]
+    fn a_can_plugin_binds_and_a_serial_one_is_refused() {
+        assert!(__bind::<3, _>(gecko_leg(), &[CAN]).is_ok());
+        let res = __bind::<3, _>(gecko_leg(), &[PLUGIN]);
+        assert!(
+            matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("Bus::by_dev")),
+            "{:?}",
+            res.err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    #[test]
+    fn a_continuous_actuator_gets_no_position_bound() {
+        let limits = limits(
+            [Q(-1.0), Q(0.0)],
+            [Q(1.0), Q(0.0)],
+            [Qd(2.0), Qd(3.0)],
+            [Tau(4.0), Tau(5.0)],
+            [0b10; crate::MASK_WORDS],
+        );
+        assert_eq!(
+            limits,
+            [
+                Limit {
+                    lower: Some(Q(-1.0)),
+                    upper: Some(Q(1.0)),
+                    speed: Qd(2.0),
+                    effort: Tau(4.0),
+                },
+                Limit {
+                    lower: None,
+                    upper: None,
+                    speed: Qd(3.0),
+                    effort: Tau(5.0),
+                },
+            ]
+        );
     }
 }

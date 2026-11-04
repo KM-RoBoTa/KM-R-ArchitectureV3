@@ -4,10 +4,10 @@ use kmr_adapters::binding::{Binding, Port};
 
 /// One serial bus, bound to this machine's port.
 ///
-/// On a preset robot, the hardware table gives brand, protocol and baud, a call here overrides
-/// the baud, and [`Robot::add_plugins`](crate::Robot::add_plugins) registers it. On a
-/// `robot!(model = ..)` robot, [`build`](Self::build) it and hand the handle to the actuators on
-/// it.
+/// On a robot with a hardware table, the table gives brand, protocol and baud, a call here
+/// overrides the baud, and [`Robot::add_plugins`](crate::Robot::add_plugins) registers it. On a
+/// `robot!(model = ..)` robot without one, [`build`](Self::build) it and hand the handle to the
+/// actuators on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bus {
     pub(crate) binding: Binding,

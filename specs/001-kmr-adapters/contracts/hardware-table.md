@@ -17,7 +17,7 @@ pub mod dynamixel {
         pub bus: usize, pub id: u8, pub model: Model, pub mode: Mode,
         pub torque: Torque, pub zero: Zero,
     }
-    pub enum Model { Ax12a, Rx28, Xm430W210, Xw430T200, Xw540T140, Xw540T260 }
+    pub enum Model { Ax12a, Rx28, Mx64, Mx64V2, Xm430W210, Xw430T200, Xw540T140, Xw540T260 }
     pub enum Mode { Position, Velocity, Current }
     pub enum Torque { On, ReadOnly }
     pub enum Zero { Center, Raw(i32) }

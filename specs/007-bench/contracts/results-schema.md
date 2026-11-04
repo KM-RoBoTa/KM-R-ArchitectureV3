@@ -75,7 +75,7 @@ every file:
 
 | Key | Rule |
 |---|---|
-| `loop_thread_allocs` | FR-012; flag `alloc_seen` when > 0 |
+| `loop_thread_allocs` | FR-012; flag `alloc_seen` when > 0; `"not measured"` in a report with no counting window (`minimal`, `baseline`, `compile`) |
 | `locks` | always `"not measured"` |
 | `sim_warning_count` | added by the script from the `.log`; must be 1 on a run with no bus plugin |
 

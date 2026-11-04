@@ -156,6 +156,9 @@ Not proved here: the bring-up error with a bus plugin and no robot (needs critic
   error" holds with no code in the example.
 - **Alternative**: the example matches the error, prints `{e}` and returns `ExitCode`. Five
   more lines in the file every user copies. Rejected.
+- **Outcome, 2026-10-29**: `kmr_api` prints the `Display` text in release builds; debug builds
+  derive `Debug`, so the variant and the typed adapter error show. Quickstart V4 runs
+  `--release`.
 
 ## R13. Hardware safety assumption on the start sample
 

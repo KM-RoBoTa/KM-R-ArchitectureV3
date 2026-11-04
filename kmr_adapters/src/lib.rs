@@ -11,5 +11,6 @@
 #![warn(missing_docs)]
 
 pub mod binding;
+pub mod cubemars;
 pub mod dynamixel;
 pub mod presets;

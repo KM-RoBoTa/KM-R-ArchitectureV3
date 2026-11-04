@@ -11,17 +11,50 @@ kmr_core.workspace = true
 kmr_adapters.workspace = true
 kmr_model.workspace = true
 thiserror.workspace = true
+triple_buffer.workspace = true
+kmr_ffi = { workspace = true, optional = true }
+zenoh = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
-# Dev bench stopgap until N is a const generic (core M2): JOINTS = 10.
-joints-10 = ["kmr_core/joints-10"]
+# Batches keep declaration order: the bench's baseline for the presort (SRS
+# FR-5.3; assumed, pending human: D11 B). Off by default.
+presort-off = ["kmr_core/presort-off"]
+# Foreign-language controller math (kmr_ffi), all off by default: without them no FFI code is
+# compiled (FR-072 (SRS FR-10)).
+ffi = ["dep:kmr_ffi"]
+# For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
+ffi-build = ["ffi", "kmr_ffi/build"]
+# A Python function as the foreign body: `kmr_api::ffi::python::Bridge` (needs the Python
+# headers and library).
+ffi-python = ["ffi", "kmr_ffi/python"]
+# A Lua 5.4 function as the foreign body, Lua vendored: `kmr_api::ffi::lua::Bridge`.
+ffi-lua = ["ffi", "kmr_ffi/lua"]
+# Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
+test-util = ["kmr_core/test-util"]
+cubemars = ["kmr_adapters/cubemars"]
+# The Zenoh gateway plugin, `kmr_api::Gateway` (SRS FR-7.1). Off by default: without it no
+# Zenoh crate is compiled (SC-004).
+zenoh = ["dep:zenoh", "dep:tracing"]
 
 [dev-dependencies]
 # Same crate as above, plus the test hooks: the group tests need a populated
 # history and a readable desired buffer, which the normal surface never gives.
 kmr_core = { workspace = true, features = ["test-util"] }
 color-eyre.workspace = true
+# Compile-fail cases of kmr_api/tests/ui/ (SC-008 (SRS NFR-3)).
+trybuild.workspace = true
+# The remote peer of kmr_api/tests/zenoh.rs, in the test process.
+zenoh.workspace = true
 
 [[example]]
 name = "complete_api_example"
+
+# The gateway against an in-process peer on loopback.
+[[test]]
+name = "zenoh"
+required-features = ["zenoh", "test-util"]
+
+[lints]
+workspace = true

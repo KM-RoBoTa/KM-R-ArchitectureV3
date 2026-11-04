@@ -41,8 +41,8 @@
 // are a debug affordance and never touch the release layout.
 // ===========================================================================
 
-use std::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
-use std::{fmt, ptr};
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use core::{fmt, ptr};
 
 // ── Priority levels ─────────────────────────────────────────────────────────
 pub(crate) const NONE: u8 = 0;
@@ -75,7 +75,7 @@ impl SignalMeta {
 
 /// The kind of stop requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalKind {
+pub(crate) enum SignalKind {
     /// Graceful shutdown — write one final desired state, then exit.
     Shutdown,
     /// Emergency stop — skip `write_state`, cut torque immediately.

@@ -1,16 +1,18 @@
 //! Rx28Chain: its model half counts the actuators of its hardware half, and
-//! under `joints-10` the front door builds it.
+//! the front door builds it, N = 10.
 
-use kmr_api::presets::{Preset, Rx28Chain};
+mod model_half {
+    use kmr_api::presets::Rx28Chain;
 
-#[test]
-fn the_urdf_counts_the_actuators_of_the_hardware_table() {
-    const URDF: usize = kmr_api::__actuator_count!("../kmr_model/presets/rx28_chain.urdf");
-    assert_eq!(URDF, <Rx28Chain as Preset>::N);
-    assert_eq!(URDF, Rx28Chain::HARDWARE.actuators.len());
+    kmr_api::__model!(kmr_api; preset = Rx28Chain);
+
+    #[test]
+    fn the_model_half_counts_the_actuators_of_the_hardware_half() {
+        assert_eq!(N, 10);
+        assert_eq!(N, Rx28Chain::HARDWARE.actuators.len());
+    }
 }
 
-#[cfg(feature = "joints-10")]
 mod front_door {
     kmr_api::robot!(Rx28Chain);
 

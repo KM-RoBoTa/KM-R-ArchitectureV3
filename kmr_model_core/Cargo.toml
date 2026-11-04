@@ -1,0 +1,16 @@
+[package]
+name = "kmr_model_core"
+description = "Reads and checks a robot descriptor: the library behind kmr_model's robot! expansion and kmr_ffi's build helper."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+roxmltree.workspace = true
+ron.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

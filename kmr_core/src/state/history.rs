@@ -1,12 +1,17 @@
 use circular_buffer::FixedCircularBuffer;
 
-use super::JOINTS;
 use super::joint_state::{Kd, Kp, Q, Qd, Tau};
+use crate::error::StateError;
+use crate::hal::{Faults, TickFlags};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// The current state of the robot.
+/// The current state of the robot: one history slot.
 ///
-///
+/// Layout: structure of arrays, one `[_; N]` per field, so a field read walks
+/// contiguous memory. `repr(C)` keeps the declared field order; `align(64)`
+/// starts every slot on a cache line, so a 4-actuator slot (80 bytes) spans
+/// two lines and never shares one with its neighbour in the ring.
+#[repr(C, align(64))]
 pub(crate) struct State<const N: usize> {
     /// Array of all joint's position (as radiants).
     /// See [`super::joint_state::Q`]
@@ -23,11 +28,10 @@ pub(crate) struct State<const N: usize> {
     pub(crate) kd: [Kd; N],
 }
 
-impl State<JOINTS> {
-    fn home_state() -> Self {
-        todo!(
-            "I must save somewhere permanant the home state. This must be the default because zeroing all actuators as default is dangerous."
-        )
+impl<const N: usize> State<N> {
+    /// The robot model's home state; its source is still open in the SRS.
+    pub(crate) fn home_state() -> Result<Self, StateError> {
+        Err(StateError::Undecided("SRS FR-2.7: home state source"))
     }
 
     /// Returns a completely zeroed-out state.
@@ -36,32 +40,46 @@ impl State<JOINTS> {
     pub(crate) fn zeroed() -> Self {
         // WARN: default must depend on the robot model
         Self {
-            q: [Q(0.0); JOINTS],
-            qd: [Qd(0.0); JOINTS],
-            tau: [Tau(0.0); JOINTS],
-            kp: [Kp(0.0); JOINTS],
-            kd: [Kd(0.0); JOINTS],
+            q: [Q(0.0); N],
+            qd: [Qd(0.0); N],
+            tau: [Tau(0.0); N],
+            kp: [Kp(0.0); N],
+            kd: [Kd(0.0); N],
         }
     }
 
     /// Checks if the current [`State`] is zeroed.
     fn is_zeroed(&self) -> bool {
-        if *self == State::<JOINTS>::zeroed() {
+        if *self == Self::zeroed() {
             return true;
         }
         false
     }
 }
 
-impl Default for State<JOINTS> {
+impl<const N: usize> Default for State<N> {
     fn default() -> Self {
         // WARN: default must depend on the robot model
         Self::zeroed()
     }
 }
 
+/// The fault bits and flags of one tick, kept next to its [`State`] slot.
+///
+/// Apart from [`State`], so the values keep their layout and a new slot
+/// starts with no flag instead of a copy of the last one.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub(crate) struct Flags<const N: usize> {
+    /// Per-actuator faults of the tick.
+    pub(crate) faults: Faults<N>,
+    /// Whole-tick flags.
+    pub(crate) tick: TickFlags,
+}
+
 #[derive(Default, Debug, PartialEq)]
 /// READ ONLY
 pub(crate) struct History<const N: usize, const DEPTH: usize> {
     pub(in crate::state) buf: FixedCircularBuffer<State<N>, DEPTH>,
+    /// One entry per slot of `buf`, pushed with it.
+    pub(in crate::state) flags: FixedCircularBuffer<Flags<N>, DEPTH>,
 }

@@ -36,10 +36,53 @@
 //! surface follows the needs of `kmr_api` and may change without notice: users
 //! are expected to go through `kmr_api`.
 //!
-//! It is not a microcontroller software architecture. While limited no_std can
-//! be used in the future, the overall architectural design is not meant to be
-//! no_std.
+//! # `std` and `no_std`
+//!
+//! The default `std` feature brings the hosted engine: Ctrl-C handling,
+//! logging, the system clock and sleep, threaded controllers. Without it the
+//! crate is `no_std` and needs no `alloc` (SRS NFR-7): state, schedules,
+//! limits, the hardware contract and the loop stay, and a target brings its
+//! own `Host` and [`Instant`]. A run entry point for such a target is not
+//! part of this version.
+//!
+//! # What does not build
+//!
+//! The staging area of the desired values is write-only:
+//!
+//! ```compile_fail,E0616
+//! fn peek(state: &kmr_core::RobotState<4>) {
+//!     let _ = state.desired;
+//! }
+//! ```
+//!
+//! The field set is sealed: no new field type outside the core.
+//!
+//! ```compile_fail,E0277
+//! #[derive(Clone, Copy)]
+//! struct Temperature(f32);
+//! impl kmr_core::state::StateField for Temperature {}
+//! ```
+//!
+//! The phases are sealed: no new phase outside the core.
+//!
+//! ```compile_fail,E0277
+//! #[derive(Clone, Copy)]
+//! struct Midway;
+//! impl kmr_core::Schedule for Midway {}
+//! ```
+//!
+//! A robot without a controller does not run:
+//!
+//! ```compile_fail,E0277
+//! kmr_core::Robot::<4>::new().run().ok();
+//! ```
+//!
+//! The direct field write is refused in [`state`] (`RobotState`).
 
+#![cfg_attr(not(feature = "std"), no_std)]
+// Without `std` the log macros expand to nothing: a value computed only for
+// a log line is then unread.
+#![cfg_attr(not(feature = "std"), allow(unused_variables))]
 #![forbid(clippy::disallowed_types)]
 // Test code may unwrap: a panic there IS the failure report. Everywhere else
 // an unwrap is a crash on the control path, so it stays forbidden.
@@ -56,12 +99,17 @@ pub(crate) mod controllers;
 #[doc(hidden)]
 pub mod error;
 pub mod hal;
+pub mod limits;
+pub(crate) mod logging;
 pub(crate) mod runtime;
 pub(crate) mod schedule;
 pub(crate) mod sealed;
 pub(crate) mod sensors;
 pub(crate) mod signal;
 pub mod state;
+#[cfg(any(test, feature = "test-util"))]
+#[doc(hidden)]
+pub mod test_util;
 
 mod robot;
 
@@ -69,11 +117,16 @@ mod robot;
 // reachable here: the HList shape, the controller node types (fields sealed, so
 // naming one is harmless), plus `Sensors`/`RobotState` and the `state`/`error`
 // module paths. Each item has ONE public path: what lives in the public `state`
-// module (`JOINTS`, `Q`, ...) is not repeated here. `RobotState` is the
+// module (`Q`, `HISTORY_DEPTH`, ...) is not repeated here. `RobotState` is the
 // exception, `kmr_api` names it from the root like the other two handles.
-pub use clock::Time;
+pub use clock::{Instant, Time};
 pub use controllers::{ControlFn, ControlFnWith, Inline, InlineWith, ThreadFn, Threaded};
-pub use robot::{HCons, HNil, Robot};
+pub use robot::{Empty, Filled, HCons, HNil, HasController, Robot, Stages};
+// Hidden: for a port to a target without `std`, never for controllers.
+#[doc(hidden)]
+pub use runtime::Host;
+#[doc(hidden)]
+pub use runtime::seal as host_seal;
 pub use schedule::{
     Drive, EachTick, First, Init, Insert, Last, PostInit, PreInit, Schedule, Scheduled,
 };
@@ -84,6 +137,6 @@ pub use sensors::Sensors;
 pub use signal::{Signal, SignalMeta};
 pub use state::RobotState;
 
-// Crate-internal shorthands, so `crate::JOINTS` and friends keep resolving.
+// Crate-internal shorthands, so `crate::N` and friends keep resolving.
 pub(crate) use signal::SignalKind;
-pub(crate) use state::{HISTORY_DEPTH, JOINTS, State};
+pub(crate) use state::{HISTORY_DEPTH, State};

@@ -10,8 +10,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ::dxl_rs::actuator::ax_series::Ax12A;
+use ::dxl_rs::actuator::mx_series::Mx64Ar;
 use ::dxl_rs::actuator::{
-    Actuator, ActuatorOff, ActuatorOn, Readable, TorqueOn, Xm430W210, Xw430T200, Xw540T140,
+    Actuator, ActuatorOff, ActuatorOn, Mx64P1, Readable, TorqueOn, Xm430W210, Xw430T200, Xw540T140,
     Xw540T260,
 };
 use ::dxl_rs::actuators_list::{ActuatorVariant, ActuatorsList, P1, P2};
@@ -20,13 +21,12 @@ use ::dxl_rs::error::{
 };
 use ::dxl_rs::port::{PortBuilder, PortHandler, PortNumber};
 use ::dxl_rs::transport::group_sync_read;
-use kmr_core::state::JOINTS;
 use tracing::warn;
 
 use super::backend::{
     Backend, BackendError, GoalRegister, Health, OpenFailure, PortSpec, RawState, Setting, Wire,
 };
-use super::config::{Model, Protocol};
+use super::config::{HealthLimits, Model, Protocol};
 
 /// Ports one process can drive.
 const MAX_PORTS: usize = 4;
@@ -39,6 +39,18 @@ const PRESENT_CURRENT: (u16, u16) = (126, 2);
 const PRESENT_VELOCITY: (u16, u16) = (128, 4);
 /// Present Position, Protocol 2: `i32` at 132.
 const PRESENT_POSITION: (u16, u16) = (132, 4);
+
+// `STATE_READS` is what `sync_read_state` sends: one sync read per register.
+const _: () = assert!(
+    matches!(
+        super::backend::STATE_READS,
+        [current, velocity, position]
+            if *current == PRESENT_CURRENT.1
+                && *velocity == PRESENT_VELOCITY.1
+                && *position == PRESENT_POSITION.1
+    ),
+    "STATE_READS differs from the registers sync_read_state reads"
+);
 /// Operating Mode, X series: `u8` at 11.
 const OPERATING_MODE: (u16, u16) = (11, 1);
 /// Torque Enable, X series: `u8` at 64.
@@ -66,12 +78,19 @@ fn warn_once(flag: &AtomicBool, message: &str) {
 }
 
 /// Runs `$body` with `$actuator` bound to the torque-off `dxl_rs` actuator of
-/// `$model`. The RX-28 goes through the AX-12A table (research R7).
+/// `$model`. The RX-28 goes through the AX-12A table (research R7), and so
+/// does the Protocol 1 MX-64, so it joins the AX sync write: every register
+/// used here has the AX address and size on both. Only its Torque Ctrl Mode
+/// Enable, past the AX table, is read through the `dxl_rs` `Mx64P1`.
 macro_rules! with_actuator {
     ($model:expr, $id:expr, $number:expr, $actuator:ident => $body:expr) => {
         match $model {
-            Model::Ax12a | Model::Rx28 => {
+            Model::Ax12a | Model::Rx28 | Model::Mx64 => {
                 let $actuator = Ax12A::new($id, $number);
+                $body
+            }
+            Model::Mx64V2 => {
+                let $actuator = Mx64Ar::new($id, $number);
                 $body
             }
             Model::Xm430W210 => {
@@ -112,9 +131,10 @@ struct Powered {
     actuator: ActuatorVariant<TorqueOn>,
 }
 
-/// The `dxl_rs` backend. One per process: the C SDK keeps global port state.
+/// The `dxl_rs` backend for a robot of `N` actuators, which sizes its table of
+/// powered actuators. One per process: the C SDK keeps global port state.
 #[derive(Debug)]
-pub struct DxlRs {
+pub struct DxlRs<const N: usize> {
     /// SDK number of each opened port.
     numbers: [PortNumber; MAX_PORTS],
     /// Ports opened.
@@ -122,21 +142,21 @@ pub struct DxlRs {
     /// Sync write lists of each port.
     lists: [Lists; MAX_PORTS],
     /// Actuators switched on, at most one entry each.
-    powered: [Option<Powered>; JOINTS],
+    powered: [Option<Powered>; N],
     /// Whether `(port, id)` is switched on.
     on: [[bool; IDS]; MAX_PORTS],
     /// Whether `(port, id)` got its start goal since it was last switched.
     started: [[bool; IDS]; MAX_PORTS],
 }
 
-impl DxlRs {
+impl<const N: usize> DxlRs<N> {
     /// A backend with no port open.
     pub fn new() -> Self {
         Self {
             numbers: [0; MAX_PORTS],
             opened: 0,
             lists: Default::default(),
-            powered: [const { None }; JOINTS],
+            powered: [const { None }; N],
             on: [[false; IDS]; MAX_PORTS],
             started: [[false; IDS]; MAX_PORTS],
         }
@@ -188,7 +208,7 @@ impl DxlRs {
     ) -> Result<(), BackendError> {
         let known = self.is_on(port, id);
         let free = self.powered.iter().position(Option::is_none);
-        let full = BackendError::HandlesFull { max: JOINTS };
+        let full = BackendError::HandlesFull { max: N };
         if !known && free.is_none() {
             return Err(full);
         }
@@ -197,10 +217,17 @@ impl DxlRs {
             .get_mut(port)
             .ok_or(BackendError::PortNotOpen { port })?;
         let actuator: ActuatorVariant<TorqueOn> = match model {
-            Model::Ax12a | Model::Rx28 => {
+            Model::Ax12a | Model::Rx28 | Model::Mx64 => {
                 let on = enable(Ax12A::new(id, number))?;
                 if !known {
                     lists.one.push(on);
+                }
+                on.into()
+            }
+            Model::Mx64V2 => {
+                let on = enable(Mx64Ar::new(id, number))?;
+                if !known {
+                    lists.two.push(on);
                 }
                 on.into()
             }
@@ -282,7 +309,7 @@ impl DxlRs {
     }
 }
 
-impl Default for DxlRs {
+impl<const N: usize> Default for DxlRs<N> {
     fn default() -> Self {
         Self::new()
     }
@@ -348,6 +375,8 @@ const fn register_name(readable: Readable) -> &'static str {
         Readable::TemperatureLimit => "Temperature Limit",
         Readable::MinVoltageLimit => "Min Voltage Limit",
         Readable::MaxVoltageLimit => "Max Voltage Limit",
+        Readable::ModelNumber => "Model Number",
+        Readable::TorqueCtrlModeEnable => "Torque Ctrl Mode Enable",
     }
 }
 
@@ -443,10 +472,9 @@ fn on_port(port: usize, source: BackendError) -> OpenFailure {
     }
 }
 
-impl Backend for DxlRs {
+impl<const N: usize> Backend for DxlRs<N> {
     const MAX_PORTS: usize = MAX_PORTS;
-    const STATE_READS: &'static [u16] =
-        &[PRESENT_CURRENT.1, PRESENT_VELOCITY.1, PRESENT_POSITION.1];
+    const STATE_READS: &'static [u16] = super::backend::STATE_READS;
 
     /// Claims the SDK before its first call: a second bring-up in one
     /// process is an error, never a second init.
@@ -516,6 +544,19 @@ impl Backend for DxlRs {
             .map_err(|error| sdk_error(&error))
     }
 
+    /// One read instruction, on either protocol.
+    fn read_model_number(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u16, BackendError> {
+        let number = self.number(port)?;
+        let raw = with_actuator!(model, id, number, actuator => actuator.read_register(Readable::ModelNumber))
+            .map_err(|error| sdk_error(&error))?;
+        narrow(register_name(Readable::ModelNumber), raw)
+    }
+
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
         let number = self.number(port)?;
         with_actuator!(model, id, number, actuator => actuator.read_present_position())
@@ -569,12 +610,12 @@ impl Backend for DxlRs {
         goals: &[(u8, u32)],
     ) -> Result<(), BackendError> {
         self.number(port)?;
-        let mut narrow = [(0, 0); JOINTS];
+        let mut narrow = [(0, 0); N];
         let narrow = narrow
             .get_mut(..goals.len())
             .ok_or(BackendError::TooManyGoals {
                 goals: goals.len(),
-                max: JOINTS,
+                max: N,
             })?;
         for (slot, &(id, raw)) in narrow.iter_mut().zip(goals) {
             if !self.is_on(port, id) {
@@ -663,8 +704,10 @@ impl Backend for DxlRs {
         Ok(())
     }
 
-    /// Protocol 1 fails: it has no Operating Mode, and `dxl_rs` has no
-    /// [`Readable`] for its Torque Enable.
+    /// Protocol 2 settings fail on Protocol 1: it has no Operating Mode,
+    /// and `dxl_rs` has no [`Readable`] for its Torque Enable. Torque Ctrl
+    /// Mode Enable is one read through `Mx64P1`; any other model fails
+    /// before any I/O.
     fn read_setting(
         &mut self,
         port: usize,
@@ -673,13 +716,24 @@ impl Backend for DxlRs {
         setting: Setting,
     ) -> Result<u8, BackendError> {
         let number = self.number(port)?;
-        if model.protocol() != Protocol::Two {
-            return Err(BackendError::NoSetting { setting });
-        }
         let register = match setting {
             Setting::OperatingMode => OPERATING_MODE,
             Setting::TorqueEnable => TORQUE_ENABLE,
+            Setting::TorqueCtrlModeEnable => {
+                if model != Model::Mx64 {
+                    return Err(BackendError::NoRegister {
+                        register: setting.name(),
+                    });
+                }
+                let raw = Mx64P1::new(id, number)
+                    .read_register(Readable::TorqueCtrlModeEnable)
+                    .map_err(|error| sdk_error(&error))?;
+                return narrow(setting.name(), raw);
+            }
         };
+        if model.protocol() != Protocol::Two {
+            return Err(BackendError::NoSetting { setting });
+        }
         narrow(setting.name(), read_register(number, register, id)?)
     }
 
@@ -727,7 +781,7 @@ impl Backend for DxlRs {
     ) -> Result<(u32, u32), BackendError> {
         let number = self.number(port)?;
         match model {
-            Model::Ax12a | Model::Rx28 => {
+            Model::Ax12a | Model::Rx28 | Model::Mx64 => {
                 let mut actuator = Ax12A::new(id, number);
                 actuator
                     .read_goal_limits()
@@ -735,10 +789,27 @@ impl Backend for DxlRs {
                 let (cw, ccw) = actuator.goal_limits();
                 Ok((u32::from(cw), u32::from(ccw)))
             }
-            Model::Xm430W210 | Model::Xw430T200 | Model::Xw540T140 | Model::Xw540T260 => {
-                Err(BackendError::NoAngleLimits)
-            }
+            Model::Mx64V2
+            | Model::Xm430W210
+            | Model::Xw430T200
+            | Model::Xw540T140
+            | Model::Xw540T260 => Err(BackendError::NoAngleLimits),
         }
+    }
+
+    /// Unsupported: `dxl_rs` has no public register write, and its C SDK
+    /// bindings are crate-private.
+    fn write_health_limits(
+        &mut self,
+        port: usize,
+        _model: Model,
+        _id: u8,
+        _limits: HealthLimits,
+    ) -> Result<(), BackendError> {
+        self.number(port)?;
+        Err(BackendError::Unsupported {
+            operation: "writing the health limit registers",
+        })
     }
 
     fn close_ports(&mut self) {

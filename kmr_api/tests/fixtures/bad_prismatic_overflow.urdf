@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Bad test descriptor: a prismatic upper limit that fits f32 in m, not in mm. -->
+<robot name="bad">
+  <link name="base"/><link name="l1"/>
+  <joint name="j1" type="prismatic"><parent link="base"/><child link="l1"/><limit lower="0.0" upper="3.5e35" velocity="0.05" effort="20"/></joint>
+</robot>

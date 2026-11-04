@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- Bad test descriptor: one transmission, two joints. -->
+<robot name="bad">
+  <link name="base"/><link name="l1"/>
+  <link name="l2"/>
+  <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/><limit lower="-1.57" upper="1.57" velocity="3.0" effort="1.5"/></joint>
+  <transmission name="t1"><joint name="j1"/><joint name="j2"/><actuator name="m1"/></transmission>
+</robot>

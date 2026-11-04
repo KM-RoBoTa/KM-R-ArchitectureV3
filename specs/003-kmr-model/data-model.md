@@ -21,8 +21,8 @@ build. The **emitted facts** are `const` items in the user crate; they are all t
    (edge case "a field the format does not know").
 4. Joint types: `fixed` skipped; `revolute`, `continuous`, `prismatic` kept; `floating`,
    `planar` stop with "roadmap: non-1-DOF joints" (FR-010).
-5. `<mimic>`, or a `<transmission>` with more than one joint or actuator, stops with
-   "SRS index space: multi-actuator joint" (FR-009).
+5. `<mimic>`, a `<transmission>` with more than one joint or actuator, or a joint or actuator
+   named in two transmissions, stops with "SRS index space: multi-actuator joint" (FR-009).
 6. Unique joint and link names.
 7. Limits: revolute and prismatic need `<limit lower upper velocity effort>`; continuous needs
    `velocity effort` only. `lower <= upper`, `velocity >= 0`, `effort >= 0` (edge cases).
