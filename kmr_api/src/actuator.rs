@@ -61,6 +61,10 @@ pub(crate) fn lower<const N: usize>(
     let mut handles: Vec<BusHandle> = Vec::new();
     let mut actuators = Vec::with_capacity(N);
     for declaration in &declarations {
+        // An empty range names no bus: every live bus carries an actuator.
+        if declaration.len() == 0 {
+            continue;
+        }
         let bus = match handles.iter().position(|seen| *seen == declaration.bus) {
             Some(bus) => bus,
             None => {
@@ -202,6 +206,18 @@ mod tests {
             REVOLUTE,
         );
         assert!(res.is_ok(), "{:?}", res.err());
+    }
+
+    #[test]
+    fn an_empty_range_registers_no_bus() {
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        let spare = Plugin::by_id("SPARE001").build();
+        #[expect(clippy::reversed_empty_ranges, reason = "the empty range is the case")]
+        let none = Xm430W210::ids(5..=1).on(spare);
+        let declared = lower::<1>(vec![Xm430W210::id(1).on(arm), none], REVOLUTE)
+            .expect("the empty range is ignored");
+        assert_eq!(declared.live(), 1);
+        assert_eq!(declared.ports(), [Port::ById("ARM00001")]);
     }
 
     #[test]
