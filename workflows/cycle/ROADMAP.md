@@ -38,14 +38,13 @@ Every crate entered the cycle on 2026-11-03 from spec-kit, already being
 built, so all of them start at step 5 without a step-4 sign-off. Their
 open tasks are in `docs/plans/<module>.md`.
 
-Until `agent/integration` and `agent/replace-spec-kit` are merged into
-`dev`, cut module branches from `agent/replace-spec-kit`, not from `dev`:
-`dev` has neither the integration work nor this workflow.
+`agent-goal` (with `agent/integration` and `agent/replace-spec-kit`) was
+merged into `dev` on 2026-11-04 (f838fcd). Cut module branches from `dev`.
 
 | module | owner | mode | step | branch | last oracle run |
 |---|---|---|---|---|---|
-| kmr_core | delegated | loop | 5 | agent-goal | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
-| kmr_adapters | delegated | loop | 5 | agent-goal | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_core | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_adapters | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | kmr_model | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | kmr_api | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | controllers | mine | pair | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
