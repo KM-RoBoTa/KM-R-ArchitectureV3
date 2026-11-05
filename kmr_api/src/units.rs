@@ -3,6 +3,9 @@
 //! `Q` is rad on a revolute actuator and mm on a prismatic one; `Qd` is rad/s or mm/s. A marker
 //! does not know the kind of the actuator it is written to: `Q::from(Deg(..))` on a prismatic
 //! actuator compiles and is wrong.
+//!
+//! [`Celsius`] and [`Volts`] carry actuator telemetry, read-only (SRS FR-5.11): they convert
+//! into nothing.
 
 use crate::{Q, Qd};
 
@@ -29,6 +32,14 @@ pub struct CmPerS(pub f32);
 /// A speed in metres per second, into `Qd` as mm/s.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MPerS(pub f32);
+
+/// A temperature in degrees Celsius, as an actuator reports it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Celsius(pub f32);
+
+/// A voltage in volts, as an actuator reports its input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Volts(pub f32);
 
 impl From<Deg> for Q {
     fn from(v: Deg) -> Self {

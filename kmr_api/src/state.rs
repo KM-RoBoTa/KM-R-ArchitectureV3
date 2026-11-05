@@ -1,6 +1,6 @@
 use core::num::NonZeroU32;
 
-use crate::{Faults, StateError};
+use crate::{Celsius, Faults, StateError, Volts};
 
 /// Ticks of history kept: every `prev_*` depth is below it.
 pub use kmr_core::state::HISTORY_DEPTH;
@@ -407,5 +407,56 @@ impl<'a, const N: usize> State<'a, N> {
     #[inline]
     pub fn read_every(&self, i: usize) -> Result<NonZeroU32, StateError> {
         self.inner.cadence(i).map_err(StateError::from)
+    }
+
+    // ---- Telemetry (read-only) ----
+    //
+    // Temperature, input voltage and hardware error status, read by the adapter at its own
+    // cadence, slower than the ticks (SRS FR-5.11). `Ok(None)` until the adapter reports a
+    // value, and always on a run without hardware.
+    // DECISION: `Result<Option<_>>` like `age_at`: `Err` for an index past N, `None` for no
+    // reading yet.
+
+    /// Temperature of actuator `i`. `Err` if `i` is out of range.
+    #[inline]
+    pub fn temperature_at(&self, i: usize) -> Result<Option<Celsius>, StateError> {
+        self.inner
+            .telemetry()
+            .temperature_c(i)
+            .map(|celsius| celsius.map(Celsius))
+            .map_err(StateError::from)
+    }
+
+    /// Temperature of every actuator; `None` where there is no reading yet.
+    #[inline]
+    pub fn temperatures(&self) -> [Option<Celsius>; N] {
+        core::array::from_fn(|i| self.temperature_at(i).ok().flatten())
+    }
+
+    /// Input voltage of actuator `i`. `Err` if `i` is out of range.
+    #[inline]
+    pub fn voltage_at(&self, i: usize) -> Result<Option<Volts>, StateError> {
+        self.inner
+            .telemetry()
+            .voltage_v(i)
+            .map(|volts| volts.map(Volts))
+            .map_err(StateError::from)
+    }
+
+    /// Raw hardware error status of actuator `i`, bits defined by its brand (a Dynamixel's
+    /// Hardware Error Status). `Err` if `i` is out of range.
+    #[inline]
+    pub fn hardware_error_at(&self, i: usize) -> Result<Option<u8>, StateError> {
+        self.inner
+            .telemetry()
+            .hardware_error(i)
+            .map_err(StateError::from)
+    }
+
+    /// Ticks since the telemetry of actuator `i` was last refreshed. A reading taken during a
+    /// tick shows from the next one on, aged 1. `Err` if `i` is out of range.
+    #[inline]
+    pub fn telemetry_age_at(&self, i: usize) -> Result<Option<u64>, StateError> {
+        self.inner.telemetry().age(i).map_err(StateError::from)
     }
 }

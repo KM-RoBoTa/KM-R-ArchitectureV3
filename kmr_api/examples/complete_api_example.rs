@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 use kmr_api::{
-    Bus, EachTick, Init, Latest, LatestReader, LatestWriter, Payload, Q, Sensors,
+    Bus, Celsius, EachTick, Init, Latest, LatestReader, LatestWriter, Payload, Q, Sensors,
     StateErrorKind as StateError, Time,
 };
 use std::{
@@ -529,6 +529,20 @@ fn main() -> color_eyre::Result<()> {
         // let imu = sensors.imu();
     }
 
+    fn use_telemetry(time: &Time, robot: &mut State, _sensors: &Sensors) {
+        // Temperature, input voltage and the hardware error status are telemetry: the
+        // adapter reads them at its own, slower cadence, and you can only read them.
+        // `telemetry_age_at(i)` says how many ticks old a reading is.
+        // A run without hardware has none: `Ok(None)`.
+        if time.tick() == 0 {
+            match robot.temperature_at(0) {
+                Ok(Some(Celsius(t))) => println!("actuator 0 is at {t} °C"),
+                Ok(None) => println!("actuator 0: no temperature reading"),
+                Err(e) => println!("{e}"),
+            }
+        }
+    }
+
     // WARN: Think of what happens if an actuator needs to shutdown mid-run for
     // an effect. Also think of read-only actuators (off but we just read its
     // state like in driver-driven displays)
@@ -597,6 +611,7 @@ fn main() -> color_eyre::Result<()> {
         // other half of the same slot: the bridge from thread back to the robot.
         .add_controller_with(EachTick, pad, use_gamepad)
         .add_controller(EachTick, use_sensors)
+        .add_controller(EachTick, use_telemetry)
         .add_controller(EachTick, estop)
         .run()?;
     Ok(())
