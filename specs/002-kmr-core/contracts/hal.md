@@ -26,6 +26,9 @@ pub trait Hal<const N: usize>: seal::Adapter {          // `Hal` with N = 4 unti
     fn torque_on(&mut self) -> Result<(), Self::Error>;
     fn read(&mut self, sample: Sample<'_, N>, faults: &mut Faults<N>) -> Mask<N>;
     fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>);
+    fn telemetry(&mut self, telemetry: &mut Telemetry<N>, faults: &mut Faults<N>) -> Mask<N> {
+        Mask::NONE                                       // default: reads nothing (FR-5.11)
+    }
     fn hold(&mut self, target: Command<'_, N>);
     fn torque_off(&mut self);
     fn close(&mut self);
@@ -42,9 +45,9 @@ convention and review (FR-040 (SRS FR-5.1)). Static dispatch only (FR-010 (SRS F
 |---|---|---|
 | finalization | `check(Overrides::default())` | `run_on` returns `RunError::Hal`, no other call |
 | Init, before user `Init` | guard built, `open`, `zero` | `torque_off`, `close`, return |
-| PostInit, before user `PostInit` | `ping`, `health`, `configure`, `read_all` (into a pushed slot), estop check (K1.9), `torque_on` | `torque_off`, `close`, return |
+| PostInit, before user `PostInit` | `ping`, `health`, `configure`, `read_all` (into a pushed slot), `telemetry`, estop check (K1.9), `torque_on` | `torque_off`, `close`, return |
 | tick, after `begin_tick` | slot pushed (copy of `prev(0)`), `read` | faults only |
-| tick, after `Last` and the limit stage | `write` if the batch is not empty | faults only |
+| tick, after `Last` and the limit stage | `write` if the batch is not empty, then `telemetry` every tick | faults only |
 | shutdown | `hold(target)`, wait if `hold` duration set, then guard | – |
 | emergency stop | guard | – |
 | guard drop (any exit after `open`, unwind included) | `torque_off`, `close` | – |
@@ -74,6 +77,9 @@ Promises:
 6. `Layout` holds the per-actuator cadence as a whole number of ticks (FR-045 (SRS FR-5.3)) and
    the (bus, series) group of each actuator (FR-044).
 7. At most 64 actuators (D4).
+8. `telemetry` decides itself whether a read is due (at most one bus transaction every few
+   ticks), writes `Telemetry` through its `set_*` methods at engine indices, and returns the
+   actuators refreshed; the engine stamps them with `Time::tick` (SRS FR-5.11, 2026-11-05).
 
 ## `Overrides`
 

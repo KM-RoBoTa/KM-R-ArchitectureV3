@@ -17,6 +17,7 @@ use crate::hal::{
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::Q;
+use crate::telemetry::Telemetry;
 use crate::{Robot, Signal, SignalKind, Stages};
 
 pub use crate::runtime::Host;
@@ -301,6 +302,7 @@ pub enum Call {
     TorqueOn,
     Read,
     Write,
+    Telemetry,
     Hold,
     TorqueOff,
     Close,
@@ -381,7 +383,8 @@ pub const SEED: Q = Q(10.0);
 
 /// A fake adapter: logs every call, can fail one bring-up step. Each `read`
 /// moves actuator 0 by one, reports `faults` and refreshes the owned
-/// actuators every `every` reads.
+/// actuators every `every` reads. With a `temperature`, each `telemetry`
+/// call is logged too and refreshes the owned actuators.
 #[derive(Debug)]
 pub struct Recorder<'a, const N: usize> {
     /// Where the calls go.
@@ -402,6 +405,13 @@ pub struct Recorder<'a, const N: usize> {
     /// Calls to `read` so far: call `k` refreshes the owned actuators when
     /// `k` is a multiple of `every`, none otherwise.
     pub reads: u32,
+    /// The temperature `telemetry` call `k` reports on the owned actuators,
+    /// plus `k`. `None`: the default no-op, not logged.
+    // DECISION: opt-in, so the call sequences the other tests pin stay as
+    // they are.
+    pub temperature: Option<f32>,
+    /// Calls to `telemetry` so far.
+    pub telemetry_calls: u32,
 }
 
 impl<'a, const N: usize> Recorder<'a, N> {
@@ -416,6 +426,8 @@ impl<'a, const N: usize> Recorder<'a, N> {
             faults_on: None,
             write_faults: Faults::default(),
             reads: 0,
+            temperature: None,
+            telemetry_calls: 0,
         }
     }
 
@@ -522,6 +534,19 @@ impl<const N: usize> Hal<N> for Recorder<'_, N> {
             written: *command.written,
             batch: actuators,
         }));
+    }
+
+    fn telemetry(&mut self, telemetry: &mut Telemetry<N>, _faults: &mut Faults<N>) -> Mask<N> {
+        let Some(base) = self.temperature else {
+            return Mask::NONE;
+        };
+        self.log.push(Call::Telemetry);
+        let celsius = base + self.telemetry_calls as f32;
+        self.telemetry_calls = self.telemetry_calls.wrapping_add(1);
+        for actuator in self.owned.iter() {
+            telemetry.set_temperature_c(actuator, celsius);
+        }
+        self.owned
     }
 
     fn hold(&mut self, target: Command<'_, N>) {

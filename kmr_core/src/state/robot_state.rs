@@ -11,12 +11,14 @@ use super::joint_state::{Q, Qd, Tau};
 use crate::error::StateError;
 use crate::hal::{Command, Faults, HoldTarget, Mask, Sample, TickFlags, Written};
 use crate::limits::Staged;
+use crate::telemetry::Telemetry;
 
 /// The robot state abstraction.
 ///
 /// It holds both the desired values, and the history of states. The history
 /// keeps [`HISTORY_DEPTH`] ticks, a fixed capacity (SRS section 8, decision
-/// 0001). `N` is the actuator count.
+/// 0001). Next to it, one block of actuator telemetry, read-only (SRS
+/// FR-5.11). `N` is the actuator count.
 pub struct RobotState<const N: usize> {
     pub(in crate::state) desired: Desired<N>,
     pub(in crate::state) history: History<N, HISTORY_DEPTH>,
@@ -29,6 +31,8 @@ pub struct RobotState<const N: usize> {
     // DECISION: a count per actuator rather than a mask per slot, so the
     // slot layout of T038 stays as it is.
     pub(in crate::state) sampled: [u32; N],
+    /// The newest telemetry of each actuator: one block, not one per slot.
+    pub(in crate::state) telemetry: Telemetry<N>,
 }
 
 impl<const N: usize> Default for RobotState<N> {
@@ -39,6 +43,7 @@ impl<const N: usize> Default for RobotState<N> {
             cadence: [NonZeroU32::MIN; N],
             age: [0; N],
             sampled: [0; N],
+            telemetry: Telemetry::default(),
         }
     }
 }
@@ -204,6 +209,12 @@ impl<const N: usize> RobotState<N> {
             .copied()
             .ok_or(StateError::OutOfRange { index, len: N })
     }
+
+    /// The actuators' telemetry, as their adapters last reported it (SRS
+    /// FR-5.11). Read-only: no controller writes it.
+    pub fn telemetry(&self) -> &Telemetry<N> {
+        &self.telemetry
+    }
 }
 
 /// The engine's side: what it hands the adapter and resets once applied.
@@ -281,6 +292,20 @@ impl<const N: usize> RobotState<N> {
             },
             self.history.flags.back_mut().map(|flags| &mut flags.faults),
         )
+    }
+
+    /// The telemetry block for `telemetry` to fill, and the newest slot's
+    /// faults beside it.
+    pub(crate) fn telemetry_mut(&mut self) -> (&mut Telemetry<N>, Option<&mut Faults<N>>) {
+        (
+            &mut self.telemetry,
+            self.history.flags.back_mut().map(|flags| &mut flags.faults),
+        )
+    }
+
+    /// Notes the tick in progress, which telemetry ages are counted from.
+    pub(crate) fn set_tick(&mut self, tick: u64) {
+        self.telemetry.set_tick(tick);
     }
 
     /// The newest slot's faults, for the limit stage and `write`.

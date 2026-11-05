@@ -200,8 +200,8 @@ the internal type paths.
 
 ```
 finalization (claims, no I/O)
-pre_init → open, zero → init → ping, health, configure, read_all → torque_on → post_init
-loop { read → inbound → first → each_tick → last → limits → write → clock bookkeeping → outbound → clear desired → sleep }
+pre_init → open, zero → init → ping, health, configure, read_all, telemetry → torque_on → post_init
+loop { read → inbound → first → each_tick → last → limits → write → telemetry → clock bookkeeping → outbound → clear desired → sleep }
 hold (shutdown with set_hold only) → torque_off → close
 ```
 
@@ -227,6 +227,7 @@ falls back to 1 ms with one warning.
 | 6 | `Last`, then an emergency-stop check | |
 | 6b | limit stage: clamp to the envelopes, check the limits per `Policy`; an `Abort` breach is an emergency stop, no write | |
 | 7 | `Batch` from this tick's write masks; `write` if not empty | one transaction per group |
+| 7b | `telemetry`, written or not; the refreshed actuators are stamped with the tick | at the adapter's cadence, at most one transaction every few ticks |
 | 8 | `end_tick(now)`: tick count, overrun; a late tick sets `OVERRUN` in its slot; then `Stages::outbound` | |
 | 9 | bus check, any signal | |
 | 10 | clear Desired | |
@@ -331,8 +332,19 @@ the adapter, `joint_limit` and `envelope` from the limit stage) and its
 `TickFlags` (`OVERRUN`, `SENSOR_MISSING`, `REMOTE_TIMEOUT`, `UNAUTHORIZED`).
 A new slot starts with none set. `faults(depth)` and `tick_flags(depth)` read
 them; controllers cannot set or clear one. `read` faults show at depth 0 from
-`First` on; `write` and limit faults, and `OVERRUN`, at depth 1 on the next
-tick. The home state is `StateError::Undecided` (core T031).
+`First` on; `write`, `telemetry` and limit faults, and `OVERRUN`, at depth 1
+on the next tick. The home state is `StateError::Undecided` (core T031).
+
+**Telemetry.** Next to History, not in it, `RobotState` keeps one
+`Telemetry` block (`kmr_core/src/telemetry.rs`): per actuator, the newest
+temperature, input voltage and raw hardware error status, each an `Option`,
+and the tick that refreshed it (SRS FR-5.11). It is not a state field: no
+controller writes it, nothing in Desired or the ring holds it. The adapters
+fill it in `Hal::telemetry`, at their own cadence; the engine stamps what
+they return. Controllers read it through `telemetry()` (kmr_api:
+`temperature_at`, `voltage_at`, `hardware_error_at`, `telemetry_age_at`,
+`temperatures`). A reading taken in tick `k` shows from tick `k + 1` on,
+aged 1; the one taken in `PostInit` is stamped tick 0.
 
 ## Robot model
 
@@ -399,17 +411,18 @@ list, and `run()` is `run_on` of `NoHardware` alone.
 |---|---|
 | `run()` finalization, no I/O | `check` → `Claim`: owned indices, groups, read cadence, costs |
 | Init, before user controllers | `open`, `zero` |
-| PostInit, before user controllers | `ping`, `health`, `configure`, `read_all`, `torque_on` |
+| PostInit, before user controllers | `ping`, `health`, `configure`, `read_all`, `telemetry`, `torque_on` |
 | Each tick, before `First` | `read` into a copy of the previous sample |
-| Each tick, after `Last` | `write` of the written actuators in group order, then Desired is cleared |
+| Each tick, after `Last` | `write` of the written actuators in group order, then `telemetry`, then Desired is cleared |
 | Shutdown | `hold` (only after `set_hold`), `torque_off`, `close` |
 | Emergency stop | `torque_off`, `close` |
 
 Bring-up calls return the member's error and `run()` returns it. Once `open`
 was called, every exit, a controller panic included, ends with `torque_off`
-then `close`. `read` and `write` never fail: they set per-actuator fault bits
-(`stale`, `bus_error`, `offline`, `rejected`) and never allocate, lock, sleep
-or retry. The write mask is kept per field (`Written { q, qd, tau, kp, kd }`),
+then `close`. `read`, `write` and `telemetry` never fail: they set
+per-actuator fault bits (`stale`, `bus_error`, `offline`, `rejected`) and
+never allocate, lock, sleep or retry. `telemetry` has a default that reads
+nothing, so a member without telemetry implements nothing for it. The write mask is kept per field (`Written { q, qd, tau, kp, kd }`),
 so a member sends only the field its actuator's mode takes; a Dynamixel
 member ignores `Kp` and `Kd`.
 

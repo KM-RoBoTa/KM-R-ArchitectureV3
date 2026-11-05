@@ -50,7 +50,7 @@
 //!   in a single tick is the job of the deferred per-tick write-mask, not this
 //!   layer.
 
-use crate::{Kd, Kp, Q, Qd, State, StateError, Tau};
+use crate::{Celsius, Kd, Kp, Q, Qd, State, StateError, Tau};
 
 impl<const N: usize> State<'_, N> {
     /// View a fixed set of actuator `indices` as a [`GroupView`]. Indices may be
@@ -152,6 +152,16 @@ impl<'a, const N: usize, const K: usize> GroupView<'a, N, K> {
         self.indices
             .into_iter()
             .any(|index| self.robot.stale_at(index))
+    }
+
+    // ---- Telemetry ----
+
+    /// Temperature of each group actuator, in group order (SRS FR-5.11). `None` where there is
+    /// no reading yet, or for an index out of range.
+    #[inline]
+    pub fn temperatures(&self) -> [Option<Celsius>; K] {
+        self.indices
+            .map(|index| self.robot.temperature_at(index).ok().flatten())
     }
 
     // ---- Q (position) ----

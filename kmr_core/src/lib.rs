@@ -107,6 +107,7 @@ pub(crate) mod sealed;
 pub(crate) mod sensors;
 pub(crate) mod signal;
 pub mod state;
+pub mod telemetry;
 #[cfg(any(test, feature = "test-util"))]
 #[doc(hidden)]
 pub mod test_util;
