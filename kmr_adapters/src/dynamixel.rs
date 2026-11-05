@@ -28,7 +28,9 @@ use kmr_core::telemetry::Telemetry;
 use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
-use backend::{Backend, BackendError, Fault, POSITION_MODE, PortSpec, Setting, Undeclared};
+use backend::{
+    Backend, BackendError, Fault, POSITION_MODE, PortSpec, RamSetting, Setting, Undeclared,
+};
 use io::{Goals, Groups, Outcome};
 use port::DevicePath;
 
@@ -36,8 +38,8 @@ use port::DevicePath;
 pub use self::dxl_rs_v2::DxlRsV2;
 use config::Placed;
 pub use config::{
-    Actuator, Bus, DEFAULT_READ_EVERY, Declared, HealthLimits, Mode, Model, Placement, Protocol,
-    Series, Table, TableError, Torque, Zero,
+    Actuator, Bus, DEFAULT_READ_EVERY, Declared, Gains, HealthLimits, Mode, Model, Placement,
+    Protocol, Series, Settings, Table, TableError, Torque, Zero,
 };
 pub(crate) use config::{Message, fail, position, same};
 
@@ -284,6 +286,62 @@ pub enum DynamixelError {
         written: HealthLimits,
         /// Limits read back.
         read: HealthLimits,
+    },
+    /// A setting for a model whose control table has no register for it.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: the {} has no {register} register",
+        .model.name()
+    )]
+    NoSettingRegister {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Model of the actuator.
+        model: Model,
+        /// ROBOTIS name of the register.
+        register: &'static str,
+    },
+    /// A setting above what the model's register takes.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: {register} {value} above the {} maximum {max}",
+        .model.name()
+    )]
+    SettingRange {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Model of the actuator.
+        model: Model,
+        /// ROBOTIS name of the register.
+        register: &'static str,
+        /// Value set.
+        value: u16,
+        /// Highest value the register takes.
+        max: u16,
+    },
+    /// A setting read back other than written.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: {register} read back {read}, written {written}"
+    )]
+    SettingMismatch {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// ROBOTIS name of the register.
+        register: &'static str,
+        /// Value written.
+        written: u16,
+        /// Value read back.
+        read: u16,
     },
     /// The actuator reports a hardware error: Hardware Error Status on
     /// Protocol 2, its status packet's error bits on Protocol 1.
@@ -803,6 +861,58 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         io::position_goal(actuator, q).filter(|&raw| self.within_limits(index, raw))
     }
 
+    /// The registers and values actuator `index`'s settings write, in
+    /// order: P, I and D Gain, then LED.
+    fn ram_writes(&self, index: usize) -> [Option<(RamSetting, u16)>; 4] {
+        let settings = self.actuators.settings(index);
+        let gain = |setting, pick: fn(&Gains) -> u16| {
+            settings.gains.as_ref().map(|gains| (setting, pick(gains)))
+        };
+        [
+            gain(RamSetting::PGain, |gains| gains.p),
+            gain(RamSetting::IGain, |gains| gains.i),
+            gain(RamSetting::DGain, |gains| gains.d),
+            settings.led.map(|on| (RamSetting::Led, u16::from(on))),
+        ]
+    }
+
+    /// The `check` error of actuator `index`'s settings, if any: a register
+    /// its model lacks, or a gain above its range. No I/O.
+    fn refused_setting(&self, index: usize) -> Option<DynamixelError> {
+        let actuator = self.actuators.get(index)?;
+        let (bus, id, model) = (self.label(actuator.bus), actuator.id, actuator.model);
+        self.ram_writes(index)
+            .into_iter()
+            .flatten()
+            .find_map(|(setting, value)| {
+                let max = match setting {
+                    RamSetting::Led => 1,
+                    _ => model.max_gain().unwrap_or(0),
+                };
+                if !setting.exists_on(model) {
+                    Some(DynamixelError::NoSettingRegister {
+                        actuator: index,
+                        bus,
+                        id,
+                        model,
+                        register: setting.name(),
+                    })
+                } else if value > max {
+                    Some(DynamixelError::SettingRange {
+                        actuator: index,
+                        bus,
+                        id,
+                        model,
+                        register: setting.name(),
+                        value,
+                        max,
+                    })
+                } else {
+                    None
+                }
+            })
+    }
+
     /// The bring-up error of the actuator a read `failed` on, if any. A
     /// failed group transaction names the bus, not one of its actuators.
     fn read_failure(&self, failed: Option<(usize, Outcome)>) -> Result<(), DynamixelError> {
@@ -818,6 +928,43 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     }
 }
 
+#[expect(
+    private_bounds,
+    reason = "the SDK seam stays private: this helper serves the Hal impl only"
+)]
+impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
+    /// Writes the settings of actuator `index`, then reads each back.
+    fn apply_settings(&mut self, index: usize) -> Result<(), DynamixelError> {
+        let Some(&actuator) = self.actuators.get(index) else {
+            return Ok(());
+        };
+        let (port, model, id) = (actuator.bus, actuator.model, actuator.id);
+        let writes = self.ram_writes(index);
+        for &(setting, value) in writes.iter().flatten() {
+            self.backend
+                .write_ram(port, model, id, setting, value)
+                .map_err(|error| self.actuator_error(index, error))?;
+        }
+        for &(setting, written) in writes.iter().flatten() {
+            let read = self
+                .backend
+                .read_ram(port, model, id, setting)
+                .map_err(|error| self.actuator_error(index, error))?;
+            if read != written {
+                return Err(DynamixelError::SettingMismatch {
+                    actuator: index,
+                    bus: self.label(port),
+                    id,
+                    register: setting.name(),
+                    written,
+                    read,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<B, const NB: usize, const N: usize> seal::Adapter for Dynamixel<B, NB, N> {}
 
 impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N> {
@@ -827,7 +974,8 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// ids from 0; each bus is read every `read_every` ticks, else every
     /// [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no cadence: it is
     /// a table field (core K3.8). A model the backend has no control table
-    /// for is refused here, before any I/O.
+    /// for is refused here, before any I/O, and so is a setting its model
+    /// has no register for or a gain above the register's range.
     fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
         if let Some((actuator, index)) = self.actuators.past() {
             return Err(DynamixelError::PastTheRobot {
@@ -849,6 +997,13 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                     number: actuator.model.number(),
                 },
             });
+        }
+        if let Some(error) = self
+            .actuators
+            .iter()
+            .find_map(|(index, _)| self.refused_setting(index))
+        {
+            return Err(error);
         }
         if self.live > B::MAX_PORTS {
             return Err(DynamixelError::TooManyBuses {
@@ -1126,6 +1281,10 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// nor both the model's multi-turn value, read here and kept as that
     /// range; on the MX-64, Torque Ctrl Mode Enable 0 too, its counterpart
     /// of position mode. Its torque state is not read.
+    ///
+    /// Then, every check passed, writes each actuator's [`Settings`], the
+    /// torque still off, and reads every one back: another value read is
+    /// `SettingMismatch`.
     fn configure(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
@@ -1221,6 +1380,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 }
                 _ => {}
             }
+        }
+        for index in self.actuators.owned().iter() {
+            self.apply_settings(index)?;
         }
         Ok(())
     }

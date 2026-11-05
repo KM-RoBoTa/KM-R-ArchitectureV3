@@ -457,6 +457,11 @@ or at the raw position the table names. The vendor SDK sits behind a private
 refuses what `DxlRsV2`, the backend on the pure-Rust `dxl_rs_v2`, refuses;
 `DxlRsV2` itself has contract tests on `dxl_rs_v2`'s scripted serial line.
 
+Declared actuators may carry RAM settings, `kmr_api`'s `Ids::gains(p, i, d)`
+and `Ids::led(on)`: `check` refuses one the model has no register for, or a
+gain above its range, before any I/O; `configure` writes them, torque off,
+after every mode check, then reads each back.
+
 Telemetry costs the Dynamixel member one bus transaction per 50 ticks at
 most: every register of every actuator once in PostInit, then round-robin,
 one sync read of one register per Protocol 2 group or one read per

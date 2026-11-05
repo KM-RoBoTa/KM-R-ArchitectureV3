@@ -16,6 +16,12 @@ read the same bus (kmr_adapters T073); CubeMars copies what its replies carry (T
 for FR-13.4 (`overheat`, `undervoltage`) still wait for core T044: a fault shows as its hardware
 error bits.
 
+Phase 3, RAM part, done (kmr_adapters T075, kmr_api T070): `Ids::gains(p, i, d)` and
+`Ids::led(on)`, raw register values, checked against the model at `check` (no I/O), written in
+`configure` torque off and read back. `.speed_limit` is not wired: `dxl_rs_v2`'s `SpeedLimit` is
+rad/s or unlimited over two registers with different meanings per protocol, no plain unit to
+expose yet. EEPROM settings still wait for B3. A preset table (`Placement`) sets no RAM setting yet.
+
 ## Verdict
 
 **Feasible, and cheaper than it looks for the hot path.** All v1 calls live in one

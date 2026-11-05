@@ -11,18 +11,18 @@ use core::time::Duration;
 use std::io::ErrorKind;
 
 use ::dxl_rs_v2::field::{
-    HardwareErrorStatus, PresentCurrent, PresentPosition, PresentTemperature, PresentVelocity,
-    PresentVoltage, Raw,
+    DGain, HardwareErrorStatus, Led, PGain, PresentCurrent, PresentPosition, PresentTemperature,
+    PresentVelocity, PresentVoltage, Raw,
 };
 use ::dxl_rs_v2::{
-    ActuatorRef, Bus, Clock, Config, Error, FaultError, Id, IdSet, ModelNumber, P1, P2,
+    ActuatorRef, Bus, Clock, Config, Error, FaultError, Gain, Id, IdSet, ModelNumber, P1, P2,
     ProtocolError, SerialTransport, SetupError, StatusReport, StdClock, TemperatureError,
     TorqueState, Transport, TransportError, ValidationError, VoltageError,
 };
 
 use super::backend::{
     Backend, BackendError, Fault, GoalRegister, Health, LimitRegisters, OpenFailure, PortSpec,
-    RawState, Reading, Register, Reply, Setting, Undeclared, Vital, Wire,
+    RamSetting, RawState, Reading, Register, Reply, Setting, Undeclared, Vital, Wire,
 };
 use super::config::{HealthLimits, Model, Protocol};
 
@@ -63,6 +63,22 @@ const fn goal_position(model: Model) -> Register {
         Protocol::Two => Register {
             address: 116,
             size: 4,
+        },
+    }
+}
+
+/// I Gain of `model`, Position I Gain on Protocol 2: address and width.
+// DECISION: written raw at the e-Manual address: dxl_rs_v2 has typed P and D
+// gain fields and no I gain. A RAM register, so no cache of v2 goes stale.
+const fn i_gain(model: Model) -> Register {
+    match model.protocol() {
+        Protocol::One => Register {
+            address: 27,
+            size: 1,
+        },
+        Protocol::Two => Register {
+            address: 82,
+            size: 2,
         },
     }
 }
@@ -816,6 +832,68 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
         Ok(value[0])
     }
 
+    /// One acknowledged write: P and D Gain and LED through their typed
+    /// fields, I Gain raw ([`i_gain`]).
+    fn write_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+        value: u16,
+    ) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        if !setting.exists_on(model) {
+            return Err(BackendError::NoRegister {
+                register: setting.name(),
+            });
+        }
+        on_bus!(open, model, |bus| {
+            let mut actuator = held(bus, target)?;
+            match setting {
+                RamSetting::PGain => actuator.write(PGain, Gain::from_raw(value)),
+                RamSetting::DGain => actuator.write(DGain, Gain::from_raw(value)),
+                RamSetting::Led => actuator.write(Led, value != 0),
+                RamSetting::IGain => {
+                    let register = i_gain(model);
+                    if register.size < 2 && value > u16::from(u8::MAX) {
+                        return Err(BackendError::Refused {
+                            reason: "a value wider than its register",
+                        });
+                    }
+                    return write_register(&mut actuator, register, value);
+                }
+            }
+            .map_err(backend_error)
+        })
+    }
+
+    /// One read, as `write_ram` writes it.
+    fn read_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+    ) -> Result<u16, BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        if !setting.exists_on(model) {
+            return Err(BackendError::NoRegister {
+                register: setting.name(),
+            });
+        }
+        on_bus!(open, model, |bus| {
+            let mut actuator = held(bus, target)?;
+            match setting {
+                RamSetting::PGain => actuator.read(PGain).map(Gain::raw),
+                RamSetting::DGain => actuator.read(DGain).map(Gain::raw),
+                RamSetting::Led => actuator.read(Led).map(u16::from),
+                RamSetting::IGain => return read_register(&mut actuator, i_gain(model)),
+            }
+            .map_err(backend_error)
+        })
+    }
+
     /// Hardware Error Status (Protocol 2), Present Input Voltage and Present
     /// Temperature through their fields, the three limits raw: six reads on
     /// Protocol 2, five on Protocol 1.
@@ -949,6 +1027,27 @@ impl<const N: usize> Backend for DxlRsV2<N> {
         setting: Setting,
     ) -> Result<u8, BackendError> {
         self.0.read_setting(port, model, id, setting)
+    }
+
+    fn write_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+        value: u16,
+    ) -> Result<(), BackendError> {
+        self.0.write_ram(port, model, id, setting, value)
+    }
+
+    fn read_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+    ) -> Result<u16, BackendError> {
+        self.0.read_ram(port, model, id, setting)
     }
 
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError> {

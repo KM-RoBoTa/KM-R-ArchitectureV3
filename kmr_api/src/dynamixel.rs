@@ -6,9 +6,9 @@
 //! Robot::new().add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(spine))
 //! ```
 //!
-//! Each declared actuator is powered, in position mode, zero at the model's centre, unless set
-//! otherwise before [`on`](Ids::on). Declaring needs no feature; driving them needs
-//! `kmr_api/dynamixel`.
+//! Each declared actuator is powered, in position mode, zero at the model's centre, its gains and
+//! LED as it holds them, unless set otherwise before [`on`](Ids::on). Declaring needs no feature;
+//! driving them needs `kmr_api/dynamixel`.
 
 use core::ops::RangeInclusive;
 
@@ -29,6 +29,8 @@ pub use kmr_adapters::dynamixel::{
     Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
 };
 
+use kmr_adapters::dynamixel::{Gains, Settings};
+
 use crate::BusHandle;
 use crate::actuator::{Actuators, Driver};
 
@@ -40,6 +42,7 @@ pub struct Ids {
     mode: Mode,
     torque: Torque,
     zero: Zero,
+    settings: Settings,
 }
 
 impl Ids {
@@ -51,6 +54,7 @@ impl Ids {
             mode: Mode::Position,
             torque: Torque::On,
             zero: Zero::DEFAULT,
+            settings: Settings::default(),
         }
     }
 
@@ -72,6 +76,32 @@ impl Ids {
         Self { zero, ..self }
     }
 
+    /// Writes these P, I and D gains at bring-up, before the torque goes on, as register values:
+    /// 0 to 254 on the MX-64, 0 to 16383 on Protocol 2. `run()` refuses them on the AX-12A and
+    /// RX-28, which have no gain register, and above the model's range.
+    pub fn gains(self, p: u16, i: u16, d: u16) -> Self {
+        let gains = Some(Gains { p, i, d });
+        Self {
+            settings: Settings {
+                gains,
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Switches the LED on or off at bring-up. `run()` refuses it on the XW series, which has no
+    /// LED.
+    pub fn led(self, on: bool) -> Self {
+        Self {
+            settings: Settings {
+                led: Some(on),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
     /// These actuators on `bus`.
     pub fn on(self, bus: BusHandle) -> Actuators {
         Actuators {
@@ -82,6 +112,7 @@ impl Ids {
                 mode: self.mode,
                 torque: self.torque,
                 zero: self.zero,
+                settings: self.settings,
             },
         }
     }

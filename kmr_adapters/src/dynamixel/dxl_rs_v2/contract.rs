@@ -684,3 +684,49 @@ fn telemetry_reads_allocate_nothing() {
     assert_eq!(counted, 0, "{counted} allocations in {ROUNDS} rounds");
     assert_eq!(out, [Err(BackendError::Timeout); 2], "nothing answers");
 }
+
+#[test]
+fn ram_settings_are_written_then_read_back_at_their_addresses() {
+    let time = MockTime::new();
+    let mut two = Line::with_capacity(&time);
+    xm_setup(&mut two, 1, 1);
+    for packet in 5..=8 {
+        two.reply_to(packet, status2(1, 0, &[]).bytes());
+    }
+    two.reply_to(9, status2(1, 0, &800_u16.to_le_bytes()).bytes())
+        .reply_to(10, status2(1, 0, &20_u16.to_le_bytes()).bytes())
+        .reply_to(11, status2(1, 0, &4000_u16.to_le_bytes()).bytes())
+        .reply_to(12, status2(1, 0, &[1]).bytes());
+    let mut backend = backend(Line::with_capacity(&time), two);
+    backend.declare(0, &[(1, XM)]).unwrap();
+    let settings = [
+        (RamSetting::PGain, 800, 84),
+        (RamSetting::IGain, 20, 82),
+        (RamSetting::DGain, 4000, 80),
+        (RamSetting::Led, 1, 65),
+    ];
+
+    for (setting, value, _) in settings {
+        assert_eq!(backend.write_ram(0, XM, 1, setting, value), Ok(()));
+    }
+    for (setting, value, _) in settings {
+        assert_eq!(backend.read_ram(0, XM, 1, setting), Ok(value));
+    }
+    assert_eq!(
+        backend.write_ram(0, Model::Xw540T140, 1, RamSetting::Led, 1),
+        Err(BackendError::NoRegister { register: "LED" })
+    );
+
+    let (_, two) = lines(&mut backend);
+    for (setting, value, address) in settings {
+        let data = value.to_le_bytes();
+        let data = if setting == RamSetting::Led {
+            &data[..1]
+        } else {
+            &data[..]
+        };
+        let write = write2(1, address, data);
+        assert!(find(two.sent(), write.bytes()).is_some(), "{setting:?}");
+    }
+    assert_eq!(two.unread(), 0);
+}

@@ -17,7 +17,7 @@ use std::path::Path;
 
 use super::backend::{
     Backend, BackendError, GoalRegister, Health, LimitRegisters, OpenFailure, POSITION_MODE,
-    PortSpec, RawState, Reading, Setting, Undeclared, Vital, Wire,
+    PortSpec, RamSetting, RawState, Reading, Setting, Undeclared, Vital, Wire,
 };
 use super::config::{HealthLimits, Model, Protocol};
 use super::units;
@@ -31,11 +31,13 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 14;
+const KINDS: usize = 16;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Variants of [`GoalRegister`].
 const REGISTERS: usize = GoalRegister::ALL.len();
+/// Variants of [`RamSetting`].
+const RAM: usize = 4;
 /// Device path bytes kept per port; longer paths are cut.
 const PATH: usize = 256;
 
@@ -100,6 +102,10 @@ pub(crate) enum Call {
     ReadAngleLimits,
     /// [`Backend::write_health_limits`].
     WriteHealthLimits,
+    /// [`Backend::write_ram`]; its entry is `(id, value)`.
+    WriteRam,
+    /// [`Backend::read_ram`].
+    ReadRam,
     /// [`Backend::close_ports`].
     ClosePorts,
 }
@@ -201,6 +207,11 @@ pub(crate) struct Scripted {
     /// Per actuator, whether a limit write answers but leaves the
     /// registers as they were.
     stuck: [[bool; IDS]; PORTS],
+    /// Per actuator, its RAM settings, in [`RamSetting`] order.
+    ram: [[[u16; RAM]; IDS]; PORTS],
+    /// Per actuator, whether a RAM write answers but leaves the register as
+    /// it was.
+    stuck_ram: [[bool; IDS]; PORTS],
     /// Errors the faults name, `errored` of them used: a fault holds a slot,
     /// so the per-actuator table stays small.
     errors: [BackendError; ERRORS],
@@ -247,6 +258,8 @@ impl Scripted {
             limits: [[None; IDS]; PORTS],
             missing: [[false; IDS]; PORTS],
             stuck: [[false; IDS]; PORTS],
+            ram: [[[0; RAM]; IDS]; PORTS],
+            stuck_ram: [[false; IDS]; PORTS],
             errors: [BackendError::Timeout; ERRORS],
             errored: 0,
             faults: [[[0; KINDS]; IDS]; PORTS],
@@ -263,6 +276,25 @@ impl Scripted {
             *stuck = true;
         }
         self
+    }
+
+    /// RAM writes to actuator `id` answer but change nothing, as an
+    /// actuator ignoring them would.
+    pub(crate) fn stuck_ram(&mut self, port: usize, id: u8) -> &mut Self {
+        if let Some(stuck) = at(&mut self.stuck_ram, port, id) {
+            *stuck = true;
+        }
+        self
+    }
+
+    /// RAM register `setting` of actuator `id`; 0 outside the script.
+    pub(crate) fn ram(&self, port: usize, id: u8, setting: RamSetting) -> u16 {
+        self.ram
+            .get(port)
+            .and_then(|ids| ids.get(usize::from(id)))
+            .and_then(|registers| registers.get(setting as usize))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Health limits actuator `id` holds now.
@@ -1040,6 +1072,59 @@ impl Backend for Scripted {
             health.temperature_limit_c = limits.temperature_c;
         }
         Ok(())
+    }
+
+    /// Refused as `DxlRsV2` refuses it: a register the model lacks, before
+    /// sending.
+    fn write_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+        value: u16,
+    ) -> Result<(), BackendError> {
+        let entry = (id, u32::from(value));
+        self.record(
+            Call::WriteRam,
+            port,
+            Some(model),
+            1,
+            false,
+            iter::once(entry),
+        );
+        if !setting.exists_on(model) {
+            return Err(BackendError::NoRegister {
+                register: setting.name(),
+            });
+        }
+        self.answer(Call::WriteRam, port, id)?;
+        if get(&self.stuck_ram, port, id) {
+            return Ok(());
+        }
+        if let Some(slot) =
+            at(&mut self.ram, port, id).and_then(|registers| registers.get_mut(setting as usize))
+        {
+            *slot = value;
+        }
+        Ok(())
+    }
+
+    fn read_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+    ) -> Result<u16, BackendError> {
+        self.note(Call::ReadRam, port, model, id, false);
+        if !setting.exists_on(model) {
+            return Err(BackendError::NoRegister {
+                register: setting.name(),
+            });
+        }
+        self.answer(Call::ReadRam, port, id)?;
+        Ok(self.ram(port, id, setting))
     }
 
     fn close_ports(&mut self) {

@@ -439,6 +439,43 @@ impl fmt::Display for Setting {
     }
 }
 
+/// A RAM register `configure` writes, then reads back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RamSetting {
+    /// P Gain; Position P Gain on Protocol 2.
+    PGain,
+    /// I Gain; Position I Gain on Protocol 2.
+    IGain,
+    /// D Gain; Position D Gain on Protocol 2.
+    DGain,
+    /// LED, 1 on.
+    Led,
+}
+
+impl RamSetting {
+    /// Every register, in the order `configure` writes them.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 4] = [Self::PGain, Self::IGain, Self::DGain, Self::Led];
+
+    /// The register's ROBOTIS name, Protocol 1 wording.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::PGain => "P Gain",
+            Self::IGain => "I Gain",
+            Self::DGain => "D Gain",
+            Self::Led => "LED",
+        }
+    }
+
+    /// Whether the control table of `model` has the register.
+    pub(crate) const fn exists_on(self, model: Model) -> bool {
+        match self {
+            Self::Led => model.has_led(),
+            Self::PGain | Self::IGain | Self::DGain => model.max_gain().is_some(),
+        }
+    }
+}
+
 /// Operating Mode value of position mode, `0..=4095` (X series).
 pub(crate) const POSITION_MODE: u8 = 3;
 
@@ -598,6 +635,27 @@ pub(crate) trait Backend {
         id: u8,
         setting: Setting,
     ) -> Result<u8, BackendError>;
+
+    /// Writes `value` to RAM register `setting` of one actuator, with or
+    /// without its torque on. Refused before sending when the model has no
+    /// such register.
+    fn write_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+        value: u16,
+    ) -> Result<(), BackendError>;
+
+    /// RAM register `setting` of one actuator.
+    fn read_ram(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        setting: RamSetting,
+    ) -> Result<u16, BackendError>;
 
     /// Error status, voltage and temperature of one actuator, and its
     /// voltage and temperature limits.

@@ -30,13 +30,13 @@ use kmr_core::telemetry::Telemetry;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 use super::backend::{
-    Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Vital, Wire,
+    Backend, BackendError, GoalRegister, Health, PortSpec, RamSetting, RawState, Vital, Wire,
 };
 use super::scripted::{self, Call, HEALTHY, Record, Scripted};
 use super::telemetry::TELEMETRY_EVERY;
 use super::{
-    Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, HealthLimits, Mode, Model,
-    PING_ATTEMPTS, Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero,
+    Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Gains, HealthLimits, Mode, Model,
+    PING_ATTEMPTS, Placed, Placement, Protocol, Settings, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero,
     declared_costs, io as tick, port, units,
 };
 use crate::binding::{Binding, Port};
@@ -1315,6 +1315,7 @@ fn torque_on_zeroes_goal_velocity_and_goal_current() -> Result<(), DynamixelErro
             table,
             at,
             limits: [None; N],
+            settings: [Settings::default(); N],
         },
     );
     adapter
@@ -4440,4 +4441,229 @@ fn ten_thousand_ticks_of_telemetry_allocate_nothing() -> Result<(), DynamixelErr
     assert_eq!(counted, 0, "{counted} allocations in {TICKS} ticks");
     assert!(adapter.backend.count(Call::ReadVitals) >= TICKS / EVERY);
     Ok(())
+}
+
+// ── dxl_rs_v2 migration phase 3: RAM settings at bring-up ───────────────────
+
+/// Gains well inside every Protocol 2 model's range.
+const GAINS: Gains = Gains {
+    p: 800,
+    i: 20,
+    d: 4000,
+};
+
+/// `table` in order, actuator `row` given `settings`.
+fn set<const NB: usize>(table: Table<NB, N>, row: usize, settings: Settings) -> Placement<NB, N> {
+    let mut placement = table.in_order();
+    placement.settings[row] = settings;
+    placement
+}
+
+/// `table` of `model` on one bus, read every tick.
+const fn chain_of(model: Model) -> Table<1, N> {
+    Table {
+        buses: one_bus("chain", NonZeroU32::new(1)),
+        actuators: chain(model),
+    }
+}
+
+#[test]
+fn configure_writes_the_settings_torque_off_then_reads_each_back() -> Result<(), DynamixelError> {
+    let settings = Settings {
+        gains: Some(GAINS),
+        led: Some(true),
+    };
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 2, settings));
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.configure()?;
+
+    let ram = |setting| adapter.backend.ram(0, id(2), setting);
+    assert_eq!(RamSetting::ALL.map(ram), [GAINS.p, GAINS.i, GAINS.d, 1]);
+    assert_eq!(adapter.backend.ram(0, id(1), RamSetting::Led), 0);
+    assert!(!adapter.backend.torqued(0, id(2)));
+    let order = adapter
+        .backend
+        .calls()
+        .iter()
+        .filter(|record| matches!(record.call, Call::WriteRam | Call::ReadRam))
+        .map(|record| (record.call, record.id));
+    let writes = iter::repeat_n((Call::WriteRam, id(2)), 4);
+    assert!(order.eq(writes.chain(iter::repeat_n((Call::ReadRam, id(2)), 4))));
+    let last_check = adapter
+        .backend
+        .calls()
+        .iter()
+        .rposition(|record| record.call == Call::ReadSetting);
+    let first_write = adapter
+        .backend
+        .calls()
+        .iter()
+        .position(|record| record.call == Call::WriteRam);
+    assert!(
+        last_check < first_write,
+        "every mode check before any write"
+    );
+    Ok(())
+}
+
+#[test]
+fn no_settings_write_nothing() -> Result<(), DynamixelError> {
+    let mut adapter = rig(MIX_TABLE);
+    configured(&mut adapter)?;
+
+    assert_eq!(adapter.backend.count(Call::WriteRam), 0);
+    assert_eq!(adapter.backend.count(Call::ReadRam), 0);
+    Ok(())
+}
+
+#[test]
+fn protocol_1_mx64_gains_are_written_too() -> Result<(), DynamixelError> {
+    let gains = Gains {
+        p: 32,
+        i: 0,
+        d: 254,
+    };
+    let settings = Settings {
+        gains: Some(gains),
+        led: None,
+    };
+    let placement = set(chain_of(Model::Mx64).check(), 0, settings);
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.configure()?;
+
+    assert_eq!(adapter.backend.ram(0, id(0), RamSetting::DGain), 254);
+    assert_eq!(adapter.backend.count(Call::WriteRam), 3);
+    Ok(())
+}
+
+#[test]
+fn a_setting_read_back_other_than_written_is_an_error_naming_the_register() {
+    let settings = Settings {
+        gains: Some(GAINS),
+        led: None,
+    };
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 1, settings));
+    adapter.check(Overrides::default()).unwrap();
+    mark_open(&mut adapter);
+    adapter.backend.stuck_ram(0, id(1));
+
+    let error = adapter.configure().unwrap_err();
+
+    assert_eq!(
+        error,
+        DynamixelError::SettingMismatch {
+            actuator: 1,
+            bus: "x",
+            id: id(1),
+            register: "P Gain",
+            written: GAINS.p,
+            read: 0,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "actuator 1: id 2 on bus x: P Gain read back 0, written 800"
+    );
+}
+
+#[test]
+fn check_refuses_a_setting_the_model_has_no_register_for_before_any_io() {
+    let led = Settings {
+        gains: None,
+        led: Some(true),
+    };
+    let gains = Settings {
+        gains: Some(GAINS),
+        led: None,
+    };
+    let cases = [
+        (
+            chain_of(Model::Xw540T140).check(),
+            led,
+            Model::Xw540T140,
+            "LED",
+        ),
+        (
+            chain_of(Model::Ax12a).check(),
+            gains,
+            Model::Ax12a,
+            "P Gain",
+        ),
+        (chain_of(Model::Rx28).check(), gains, Model::Rx28, "P Gain"),
+    ];
+    for (table, settings, model, register) in cases {
+        let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(table, 3, settings));
+
+        let error = adapter.check(Overrides::default()).err();
+
+        assert_eq!(
+            error,
+            Some(DynamixelError::NoSettingRegister {
+                actuator: 3,
+                bus: "chain",
+                id: id(3),
+                model,
+                register,
+            })
+        );
+        assert!(adapter.backend.calls().is_empty());
+    }
+    let mut adapter = Dynamixel::<_, _, N>::new(
+        Scripted::new(),
+        set(chain_of(Model::Xw540T140).check(), 0, led),
+    );
+    let message = adapter.check(Overrides::default()).unwrap_err().to_string();
+    assert_eq!(
+        message,
+        "actuator 0: id 1 on bus chain: the XW540-T140 has no LED register"
+    );
+}
+
+#[test]
+fn check_refuses_a_gain_above_the_model_s_range() {
+    let wide = |gains| Settings {
+        gains: Some(gains),
+        led: None,
+    };
+    let mx = set(
+        chain_of(Model::Mx64).check(),
+        0,
+        wide(Gains {
+            p: 32,
+            i: 255,
+            d: 0,
+        }),
+    );
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), mx);
+    assert_eq!(
+        adapter.check(Overrides::default()).err(),
+        Some(DynamixelError::SettingRange {
+            actuator: 0,
+            bus: "chain",
+            id: id(0),
+            model: Model::Mx64,
+            register: "I Gain",
+            value: 255,
+            max: 254,
+        })
+    );
+
+    let declared = declared().with_settings([
+        Settings::default(),
+        wide(Gains { d: 16_384, ..GAINS }),
+        Settings::default(),
+        Settings::default(),
+    ]);
+    let mut adapter = Dynamixel::<_, _, N>::declared(Scripted::new(), declared);
+    let error = adapter.check(Overrides::default()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "actuator 1: id 2 on bus ARM00001: D Gain 16384 above the XM430-W210 maximum 16383"
+    );
+    assert!(adapter.backend.calls().is_empty());
 }

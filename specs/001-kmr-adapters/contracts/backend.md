@@ -139,3 +139,19 @@ most every `TELEMETRY_EVERY` (50) ticks, round-robin: per Protocol 2 group volta
 then error status; per Protocol 1 actuator one read. A step whose bus the tick's state read took
 waits one tick when the bus cadence leaves any. A failed read sets `offline` or `bus_error` as
 `read` does, never `stale`, and leaves the previous values.
+
+## Change: `write_ram`, `read_ram` (2026-11-05, RAM settings)
+
+```rust
+fn write_ram(&mut self, port: usize, model: Model, id: u8, setting: RamSetting, value: u16)
+    -> Result<(), BackendError>;
+fn read_ram(&mut self, port: usize, model: Model, id: u8, setting: RamSetting)
+    -> Result<u16, BackendError>;
+```
+
+`RamSetting` is P, I or D Gain (Position P, I, D Gain on Protocol 2) or LED. A model without the
+register is refused before sending, `NoRegister`, on both backends. `DxlRsV2`: P and D Gain and
+LED through `dxl_rs_v2`'s typed fields (`PGain`, `DGain` with a raw `Gain`, `Led`); I Gain raw at
+27 (one byte, Protocol 1 MX-64) or 82 (two bytes), since `dxl_rs_v2` has no I gain field; a RAM
+register, so no cache of v2 goes stale. The fake keeps the registers per actuator and can be
+scripted to ignore writes (`stuck_ram`).

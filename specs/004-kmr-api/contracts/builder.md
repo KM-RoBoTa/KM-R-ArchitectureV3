@@ -33,6 +33,17 @@ Bare `kmr_api::Robot::new()` without `robot!` does not compile (E0283, research 
 `add_plugins` takes any sealed `Plugin` (`Bus`, `Gateway`) from phase Z on; until then it takes
 `Bus`.
 
+## Dynamixel declarations (2026-11-05)
+
+`.add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(bus))`: `Ids` knobs before `on`, each
+lowered into the adapter's `Declared` at `run()`.
+
+| Call on `dynamixel::Ids` | Notes | Spec ids |
+| --- | --- | --- |
+| `.mode(Mode)`, `.read_only()`, `.zero(Zero)` | existing | SRS FR-6.1, FR-5.8 |
+| `.gains(p: u16, i: u16, d: u16)` | raw register values, written in `configure` torque off and read back; refused at `check` on AX and RX (no register) and above the model's range (254 on the MX-64, 16383 on Protocol 2) | SRS FR-5.2, FR-6.1 |
+| `.led(on: bool)` | written and read back in `configure`; refused at `check` on the XW series (no LED) | SRS FR-5.2, FR-6.1 |
+
 ## Registrations (grow the type-state)
 
 | Call | Controller | Spec ids |

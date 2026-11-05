@@ -194,6 +194,27 @@ impl Model {
         matches!(self, Self::Mx64)
     }
 
+    /// Highest value of its P, I and D Gain registers (Position P, I and D
+    /// Gain on Protocol 2), ROBOTIS e-Manual; `None` on AX and RX, which have
+    /// compliance registers instead.
+    pub(crate) const fn max_gain(self) -> Option<u16> {
+        match self {
+            Self::Ax12a | Self::Rx28 => None,
+            Self::Mx64 => Some(254),
+            Self::Mx64V2
+            | Self::Xm430W210
+            | Self::Xw430T200
+            | Self::Xw540T140
+            | Self::Xw540T260 => Some(16_383),
+        }
+    }
+
+    /// Whether its control table has an LED register: every model but the
+    /// XW series.
+    pub(crate) const fn has_led(self) -> bool {
+        !matches!(self, Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260)
+    }
+
     /// CW and CCW Angle Limit that, both at this value, select multi-turn
     /// mode; `None` on a model without one.
     pub(crate) const fn multi_turn_limit(self) -> Option<u32> {
@@ -705,6 +726,38 @@ pub struct HealthLimits {
     pub temperature_c: u8,
 }
 
+/// RAM settings written to an actuator in `configure`, PostInit, before the
+/// torque goes on, then read back. `None` leaves the register as it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// P, I and D Gain; Position P, I and D Gain on Protocol 2.
+    pub gains: Option<Gains>,
+    /// LED on or off.
+    pub led: Option<bool>,
+}
+
+impl Settings {
+    /// Every register left as it is.
+    pub(crate) const NONE: Self = Self {
+        gains: None,
+        led: None,
+    };
+}
+
+/// Position gains as the registers hold them: 0 to 254 on the Protocol 1
+/// MX-64, 0 to 16383 on Protocol 2 (ROBOTIS e-Manual).
+// DECISION: raw register values, not SI: `dxl_rs_v2`'s `Gain` is raw too,
+// and the e-Manual's factor to Kp differs by series and is no SI unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gains {
+    /// P Gain.
+    pub p: u16,
+    /// I Gain.
+    pub i: u16,
+    /// D Gain.
+    pub d: u16,
+}
+
 /// A checked [`Table`] placed in the robot: the engine index of each of its
 /// actuators, in table order. The Dynamixel member owns these indices and no
 /// other (SRS FR-5.1). Built through [`Table::at`] or [`Table::in_order`].
@@ -718,6 +771,8 @@ pub struct Placement<const NB: usize, const M: usize> {
     /// Health limits written to each actuator of `table` at bring-up;
     /// `None` leaves its registers as they are.
     pub(crate) limits: [Option<HealthLimits>; M],
+    /// RAM settings written to each actuator of `table` at bring-up.
+    pub(crate) settings: [Settings; M],
 }
 
 impl<const NB: usize, const M: usize> Placement<NB, M> {
@@ -1022,6 +1077,7 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
             table,
             at,
             limits: [None; M],
+            settings: [Settings::NONE; M],
         }
     }
 
@@ -1085,6 +1141,7 @@ impl<const NB: usize, const M: usize> Declared<NB, M> {
             table,
             at,
             limits: [None; M],
+            settings: [Settings::NONE; M],
         };
         Ok(Self {
             placement,
@@ -1110,9 +1167,22 @@ impl<const NB: usize, const M: usize> Declared<NB, M> {
         Ok(self)
     }
 
+    /// The declaration, actuator `k` given `settings[k]`, written at
+    /// bring-up. No check here: the adapter's `check` refuses a setting the
+    /// model has no register for, or a value above its range.
+    pub const fn with_settings(mut self, settings: [Settings; M]) -> Self {
+        self.placement.settings = settings;
+        self
+    }
+
     /// The table; bus slots past [`live`](Self::live) are unused.
     pub const fn table(&self) -> &Table<NB, M> {
         &self.placement.table
+    }
+
+    /// RAM settings written to each actuator at bring-up, in table order.
+    pub const fn settings(&self) -> &[Settings; M] {
+        &self.placement.settings
     }
 
     /// Port of each live bus, by bus index.
@@ -1148,6 +1218,8 @@ pub(crate) struct Placed<const N: usize> {
     past: Option<(usize, usize)>,
     /// Health limits to write at each engine index.
     limits: [Option<HealthLimits>; N],
+    /// RAM settings to write at each engine index.
+    settings: [Settings; N],
 }
 
 impl<const N: usize> Placed<N> {
@@ -1155,6 +1227,7 @@ impl<const N: usize> Placed<N> {
     pub(crate) const fn new<const NB: usize, const M: usize>(placement: &Placement<NB, M>) -> Self {
         let mut slots = [None; N];
         let mut limits = [None; N];
+        let mut settings = [Settings::NONE; N];
         let mut past = None;
         let mut row = 0;
         let mut rest: &[Actuator] = &placement.table.actuators;
@@ -1163,10 +1236,12 @@ impl<const N: usize> Placed<N> {
             match (
                 slots.split_at_mut_checked(*index),
                 limits.split_at_mut_checked(*index),
+                settings.split_at_mut_checked(*index),
             ) {
-                (Some((_, [slot, ..])), Some((_, [limit, ..]))) => {
+                (Some((_, [slot, ..])), Some((_, [limit, ..])), Some((_, [setting, ..]))) => {
                     *slot = Some(*actuator);
                     *limit = placement.limits[row];
+                    *setting = placement.settings[row];
                 }
                 _ => {
                     if past.is_none() {
@@ -1182,12 +1257,18 @@ impl<const N: usize> Placed<N> {
             slots,
             past,
             limits,
+            settings,
         }
     }
 
     /// Health limits to write to the actuator at engine index `index`.
     pub(crate) fn limits(&self, index: usize) -> Option<HealthLimits> {
         self.limits.get(index).copied().flatten()
+    }
+
+    /// RAM settings to write to the actuator at engine index `index`.
+    pub(crate) fn settings(&self, index: usize) -> Settings {
+        self.settings.get(index).copied().unwrap_or_default()
     }
 
     /// The first table row placed past the robot's `N` actuators, and its
