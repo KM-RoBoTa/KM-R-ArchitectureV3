@@ -46,15 +46,17 @@ fn shutdown_after_some_time(time: &Time, _robot: &mut State, _sensors: &Sensors)
 
 fn main() {
     let spine = kmr_api::Bus::by_id("AL02L1KL").baud(1_000_000).build();
+
     if let Err(e) = Robot::new()
         .set_dt(Duration::from_millis(20))
         .set_hold(Duration::from_millis(500))
         .add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(spine))
+        .set_limit_policy_all(kmr_api::Policy::Clamp)
         // .add_controller(EachTick, nudge_first_joint)
         .add_controller_with(EachTick, None, sine_all)
         .add_controller(EachTick, shutdown_after_some_time)
         .run()
     {
-        eprintln!("{:?}", e);
+        println!("{}", e);
     }
 }
