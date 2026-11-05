@@ -278,6 +278,64 @@ pub(crate) struct Health {
     pub(crate) temperature_limit_c: u8,
 }
 
+/// One telemetry register, read for a whole Protocol 2 group in one sync
+/// read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Vital {
+    /// Present Input Voltage.
+    Voltage,
+    /// Present Temperature.
+    Temperature,
+    /// Hardware Error Status.
+    HardwareError,
+}
+
+impl Vital {
+    /// Every register, in the order the telemetry rounds read them.
+    pub(crate) const ALL: [Self; 3] = [Self::Voltage, Self::Temperature, Self::HardwareError];
+}
+
+/// What one telemetry read got from one actuator, in register units: the
+/// values it carried, `None` for the rest. A faulted actuator answers with
+/// what its fault measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Reading {
+    /// Present input voltage, in 0.1 V.
+    pub(crate) voltage_dv: Option<u16>,
+    /// Present temperature, in °C.
+    pub(crate) temperature_c: Option<u8>,
+    /// Hardware Error Status bits, X series layout.
+    pub(crate) hardware_error: Option<u8>,
+}
+
+#[cfg_attr(
+    not(any(test, feature = "dynamixel")),
+    expect(
+        dead_code,
+        reason = "only the backends use it, and both are compiled out"
+    )
+)]
+impl Reading {
+    /// The reading of `raw`, read from `vital`'s register.
+    pub(crate) fn of(vital: Vital, raw: i32) -> Self {
+        let byte = |raw: i32| u8::try_from(raw).ok();
+        match vital {
+            Vital::Voltage => Self {
+                voltage_dv: u16::try_from(raw).ok(),
+                ..Self::default()
+            },
+            Vital::Temperature => Self {
+                temperature_c: byte(raw),
+                ..Self::default()
+            },
+            Vital::HardwareError => Self {
+                hardware_error: byte(raw),
+                ..Self::default()
+            },
+        }
+    }
+}
+
 /// Address and width of one register.
 #[cfg_attr(
     not(any(test, feature = "dynamixel")),
@@ -485,6 +543,20 @@ pub(crate) trait Backend {
         model: Model,
         ids: &[u8],
         out: &mut [Result<RawState, BackendError>],
+    ) -> Result<(), BackendError>;
+
+    /// Telemetry of one group: `out[i]` answers `ids[i]`. Protocol 2 reads
+    /// `vital` of every id in one sync read; Protocol 1 reads the voltage
+    /// and the temperature of each id in one read, whatever `vital`, and
+    /// the fault bits its status packet carries. `Err` when the line failed
+    /// under the whole group.
+    fn read_vitals(
+        &mut self,
+        port: usize,
+        model: Model,
+        vital: Vital,
+        ids: &[u8],
+        out: &mut [Result<Reading, BackendError>],
     ) -> Result<(), BackendError>;
 
     /// Goal positions of one group, `(id, raw)`, in one transaction.

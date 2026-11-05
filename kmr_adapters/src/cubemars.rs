@@ -21,6 +21,7 @@ use core::time::Duration;
 
 use kmr_core::hal::{Batch, Claim, Command, Faults, Group, Hal, Mask, Overrides, Sample, seal};
 use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
+use kmr_core::telemetry::Telemetry;
 use tracing::warn;
 
 use crate::binding::{self, Binding, Port, Unmatched};
@@ -259,6 +260,10 @@ pub struct CubeMars<T, const NB: usize, const N: usize> {
     sent: [Option<Sent>; N],
     /// Actuators sent a frame whose reply the next `read` drains.
     pending: Mask<N>,
+    /// `data[6]` and `data[7]` of the newest reply of each actuator.
+    vitals: [Option<(u8, u8)>; N],
+    /// Actuators with a reply since the last `telemetry`.
+    fresh: Mask<N>,
     /// Whether the transport opened the interfaces.
     open: bool,
 }
@@ -275,6 +280,8 @@ impl<T, const NB: usize, const N: usize> CubeMars<T, NB, N> {
             origin: [0.0; N],
             sent: [None; N],
             pending: Mask::NONE,
+            vitals: [None; N],
+            fresh: Mask::NONE,
             open: false,
         }
     }
@@ -382,6 +389,15 @@ impl<T, const NB: usize, const N: usize> CubeMars<T, NB, N> {
         {
             *kp_slot = Kp(kp);
             *kd_slot = Kd(kd);
+        }
+    }
+
+    /// Keeps the temperature and the error code of `feedback`, actuator
+    /// `index`'s newest reply, for the next `telemetry`.
+    fn note(&mut self, index: usize, feedback: &Feedback) {
+        if let Some(slot) = self.vitals.get_mut(index) {
+            *slot = Some((feedback.temperature, feedback.fault));
+            self.fresh.set(index);
         }
     }
 }
@@ -617,6 +633,7 @@ impl<T: Transport, const NB: usize, const N: usize> Hal<N> for CubeMars<T, NB, N
     fn read_all(&mut self, mut sample: Sample<'_, N>) -> Result<(), CubeMarsError> {
         self.ask_all(|adapter, index, feedback| {
             adapter.fill(index, &feedback, &mut sample);
+            adapter.note(index, &feedback);
             Ok(())
         })
     }
@@ -681,6 +698,7 @@ impl<T: Transport, const NB: usize, const N: usize> Hal<N> for CubeMars<T, NB, N
                         let feedback = frame::unpack(data);
                         if let Some(index) = self.actuators.find(bus, feedback.id) {
                             self.fill(index, &feedback, &mut sample);
+                            self.note(index, &feedback);
                             refreshed.set(index);
                         }
                     }
@@ -746,6 +764,25 @@ impl<T: Transport, const NB: usize, const N: usize> Hal<N> for CubeMars<T, NB, N
             }
         }
         self.send_all(faults);
+    }
+
+    /// Copies the temperature and the error code of each actuator's newest
+    /// reply, kept by `read` and `read_all`, into `telemetry`: no frame
+    /// sent, none received. Returns the actuators with a reply since the
+    /// last call. The MIT reply carries no voltage.
+    // DECISION: `data[6]` is °C with no offset, as `health` and cubemars_rs
+    // read it, and `data[7]` the raw hardware error; both unverified on the
+    // AK60-6 (docs/deferred.md).
+    fn telemetry(&mut self, telemetry: &mut Telemetry<N>, _faults: &mut Faults<N>) -> Mask<N> {
+        let fresh = self.fresh;
+        self.fresh = Mask::NONE;
+        for index in fresh.iter() {
+            if let Some((celsius, code)) = self.vitals.get(index).copied().flatten() {
+                telemetry.set_temperature_c(index, f32::from(celsius));
+                telemetry.set_hardware_error(index, code);
+            }
+        }
+        fresh
     }
 
     /// Sends each powered actuator a pure position command at `target.q`,

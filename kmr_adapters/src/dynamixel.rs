@@ -10,6 +10,7 @@ mod config;
 mod dxl_rs_v2;
 mod io;
 mod port;
+mod telemetry;
 mod units;
 
 #[cfg(test)]
@@ -23,6 +24,7 @@ use std::path::Path;
 
 use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
 use kmr_core::state::Q;
+use kmr_core::telemetry::Telemetry;
 use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
@@ -572,6 +574,8 @@ pub struct Dynamixel<B, const NB: usize, const N: usize> {
     open: bool,
     /// `read` calls so far, for the cadence.
     reads: u64,
+    /// Where the telemetry rounds stand.
+    rounds: telemetry::Rounds,
 }
 
 impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
@@ -591,6 +595,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             limits: [(0, u32::MAX); N],
             open: false,
             reads: 0,
+            rounds: telemetry::Rounds::NEW,
         }
     }
 
@@ -1273,6 +1278,15 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
 
     fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
         io::write_batch(self, &command, batch, faults);
+    }
+
+    /// Input voltage, temperature and Hardware Error Status, read-only
+    /// actuators included: all of them in PostInit, then one bus
+    /// transaction at most every [`telemetry::TELEMETRY_EVERY`] ticks, kept
+    /// off the ticks that read the same bus when its cadence leaves any
+    /// (SRS FR-5.11, NFR-1).
+    fn telemetry(&mut self, telemetry: &mut Telemetry<N>, faults: &mut Faults<N>) -> Mask<N> {
+        telemetry::refresh(self, telemetry, faults)
     }
 
     /// Sends `last.q` to every powered position actuator, one transaction per

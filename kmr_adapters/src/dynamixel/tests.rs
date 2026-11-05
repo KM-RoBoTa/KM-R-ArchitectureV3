@@ -26,10 +26,14 @@ use kmr_core::hal::{
     Sample, Written,
 };
 use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
+use kmr_core::telemetry::Telemetry;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
-use super::backend::{Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Wire};
+use super::backend::{
+    Backend, BackendError, GoalRegister, Health, PortSpec, RawState, Vital, Wire,
+};
 use super::scripted::{self, Call, HEALTHY, Record, Scripted};
+use super::telemetry::TELEMETRY_EVERY;
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, HealthLimits, Mode, Model,
     PING_ATTEMPTS, Placed, Placement, Protocol, TORQUE_OFF_ATTEMPTS, Table, Torque, Zero,
@@ -4180,4 +4184,260 @@ fn a_declared_table_breaking_a_check_rule_is_refused() {
         error.to_string(),
         "actuator 0: XM430-W210 does not accept 500000 baud on bus ARM00001"
     );
+}
+
+// ── SRS FR-5.11: telemetry rounds, one transaction per due tick at most ─────
+
+/// One `telemetry` call into `telemetry`, with its faults.
+fn refresh<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB, N>,
+    telemetry: &mut Telemetry<N>,
+) -> (Mask<N>, Faults<N>) {
+    let mut faults = Faults::default();
+    let refreshed = adapter.telemetry(telemetry, &mut faults);
+    (refreshed, faults)
+}
+
+/// `(port, register, first id, ids)` of every `ReadVitals` recorded, oldest
+/// first.
+fn vitals_read(backend: &Scripted) -> impl Iterator<Item = (usize, Option<Vital>, u8, usize)> {
+    backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::ReadVitals)
+        .map(|record| (record.port, backend.vital(record), record.id, record.count))
+}
+
+/// Ticks between two due telemetry calls.
+const EVERY: usize = TELEMETRY_EVERY as usize;
+
+/// One tick as the engine runs it, `read` then `telemetry`: whether the
+/// state read and the telemetry each sent anything, and what the telemetry
+/// refreshed.
+fn tick_with_telemetry<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB, N>,
+    telemetry: &mut Telemetry<N>,
+) -> (bool, usize, Mask<N>) {
+    let (state, vitals_sent) = (
+        adapter.backend.count(Call::SyncReadState),
+        adapter.backend.count(Call::ReadVitals),
+    );
+    read(adapter, &mut Slot::filled(0.0));
+    let state = adapter.backend.count(Call::SyncReadState) > state;
+    let (refreshed, faults) = refresh(adapter, telemetry);
+    assert_eq!(faults, Faults::default());
+    let sent = adapter.backend.count(Call::ReadVitals) - vitals_sent;
+    (state, sent, refreshed)
+}
+
+#[test]
+fn the_bring_up_call_reads_every_register_of_every_actuator() -> Result<(), DynamixelError> {
+    let mut adapter = rig(MIX_TABLE);
+    powered(&mut adapter)?;
+    let warm = Health {
+        voltage_dv: 118,
+        temperature_c: 41,
+        ..HEALTHY
+    };
+    let overheating = Health {
+        error_status: 0x04,
+        ..HEALTHY
+    };
+    adapter
+        .backend
+        .health(1, id(3), warm)
+        .health(0, id(2), overheating);
+    let mut telemetry = Telemetry::default();
+
+    let (refreshed, faults) = refresh(&mut adapter, &mut telemetry);
+
+    assert_eq!((refreshed, faults), (Mask::ALL, Faults::default()));
+    assert!(vitals_read(&adapter.backend).eq([
+        (0, Some(Vital::Voltage), id(0), 2),
+        (0, Some(Vital::Temperature), id(0), 2),
+        (0, Some(Vital::HardwareError), id(0), 2),
+        (1, Some(Vital::Voltage), id(1), 1),
+        (1, Some(Vital::Voltage), id(3), 1),
+    ]));
+    assert_eq!(telemetry.voltage_v(0), Ok(Some(12.0)));
+    assert_eq!(telemetry.temperature_c(0), Ok(Some(30.0)));
+    assert_eq!(telemetry.hardware_error(0), Ok(Some(0)));
+    assert_eq!(telemetry.hardware_error(2), Ok(Some(0x04)));
+    assert_eq!(telemetry.voltage_v(3), Ok(Some(11.8)));
+    assert_eq!(telemetry.temperature_c(3), Ok(Some(41.0)));
+    assert_eq!(telemetry.hardware_error(3), Ok(Some(0)));
+    Ok(())
+}
+
+#[test]
+fn a_tick_sends_no_telemetry_between_due_ticks_and_one_transaction_on_them()
+-> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    powered(&mut adapter)?;
+    let mut telemetry = Telemetry::default();
+    refresh(&mut adapter, &mut telemetry);
+
+    for tick in 0..4 * EVERY {
+        let (_, sent, refreshed) = tick_with_telemetry(&mut adapter, &mut telemetry);
+        let due = tick % EVERY == EVERY - 1;
+        assert_eq!(sent, usize::from(due), "tick {tick}");
+        let expected = if due { Mask::ALL } else { Mask::NONE };
+        assert_eq!(refreshed, expected, "tick {tick}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_rounds_cycle_each_group_s_registers_then_each_protocol_1_actuator()
+-> Result<(), DynamixelError> {
+    let mut adapter = rig(MIX_TABLE);
+    powered(&mut adapter)?;
+    let mut telemetry = Telemetry::default();
+    refresh(&mut adapter, &mut telemetry);
+    adapter.backend.clear_log();
+    let (arm, wrist) = (mask(|index| index % 2 == 0), |index| {
+        mask(move |at| at == index)
+    });
+
+    let mut masks = [Mask::NONE; 6];
+    let mut reads = [(0, None, 0, 0); 6];
+    let mut taken = 0;
+    for _ in 0..7 * EVERY {
+        let (_, sent, refreshed) = tick_with_telemetry(&mut adapter, &mut telemetry);
+        assert!(sent <= 1);
+        let record = vitals_read(&adapter.backend).last();
+        if let (1, Some(mask), Some(read), Some(record)) =
+            (sent, masks.get_mut(taken), reads.get_mut(taken), record)
+        {
+            (*mask, *read) = (refreshed, record);
+            taken += 1;
+        }
+        adapter.backend.clear_log();
+    }
+
+    assert_eq!(taken, masks.len());
+    assert_eq!(masks, [arm, arm, arm, wrist(1), wrist(3), arm]);
+    assert_eq!(
+        reads,
+        [
+            (0, Some(Vital::Voltage), id(0), 2),
+            (0, Some(Vital::Temperature), id(0), 2),
+            (0, Some(Vital::HardwareError), id(0), 2),
+            (1, Some(Vital::Voltage), id(1), 1),
+            (1, Some(Vital::Voltage), id(3), 1),
+            (0, Some(Vital::Voltage), id(0), 2),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn telemetry_keeps_off_the_ticks_whose_state_read_takes_its_bus() -> Result<(), DynamixelError> {
+    let mut adapter = rig(every(X_TABLE, 3));
+    powered(&mut adapter)?;
+    let mut telemetry = Telemetry::default();
+    refresh(&mut adapter, &mut telemetry);
+
+    let mut sent_at = [0; 3];
+    let mut taken = 0;
+    for tick in 0..3 * EVERY + 10 {
+        let (state, sent, _) = tick_with_telemetry(&mut adapter, &mut telemetry);
+        assert_eq!(state, tick % 3 == 0, "tick {tick}");
+        assert!(
+            !(state && sent > 0),
+            "tick {tick}: state read and telemetry"
+        );
+        if let (1, Some(slot)) = (sent, sent_at.get_mut(taken)) {
+            *slot = tick;
+            taken += 1;
+        }
+    }
+
+    // Due at 49, 99 and 150; 99 and 150 read the bus, so they wait a tick.
+    assert_eq!(sent_at, [EVERY - 1, 2 * EVERY, 3 * EVERY + 1]);
+    Ok(())
+}
+
+#[test]
+fn a_failed_telemetry_read_sets_a_fault_and_keeps_the_values() -> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    powered(&mut adapter)?;
+    let mut telemetry = Telemetry::default();
+    refresh(&mut adapter, &mut telemetry);
+    adapter
+        .backend
+        .fail(Call::ReadVitals, 0, id(1), BackendError::Timeout)
+        .health(
+            0,
+            id(1),
+            Health {
+                voltage_dv: 99,
+                ..HEALTHY
+            },
+        );
+
+    let mut last = (Mask::NONE, Faults::default());
+    for _ in 0..EVERY {
+        read(&mut adapter, &mut Slot::filled(0.0));
+        last = refresh(&mut adapter, &mut telemetry);
+    }
+
+    let (refreshed, faults) = last;
+    assert_eq!(refreshed, mask(|index| index != 1));
+    assert_eq!(faults.offline, mask(|index| index == 1));
+    assert_eq!((faults.stale, faults.bus_error), (Mask::NONE, Mask::NONE));
+    assert_eq!(telemetry.voltage_v(1), Ok(Some(12.0)));
+    Ok(())
+}
+
+#[test]
+fn a_failed_group_telemetry_read_is_a_bus_error_on_the_group_and_refreshes_none()
+-> Result<(), DynamixelError> {
+    let mut adapter = rig(X_TABLE);
+    powered(&mut adapter)?;
+    adapter
+        .backend
+        .fail_port(Call::ReadVitals, 0, BackendError::Io(Wire::Closed));
+    let mut telemetry = Telemetry::default();
+
+    let (refreshed, faults) = refresh(&mut adapter, &mut telemetry);
+
+    assert_eq!(refreshed, Mask::NONE);
+    assert_eq!(faults.bus_error, Mask::ALL);
+    assert_eq!((faults.stale, faults.offline), (Mask::NONE, Mask::NONE));
+    assert_eq!(telemetry.temperature_c(0), Ok(None));
+    Ok(())
+}
+
+#[test]
+fn read_only_actuators_are_read_for_telemetry_too() -> Result<(), DynamixelError> {
+    let mut adapter = rig(RO_TABLE);
+    powered(&mut adapter)?;
+    let mut telemetry = Telemetry::default();
+
+    let (refreshed, _) = refresh(&mut adapter, &mut telemetry);
+
+    assert!(refreshed.get(LAST));
+    assert_eq!(telemetry.temperature_c(LAST), Ok(Some(30.0)));
+    Ok(())
+}
+
+#[test]
+fn ten_thousand_ticks_of_telemetry_allocate_nothing() -> Result<(), DynamixelError> {
+    let mut adapter = bound(MIX_TABLE, &MIX_PLUGINS);
+    powered(&mut adapter)?;
+    let mut telemetry = Telemetry::default();
+    let mut slot = Slot::filled(0.0);
+    refresh(&mut adapter, &mut telemetry);
+
+    let counted = allocations(|| {
+        for _ in 0..TICKS {
+            read(&mut adapter, &mut slot);
+            refresh(&mut adapter, &mut telemetry);
+        }
+    });
+
+    assert_eq!(counted, 0, "{counted} allocations in {TICKS} ticks");
+    assert!(adapter.backend.count(Call::ReadVitals) >= TICKS / EVERY);
+    Ok(())
 }

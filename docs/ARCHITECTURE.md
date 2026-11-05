@@ -457,6 +457,13 @@ or at the raw position the table names. The vendor SDK sits behind a private
 refuses what `DxlRsV2`, the backend on the pure-Rust `dxl_rs_v2`, refuses;
 `DxlRsV2` itself has contract tests on `dxl_rs_v2`'s scripted serial line.
 
+Telemetry costs the Dynamixel member one bus transaction per 50 ticks at
+most: every register of every actuator once in PostInit, then round-robin,
+one sync read of one register per Protocol 2 group or one read per
+Protocol 1 actuator, kept off the ticks whose state read took the same bus.
+The CubeMars member reads nothing for it: every MIT reply carries the
+temperature and the error code, kept by `read` and copied by `telemetry`.
+
 Still open: Dynamixel velocity and current modes (`dxl_rs_v2` has no
 Operating Mode write yet, SRS section 8), one state read per group instead
 of three partial sync reads, `dxl_rs_v2` as a pinned git dependency once it

@@ -11,7 +11,8 @@ use core::time::Duration;
 use std::io::ErrorKind;
 
 use ::dxl_rs_v2::field::{
-    PresentCurrent, PresentPosition, PresentTemperature, PresentVelocity, PresentVoltage, Raw,
+    HardwareErrorStatus, PresentCurrent, PresentPosition, PresentTemperature, PresentVelocity,
+    PresentVoltage, Raw,
 };
 use ::dxl_rs_v2::{
     ActuatorRef, Bus, Clock, Config, Error, FaultError, Id, IdSet, ModelNumber, P1, P2,
@@ -21,7 +22,7 @@ use ::dxl_rs_v2::{
 
 use super::backend::{
     Backend, BackendError, Fault, GoalRegister, Health, LimitRegisters, OpenFailure, PortSpec,
-    RawState, Register, Reply, Setting, Undeclared, Wire,
+    RawState, Reading, Register, Reply, Setting, Undeclared, Vital, Wire,
 };
 use super::config::{HealthLimits, Model, Protocol};
 
@@ -46,6 +47,11 @@ const OPERATING_MODE: u16 = 11;
 const TORQUE_ENABLE: u16 = 64;
 /// Torque Ctrl Mode Enable, Protocol 1 MX-64: one byte at 70.
 const TORQUE_CTRL_MODE_ENABLE: u16 = 70;
+/// Present Voltage then Present Temperature, Protocol 1: one byte each from
+/// 42 (AX, RX and MX tables).
+// DECISION: one raw read of both, as the backend author advises: dxl_rs_v2
+// has no read of two fields on Protocol 1, and two reads double the cost.
+const P1_VITALS: u16 = 42;
 
 /// Goal Position of `model`: address and width.
 const fn goal_position(model: Model) -> Register {
@@ -279,18 +285,25 @@ fn health_of<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
     })
 }
 
-/// Folds one field of a partial read into `out`: `apply` on a value, the
-/// first error of each actuator kept. Returns a line failure, if any.
-fn merge(
-    out: &mut [Result<RawState, BackendError>],
+/// Folds one field of a partial read into `out`: `apply` on a value, or on
+/// the fault an actuator reported when `measured` takes it; the first error
+/// of each actuator kept. Returns a line failure, if any.
+fn merge<S>(
+    out: &mut [Result<S, BackendError>],
     read: &[Result<i32, Error>],
-    apply: impl Fn(&mut RawState, i32),
+    apply: impl Fn(&mut S, i32),
+    measured: impl Fn(&mut S, &FaultError) -> bool,
 ) -> Option<BackendError> {
     let mut line = None;
     for (slot, value) in out.iter_mut().zip(read) {
         match (slot.as_mut(), value) {
             (Ok(state), Ok(raw)) => apply(state, *raw),
-            (Ok(_), Err(error)) => {
+            (Ok(state), Err(error)) => {
+                if let Error::Fault(fault) = error
+                    && measured(state, fault)
+                {
+                    continue;
+                }
                 let error = backend_error(*error);
                 if error.is_bus() {
                     line.get_or_insert(error);
@@ -301,6 +314,25 @@ fn merge(
         }
     }
     line
+}
+
+/// What `reading` gains from a fault `dxl_rs_v2` measured: its Hardware
+/// Error Status bits, and the voltage or the temperature it measured.
+fn note_fault(reading: &mut Reading, fault: &FaultError) -> bool {
+    reading.hardware_error = Some(fault.faults().raw());
+    match fault {
+        FaultError::Voltage(
+            VoltageError::BelowMin { measured, .. }
+            | VoltageError::AboveMax { measured, .. }
+            | VoltageError::InsideLimits { measured, .. },
+        ) => reading.voltage_dv = Some(measured.0),
+        FaultError::Temperature(
+            TemperatureError::AboveLimit { measured, .. }
+            | TemperatureError::WithinLimit { measured, .. },
+        ) => reading.temperature_c = u8::try_from(measured.0).ok(),
+        _ => {}
+    }
+    true
 }
 
 /// The id a `dxl_rs_v2` error names, if any.
@@ -535,20 +567,101 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
             })?;
         bus.read_field_partial(Raw(PresentCurrent), targets(), read)
             .map_err(backend_error)?;
-        if let Some(line) = merge(out, read, |state, raw| {
-            let [low, high, ..] = raw.to_le_bytes();
-            state.current = i16::from_le_bytes([low, high]);
-        }) {
+        let kept = |_: &mut RawState, _: &FaultError| false;
+        if let Some(line) = merge(
+            out,
+            read,
+            |state, raw| {
+                let [low, high, ..] = raw.to_le_bytes();
+                state.current = i16::from_le_bytes([low, high]);
+            },
+            kept,
+        ) {
             return Err(line);
         }
         bus.read_field_partial(Raw(PresentVelocity), targets(), read)
             .map_err(backend_error)?;
-        if let Some(line) = merge(out, read, |state, raw| state.velocity = raw) {
+        if let Some(line) = merge(out, read, |state, raw| state.velocity = raw, kept) {
             return Err(line);
         }
         bus.read_field_partial(Raw(PresentPosition), targets(), read)
             .map_err(backend_error)?;
-        merge(out, read, |state, raw| state.position = raw).map_or(Ok(()), Err)
+        merge(out, read, |state, raw| state.position = raw, kept).map_or(Ok(()), Err)
+    }
+
+    /// One partial sync read of `vital` on Protocol 2; on Protocol 1 one
+    /// raw read of Present Voltage and Present Temperature per id, the first
+    /// line failure ending the call. A clean Protocol 1 reply carries no
+    /// fault bit, so its Hardware Error Status reads 0.
+    // DECISION: Protocol 1 reports the fault bits of its status packet as its
+    // hardware error, in the X series layout `dxl_rs_v2` decodes them to, and
+    // 0 on a clean reply: they come with the read, at no cost.
+    fn read_vitals(
+        &mut self,
+        port: usize,
+        model: Model,
+        vital: Vital,
+        ids: &[u8],
+        out: &mut [Result<Reading, BackendError>],
+    ) -> Result<(), BackendError> {
+        if out.len() != ids.len() {
+            return Err(BackendError::SlotMismatch {
+                ids: ids.len(),
+                slots: out.len(),
+            });
+        }
+        let open = self.port(port)?;
+        for &id in ids {
+            id_of(id)?;
+        }
+        out.fill(Ok(Reading::default()));
+        if model.protocol() == Protocol::One {
+            for (slot, &id) in out.iter_mut().zip(ids) {
+                let mut bytes = [0; 2];
+                *slot = match held(&mut open.one, id_of(id)?) {
+                    Ok(mut actuator) => match actuator.read_raw(P1_VITALS, &mut bytes) {
+                        Ok(()) => {
+                            let [voltage, temperature] = bytes;
+                            Ok(Reading {
+                                voltage_dv: Some(u16::from(voltage)),
+                                temperature_c: Some(temperature),
+                                hardware_error: Some(0),
+                            })
+                        }
+                        Err(Error::Fault(fault)) => {
+                            let mut reading = Reading::default();
+                            note_fault(&mut reading, &fault);
+                            Ok(reading)
+                        }
+                        Err(error) => Err(backend_error(error)),
+                    },
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = slot
+                    && error.is_bus()
+                {
+                    return Err(*error);
+                }
+            }
+            return Ok(());
+        }
+        let bus = &mut open.two;
+        let targets = ids.iter().filter_map(|&id| Id::new(id).ok());
+        let mut read = [Ok(0); N];
+        let read = read
+            .get_mut(..ids.len())
+            .ok_or(BackendError::SlotMismatch {
+                ids: ids.len(),
+                slots: N,
+            })?;
+        match vital {
+            Vital::Voltage => bus.read_field_partial(Raw(PresentVoltage), targets, read),
+            Vital::Temperature => bus.read_field_partial(Raw(PresentTemperature), targets, read),
+            Vital::HardwareError => bus.read_field_partial(Raw(HardwareErrorStatus), targets, read),
+        }
+        .map_err(backend_error)?;
+        let apply = |reading: &mut Reading, raw| *reading = Reading::of(vital, raw);
+        merge(out, read, apply, note_fault).map_or(Ok(()), Err)
     }
 
     /// One sync write. Refused whole when an actuator of `goals` was not
@@ -788,6 +901,17 @@ impl<const N: usize> Backend for DxlRsV2<N> {
         out: &mut [Result<RawState, BackendError>],
     ) -> Result<(), BackendError> {
         self.0.sync_read_state(port, model, ids, out)
+    }
+
+    fn read_vitals(
+        &mut self,
+        port: usize,
+        model: Model,
+        vital: Vital,
+        ids: &[u8],
+        out: &mut [Result<Reading, BackendError>],
+    ) -> Result<(), BackendError> {
+        self.0.read_vitals(port, model, vital, ids, out)
     }
 
     fn sync_write_goal(

@@ -17,7 +17,7 @@ use std::path::Path;
 
 use super::backend::{
     Backend, BackendError, GoalRegister, Health, LimitRegisters, OpenFailure, POSITION_MODE,
-    PortSpec, RawState, Setting, Undeclared, Wire,
+    PortSpec, RawState, Reading, Setting, Undeclared, Vital, Wire,
 };
 use super::config::{HealthLimits, Model, Protocol};
 use super::units;
@@ -31,7 +31,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 13;
+const KINDS: usize = 14;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Variants of [`GoalRegister`].
@@ -81,6 +81,9 @@ pub(crate) enum Call {
     ReadPosition,
     /// [`Backend::sync_read_state`].
     SyncReadState,
+    /// [`Backend::read_vitals`]: one record per transaction, a sync read
+    /// on Protocol 2, a read per actuator on Protocol 1.
+    ReadVitals,
     /// [`Backend::sync_write_goal`].
     SyncWriteGoal,
     /// [`Backend::sync_write_start_goal`].
@@ -508,6 +511,16 @@ impl Scripted {
         }
     }
 
+    /// The register a `ReadVitals` record read on Protocol 2; `None` for any
+    /// other kind.
+    pub(crate) fn vital(&self, record: &Record) -> Option<Vital> {
+        let raw = match record.call {
+            Call::ReadVitals => self.entries(record).first()?.1,
+            _ => return None,
+        };
+        Vital::ALL.get(usize::try_from(raw).ok()?).copied()
+    }
+
     /// Goals of the newest recorded `SyncWriteGoal`; empty when there is none.
     pub(crate) fn last_goals(&self) -> &[(u8, u32)] {
         self.last(Call::SyncWriteGoal)
@@ -715,6 +728,22 @@ fn get(table: &[[bool; IDS]; PORTS], port: usize, id: u8) -> bool {
         .unwrap_or(false)
 }
 
+/// What `DxlRsV2` reads of `vital` from an actuator in state `health`: the
+/// one register on Protocol 2, voltage, temperature and error status on
+/// Protocol 1.
+fn vitals_of(model: Model, vital: Vital, health: Health) -> Reading {
+    match (model.protocol(), vital) {
+        (Protocol::One, _) => Reading {
+            voltage_dv: Some(health.voltage_dv),
+            temperature_c: Some(health.temperature_c),
+            hardware_error: Some(health.error_status),
+        },
+        (Protocol::Two, Vital::Voltage) => Reading::of(vital, i32::from(health.voltage_dv)),
+        (Protocol::Two, Vital::Temperature) => Reading::of(vital, i32::from(health.temperature_c)),
+        (Protocol::Two, Vital::HardwareError) => Reading::of(vital, i32::from(health.error_status)),
+    }
+}
+
 impl Backend for Scripted {
     const MAX_PORTS: usize = PORTS;
     const STATE_READS: &'static [u16] = super::backend::STATE_READS;
@@ -814,6 +843,54 @@ impl Backend for Scripted {
             *entry = self
                 .answer(Call::SyncReadState, port, id)
                 .map(|()| self.states[port][usize::from(id)]);
+        }
+        Ok(())
+    }
+
+    /// Answers from the health script: its voltage, temperature and error
+    /// status. Logs one record per transaction `DxlRsV2` sends, each naming
+    /// its ids with `vital` as their entry.
+    fn read_vitals(
+        &mut self,
+        port: usize,
+        model: Model,
+        vital: Vital,
+        ids: &[u8],
+        out: &mut [Result<Reading, BackendError>],
+    ) -> Result<(), BackendError> {
+        let entry = |&id: &u8| (id, vital as u32);
+        if model.protocol() == Protocol::Two {
+            self.record(
+                Call::ReadVitals,
+                port,
+                Some(model),
+                ids.len(),
+                false,
+                ids.iter().map(entry),
+            );
+        }
+        if out.len() != ids.len() {
+            return Err(BackendError::SlotMismatch {
+                ids: ids.len(),
+                slots: out.len(),
+            });
+        }
+        for (slot, id) in out.iter_mut().zip(ids) {
+            if model.protocol() == Protocol::One {
+                self.record(
+                    Call::ReadVitals,
+                    port,
+                    Some(model),
+                    1,
+                    false,
+                    iter::once(entry(id)),
+                );
+            }
+            self.transaction(Call::ReadVitals, port)?;
+            *slot = self.answer(Call::ReadVitals, port, *id).map(|()| {
+                let health = self.vitals[port][usize::from(*id)];
+                vitals_of(model, vital, health)
+            });
         }
         Ok(())
     }
@@ -1415,6 +1492,46 @@ mod tests {
                 .calls()
                 .iter()
                 .all(|record| record.call == Call::SyncReadState && record.count == 2)
+        );
+    }
+
+    #[test]
+    fn the_fake_reads_one_register_per_sync_read_and_both_on_protocol_1() {
+        let warm = Health {
+            voltage_dv: 118,
+            temperature_c: 41,
+            error_status: 0x04,
+            ..HEALTHY
+        };
+        let mut backend = Scripted::new();
+        backend.health(0, 2, warm).missing(0, 3);
+        backend.open_ports(&[]).unwrap();
+        backend.clear_log();
+        let mut out = [Ok(Reading::default()); 2];
+
+        backend
+            .read_vitals(0, MODEL, Vital::Temperature, &[2, 3], &mut out)
+            .unwrap();
+        assert_eq!(
+            out,
+            [
+                Ok(Reading::of(Vital::Temperature, 41)),
+                Err(BackendError::Timeout)
+            ]
+        );
+        backend
+            .read_vitals(0, Model::Ax12a, Vital::Voltage, &[2, 1], &mut out)
+            .unwrap();
+        let both = Reading {
+            voltage_dv: Some(118),
+            temperature_c: Some(41),
+            hardware_error: Some(0x04),
+        };
+        assert_eq!(out[0], Ok(both));
+        assert_eq!(backend.count(Call::ReadVitals), 3);
+        assert_eq!(
+            backend.read_vitals(0, MODEL, Vital::Voltage, &[2], &mut out),
+            Err(BackendError::SlotMismatch { ids: 1, slots: 2 })
         );
     }
 

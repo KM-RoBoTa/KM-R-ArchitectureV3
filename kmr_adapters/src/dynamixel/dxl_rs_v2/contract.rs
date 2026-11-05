@@ -529,3 +529,158 @@ fn check_refuses_the_xw430_t200_before_any_io() {
         Some("actuator 1: id 2 on bus arm: model number 1280: the SDK has no control table for it")
     );
 }
+
+/// One XM430-W210 at id 1 on bus `arm`, owned at engine index 0.
+fn one_xm() -> crate::dynamixel::Placement<1, 1> {
+    use crate::dynamixel::{Actuator, Bus as TableBus, Mode, Table, Torque, Zero};
+
+    Table {
+        buses: [TableBus {
+            label: "arm",
+            baud: 1_000_000,
+            read_every: None,
+        }],
+        actuators: [Actuator {
+            bus: 0,
+            id: 1,
+            model: XM,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::DEFAULT,
+        }],
+    }
+    .in_order()
+}
+
+#[test]
+fn the_bring_up_telemetry_is_one_sync_read_per_register_and_lands_in_the_block() {
+    use kmr_core::hal::{Faults, Hal, Mask, Overrides};
+    use kmr_core::telemetry::Telemetry;
+
+    use crate::dynamixel::Dynamixel;
+
+    let time = MockTime::new();
+    let mut two = Line::with_capacity(&time);
+    xm_setup(&mut two, 1, 1);
+    two.reply_to(5, status2(1, 0, &[121, 0]).bytes())
+        .reply_to(6, status2(1, 0, &[31]).bytes())
+        .reply_to(7, status2(1, 0, &[0]).bytes());
+    let mut adapter = Dynamixel::<_, 1, 1>::new(backend(Line::with_capacity(&time), two), one_xm());
+    adapter.check(Overrides::default()).unwrap();
+    adapter.open = true;
+    adapter.ping().unwrap();
+    let (mut telemetry, mut faults) = (Telemetry::default(), Faults::default());
+
+    let refreshed = adapter.telemetry(&mut telemetry, &mut faults);
+
+    assert_eq!((refreshed, faults), (Mask::ALL, Faults::default()));
+    assert_eq!(telemetry.voltage_v(0), Ok(Some(12.1)));
+    assert_eq!(telemetry.temperature_c(0), Ok(Some(31.0)));
+    assert_eq!(telemetry.hardware_error(0), Ok(Some(0)));
+    let (_, two) = lines(&mut adapter.backend);
+    for (address, size) in [(144, 2), (146, 1), (70, 1)] {
+        let read = p2(0xFE, &[0x82, address, 0, size, 0, 1]);
+        assert!(find(two.sent(), read.bytes()).is_some(), "{address}");
+    }
+    assert_eq!(two.unread(), 0);
+}
+
+#[test]
+fn a_protocol_1_telemetry_read_is_one_read_of_voltage_and_temperature() {
+    let time = MockTime::new();
+    let mut one = Line::with_capacity(&time);
+    one.reply_to(1, status1(1, &[]).bytes())
+        .reply_to(2, status1(1, &[12, 0]).bytes())
+        .reply_to(3, status1(1, &[0, 0]).bytes())
+        .reply_to(4, status1(1, &[0xFF, 0x03]).bytes())
+        .reply_to(5, status1(1, &[118, 36]).bytes());
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+
+    let mut out = [Ok(Reading::default()), Ok(Reading::default())];
+    assert_eq!(
+        backend.read_vitals(0, AX, Vital::Voltage, &[1, 2], &mut out),
+        Ok(())
+    );
+
+    assert_eq!(
+        out,
+        [
+            Ok(Reading {
+                voltage_dv: Some(118),
+                temperature_c: Some(36),
+                hardware_error: Some(0),
+            }),
+            Err(BackendError::NotDeclared { id: 2 }),
+        ]
+    );
+    let (one, two) = lines(&mut backend);
+    assert!(two.sent().is_empty());
+    assert!(find(one.sent(), p1(1, &[0x02, 42, 2]).bytes()).is_some());
+    assert_eq!(one.unread(), 0);
+}
+
+#[test]
+fn a_faulted_actuator_s_telemetry_is_what_its_fault_measured() {
+    let time = MockTime::new();
+    let mut two = Line::with_capacity(&time);
+    xm_setup(&mut two, 1, 1);
+    xm_setup(&mut two, 5, 2);
+    // The sync read of Present Temperature: id 1 raises the alert, which
+    // dxl_rs_v2 then measures with three reads.
+    two.reply_to(9, status2(1, 0x80, &[85]).bytes())
+        .reply_to(9, status2(2, 0, &[33]).bytes())
+        .reply_to(10, status2(1, 0x80, &[0x04]).bytes())
+        .reply_to(11, status2(1, 0x80, &[85]).bytes())
+        .reply_to(12, status2(1, 0x80, &[80]).bytes());
+    let mut backend = backend(Line::with_capacity(&time), two);
+    backend.declare(0, &[(1, XM), (2, XM)]).unwrap();
+
+    let mut out = [Ok(Reading::default()); 2];
+    assert_eq!(
+        backend.read_vitals(0, XM, Vital::Temperature, &[1, 2], &mut out),
+        Ok(())
+    );
+
+    assert_eq!(
+        out,
+        [
+            Ok(Reading {
+                voltage_dv: None,
+                temperature_c: Some(85),
+                hardware_error: Some(0x04),
+            }),
+            Ok(Reading {
+                temperature_c: Some(33),
+                ..Reading::default()
+            }),
+        ]
+    );
+}
+
+#[test]
+fn telemetry_reads_allocate_nothing() {
+    const ROUNDS: usize = 100;
+    let time = MockTime::new();
+    let mut two = MockTransport::<'_, 4096, 16_384, 64>::with_capacity(&time);
+    xm_setup(&mut two, 1, 1);
+    xm_setup(&mut two, 5, 2);
+    let mut backend = backend(MockTransport::with_capacity(&time), two);
+    backend.declare(0, &[(1, XM), (2, XM)]).unwrap();
+    let mut out = [Ok(Reading::default()); 2];
+    let round = |backend: &mut Ports<4, _, _>, out: &mut [_]| {
+        for vital in Vital::ALL {
+            assert_eq!(backend.read_vitals(0, XM, vital, &[1, 2], out), Ok(()));
+        }
+    };
+    round(&mut backend, &mut out);
+
+    let counted = allocations(|| {
+        for _ in 0..ROUNDS {
+            round(&mut backend, &mut out);
+        }
+    });
+
+    assert_eq!(counted, 0, "{counted} allocations in {ROUNDS} rounds");
+    assert_eq!(out, [Err(BackendError::Timeout); 2], "nothing answers");
+}

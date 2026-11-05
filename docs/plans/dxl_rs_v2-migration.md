@@ -9,6 +9,13 @@ worked around (`write_raw`), B2, B3, B4 (XW430-T200 only; MX-64 P1 landed in v2)
 one-read state are rows of `docs/deferred.md`; the state read stays three partial sync reads.
 Phase 2 (bench parity) is next.
 
+Update 2026-11-05, later: phase 4 done for Dynamixel and CubeMars. The core block, `Hal::telemetry`
+and the kmr_api getters landed first (SRS FR-5.11); the Dynamixel member reads every register
+once in PostInit, then one transaction at most every 50 ticks, round-robin, off the ticks that
+read the same bus (kmr_adapters T073); CubeMars copies what its replies carry (T074). Fault flags
+for FR-13.4 (`overheat`, `undervoltage`) still wait for core T044: a fault shows as its hardware
+error bits.
+
 ## Verdict
 
 **Feasible, and cheaper than it looks for the hot path.** All v1 calls live in one

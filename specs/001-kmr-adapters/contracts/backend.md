@@ -113,3 +113,29 @@ Strictness, two departures of the fake: it answers an actuator no `declare` name
 health fault fails `read_health`, never `declare` (`dxl_rs_v2` fails Setup on a faulted actuator,
 B2). The `DxlRsV2` side is pinned by contract tests on `dxl_rs_v2`'s `MockTransport`
 (kmr_adapters/src/dynamixel/dxl_rs_v2/contract.rs).
+
+## Change: `read_vitals` (2026-11-05, telemetry, SRS FR-5.11)
+
+```rust
+/// Telemetry of one group: `out[i]` answers `ids[i]`. Protocol 2 reads `vital` of every id in
+/// one sync read; Protocol 1 reads the voltage and the temperature of each id in one read,
+/// whatever `vital`, and the fault bits its status packet carries. `Err` when the line failed
+/// under the whole group.
+fn read_vitals(&mut self, port: usize, model: Model, vital: Vital, ids: &[u8],
+    out: &mut [Result<Reading, BackendError>]) -> Result<(), BackendError>;
+```
+
+`Vital` is Present Input Voltage, Present Temperature or Hardware Error Status; `Reading` holds
+each value the read carried, in register units (0.1 V, °C, X series error bits), `None` for the
+rest. `DxlRsV2`: one `read_field_partial` of `Raw(..)` on Protocol 2; one `read_raw(42, 2)` per
+id on Protocol 1, Hardware Error Status 0 on a clean reply. A slot whose actuator reported a
+fault is `Ok`, with what `dxl_rs_v2` measured: its error bits, and the voltage or the
+temperature of a voltage or temperature fault. The measurement costs `dxl_rs_v2`'s diagnosis
+reads, on the fault path only. The fake answers from its health script, one record per
+transaction, and refuses a slot count other than the ids'.
+
+The adapter's `telemetry` reads every step once in PostInit, then one step (one transaction) at
+most every `TELEMETRY_EVERY` (50) ticks, round-robin: per Protocol 2 group voltage, temperature,
+then error status; per Protocol 1 actuator one read. A step whose bus the tick's state read took
+waits one tick when the bus cadence leaves any. A failed read sets `offline` or `bus_error` as
+`read` does, never `stale`, and leaves the previous values.
