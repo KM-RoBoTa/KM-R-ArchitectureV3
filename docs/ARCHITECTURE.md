@@ -441,12 +441,13 @@ an earlier run left powered included, through the backend's
 PostInit. The zero is a software offset: 0 rad sits at the model's centre
 or at the raw position the table names. The vendor SDK sits behind a private
 `Backend` trait, so the adapter is tested on a strict scripted backend that
-refuses what `dxl_rs` refuses, and `dxl_rs_v2` can replace `dxl_rs` later.
+refuses what `DxlRsV2`, the backend on the pure-Rust `dxl_rs_v2`, refuses;
+`DxlRsV2` itself has contract tests on `dxl_rs_v2`'s scripted serial line.
 
-Still open: Dynamixel velocity and current modes (`dxl_rs` cannot write the
-operating mode register, SRS section 8), one 10-byte sync read per group
-instead of three, `dxl_rs` as a pinned git dependency with a cross build in
-CI, and N as a const generic of the core. The contract and its departures
+Still open: Dynamixel velocity and current modes (`dxl_rs_v2` has no
+Operating Mode write yet, SRS section 8), one state read per group instead
+of three partial sync reads, `dxl_rs_v2` as a pinned git dependency once it
+is pushed, and N as a const generic of the core. The contract and its departures
 from the SRS are argued in [decision 0002](decisions/0002-hal-contract.md).
 
 ## Real-time constraints

@@ -1,7 +1,8 @@
 //! The private seam between the adapter and a Dynamixel SDK.
 //!
-//! One implementation per SDK, plus the scripted one the tests run on
-//! (research R7). Values stay raw here: units are converted by the adapter.
+//! `DxlRsV2` implements it on `dxl_rs_v2`, the scripted backend for the
+//! tests (research R7). Values stay raw here: units are converted by the
+//! adapter.
 
 use core::fmt;
 use std::io::ErrorKind;
@@ -9,8 +10,8 @@ use std::path::Path;
 
 use super::config::{HealthLimits, Model, Protocol};
 
-/// Why a backend call failed: one variant per cause, with its data. `Io`
-/// is a failed serial transaction, nothing else.
+/// Why a backend call failed: one variant per cause, with its data. `Io` is
+/// the serial line failing, nothing else.
 #[cfg_attr(
     not(feature = "dynamixel"),
     expect(
@@ -23,15 +24,43 @@ pub(crate) enum BackendError {
     /// No status packet before the timeout.
     #[error("no answer before the timeout")]
     Timeout,
-    /// A serial transaction failed, as the SDK reports it.
-    #[error("serial transaction failed: {0}")]
+    /// A status packet came, but not one the SDK could use.
+    #[error("{0}")]
+    Reply(Reply),
+    /// The serial line failed.
+    #[error("serial line failed: {0}")]
     Io(Wire),
     /// The actuator answered with these error bits set.
     #[error("status packet error {0:#04x}")]
     Status(u8),
-    /// The actuator answered with an error the SDK gave no code for.
-    #[error("status packet error, its code not given by the SDK")]
-    StatusUncoded,
+    /// The actuator reports a hardware fault.
+    #[error("{0}")]
+    Fault(Fault),
+    /// Torque on refused: the actuator reported a hardware fault this
+    /// process did not clear.
+    #[error("id {id} reported a hardware fault; its torque stays off")]
+    Faulted {
+        /// Firmware id.
+        id: u8,
+    },
+    /// Another model answers at the id.
+    #[error("Model Number {found} answers")]
+    WrongModel {
+        /// Model Number read.
+        found: u16,
+    },
+    /// The SDK has no control table for the model.
+    #[error("model number {number}: the SDK has no control table for it")]
+    UnsupportedModel {
+        /// Model Number of the model.
+        number: u16,
+    },
+    /// The mode register holds a value the model's table does not list.
+    #[error("unknown operating mode {value}")]
+    UnknownMode {
+        /// Value read.
+        value: u8,
+    },
     /// The call names a port that is not open.
     #[error("port {port} is not open")]
     PortNotOpen {
@@ -46,44 +75,21 @@ pub(crate) enum BackendError {
         /// Ports the backend opens.
         max: usize,
     },
-    /// The C SDK was already brought up in this process.
-    #[error("the C SDK was already brought up in this process, and takes one bring-up per process")]
-    SdkClaimed,
-    /// The device path is not UTF-8, which the SDK needs.
+    /// The device path is not UTF-8, which the serial port needs.
     #[error("the device path is not UTF-8")]
     PathNotUtf8,
-    /// The device path holds a NUL byte.
-    #[error("the device path holds a NUL byte")]
-    PathNul,
-    /// The baud does not fit the SDK's `i32`.
-    #[error("baud {baud} does not fit the SDK's i32")]
-    BaudTooHigh {
-        /// Baud of the bus.
-        baud: u32,
+    /// The serial port could not be opened.
+    #[error("the serial port could not be opened: {0}")]
+    PortOpen(ErrorKind),
+    /// An actuator its port does not hold: no `declare` named it, or the
+    /// last one failed.
+    #[error("id {id} is not set up on its port")]
+    NotDeclared {
+        /// Firmware id.
+        id: u8,
     },
-    /// The SDK's port builder refused the settings.
-    #[error("the SDK refused the port settings")]
-    PortSettings,
-    /// The SDK could not open the port.
-    #[error("the SDK could not open the port")]
-    PortOpen,
-    /// The SDK could not set the baud rate.
-    #[error("the SDK could not set the baud rate")]
-    BaudRate,
-    /// The SDK has no control table to load.
-    #[error("the SDK found no control table")]
-    NoControlTable,
-    /// The SDK refuses both protocols on one bus.
-    #[error("the SDK refuses both protocols on one bus")]
-    MixedProtocols,
-    /// The SDK could not build a sync read or sync write group.
-    #[error("the SDK could not build the sync group")]
-    SyncGroup,
-    /// A broadcast ping failed or got no answer.
-    #[error("the broadcast ping failed or got no answer")]
-    BroadcastPing,
-    /// An actuator this process did not switch on: no handle is held for it.
-    #[error("id {id} was not switched on by this process, which holds no handle for it")]
+    /// An actuator this process did not switch on.
+    #[error("id {id} was not switched on by this process")]
     NotPowered {
         /// Firmware id.
         id: u8,
@@ -103,46 +109,19 @@ pub(crate) enum BackendError {
         /// Firmware id.
         id: u8,
     },
-    /// Every handle slot is taken.
-    #[error("no handle slot left: at most {max} actuators switched on")]
-    HandlesFull {
-        /// Handle slots.
-        max: usize,
-    },
-    /// The SDK's torque-on list does not hold the actuator.
-    #[error("id {id} is not in the SDK's torque-on list")]
-    NotListed {
-        /// Firmware id.
-        id: u8,
-    },
-    /// More goals than one write carries.
-    #[error("{goals} goals in one write, at most {max}")]
-    TooManyGoals {
-        /// Goals given.
-        goals: usize,
-        /// Goals one write carries.
-        max: usize,
-    },
-    /// A goal position the SDK's `u16` sync write cannot carry.
-    #[error("goal position {raw} for id {id} above u16::MAX; the dxl_rs sync write takes u16")]
-    GoalTooWide {
-        /// Firmware id.
-        id: u8,
-        /// Raw goal.
-        raw: u32,
-    },
-    /// The SDK refused a goal outside the angle limits it holds.
-    #[error("goal position {goal} outside the angle limits {min}–{max}")]
+    /// The SDK refused a goal outside the position limits it holds.
+    #[error("goal position {goal} outside the position limits {min}–{max}")]
     GoalOutsideLimits {
         /// Raw goal.
-        goal: u32,
+        goal: i32,
         /// Lowest raw goal.
-        min: u32,
+        min: i32,
         /// Highest raw goal.
-        max: u32,
+        max: i32,
     },
-    /// A goal register the SDK does not write.
-    #[error("cannot write {register}: dxl_rs writes Goal Position only")]
+    /// A goal register written before the torque that the backend does not
+    /// write.
+    #[error("cannot write {register} before the torque: only Goal Position is")]
     Unwritable {
         /// The register.
         register: GoalRegister,
@@ -156,8 +135,8 @@ pub(crate) enum BackendError {
         /// The setting.
         setting: Setting,
     },
-    /// CW and CCW Angle Limit asked of a Protocol 2 actuator.
-    #[error("CW and CCW Angle Limit are Protocol 1 registers")]
+    /// Position limits asked of an actuator the SDK read none of.
+    #[error("no position limits read for the actuator")]
     NoAngleLimits,
     /// Result slots and ids differ in number.
     #[error("{slots} result slots for {ids} ids")]
@@ -167,31 +146,11 @@ pub(crate) enum BackendError {
         /// Result slots given.
         slots: usize,
     },
-    /// A sync read answered another number of rows than of ids.
-    #[error("the sync read answered {rows} rows for {ids} ids")]
-    RowMismatch {
-        /// Ids named.
-        ids: usize,
-        /// Rows answered.
-        rows: usize,
-    },
-    /// A sync read gave no value for one actuator.
-    #[error("the sync read gave no value for id {id}")]
-    NoValue {
-        /// Firmware id.
-        id: u8,
-    },
     /// The model has no such register.
     #[error("the model has no {register} register")]
     NoRegister {
         /// ROBOTIS name of the register.
         register: &'static str,
-    },
-    /// What the SDK offers no call for.
-    #[error("{operation}: the SDK offers no call for it")]
-    Unsupported {
-        /// What was asked.
-        operation: &'static str,
     },
     /// A register value wider than the type it is read into.
     #[error("{register} read {value}, wider than the register")]
@@ -199,44 +158,86 @@ pub(crate) enum BackendError {
         /// ROBOTIS name of the register.
         register: &'static str,
         /// Value read.
-        value: u32,
+        value: i32,
+    },
+    /// The SDK refused the call before sending anything.
+    #[error("refused before sending: {reason}")]
+    Refused {
+        /// What the SDK refused.
+        reason: &'static str,
     },
 }
 
-/// How a serial transaction failed, as the SDK reports it.
+/// A status packet that came but could not be used.
+#[cfg_attr(
+    not(feature = "dynamixel"),
+    expect(dead_code, reason = "only the SDK backend reports them")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum Reply {
+    /// It came after the timeout: a USB latency timer above it.
+    #[error("status packet after the timeout")]
+    Late,
+    /// Part of it came, then nothing.
+    #[error("status packet cut short")]
+    Partial,
+    /// It failed its checksum or CRC.
+    #[error("status packet corrupted")]
+    Corrupt,
+    /// Its id or length was not the one asked for.
+    #[error("status packet malformed")]
+    Malformed,
+}
+
+/// How the serial line failed.
 #[cfg_attr(
     not(feature = "dynamixel"),
     expect(dead_code, reason = "only the SDK backend reports every one")
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum Wire {
-    /// The port is in use.
-    #[error("port busy")]
-    PortBusy,
-    /// The instruction packet was not sent.
-    #[error("instruction packet not sent")]
-    TxFail,
-    /// No status packet was received.
-    #[error("status packet not received")]
-    RxFail,
-    /// The instruction packet was malformed.
-    #[error("instruction packet malformed")]
-    TxError,
-    /// The status packet was incomplete.
-    #[error("status packet incomplete")]
-    RxWaiting,
-    /// The status packet was corrupted.
-    #[error("status packet corrupted")]
-    RxCorrupt,
-    /// The instruction is not available.
-    #[error("instruction not available")]
-    NotAvailable,
-    /// A result code the SDK does not name.
-    #[error("SDK result code {0}")]
-    Unknown(i32),
+    /// The port's own read or write timeout expired.
+    #[error("port timeout")]
+    PortTimeout,
+    /// The port is gone: a USB adapter unplugged.
+    #[error("port closed")]
+    Closed,
     /// The operating system refused the call.
     #[error("{0}")]
     Os(ErrorKind),
+}
+
+/// A hardware fault an actuator reports, measured against its own limits.
+#[cfg_attr(
+    not(feature = "dynamixel"),
+    expect(dead_code, reason = "only the SDK backend measures faults")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum Fault {
+    /// The input voltage is outside its limits.
+    #[error("input voltage {measured_dv} dV outside {min_dv}–{max_dv} dV")]
+    Voltage {
+        /// Present input voltage, in 0.1 V.
+        measured_dv: u16,
+        /// Min Voltage Limit, in 0.1 V.
+        min_dv: u16,
+        /// Max Voltage Limit, in 0.1 V.
+        max_dv: u16,
+    },
+    /// The temperature is above its limit.
+    #[error("temperature {measured_c} °C above {limit_c} °C")]
+    Temperature {
+        /// Present temperature, in °C.
+        measured_c: u8,
+        /// Temperature Limit, in °C.
+        limit_c: u8,
+    },
+    /// Any other fault, or one the measure no longer shows.
+    #[error("Hardware Error Status {status:#010b}")]
+    Hardware {
+        /// Hardware Error Status bits, X series layout.
+        status: u8,
+    },
 }
 
 /// Why `open_ports` failed.
@@ -279,10 +280,10 @@ pub(crate) struct Health {
 
 /// Address and width of one register.
 #[cfg_attr(
-    not(test),
+    not(any(test, feature = "dynamixel")),
     expect(
         dead_code,
-        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+        reason = "only the backends use them, and both are compiled out"
     )
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,10 +297,10 @@ pub(crate) struct Register {
 /// The three health limit registers of a model, all EEPROM: written with
 /// the torque off only on Protocol 2.
 #[cfg_attr(
-    not(test),
+    not(any(test, feature = "dynamixel")),
     expect(
         dead_code,
-        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+        reason = "only the backends use them, and both are compiled out"
     )
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,10 +314,10 @@ pub(crate) struct LimitRegisters {
 }
 
 #[cfg_attr(
-    not(test),
+    not(any(test, feature = "dynamixel")),
     expect(
         dead_code,
-        reason = "dxl_rs writes no register yet: only the scripted backend uses them"
+        reason = "only the backends use them, and both are compiled out"
     )
 )]
 impl LimitRegisters {
@@ -431,38 +432,53 @@ pub(crate) struct PortSpec<'a> {
 }
 
 /// Data bytes of each Protocol 2 sync read one state read sends: present
-/// current, velocity and position, one sync read each, as `dxl_rs` reads
-/// them until its 10-byte block read (research R12). Both backends and the
-/// presets' declared costs read it, so one change moves all three.
+/// current, velocity and position, one sync read each. `dxl_rs_v2` keeps a
+/// result per actuator (SRS FR-2.6) for one field per sync read only; its
+/// one-transaction bulk read fails whole (research R12). Both backends and
+/// the presets' declared costs read it, so one change moves all three.
 pub(crate) const STATE_READS: &[u16] = &[2, 4, 4];
+
+/// Why `declare` failed: the actuator it stopped at, and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Undeclared {
+    /// Firmware id; `None` when no single actuator failed.
+    pub(crate) id: Option<u8>,
+    /// What the backend reported.
+    pub(crate) source: BackendError,
+}
 
 /// What the adapter needs from an SDK.
 ///
 /// `port` indexes the slice given to `open_ports`; `model` is the model of
 /// the actuators named, one series per call.
 pub(crate) trait Backend {
-    /// Ports one process can open.
+    /// Ports one backend opens.
     const MAX_PORTS: usize;
 
     /// Data bytes of each Protocol 2 sync read one `sync_read_state` sends.
     const STATE_READS: &'static [u16];
 
-    /// Registers every port, opens every one, then initializes once: the C
-    /// SDK keeps global port state (ROBOTIS issue #124).
+    /// Whether the backend has a control table for `model`. No I/O: `check`
+    /// asks it.
+    fn supports(model: Model) -> bool {
+        let _ = model;
+        true
+    }
+
+    /// Opens every port. Nothing is sent.
     fn open_ports(&mut self, ports: &[PortSpec<'_>]) -> Result<(), OpenFailure>;
 
-    /// Whether actuator `id` answers.
-    fn ping(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
-
-    /// Model Number (address 0) of one actuator, on any protocol.
-    fn read_model_number(&mut self, port: usize, model: Model, id: u8)
-    -> Result<u16, BackendError>;
+    /// Sets up the actuators of `port`, in id order: each answers its ping
+    /// and reports the Model Number of its declared model, then is held,
+    /// its torque state off. Stops at the first that fails. Replaces what
+    /// the port held; every later call names an actuator held here.
+    fn declare(&mut self, port: usize, actuators: &[(u8, Model)]) -> Result<(), Undeclared>;
 
     /// Present position of one actuator.
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError>;
 
-    /// Present state of one Protocol 2 group in one transaction: `out[i]`
-    /// answers `ids[i]`. `Err` when the whole transaction failed.
+    /// Present state of one Protocol 2 group: `out[i]` answers `ids[i]`.
+    /// `Err` when the line failed under the whole group.
     fn sync_read_state(
         &mut self,
         port: usize,
@@ -481,9 +497,9 @@ pub(crate) trait Backend {
 
     /// Goals of one group, `(id, raw)`, in `register`, none of them switched
     /// on here: what each holds once `torque` switches it on. One
-    /// transaction where the SDK allows it; `DxlRs` writes and confirms one
-    /// goal per actuator. Refused whole, before any write, when one of them
-    /// is switched on here.
+    /// transaction where the SDK allows it; `DxlRsV2` writes and confirms
+    /// one goal per actuator. Refused whole, before any write, when one of
+    /// them is switched on here.
     fn sync_write_start_goal(
         &mut self,
         port: usize,
@@ -498,7 +514,7 @@ pub(crate) trait Backend {
     fn torque(&mut self, port: usize, model: Model, id: u8, on: bool) -> Result<(), BackendError>;
 
     /// Writes Torque Enable = 0 to actuator `id`, whether or not this
-    /// backend switched it on; clears any handle kept for it.
+    /// backend switched it on, and whether or not its port holds it.
     fn force_torque_off(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
     /// One setting of one actuator: Operating Mode and Torque Enable on
@@ -526,8 +542,9 @@ pub(crate) trait Backend {
         limits: HealthLimits,
     ) -> Result<(), BackendError>;
 
-    /// CW and CCW Angle Limit of one Protocol 1 actuator, raw: both 0 is
-    /// wheel mode, anything else joint mode, its goals in `cw..=ccw`.
+    /// Position limits of one actuator, raw, `(low, high)`: CW and CCW Angle
+    /// Limit on Protocol 1, both 0 being wheel mode; Min and Max Position
+    /// Limit on Protocol 2. Its goals stay in `low..=high`.
     fn read_angle_limits(
         &mut self,
         port: usize,

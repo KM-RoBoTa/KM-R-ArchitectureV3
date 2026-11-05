@@ -40,8 +40,8 @@ mod preset {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_driver_is_dynamixel() {
-        use kmr_api::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs<N>, 1, N>, HNil>> =
+        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
+        let _: Option<HCons<Dynamixel<DxlRsV2<N>, 1, N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
     }
 
@@ -97,8 +97,8 @@ mod model {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_driver_is_dynamixel_on_n_bus_slots() {
-        use kmr_api::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs<N>, N, N>, HNil>> =
+        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
+        let _: Option<HCons<Dynamixel<DxlRsV2<N>, N, N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
     }
 
@@ -183,8 +183,8 @@ mod placed {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_member_is_dynamixel_and_a_plugin_binds() {
-        use kmr_api::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs<N>, 2, N>, HNil>> =
+        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
+        let _: Option<HCons<Dynamixel<DxlRsV2<N>, 2, N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
         assert!(__Spec::bind(&LABELLED).is_ok());
     }

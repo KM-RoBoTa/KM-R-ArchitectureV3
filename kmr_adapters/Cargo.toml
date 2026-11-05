@@ -11,15 +11,21 @@ kmr_core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 rustix.workspace = true
-dxl_rs = { workspace = true, optional = true }
+# The AX, RX, MX and X tables. `partial-reads` keeps a stale flag per actuator (SRS FR-2.6);
+# `raw-registers` writes the start goal with the torque off and reads the registers dxl_rs_v2
+# has no field for (Operating Mode, Torque Enable, the health limits).
+dxl_rs_v2 = { workspace = true, optional = true, features = ["std", "ax", "mx", "rx", "x-series", "partial-reads", "raw-registers"] }
 socketcan = { workspace = true, optional = true }
 
 [features]
-dynamixel = ["dep:dxl_rs"]
+dynamixel = ["dep:dxl_rs_v2"]
 # The SocketCAN transport of the CubeMars adapter; the adapter itself always builds.
 cubemars = ["dep:socketcan"]
 
 [dev-dependencies]
+# The scripted serial line of the DxlRsV2 contract tests; no `std`, so a test build without
+# `dynamixel` pulls no serial port crate.
+dxl_rs_v2 = { workspace = true, features = ["mock"] }
 rustix = { workspace = true, features = ["pty"] }
 ctrlc.workspace = true
 tracing-subscriber.workspace = true

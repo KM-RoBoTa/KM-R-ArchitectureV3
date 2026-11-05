@@ -506,7 +506,7 @@ fn torque_asked(backend: &Scripted, port: usize, id: u8, on: bool) -> bool {
 // ── US1: one transaction per group, cadence, write mask (T027) ──────────────
 
 #[test]
-#[ignore = "dxl_rs sends 3 sync reads per group until its 10-byte block read (T050, T051)"]
+#[ignore = "3 partial sync reads per group: dxl_rs_v2 has no partial multi-field read (T050, T051)"]
 fn protocol_2_chain_is_one_read_and_one_write_per_tick() -> Result<(), DynamixelError> {
     let mut adapter = rig(X_TABLE);
     let layout = powered(&mut adapter)?;
@@ -903,7 +903,7 @@ fn no_torque_call_before_configure() -> Result<(), DynamixelError> {
     adapter.configure()?;
     adapter.read_all(Slot::filled(0.0).sample())?;
     assert_eq!(adapter.backend.count(Call::Torque), 0);
-    assert_eq!(adapter.backend.count(Call::Ping), N);
+    assert_eq!(adapter.backend.count(Call::Declare), 1);
     assert_eq!(adapter.backend.count(Call::ReadHealth), N);
 
     adapter.torque_on()?;
@@ -969,7 +969,7 @@ fn a_missed_ping_names_the_actuator_after_bounded_retries() -> Result<(), Dynami
             id: id(1)
         })
     );
-    assert_eq!(adapter.backend.count(Call::Ping), 1 + PING_ATTEMPTS);
+    assert_eq!(adapter.backend.count(Call::Declare), 1 + PING_ATTEMPTS);
     Ok(())
 }
 
@@ -1358,15 +1358,17 @@ fn a_failed_present_read_keeps_the_torque_off_and_names_the_actuator() -> Result
 fn a_failed_start_goal_write_powers_nothing() -> Result<(), DynamixelError> {
     let mut adapter = rig(MIX_TABLE);
     configured(&mut adapter)?;
-    adapter
-        .backend
-        .fail_port(Call::SyncWriteStartGoal, 1, BackendError::Io(Wire::TxFail));
+    adapter.backend.fail_port(
+        Call::SyncWriteStartGoal,
+        1,
+        BackendError::Io(Wire::PortTimeout),
+    );
 
     assert_eq!(
         adapter.torque_on(),
         Err(DynamixelError::Backend {
             bus: "wrist",
-            source: BackendError::Io(Wire::TxFail)
+            source: BackendError::Io(Wire::PortTimeout)
         })
     );
     assert_eq!(adapter.backend.count(Call::Torque), 0);
@@ -1761,30 +1763,27 @@ fn a_port_that_fails_to_open_is_named_with_its_bus_and_serial() -> io::Result<()
     roots.link(WRIST, &wrist.slave)?;
     let mut adapter = roots.rig(bound(MIX_TABLE, &MIX_PLUGINS));
     assert!(adapter.check(Overrides::default()).is_ok());
-    adapter.backend.fail_open_port(1, BackendError::PortOpen);
+    let busy = BackendError::PortOpen(io::ErrorKind::ResourceBusy);
+    adapter.backend.fail_open_port(1, busy);
 
     assert_eq!(
         adapter.open(),
         Err(DynamixelError::PortOpen {
             bus: "wrist",
             port: Port::ById(WRIST),
-            source: BackendError::PortOpen
+            source: busy
         })
     );
 
-    adapter.backend.fail_open(BackendError::SdkClaimed);
+    let too_many = BackendError::TooManyPorts { ports: 2, max: 1 };
+    adapter.backend.fail_open(too_many);
     let error = adapter.open();
-    assert_eq!(
-        error,
-        Err(DynamixelError::Sdk {
-            source: BackendError::SdkClaimed
-        })
-    );
+    assert_eq!(error, Err(DynamixelError::Sdk { source: too_many }));
     let message = error.err().map(|error| error.to_string());
     assert_eq!(
         message.as_deref(),
         Some(
-            "the Dynamixel SDK could not be brought up: the C SDK was already brought up in this process, and takes one bring-up per process"
+            "the Dynamixel SDK could not be brought up: 2 ports given, the backend opens at most 1"
         )
     );
     Ok(())
@@ -2100,10 +2099,10 @@ fn protocol_1_reads_its_angle_limits_never_a_setting() -> Result<(), DynamixelEr
             .filter(move |record| record.call == call)
             .all(|record| record.port == port)
     };
-    assert!(on(Call::ReadSetting, 0) && on(Call::ReadAngleLimits, 1));
+    assert!(on(Call::ReadSetting, 0));
     let x = (0..N).filter(|index| index % 2 == 0).count();
     assert_eq!(adapter.backend.count(Call::ReadSetting), 2 * x);
-    assert_eq!(adapter.backend.count(Call::ReadAngleLimits), N - x);
+    assert_eq!(adapter.backend.count(Call::ReadAngleLimits), N);
     Ok(())
 }
 
@@ -2240,7 +2239,7 @@ fn a_present_position_outside_the_angle_limits_powers_nothing() -> Result<(), Dy
     assert_eq!(
         message.as_deref(),
         Some(
-            "actuator 1: id 2 on bus rx: present position 200 outside the CW/CCW Angle Limit 300–700"
+            "actuator 1: id 2 on bus rx: present position 200 outside the position limits 300–700"
         )
     );
     assert_eq!(adapter.backend.count(Call::SyncWriteStartGoal), 0);
@@ -2279,7 +2278,7 @@ fn rx28_chain_runs_every_step_on_protocol_1() -> Result<(), DynamixelError> {
         assert_eq!(*q, si(Model::Rx28, raw));
     }
     let counts = [
-        (Call::Ping, N),
+        (Call::Declare, 1),
         (Call::ReadHealth, N),
         (Call::ReadAngleLimits, N),
         (Call::ReadSetting, 0),
@@ -2817,10 +2816,10 @@ fn only_subset_called_refuses_another_index() {
     assert!(!only_subset_called(&backend), "index 2's goal on index 3");
 
     backend.clear_log();
-    let _ = backend.ping(1, Model::Xm430W210, 1);
+    let _ = backend.declare(1, &[(1, Model::Xm430W210)]);
     assert!(!only_subset_called(&backend), "the wrist bus has no XM");
     backend.clear_log();
-    let _ = backend.ping(0, Model::Xm430W210, 2);
+    let _ = backend.declare(0, &[(2, Model::Xm430W210)]);
     assert!(!only_subset_called(&backend), "no id 2 on the arm bus");
 }
 
@@ -2869,7 +2868,7 @@ fn a_placed_member_brings_up_only_its_actuators() -> Result<(), DynamixelError> 
     adapter.torque_on()?;
 
     assert!(only_subset_called(&adapter.backend));
-    assert_eq!(adapter.backend.count(Call::Ping), 2);
+    assert_eq!(adapter.backend.count(Call::Declare), 2);
     assert_eq!(adapter.backend.count(Call::Torque), 2);
     for index in (0..N).filter(|&index| !subset().get(index)) {
         assert_eq!(
@@ -3380,7 +3379,7 @@ fn an_ax12_bus_beside_a_protocol_1_mx64_bus_runs_every_step() -> Result<(), Dyna
         assert_eq!(slot.qd[index], Qd(9.0), "Protocol 1 rates are unread");
     }
     let counts = [
-        (Call::ReadModelNumber, N),
+        (Call::Declare, 2),
         (Call::ReadAngleLimits, N),
         (Call::ReadSetting, mx),
         (Call::SyncReadState, 0),
@@ -3439,7 +3438,7 @@ fn an_ax12_bus_beside_an_mx64_v2_bus_runs_every_step() -> Result<(), DynamixelEr
         }
     }
     let counts = [
-        (Call::ReadAngleLimits, N - mx),
+        (Call::ReadAngleLimits, N),
         (Call::ReadSetting, 2 * mx),
         (Call::SyncReadState, 3 * Scripted::STATE_READS.len()),
         (Call::ReadPosition, 3 * (N - mx)),
@@ -3587,8 +3586,8 @@ fn nothing_powered(backend: &Scripted) -> bool {
         .all(|call| backend.count(call) == 0)
 }
 
-/// Pings `table` and checks one Model Number read per actuator, naming its
-/// declared model.
+/// Pings `table` and checks one setup per bus, naming each of its
+/// actuators with the Model Number of its declared model.
 fn pings_with_model_numbers<const NB: usize>(table: Table<NB, N>) -> Result<(), DynamixelError> {
     let mut adapter = rig(table);
     adapter.check(Overrides::default())?;
@@ -3596,10 +3595,21 @@ fn pings_with_model_numbers<const NB: usize>(table: Table<NB, N>) -> Result<(), 
 
     adapter.ping()?;
 
-    let declared = table
-        .actuators
-        .map(|actuator| (actuator.bus, Some(actuator.model), 1));
-    assert!(sent(&adapter.backend, Call::ReadModelNumber).eq(declared));
+    let backend = &adapter.backend;
+    let setups = backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::Declare);
+    assert_eq!(setups.clone().count(), NB);
+    for (bus, record) in setups.enumerate() {
+        let declared = table
+            .actuators
+            .iter()
+            .filter(|actuator| actuator.bus == bus)
+            .map(|actuator| (actuator.id, u32::from(actuator.model.number())));
+        assert_eq!(record.port, bus);
+        assert!(backend.models(record).iter().copied().eq(declared));
+    }
     Ok(())
 }
 
@@ -3634,7 +3644,7 @@ fn an_ax12_answering_as_a_declared_mx64_fails_ping_before_any_torque() {
         Some("actuator 3: id 4 on bus mx: Model Number 12, expected 310 for the declared MX-64")
     );
     let backend = &adapter.backend;
-    assert_eq!(backend.count(Call::ReadModelNumber), 4);
+    assert_eq!(backend.count(Call::Declare), 2);
     assert_eq!(backend.count(Call::ReadHealth), 0);
     assert!(nothing_powered(backend));
 }
@@ -3668,7 +3678,7 @@ fn an_mx64_answering_as_a_declared_ax12_fails_ping_before_any_torque() {
 #[test]
 fn a_failed_model_number_read_names_the_actuator() {
     let (adapter, result) = bring_up_ax_beside_mx(|backend| {
-        backend.fail(Call::ReadModelNumber, 1, id(1), BackendError::Status(0x04));
+        backend.fail(Call::Declare, 1, id(1), BackendError::Status(0x04));
     });
 
     assert_eq!(
@@ -3821,7 +3831,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 /// Allocations `run` makes on this thread.
-fn allocations(run: impl FnOnce()) -> u64 {
+pub(super) fn allocations(run: impl FnOnce()) -> u64 {
     let before = ALLOCATIONS.with(Cell::get);
     COUNTING.with(|counting| counting.set(true));
     run();

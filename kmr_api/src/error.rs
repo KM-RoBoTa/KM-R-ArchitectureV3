@@ -239,7 +239,7 @@ impl UserError {
 }
 
 /// Last path segment of a type name, without its generics or a reference:
-/// `&mut kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, 1>` is
+/// `&mut kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRsV2, 1>` is
 /// `Dynamixel`.
 pub(crate) fn short_name(name: &str) -> &str {
     let path = name.split_once('<').map_or(name, |(path, _)| path);
@@ -412,7 +412,7 @@ mod tests {
     fn a_short_name_is_the_last_path_segment_without_generics() {
         let names = [
             (
-                "kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, 1>",
+                "kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRsV2, 1>",
                 "Dynamixel",
             ),
             ("a::B<c::D<e::F<g::H, 2>>, [i::J; 3], (k::L, m::N)>", "B"),
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn a_member_error_names_the_member_short_and_keeps_the_chain() {
-        let full = "&mut kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs, 1>";
+        let full = "&mut kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRsV2, 1>";
         let e = UserError::bring_up(member(full, NotFound));
 
         assert_eq!(

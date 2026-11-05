@@ -52,9 +52,10 @@ rustix = { version = "1", features = ["termios", "fs"] }
 cc = "1.10.0"
 pyo3 = { version = "0.30.1", features = ["auto-initialize"] }
 mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
-# Local path until KM-RoBoTa/dxl-rs is fetchable: the sync-read API is on its unpushed feat/battery-status branch.
-# agent/integration: dxl_rs branch agent/model-number (worktree ../dxl_rs-agent-mn); dev stays on ../dxl_rs-agent
-dxl_rs = { path = "../dxl_rs-agent-mn" }
+# A path dependency, not a git rev: dxl_rs_v2's dev branch is unpushed. ../dxl_rs_v2-kmr is a
+# worktree pinned (detached) at 66035e1; bump it deliberately and re-read v2's ARCHITECTURE.md.
+# Its features are picked in kmr_adapters/Cargo.toml.
+dxl_rs_v2 = { path = "../dxl_rs_v2-kmr", default-features = false }
 # DECISION: socketcan binds the CubeMars CAN_RAW sockets by interface name without our own
 # `unsafe` (maintainer-approved 2026-11-03). No default features: no netlink, no dump.
 socketcan = { version = "4.0.0", default-features = false }

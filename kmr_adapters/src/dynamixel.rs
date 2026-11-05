@@ -7,7 +7,7 @@
 mod backend;
 mod config;
 #[cfg(feature = "dynamixel")]
-mod dxl_rs;
+mod dxl_rs_v2;
 mod io;
 mod port;
 mod units;
@@ -26,12 +26,12 @@ use kmr_core::state::Q;
 use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
-use backend::{Backend, BackendError, POSITION_MODE, PortSpec, Setting};
+use backend::{Backend, BackendError, Fault, POSITION_MODE, PortSpec, Setting, Undeclared};
 use io::{Goals, Groups, Outcome};
 use port::DevicePath;
 
 #[cfg(feature = "dynamixel")]
-pub use self::dxl_rs::DxlRs;
+pub use self::dxl_rs_v2::DxlRsV2;
 use config::Placed;
 pub use config::{
     Actuator, Bus, DEFAULT_READ_EVERY, Declared, HealthLimits, Mode, Model, Placement, Protocol,
@@ -48,7 +48,7 @@ pub(crate) const fn declared_costs<const NB: usize, const N: usize>(
     io::declared_costs(table, backend::STATE_READS)
 }
 
-/// Ping attempts per actuator before it counts as missing (FR-007).
+/// Setups of a bus before a silent actuator counts as missing (FR-007).
 const PING_ATTEMPTS: usize = 3;
 /// Local transaction groups one member may claim: `Group` is a `u8`.
 const MAX_GROUPS: usize = 256;
@@ -151,7 +151,7 @@ pub enum DynamixelError {
         /// Port of the bus plugin.
         port: Port,
     },
-    /// Two buses resolve to one device: the SDK would merge them.
+    /// Two buses resolve to one device.
     #[error("buses {first} and {bus} resolve to the same device; check the bus plugins")]
     SharedPort {
         /// The earlier bus.
@@ -283,7 +283,8 @@ pub enum DynamixelError {
         /// Limits read back.
         read: HealthLimits,
     },
-    /// The actuator reports a hardware error (Protocol 2).
+    /// The actuator reports a hardware error: Hardware Error Status on
+    /// Protocol 2, its status packet's error bits on Protocol 1.
     #[error(
         "actuator {actuator}: id {id} on bus {bus}: Hardware Error Status {}",
         Alarms(*.status)
@@ -315,10 +316,11 @@ pub enum DynamixelError {
         /// Highest position of the model, raw.
         max: u32,
     },
-    /// The present position is outside the CW/CCW Angle Limit: powered, the
-    /// actuator would not hold there (Protocol 1).
+    /// The present position is outside the position limits, CW/CCW Angle
+    /// Limit on Protocol 1, Min/Max Position Limit on Protocol 2: powered,
+    /// the actuator would not hold there.
     #[error(
-        "actuator {actuator}: id {id} on bus {bus}: present position {raw} outside the CW/CCW Angle Limit {cw}–{ccw}"
+        "actuator {actuator}: id {id} on bus {bus}: present position {raw} outside the position limits {cw}–{ccw}"
     )]
     OutsideAngleLimits {
         /// Engine index.
@@ -329,9 +331,9 @@ pub enum DynamixelError {
         id: u8,
         /// Present position, raw.
         raw: u32,
-        /// CW Angle Limit, raw.
+        /// CW Angle Limit, or Min Position Limit, raw.
         cw: u32,
-        /// CCW Angle Limit, raw.
+        /// CCW Angle Limit, or Max Position Limit, raw.
         ccw: u32,
     },
     /// CW and CCW Angle Limit both 0: wheel mode, not joint mode
@@ -543,8 +545,6 @@ impl fmt::Display for Alarms {
 /// The Dynamixel adapter over `NB` buses, talking through backend `B`: one
 /// member of the robot's hardware, owning the engine indices of its
 /// [`Placement`] (SRS FR-5.1) out of the robot's `N` actuators.
-///
-/// One per process: the C SDK keeps global port state (research R7).
 pub struct Dynamixel<B, const NB: usize, const N: usize> {
     /// The SDK seam.
     backend: B,
@@ -564,8 +564,9 @@ pub struct Dynamixel<B, const NB: usize, const N: usize> {
     groups: Groups<N>,
     /// Device of each bus, once resolved.
     devices: [Option<DevicePath>; NB],
-    /// Raw goal range of each actuator: CW to CCW Angle Limit once
-    /// `configure` read them on Protocol 1, else any.
+    /// Raw goal range of each actuator: CW to CCW Angle Limit on Protocol
+    /// 1, Min to Max Position Limit on Protocol 2, once `configure` read
+    /// them; any before.
     limits: [(u32, u32); N],
     /// Whether the backend opened the ports.
     open: bool,
@@ -679,7 +680,8 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     }
 
     /// The bring-up error of actuator `index` failing with `error`: missing
-    /// on a timeout, a failed transaction with it otherwise.
+    /// on a timeout, its fault measured, a failed transaction with it
+    /// otherwise.
     fn actuator_error(&self, index: usize, error: BackendError) -> DynamixelError {
         let (bus, id) = self.named(index);
         match error {
@@ -688,12 +690,65 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
                 bus,
                 id,
             },
+            BackendError::Fault(Fault::Voltage {
+                measured_dv,
+                min_dv,
+                max_dv,
+            }) => DynamixelError::Voltage {
+                actuator: index,
+                bus,
+                id,
+                measured_dv,
+                min_dv,
+                max_dv,
+            },
+            BackendError::Fault(Fault::Temperature {
+                measured_c,
+                limit_c,
+            }) => DynamixelError::Temperature {
+                actuator: index,
+                bus,
+                id,
+                measured_c,
+                limit_c,
+            },
+            BackendError::Fault(Fault::Hardware { status }) => DynamixelError::HardwareError {
+                actuator: index,
+                bus,
+                id,
+                status,
+            },
             source => DynamixelError::Actuator {
                 actuator: index,
                 bus,
                 id,
                 source,
             },
+        }
+    }
+
+    /// The bring-up error of bus `bus` whose setup stopped at `failure`: the
+    /// actuator it names, another model found there included.
+    fn undeclared(&self, bus: usize, failure: Undeclared) -> DynamixelError {
+        let label = self.label(bus);
+        let found = failure.id.and_then(|id| {
+            self.actuators
+                .iter()
+                .find(|(_, actuator)| actuator.bus == bus && actuator.id == id)
+        });
+        match (found, failure.source) {
+            (Some((index, actuator)), BackendError::WrongModel { found }) => {
+                DynamixelError::ModelMismatch {
+                    actuator: index,
+                    bus: label,
+                    id: actuator.id,
+                    declared: actuator.model,
+                    found,
+                    expected: actuator.model.number(),
+                }
+            }
+            (Some((index, _)), source) if !source.is_bus() => self.actuator_error(index, source),
+            (_, source) => DynamixelError::Backend { bus: label, source },
         }
     }
 
@@ -766,13 +821,28 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// Claims the placement's indices, grouped per (bus, series) with local
     /// ids from 0; each bus is read every `read_every` ticks, else every
     /// [`DEFAULT_READ_EVERY`] (FR-009). `Overrides` carries no cadence: it is
-    /// a table field (core K3.8).
+    /// a table field (core K3.8). A model the backend has no control table
+    /// for is refused here, before any I/O.
     fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
         if let Some((actuator, index)) = self.actuators.past() {
             return Err(DynamixelError::PastTheRobot {
                 actuator,
                 index,
                 actuators: N,
+            });
+        }
+        if let Some((index, actuator)) = self
+            .actuators
+            .iter()
+            .find(|(_, actuator)| !B::supports(actuator.model))
+        {
+            return Err(DynamixelError::Actuator {
+                actuator: index,
+                bus: self.label(actuator.bus),
+                id: actuator.id,
+                source: BackendError::UnsupportedModel {
+                    number: actuator.model.number(),
+                },
             });
         }
         if self.live > B::MAX_PORTS {
@@ -890,35 +960,41 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         Ok(())
     }
 
-    /// Pings each actuator up to [`PING_ATTEMPTS`] times, without sleep,
-    /// then reads its Model Number once and refuses another model's: no
-    /// register is read through the declared table before that.
+    /// Sets up each bus with the actuators it owns there: each answers and
+    /// reports its declared model's Model Number, in id order, or the bus's
+    /// setup fails naming it. A setup that finds an actuator silent is tried
+    /// again, up to [`PING_ATTEMPTS`] times, without sleep; another model
+    /// found is refused at once. No register is read through the declared
+    /// table before that.
     fn ping(&mut self) -> Result<(), DynamixelError> {
-        for (index, actuator) in self.actuators.iter() {
-            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            let mut answer = Err(BackendError::Timeout);
+        for bus in 0..self.live {
+            let mut owned = [(0, Model::Xm430W210); N];
+            let mut len = 0;
+            for (_, actuator) in self.actuators.iter() {
+                if let (true, Some(slot)) = (actuator.bus == bus, owned.get_mut(len)) {
+                    *slot = (actuator.id, actuator.model);
+                    len += 1;
+                }
+            }
+            let owned = owned.get(..len).unwrap_or_default();
+            if owned.is_empty() {
+                continue;
+            }
+            let mut answer = Ok(());
             for _ in 0..PING_ATTEMPTS {
-                answer = self.backend.ping(bus, model, id);
-                if answer.is_ok() {
+                answer = self.backend.declare(bus, owned);
+                let silent = matches!(
+                    answer,
+                    Err(Undeclared {
+                        source: BackendError::Timeout,
+                        ..
+                    })
+                );
+                if !silent {
                     break;
                 }
             }
-            answer.map_err(|error| self.actuator_error(index, error))?;
-            let found = self
-                .backend
-                .read_model_number(bus, model, id)
-                .map_err(|error| self.actuator_error(index, error))?;
-            let expected = model.number();
-            if found != expected {
-                return Err(DynamixelError::ModelMismatch {
-                    actuator: index,
-                    bus: self.label(bus),
-                    id,
-                    declared: model,
-                    found,
-                    expected,
-                });
-            }
+            answer.map_err(|failure| self.undeclared(bus, failure))?;
         }
         Ok(())
     }
@@ -1037,13 +1113,14 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         Ok(())
     }
 
-    /// Checks that every Protocol 2 actuator is in position mode, and warns
-    /// about one found powered: `torque_on` switches a [`Torque::ReadOnly`]
-    /// one off (research R1). Protocol 1 has no Operating Mode: its joint
-    /// mode is CW and CCW Angle Limit not both 0, nor both the model's
-    /// multi-turn value, read here and kept as the range its goals must stay
-    /// in; on the MX-64, Torque Ctrl Mode Enable 0 too, its counterpart of
-    /// position mode. Its torque state is not read.
+    /// Checks that every Protocol 2 actuator is in position mode, keeps its
+    /// Min and Max Position Limit as the range its goals must stay in, and
+    /// warns about one found powered: `torque_on` switches a
+    /// [`Torque::ReadOnly`] one off (research R1). Protocol 1 has no
+    /// Operating Mode: its joint mode is CW and CCW Angle Limit not both 0,
+    /// nor both the model's multi-turn value, read here and kept as that
+    /// range; on the MX-64, Torque Ctrl Mode Enable 0 too, its counterpart
+    /// of position mode. Its torque state is not read.
     fn configure(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
@@ -1112,6 +1189,16 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                     found: mode,
                     expected: POSITION_MODE,
                 });
+            }
+            // DECISION: the Protocol 2 position limits are kept too, so a goal
+            // outside them is `rejected` alone: dxl_rs_v2 would refuse the
+            // whole group's write where the firmware once clamped it.
+            let range = self
+                .backend
+                .read_angle_limits(bus, model, id)
+                .map_err(|error| self.actuator_error(index, error))?;
+            if let Some(limits) = self.limits.get_mut(index) {
+                *limits = range;
             }
             let powered = self
                 .backend

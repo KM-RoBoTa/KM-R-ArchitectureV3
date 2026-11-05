@@ -117,9 +117,9 @@ impl Model {
         }
     }
 
-    /// Control table family. `dxl_rs` has no RX-28 table: the RX-28 shares
-    /// the AX one, as in v2 (research R7). The Protocol 1 MX-64 shares it
-    /// too, so it shares the AX sync write on its bus.
+    /// Control table family: every register the adapter touches sits at
+    /// the AX address and size on the RX-28 and the Protocol 1 MX-64 too
+    /// (research R7), so they share the AX sync write on their bus.
     pub const fn series(self) -> Series {
         match self {
             Self::Ax12a | Self::Rx28 | Self::Mx64 => Series::Ax,
@@ -317,7 +317,7 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     ///
     /// Rejects no bus, an empty label, a label two buses share, a bus index
     /// out of range, an id above 252, an id taken twice on one bus, a mode or
-    /// a baud the model lacks, every mode but `Position` (`dxl_rs` cannot
+    /// a baud the model lacks, every mode but `Position` (`dxl_rs_v2` cannot
     /// write the operating mode register, SRS section 8), and a
     /// [`Zero::Raw`] outside the model's position range.
     ///
@@ -478,7 +478,7 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
 /// const _: Table<1, 4> = XmBench::HARDWARE.baud("bus0", 500_000);
 /// ```
 ///
-/// A mode other than `Position`, which `dxl_rs` cannot write:
+/// A mode other than `Position`, which `dxl_rs_v2` cannot write:
 ///
 /// ```compile_fail,E0080
 /// # use kmr_adapters::{dynamixel::{Mode, Table}, presets::XmBench};
@@ -1345,7 +1345,7 @@ const fn check_actuator(
     }
     if !matches!(actuator.mode, Mode::Position) {
         return Err(Message::actuator(index).text(
-            "SRS section 8: Dynamixel mode register cannot be written, dxl_rs has no write for it",
+            "SRS section 8: Dynamixel mode register cannot be written, dxl_rs_v2 has no write for it",
         ));
     }
     let max = units::max_position(actuator.model);
@@ -1674,7 +1674,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "actuator 1: SRS section 8: Dynamixel mode register")]
-    fn velocity_is_rejected_until_dxl_rs_writes_the_mode() {
+    fn velocity_is_rejected_until_dxl_rs_v2_writes_the_mode() {
         let mut actuators = chain(Model::Xm430W210);
         actuators[1].mode = Mode::Velocity;
         table(actuators).check();

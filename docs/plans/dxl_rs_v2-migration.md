@@ -3,6 +3,12 @@
 Status: plan, 2026-11-04. No code written. Sources: `dxl_rs_v2` at `dev` 4c74e97,
 `kmr_v3` at `dev` 724a7bd.
 
+Update 2026-11-05: phases 0, 1 and 6 done on `feature/dxl-rs-v2`, v2 at 66035e1. The maintainer
+asked to replace v1, not to run both: no `dynamixel-v2` feature, `dynamixel` means v2. B1 is
+worked around (`write_raw`), B2, B3, B4 (XW430-T200 only; MX-64 P1 landed in v2) and the
+one-read state are rows of `docs/deferred.md`; the state read stays three partial sync reads.
+Phase 2 (bench parity) is next.
+
 ## Verdict
 
 **Feasible, and cheaper than it looks for the hot path.** All v1 calls live in one

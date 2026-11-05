@@ -178,9 +178,9 @@ pub fn __declare_none<D>(preset: &'static str) -> Result<D, UserError> {
 pub fn __declare_dynamixel<const N: usize>(
     declared: DxlDeclared<N>,
 ) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
-    use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
+    use kmr_adapters::dynamixel::{DxlRsV2, Dynamixel};
     Ok(HCons {
-        head: Dynamixel::declared(DxlRs::new(), declared),
+        head: Dynamixel::declared(DxlRsV2::new(), declared),
         tail: HNil,
     })
 }
@@ -204,7 +204,7 @@ pub fn __declare_dynamixel<const N: usize>(
 #[doc(hidden)]
 #[cfg(feature = "dynamixel")]
 pub type __DxlAdapter<const NB: usize, const N: usize> =
-    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRs<N>, NB, N>;
+    kmr_adapters::dynamixel::Dynamixel<kmr_adapters::dynamixel::DxlRsV2<N>, NB, N>;
 
 /// No Dynamixel driver: kmr_api is built without its `dynamixel` feature.
 #[doc(hidden)]
@@ -226,8 +226,8 @@ impl<const NB: usize, const M: usize, const N: usize> Brand<N> for Placement<NB,
         self,
         plugins: &[Binding],
     ) -> Result<Self::Member, Refused<kmr_adapters::dynamixel::DynamixelError>> {
-        use kmr_adapters::dynamixel::{DxlRs, Dynamixel};
-        Dynamixel::bind(DxlRs::new(), self, plugins).map_err(Refused::Member)
+        use kmr_adapters::dynamixel::{DxlRsV2, Dynamixel};
+        Dynamixel::bind(DxlRsV2::new(), self, plugins).map_err(Refused::Member)
     }
 
     /// Binds `plugins` to the buses of the table, on the Dynamixel SDK; without kmr_api's

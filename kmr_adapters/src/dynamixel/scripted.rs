@@ -5,8 +5,10 @@
 //! per (port, id) and per call kind, and last until [`Scripted::heal`] or
 //! for a counted number of calls. Failed calls are recorded too.
 //!
-//! It refuses what `DxlRs` refuses, with the same error, and never panics
-//! (contracts/backend.md § Strictness).
+//! It refuses what `DxlRsV2` refuses, with the same error, and never panics
+//! (contracts/backend.md § Strictness). Two exceptions: it answers an
+//! actuator no `declare` named, and a scripted fault fails the call that
+//! reads it, never `declare` (dxl_rs_v2 fails Setup on one, B2).
 
 use core::iter;
 use std::ffi::OsStr;
@@ -15,9 +17,10 @@ use std::path::Path;
 
 use super::backend::{
     Backend, BackendError, GoalRegister, Health, LimitRegisters, OpenFailure, POSITION_MODE,
-    PortSpec, RawState, Setting, Wire,
+    PortSpec, RawState, Setting, Undeclared, Wire,
 };
 use super::config::{HealthLimits, Model, Protocol};
+use super::units;
 
 /// Calls recorded; later ones are only counted.
 pub(crate) const CAPACITY: usize = 256;
@@ -28,7 +31,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 14;
+const KINDS: usize = 13;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Variants of [`GoalRegister`].
@@ -58,15 +61,22 @@ pub(crate) const RANGE_ERROR: u8 = 0x08;
 /// otherwise: the AX and RX factory values, joint mode over the whole range.
 const JOINT_MODE: (u32, u32) = (0, 1023);
 
+/// Position limits of `model` until scripted otherwise: [`JOINT_MODE`] on
+/// Protocol 1, the whole register range on Protocol 2.
+const fn factory_limits(model: Model) -> (u32, u32) {
+    match model.protocol() {
+        Protocol::One => JOINT_MODE,
+        Protocol::Two => (0, units::max_position(model)),
+    }
+}
+
 /// A [`Backend`] method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Call {
     /// [`Backend::open_ports`].
     OpenPorts,
-    /// [`Backend::ping`].
-    Ping,
-    /// [`Backend::read_model_number`].
-    ReadModelNumber,
+    /// [`Backend::declare`].
+    Declare,
     /// [`Backend::read_position`].
     ReadPosition,
     /// [`Backend::sync_read_state`].
@@ -159,8 +169,8 @@ pub(crate) struct Scripted {
     open: bool,
     /// Per port, what it was last opened with.
     opened: [Option<Opened>; PORTS],
-    /// Per actuator, switched on through this backend: what `DxlRs` keeps a
-    /// handle for.
+    /// Per actuator, switched on through this backend: what `DxlRsV2` holds
+    /// as torque on.
     powered: [[bool; IDS]; PORTS],
     /// Per actuator, the Torque Enable register.
     torque: [[bool; IDS]; PORTS],
@@ -180,8 +190,9 @@ pub(crate) struct Scripted {
     numbers: [[Option<u16>; IDS]; PORTS],
     /// Per actuator, what Torque Ctrl Mode Enable reads return.
     torque_modes: [[u8; IDS]; PORTS],
-    /// Per actuator, what angle limit reads return.
-    limits: [[(u32, u32); IDS]; PORTS],
+    /// Per actuator, what position limit reads return; `None` answers
+    /// [`factory_limits`] of the model named.
+    limits: [[Option<(u32, u32)>; IDS]; PORTS],
     /// Per actuator, whether it never answers.
     missing: [[bool; IDS]; PORTS],
     /// Per actuator, whether a limit write answers but leaves the
@@ -230,7 +241,7 @@ impl Scripted {
             modes: [[POSITION_MODE; IDS]; PORTS],
             numbers: [[None; IDS]; PORTS],
             torque_modes: [[0; IDS]; PORTS],
-            limits: [[JOINT_MODE; IDS]; PORTS],
+            limits: [[None; IDS]; PORTS],
             missing: [[false; IDS]; PORTS],
             stuck: [[false; IDS]; PORTS],
             errors: [BackendError::Timeout; ERRORS],
@@ -270,8 +281,9 @@ impl Scripted {
     }
 
     /// Calls of kind `call` naming actuator `id` fail with `error`; for
-    /// `SyncReadState`, its entry of `out` does. No effect on
-    /// `SyncWriteGoal`, which no status packet answers.
+    /// `SyncReadState`, its entry of `out` does, and for `Declare`, the
+    /// setup of its port stops at it. No effect on `SyncWriteGoal`, which no
+    /// status packet answers.
     pub(crate) fn fail(
         &mut self,
         call: Call,
@@ -309,9 +321,10 @@ impl Scripted {
         self
     }
 
-    /// Pings of actuator `id` time out; its other calls still answer.
+    /// The ping of actuator `id` at `declare` times out; its other calls
+    /// still answer.
     pub(crate) fn fail_ping(&mut self, port: usize, id: u8) -> &mut Self {
-        self.fail(Call::Ping, port, id, BackendError::Timeout)
+        self.fail(Call::Declare, port, id, BackendError::Timeout)
     }
 
     /// Every call of kind `call` on `port` fails as a whole with `error`.
@@ -322,14 +335,18 @@ impl Scripted {
         self
     }
 
-    /// Group reads on `port` fail: no status packet received.
+    /// Group reads on `port` fail: the port is gone.
     pub(crate) fn fail_sync_read(&mut self, port: usize) -> &mut Self {
-        self.fail_port(Call::SyncReadState, port, BackendError::Io(Wire::RxFail))
+        self.fail_port(Call::SyncReadState, port, BackendError::Io(Wire::Closed))
     }
 
-    /// Group writes on `port` fail: the instruction packet not sent.
+    /// Group writes on `port` fail: the port timed out.
     pub(crate) fn fail_sync_write(&mut self, port: usize) -> &mut Self {
-        self.fail_port(Call::SyncWriteGoal, port, BackendError::Io(Wire::TxFail))
+        self.fail_port(
+            Call::SyncWriteGoal,
+            port,
+            BackendError::Io(Wire::PortTimeout),
+        )
     }
 
     /// `open_ports` fails with `error`, on no port in particular.
@@ -395,8 +412,8 @@ impl Scripted {
         self
     }
 
-    /// Model Number reads of actuator `id` return `number`, whatever model
-    /// they name: another actuator than the table declares.
+    /// Actuator `id` reports Model Number `number` at `declare`, whatever
+    /// model it names: another actuator than the table declares.
     pub(crate) fn model_number(&mut self, port: usize, id: u8, number: u16) -> &mut Self {
         if let Some(slot) = at(&mut self.numbers, port, id) {
             *slot = Some(number);
@@ -412,10 +429,10 @@ impl Scripted {
         self
     }
 
-    /// Angle limit reads of actuator `id` return `(cw, ccw)`.
+    /// Position limit reads of actuator `id` return `(cw, ccw)`.
     pub(crate) fn angle_limits(&mut self, port: usize, id: u8, cw: u32, ccw: u32) -> &mut Self {
         if let Some(slot) = at(&mut self.limits, port, id) {
-            *slot = (cw, ccw);
+            *slot = Some((cw, ccw));
         }
         self
     }
@@ -478,6 +495,15 @@ impl Scripted {
     pub(crate) fn goals(&self, record: &Record) -> &[(u8, u32)] {
         match record.call {
             Call::SyncWriteGoal | Call::SyncWriteStartGoal => self.entries(record),
+            _ => &[],
+        }
+    }
+
+    /// `(id, Model Number)` entries of a `Declare` record; empty for any
+    /// other kind.
+    pub(crate) fn models(&self, record: &Record) -> &[(u8, u32)] {
+        match record.call {
+            Call::Declare => self.entries(record),
             _ => &[],
         }
     }
@@ -631,7 +657,7 @@ impl Scripted {
     }
 
     /// `NotPowered` unless actuator `id` was switched on through this
-    /// backend, as `DxlRs` holds no handle for any other.
+    /// backend, as `DxlRsV2` holds no other as torque on.
     fn held(&self, port: usize, id: u8) -> Result<(), BackendError> {
         if get(&self.powered, port, id) {
             Ok(())
@@ -723,18 +749,31 @@ impl Backend for Scripted {
         Ok(())
     }
 
-    fn ping(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
-        self.one(Call::Ping, port, model, id, false)
-    }
-
-    fn read_model_number(
-        &mut self,
-        port: usize,
-        model: Model,
-        id: u8,
-    ) -> Result<u16, BackendError> {
-        self.one(Call::ReadModelNumber, port, model, id, false)?;
-        Ok(self.numbers[port][usize::from(id)].unwrap_or(model.number()))
+    /// One record naming every actuator, `(id, Model Number)`, in the order
+    /// given; answered in id order, as `dxl_rs_v2` sets them up.
+    fn declare(&mut self, port: usize, actuators: &[(u8, Model)]) -> Result<(), Undeclared> {
+        let model = actuators.first().map(|&(_, model)| model);
+        let entries = actuators
+            .iter()
+            .map(|&(id, model)| (id, u32::from(model.number())));
+        self.record(Call::Declare, port, model, actuators.len(), false, entries);
+        self.transaction(Call::Declare, port)
+            .map_err(|source| Undeclared { id: None, source })?;
+        let ids = (0..=u8::MAX).filter_map(|id| actuators.iter().find(|entry| entry.0 == id));
+        for &(id, model) in ids {
+            let undeclared = |source| Undeclared {
+                id: Some(id),
+                source,
+            };
+            self.answer(Call::Declare, port, id).map_err(undeclared)?;
+            match self.numbers[port].get(usize::from(id)).copied().flatten() {
+                Some(found) if found != model.number() => {
+                    return Err(undeclared(BackendError::WrongModel { found }));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
@@ -742,7 +781,7 @@ impl Backend for Scripted {
         Ok(self.states[port][usize::from(id)].position.cast_unsigned())
     }
 
-    /// Logs one record per sync read `DxlRs` sends: one per entry of
+    /// Logs one record per sync read `DxlRsV2` sends: one per entry of
     /// `STATE_READS`.
     fn sync_read_state(
         &mut self,
@@ -805,9 +844,8 @@ impl Backend for Scripted {
     }
 
     /// Refused whole when it names an actuator switched on here: written
-    /// then, it is no start goal. Every register is taken, as `DxlRs` will
-    /// once `dxl_rs` writes Goal Velocity and Goal Current too: the tests pin
-    /// that.
+    /// then, it is no start goal. Every register is taken, as `DxlRsV2` will
+    /// once velocity and current modes land (B3): the tests pin that.
     fn sync_write_start_goal(
         &mut self,
         port: usize,
@@ -895,11 +933,8 @@ impl Backend for Scripted {
         id: u8,
     ) -> Result<(u32, u32), BackendError> {
         self.note(Call::ReadAngleLimits, port, model, id, false);
-        if model.protocol() != Protocol::One {
-            return Err(BackendError::NoAngleLimits);
-        }
         self.answer(Call::ReadAngleLimits, port, id)?;
-        Ok(self.limits[port][usize::from(id)])
+        Ok(self.limits[port][usize::from(id)].unwrap_or(factory_limits(model)))
     }
 
     /// Refused as the actuator refuses it: with its torque on on Protocol 2
@@ -942,7 +977,15 @@ mod tests {
 
     const MODEL: Model = Model::Xm430W210;
     /// A failed transaction, as scripted faults inject it.
-    const IO: BackendError = BackendError::Io(Wire::RxFail);
+    const IO: BackendError = BackendError::Io(Wire::Closed);
+
+    /// Declares actuator `id` of `model` alone on `port`: its ping, as the
+    /// fake answers it.
+    fn ping(backend: &mut Scripted, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        backend
+            .declare(port, &[(id, model)])
+            .map_err(|failure| failure.source)
+    }
 
     /// Start goal 2048 for actuator `id` on port 0.
     fn start(backend: &mut Scripted, id: u8) -> Result<(), BackendError> {
@@ -958,7 +1001,7 @@ mod tests {
         }];
 
         backend.open_ports(&ports).unwrap();
-        backend.ping(0, MODEL, 1).unwrap();
+        ping(&mut backend, 0, MODEL, 1).unwrap();
         backend
             .sync_write_start_goal(0, MODEL, GoalRegister::Position, &[(1, 100), (3, 300)])
             .unwrap();
@@ -973,7 +1016,7 @@ mod tests {
         let kinds = backend.calls().iter().map(|record| record.call);
         assert!(kinds.eq([
             Call::OpenPorts,
-            Call::Ping,
+            Call::Declare,
             Call::SyncWriteStartGoal,
             Call::Torque,
             Call::Torque,
@@ -991,7 +1034,11 @@ mod tests {
         let start = backend.last(Call::SyncWriteStartGoal).unwrap();
         assert_eq!(backend.goals(start), &[(1, 100), (3, 300)]);
         assert_eq!(backend.goal(0, 3, GoalRegister::Position), 1024);
-        assert!(backend.goals(backend.last(Call::Ping).unwrap()).is_empty());
+        assert!(
+            backend
+                .goals(backend.last(Call::Declare).unwrap())
+                .is_empty()
+        );
         assert!(!backend.last(Call::Torque).unwrap().on);
         assert!(backend.torqued(0, 3) && !backend.torqued(0, 1));
         assert_eq!(backend.baud(0), Some(1_000_000));
@@ -1014,7 +1061,7 @@ mod tests {
             .position(0, 1, 2100);
         backend.open_ports(&[]).unwrap();
 
-        assert_eq!(backend.ping(0, MODEL, 2), Err(BackendError::Timeout));
+        assert_eq!(ping(&mut backend, 0, MODEL, 2), Err(BackendError::Timeout));
         assert_eq!(
             backend.read_position(0, MODEL, 2),
             Err(BackendError::Timeout)
@@ -1075,14 +1122,14 @@ mod tests {
         assert_eq!(backend.torque(0, MODEL, 4, true), Ok(()));
         assert_eq!(
             backend.sync_write_goal(0, MODEL, &[(4, 0)]),
-            Err(BackendError::Io(Wire::TxFail))
+            Err(BackendError::Io(Wire::PortTimeout))
         );
         let mut out = [Ok(RawState::default())];
         assert_eq!(
             backend.sync_read_state(1, MODEL, &[4], &mut out),
-            Err(BackendError::Io(Wire::RxFail))
+            Err(BackendError::Io(Wire::Closed))
         );
-        assert_eq!(backend.ping(0, MODEL, 4), Err(BackendError::Timeout));
+        assert_eq!(ping(&mut backend, 0, MODEL, 4), Err(BackendError::Timeout));
         assert_eq!(
             backend.read_health(0, MODEL, 4),
             Err(BackendError::Status(0x20))
@@ -1090,14 +1137,14 @@ mod tests {
         assert_eq!(backend.read_position(0, MODEL, 4), Ok(0));
         assert_eq!(backend.read_health(0, MODEL, 5), Ok(hot));
         assert_eq!(
-            backend.ping(PORTS, MODEL, 4),
+            ping(&mut backend, PORTS, MODEL, 4),
             Err(BackendError::PortNotOpen { port: PORTS })
         );
 
         backend.heal();
         assert!(backend.is_open());
         assert_eq!(backend.sync_write_goal(0, MODEL, &[(4, 0)]), Ok(()));
-        assert_eq!(backend.ping(0, MODEL, 4), Ok(()));
+        assert_eq!(ping(&mut backend, 0, MODEL, 4), Ok(()));
         assert_eq!(backend.count(Call::SyncWriteGoal), 2);
     }
 
@@ -1113,7 +1160,7 @@ mod tests {
             backend.force_torque_off(0, MODEL, 1),
             Err(BackendError::Timeout)
         );
-        assert_eq!(backend.ping(0, MODEL, 1), Ok(()));
+        assert_eq!(ping(&mut backend, 0, MODEL, 1), Ok(()));
         assert_eq!(
             backend.force_torque_off(0, MODEL, 1),
             Err(BackendError::Timeout)
@@ -1125,13 +1172,13 @@ mod tests {
         assert_eq!(backend.count(Call::ForceTorqueOff), 4);
 
         backend
-            .fail_times(Call::Ping, 0, 1, IO, 1)
-            .fail(Call::Ping, 0, 1, IO);
+            .fail_times(Call::Declare, 0, 1, IO, 1)
+            .fail(Call::Declare, 0, 1, IO);
         for _ in 0..3 {
-            assert_eq!(backend.ping(0, MODEL, 1), Err(IO));
+            assert_eq!(ping(&mut backend, 0, MODEL, 1), Err(IO));
         }
-        backend.fail_times(Call::Ping, 0, 1, IO, 0);
-        assert_eq!(backend.ping(0, MODEL, 1), Ok(()));
+        backend.fail_times(Call::Declare, 0, 1, IO, 0);
+        assert_eq!(ping(&mut backend, 0, MODEL, 1), Ok(()));
     }
 
     #[test]
@@ -1140,15 +1187,15 @@ mod tests {
         backend.open_ports(&[]).unwrap();
         backend.clear_log();
         for _ in 0..CAPACITY + 10 {
-            backend.ping(0, MODEL, 1).unwrap();
+            ping(&mut backend, 0, MODEL, 1).unwrap();
         }
         assert_eq!(backend.calls().len(), CAPACITY);
-        assert_eq!(backend.count(Call::Ping), CAPACITY + 10);
+        assert_eq!(backend.count(Call::Declare), CAPACITY + 10);
 
         backend.clear_log();
         assert!(backend.calls().is_empty());
-        assert_eq!(backend.count(Call::Ping), 0);
-        assert_eq!(backend.last(Call::Ping), None);
+        assert_eq!(backend.count(Call::Declare), 0);
+        assert_eq!(backend.last(Call::Declare), None);
     }
 
     #[test]
@@ -1237,9 +1284,11 @@ mod tests {
     }
 
     #[test]
-    fn the_fake_answers_protocol_one_health_and_angle_limits() {
+    fn the_fake_answers_health_and_the_position_limits_of_either_protocol() {
         let mut backend = Scripted::new();
-        backend.angle_limits(0, 2, 0, 0);
+        backend
+            .angle_limits(0, 2, 0, 0)
+            .angle_limits(0, 3, 1000, 3000);
         backend.open_ports(&[]).unwrap();
 
         assert_eq!(backend.read_health(0, Model::Rx28, 1), Ok(HEALTHY));
@@ -1247,11 +1296,9 @@ mod tests {
         assert_eq!(backend.count(Call::ReadHealth), 2);
         assert_eq!(backend.read_angle_limits(0, Model::Rx28, 1), Ok(JOINT_MODE));
         assert_eq!(backend.read_angle_limits(0, Model::Ax12a, 2), Ok((0, 0)));
-        assert_eq!(
-            backend.read_angle_limits(0, MODEL, 1),
-            Err(BackendError::NoAngleLimits)
-        );
-        assert_eq!(backend.count(Call::ReadAngleLimits), 3);
+        assert_eq!(backend.read_angle_limits(0, MODEL, 1), Ok((0, 4095)));
+        assert_eq!(backend.read_angle_limits(0, MODEL, 3), Ok((1000, 3000)));
+        assert_eq!(backend.count(Call::ReadAngleLimits), 4);
     }
 
     #[test]
@@ -1283,10 +1330,31 @@ mod tests {
         backend.model_number(0, 2, Model::Ax12a.number());
         backend.open_ports(&[]).unwrap();
 
-        assert_eq!(backend.read_model_number(0, Model::Mx64, 1), Ok(310));
-        assert_eq!(backend.read_model_number(0, MODEL, 1), Ok(1030));
-        assert_eq!(backend.read_model_number(0, Model::Mx64, 2), Ok(12));
-        assert_eq!(backend.count(Call::ReadModelNumber), 3);
+        assert_eq!(ping(&mut backend, 0, Model::Mx64, 1), Ok(()));
+        assert_eq!(ping(&mut backend, 0, MODEL, 1), Ok(()));
+        assert_eq!(
+            ping(&mut backend, 0, Model::Mx64, 2),
+            Err(BackendError::WrongModel { found: 12 })
+        );
+        assert_eq!(backend.count(Call::Declare), 3);
+    }
+
+    #[test]
+    fn the_fake_declares_in_id_order_and_stops_at_the_first_failure() {
+        let mut backend = Scripted::new();
+        backend.missing(0, 3).missing(0, 5);
+        backend.open_ports(&[]).unwrap();
+
+        assert_eq!(
+            backend.declare(0, &[(5, MODEL), (1, MODEL), (3, MODEL)]),
+            Err(Undeclared {
+                id: Some(3),
+                source: BackendError::Timeout
+            })
+        );
+        let record = backend.last(Call::Declare).unwrap();
+        assert!(backend.ids(record).eq([5, 1, 3]));
+        assert_eq!(record.count, 3);
     }
 
     #[test]
@@ -1311,7 +1379,7 @@ mod tests {
         let mut out = [Ok(RawState::default())];
 
         let closed = Err(BackendError::PortNotOpen { port: 0 });
-        assert_eq!(backend.ping(0, MODEL, 1), closed);
+        assert_eq!(ping(&mut backend, 0, MODEL, 1), closed);
         assert_eq!(backend.force_torque_off(0, MODEL, 1), closed);
         assert_eq!(backend.sync_read_state(0, MODEL, &[1], &mut out), closed);
         assert_eq!(start(&mut backend, 1), closed);
@@ -1321,14 +1389,14 @@ mod tests {
         backend.torque(0, MODEL, 1, true).unwrap();
         backend.close_ports();
 
-        assert_eq!(backend.ping(0, MODEL, 1), closed);
+        assert_eq!(ping(&mut backend, 0, MODEL, 1), closed);
         assert_eq!(backend.sync_write_goal(0, MODEL, &[(1, 2048)]), closed);
         assert_eq!(backend.force_torque_off(0, MODEL, 1), closed);
         assert!(backend.torqued(0, 1));
     }
 
     #[test]
-    fn a_state_read_logs_one_record_per_sync_read_of_dxl_rs() {
+    fn a_state_read_logs_one_record_per_sync_read_of_dxl_rs_v2() {
         let mut backend = Scripted::new();
         backend.open_ports(&[]).unwrap();
         backend.clear_log();
@@ -1356,7 +1424,7 @@ mod tests {
         backend
             .missing(PORTS, 1)
             .already_on(0, 253)
-            .fail_port(Call::Ping, PORTS, IO);
+            .fail_port(Call::Declare, PORTS, IO);
 
         assert!(!backend.torqued(0, 253));
         assert!(!backend.torqued(PORTS, 1));

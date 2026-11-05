@@ -12,9 +12,9 @@
 
 use core::ops::RangeInclusive;
 
-/// The `dxl_rs` backend of the Dynamixel driver.
+/// The `dxl_rs_v2` backend of the Dynamixel driver.
 #[cfg(feature = "dynamixel")]
-pub use kmr_adapters::dynamixel::DxlRs;
+pub use kmr_adapters::dynamixel::DxlRsV2;
 /// The Dynamixel driver [`Bound::drivers`](crate::Bound::drivers) hands out.
 pub use kmr_adapters::dynamixel::Dynamixel;
 /// Why a Dynamixel bind or bring-up failed; reach it with `downcast_ref`.
