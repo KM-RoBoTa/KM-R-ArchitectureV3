@@ -13,6 +13,7 @@ use core::time::Duration;
 use crate::logging::warn;
 
 use crate::state::{Kd, Kp, Q, Qd, Tau};
+use crate::telemetry::Telemetry;
 
 mod set;
 
@@ -625,12 +626,14 @@ pub static EXTERNAL_FLAGS: ExternalFlags = ExternalFlags::new();
 /// section 7): the engine calls it for the actuators it claims. Static
 /// dispatch only.
 ///
-/// The engine calls the operations in the order they are declared. Once
-/// `open` was called, every exit ends with `torque_off` then `close`.
+/// The engine calls the operations in the order they are declared;
+/// `telemetry` also runs once right after `read_all`. Once `open` was called,
+/// every exit ends with `torque_off` then `close`.
 ///
 /// The engine restricts `write` to the member's runs, with local group ids,
-/// and the `written` masks of `write` and `hold` to its actuators. `Sample`
-/// and `Faults` stay whole-robot: a member touches only its own slots.
+/// and the `written` masks of `write` and `hold` to its actuators. `Sample`,
+/// `Faults` and `Telemetry` stay whole-robot: a member touches only its own
+/// slots.
 pub trait Hal<const N: usize>: seal::Adapter {
     /// Bring-up and finalization failures. Names the actuator and the port
     /// when there is one.
@@ -679,6 +682,18 @@ pub trait Hal<const N: usize>: seal::Adapter {
     /// `batch`, one transaction per run where the protocol allows it. No
     /// allocation, lock, sleep or retry.
     fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>);
+
+    /// Tick, once, after the write step, `write` called or not; and once in
+    /// PostInit right after `read_all`: refreshes the telemetry of the
+    /// actuators due and returns them; the engine stamps them with the tick
+    /// (SRS FR-5.11). The adapter decides whether a read is due: at most one
+    /// bus transaction every few ticks. No allocation, lock, sleep or retry;
+    /// a failed read keeps the previous values and sets fault bits. The
+    /// default reads nothing.
+    fn telemetry(&mut self, telemetry: &mut Telemetry<N>, faults: &mut Faults<N>) -> Mask<N> {
+        let _ = (telemetry, faults);
+        Mask::NONE
+    }
 
     /// Shutdown: holds each actuator per its mode. `written` marks values
     /// from this tick's command; the rest is the latest sample. Best effort,
@@ -742,6 +757,10 @@ impl<const N: usize, A: Hal<N>> Hal<N> for &mut A {
 
     fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
         (**self).write(command, batch, faults);
+    }
+
+    fn telemetry(&mut self, telemetry: &mut Telemetry<N>, faults: &mut Faults<N>) -> Mask<N> {
+        (**self).telemetry(telemetry, faults)
     }
 
     fn hold(&mut self, target: Command<'_, N>) {

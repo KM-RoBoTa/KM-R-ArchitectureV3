@@ -12,6 +12,7 @@ use frunk_core::hlist::{HCons, HNil};
 
 use super::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Slots};
 use crate::state::State;
+use crate::telemetry::Telemetry;
 
 /// Transaction groups the whole robot may have, `Group` being a `u8`.
 const MAX_GROUPS: u16 = 256;
@@ -326,7 +327,8 @@ mod seal {
 }
 
 /// Debug builds: the first actuator a member changed without owning it, in
-/// its sample slots or its fault bits. Always empty in release builds.
+/// its sample slots, its fault bits or its telemetry. Always empty in release
+/// builds.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Audit {
@@ -349,6 +351,8 @@ struct Before<const N: usize> {
     values: Option<State<N>>,
     #[cfg(debug_assertions)]
     faults: Option<Faults<N>>,
+    #[cfg(debug_assertions)]
+    telemetry: Option<Telemetry<N>>,
 }
 
 impl Audit {
@@ -361,6 +365,7 @@ impl Audit {
     fn before<const N: usize>(
         sample: Option<&Sample<'_, N>>,
         faults: Option<&Faults<N>>,
+        telemetry: Option<&Telemetry<N>>,
     ) -> Before<N> {
         #[cfg(debug_assertions)]
         return Before {
@@ -372,10 +377,11 @@ impl Audit {
                 kd: *s.kd,
             }),
             faults: faults.copied(),
+            telemetry: telemetry.copied(),
         };
         #[cfg(not(debug_assertions))]
         {
-            let _ = (sample, faults);
+            let _ = (sample, faults, telemetry);
             Before {}
         }
     }
@@ -389,6 +395,7 @@ impl Audit {
         before: Before<N>,
         sample: Option<&Sample<'_, N>>,
         faults: Option<&Faults<N>>,
+        telemetry: Option<&Telemetry<N>>,
         owned: Mask<N>,
     ) {
         #[cfg(debug_assertions)]
@@ -398,6 +405,7 @@ impl Audit {
             }
             let values = before.values.as_ref().zip(sample);
             let fault_bits = before.faults.as_ref().zip(faults);
+            let readings = before.telemetry.as_ref().zip(telemetry);
             let moved = |actuator: usize| {
                 let value = values.is_some_and(|(was, now)| {
                     row(&was.q, &was.qd, &was.tau, &was.kp, &was.kd, actuator)
@@ -405,14 +413,16 @@ impl Audit {
                 });
                 let fault = fault_bits
                     .is_some_and(|(was, now)| fault_row(was, actuator) != fault_row(now, actuator));
-                value || fault
+                let reading =
+                    readings.is_some_and(|(was, now)| was.bits(actuator) != now.bits(actuator));
+                value || fault || reading
             };
             if let Some(actuator) = Mask::ALL.difference(owned).iter().find(|&a| moved(a)) {
                 self.stray = Some(Stray { member, actuator });
             }
         }
         #[cfg(not(debug_assertions))]
-        let _ = (self, member, before, sample, faults, owned);
+        let _ = (self, member, before, sample, faults, telemetry, owned);
     }
 }
 
@@ -500,6 +510,17 @@ pub trait Drivers<const N: usize>: seal::Drivers {
         audit: &mut Audit,
     );
 
+    /// [`Hal::telemetry`] on every member, into the same block; the
+    /// refreshed masks, each cut to its member's actuators, unioned.
+    #[doc(hidden)]
+    fn telemetry(
+        &mut self,
+        telemetry: &mut Telemetry<N>,
+        faults: &mut Faults<N>,
+        slots: Slots<'_, N>,
+        audit: &mut Audit,
+    ) -> Mask<N>;
+
     /// [`Hal::hold`] on every member, each given its own writes.
     #[doc(hidden)]
     fn hold(&mut self, target: Command<'_, N>, slots: Slots<'_, N>);
@@ -559,6 +580,16 @@ impl<const N: usize> Drivers<N> for HNil {
     ) {
     }
 
+    fn telemetry(
+        &mut self,
+        _telemetry: &mut Telemetry<N>,
+        _faults: &mut Faults<N>,
+        _slots: Slots<'_, N>,
+        _audit: &mut Audit,
+    ) -> Mask<N> {
+        Mask::NONE
+    }
+
     fn hold(&mut self, _target: Command<'_, N>, _slots: Slots<'_, N>) {}
 
     fn torque_off(&mut self) {}
@@ -607,11 +638,11 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
         audit: &mut Audit,
     ) -> Result<Mask<N>, Self::Error> {
         let (owned, _groups, rest) = slots.split();
-        let before = Audit::before(Some(&sample), None);
+        let before = Audit::before(Some(&sample), None, None);
         self.head
             .read_all(sample.reborrow())
             .map_err(MemberError::head::<H>)?;
-        audit.after(type_name::<H>(), before, Some(&sample), None, owned);
+        audit.after(type_name::<H>(), before, Some(&sample), None, None, owned);
         let head = if self.head.simulates() {
             Mask::NONE
         } else {
@@ -632,12 +663,19 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
         audit: &mut Audit,
     ) -> Mask<N> {
         let (owned, _groups, rest) = slots.split();
-        let before = Audit::before(Some(&sample), Some(faults));
+        let before = Audit::before(Some(&sample), Some(faults), None);
         let head = self
             .head
             .read(sample.reborrow(), faults)
             .intersection(owned);
-        audit.after(type_name::<H>(), before, Some(&sample), Some(faults), owned);
+        audit.after(
+            type_name::<H>(),
+            before,
+            Some(&sample),
+            Some(faults),
+            None,
+            owned,
+        );
         head.union(self.tail.read(sample, faults, rest, audit))
     }
 
@@ -657,11 +695,32 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
                 written: &written,
                 ..command
             };
-            let before = Audit::before(None, Some(faults));
+            let before = Audit::before(None, Some(faults), None);
             self.head.write(mine, batch, faults);
-            audit.after(type_name::<H>(), before, None, Some(faults), owned);
+            audit.after(type_name::<H>(), before, None, Some(faults), None, owned);
         }
         self.tail.write(command, batch, faults, rest, audit);
+    }
+
+    fn telemetry(
+        &mut self,
+        telemetry: &mut Telemetry<N>,
+        faults: &mut Faults<N>,
+        slots: Slots<'_, N>,
+        audit: &mut Audit,
+    ) -> Mask<N> {
+        let (owned, _groups, rest) = slots.split();
+        let before = Audit::before(None, Some(faults), Some(telemetry));
+        let head = self.head.telemetry(telemetry, faults).intersection(owned);
+        audit.after(
+            type_name::<H>(),
+            before,
+            None,
+            Some(faults),
+            Some(telemetry),
+            owned,
+        );
+        head.union(self.tail.telemetry(telemetry, faults, rest, audit))
     }
 
     fn hold(&mut self, target: Command<'_, N>, slots: Slots<'_, N>) {
@@ -768,7 +827,8 @@ mod tests {
         owned: Mask<N>,
         group: u8,
         fail_open: bool,
-        /// An actuator it changes without owning it, in `read` and `write`.
+        /// An actuator it changes without owning it, in `read`, `write` and
+        /// `telemetry`.
         stray: Option<usize>,
         journal: &'a Journal,
         wrote: core::cell::Cell<Wrote>,
@@ -855,6 +915,13 @@ mod tests {
                     .for_each(|&actuator| wrote.actuators.set(actuator));
             }
             self.wrote.set(wrote);
+        }
+
+        fn telemetry(&mut self, telemetry: &mut Telemetry<N>, _faults: &mut Faults<N>) -> Mask<N> {
+            if let Some(actuator) = self.stray {
+                telemetry.set_temperature_c(actuator, 99.0);
+            }
+            self.owned
         }
 
         fn hold(&mut self, _target: Command<'_, N>) {}
@@ -1065,6 +1132,58 @@ mod tests {
 
         let stray = audit.take().expect("a stray fault");
         assert_eq!(stray.actuator, N - 1);
+    }
+
+    #[test]
+    fn telemetry_unions_every_member() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        let mut audit = Audit::default();
+        let refreshed = hal.telemetry(
+            &mut Telemetry::default(),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
+        assert_eq!(refreshed, Mask::ALL);
+        assert_eq!(audit.take(), None);
+    }
+
+    #[test]
+    fn a_telemetry_mask_is_cut_to_the_member_s_actuators() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        hal.head.owned = Mask::ALL;
+        hal.tail.head.owned = Mask::NONE;
+        let refreshed = hal.telemetry(
+            &mut Telemetry::default(),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut Audit::default(),
+        );
+        assert_eq!(refreshed, mask(0..2));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn telemetry_of_another_member_s_actuator_is_noted() {
+        let journal = Journal::new();
+        let mut hal = two(&journal);
+        let layout = layout_of(&mut hal);
+        hal.tail.head.stray = Some(1);
+        let mut audit = Audit::default();
+
+        hal.telemetry(
+            &mut Telemetry::default(),
+            &mut Faults::default(),
+            layout.slots(),
+            &mut audit,
+        );
+
+        let stray = audit.take().expect("a stray reading");
+        assert_eq!(stray.actuator, 1);
     }
 
     #[test]
