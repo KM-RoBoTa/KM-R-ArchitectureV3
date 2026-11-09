@@ -334,11 +334,29 @@ fn torque_off_reaches_an_actuator_whose_setup_failed() {
     assert_eq!(two.unread(), 0);
 }
 
+/// FR-2.7 of dxl_rs_v2 at f391263: replies flagged with the alert alone
+/// hold the actuator faulted instead of failing Setup.
 #[test]
-fn a_faulted_actuator_fails_its_setup_with_the_fault_measured() {
+fn a_hardware_faulted_actuator_is_held_at_setup() {
     let time = MockTime::new();
     let mut two = Line::with_capacity(&time);
-    two.reply_to(1, status2(1, 0x80, &[0x06, 0x04, 45]).bytes())
+    xm_alert_setup(&mut two);
+    let mut backend = backend(Line::with_capacity(&time), two);
+
+    assert_eq!(backend.declare(0, &[(1, XM)]), Ok(()));
+    assert!(backend.faulted(0, XM, 1));
+    assert!(!backend.faulted(0, XM, 2) && !backend.faulted(0, AX, 1));
+    assert_eq!(backend.read_angle_limits(0, XM, 1), Ok((0, 4095)));
+    let (_, two) = lines(&mut backend);
+    assert_eq!(two.unread(), 0);
+}
+
+#[test]
+fn a_setup_reply_with_an_error_beside_the_fault_fails_with_the_fault_measured() {
+    let time = MockTime::new();
+    let mut two = Line::with_capacity(&time);
+    // Alert with Data Range Error: the reply's data is not trusted.
+    two.reply_to(1, status2(1, 0x84, &[0x06, 0x04, 45]).bytes())
         .reply_to(2, status2(1, 0x80, &[0x04]).bytes())
         .reply_to(3, status2(1, 0x80, &[85]).bytes())
         .reply_to(4, status2(1, 0x80, &[80]).bytes());
@@ -354,6 +372,7 @@ fn a_faulted_actuator_fails_its_setup_with_the_fault_measured() {
             })
         })
     );
+    assert!(!backend.faulted(0, XM, 1));
 }
 
 #[test]
@@ -749,7 +768,7 @@ fn ax_limit_line<'t>(time: &'t MockTime, error: u8) -> Line<'t> {
 }
 
 #[test]
-fn a_limit_write_whose_reply_flags_only_the_input_voltage_counts_as_written() {
+fn a_limit_write_whose_reply_reports_the_voltage_fault_it_fixes_counts_as_written() {
     let time = MockTime::new();
     let mut one = ax_limit_line(&time, 0x01);
     // The fault measured: Present Voltage 10.1 V, inside the limits written.
@@ -769,6 +788,37 @@ fn a_limit_write_whose_reply_flags_only_the_input_voltage_counts_as_written() {
 }
 
 #[test]
+fn a_temperature_limit_written_to_an_overheating_actuator_counts_as_written() {
+    let time = MockTime::new();
+    let mut one = Line::with_capacity(&time);
+    one.reply_to(1, status1(1, &[]).bytes())
+        .reply_to(2, status1(1, &[12, 0]).bytes())
+        .reply_to(3, status1(1, &[0, 0]).bytes())
+        .reply_to(4, status1(1, &[0xFF, 0x03]).bytes())
+        // Temperature Limit 80 °C, answered Overheating; measured 75 °C
+        // against the 80 °C now held.
+        .reply_to(5, fault1(1, 0x04, &[]).bytes())
+        .reply_to(6, fault1(1, 0x04, &[75]).bytes())
+        .reply_to(7, fault1(1, 0x04, &[80]).bytes())
+        .reply_to(8, status1(1, &[]).bytes())
+        .reply_to(9, status1(1, &[]).bytes());
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+    let limits = HealthLimits {
+        min_voltage_dv: 95,
+        max_voltage_dv: 130,
+        temperature_c: 80,
+    };
+
+    assert_eq!(backend.write_health_limits(0, AX, 1, limits), Ok(()));
+
+    let (one, _) = lines(&mut backend);
+    assert!(find(one.sent(), p1(1, &[0x03, 11, 80]).bytes()).is_some());
+    assert!(find(one.sent(), p1(1, &[0x03, 13, 130]).bytes()).is_some());
+    assert_eq!(one.unread(), 0);
+}
+
+#[test]
 fn a_limit_write_refused_by_the_actuator_fails() {
     let time = MockTime::new();
     let one = ax_limit_line(&time, 0x08);
@@ -781,26 +831,314 @@ fn a_limit_write_refused_by_the_actuator_fails() {
     );
 }
 
+// ── An actuator held faulted at Setup (docs/deferred.md, the B2 row) ──────
+
+/// One AX-12A at id 1 on bus `arm`, owned at engine index 0, given
+/// `settings`.
+fn one_ax(settings: crate::dynamixel::Settings) -> crate::dynamixel::Placement<1, 1> {
+    use crate::dynamixel::{Actuator, Bus as TableBus, Mode, Table, Torque, Zero};
+
+    let mut placement = Table {
+        buses: [TableBus {
+            label: "arm",
+            baud: 1_000_000,
+            read_every: None,
+        }],
+        actuators: [Actuator {
+            bus: 0,
+            id: 1,
+            model: AX,
+            mode: Mode::Position,
+            torque: Torque::On,
+            zero: Zero::DEFAULT,
+        }],
+    }
+    .in_order();
+    placement.settings[0] = settings;
+    placement
+}
+
+/// Settings writing Min and Max Voltage Limit `min_dv` and `max_dv`.
+fn voltage_limits(min_dv: u16, max_dv: u16) -> crate::dynamixel::Settings {
+    crate::dynamixel::Settings {
+        voltage_limits_dv: Some((min_dv, max_dv)),
+        ..crate::dynamixel::Settings::NONE
+    }
+}
+
+/// A Protocol 1 line whose AX-12A at id 1 measures 10.1 V against its
+/// EEPROM limits 10.5–13.0 V: its four Setup replies flag Input Voltage.
+fn ax_at_10_1_v(time: &MockTime) -> Line<'_> {
+    let mut one = Line::with_capacity(time);
+    one.reply_to(1, fault1(1, 0x01, &[]).bytes())
+        .reply_to(2, fault1(1, 0x01, &[12, 0]).bytes())
+        .reply_to(3, fault1(1, 0x01, &[0, 0]).bytes())
+        .reply_to(4, fault1(1, 0x01, &[0xFF, 0x03]).bytes());
+    one
+}
+
+/// The adapter for `placement` on lines `one` and `two`, checked, its port
+/// open and set up.
+fn brought_up<'t>(
+    placement: crate::dynamixel::Placement<1, 1>,
+    one: Line<'t>,
+    two: Line<'t>,
+) -> crate::dynamixel::Dynamixel<Ports<4, Line<'t>, fn() -> u64>, 1, 1> {
+    use kmr_core::hal::{Hal, Overrides};
+
+    let mut adapter = crate::dynamixel::Dynamixel::<_, 1, 1>::new(backend(one, two), placement);
+    adapter.check(Overrides::default()).unwrap();
+    adapter.open = true;
+    adapter.ping().unwrap();
+    adapter
+}
+
+/// Whether `sent` holds a Protocol 1 Torque Enable = 1 write to id 1.
+fn torque_on_sent(sent: &[u8]) -> bool {
+    find(sent, p1(1, &[0x03, 24, 1]).bytes()).is_some()
+}
+
+/// The error `torque_on` fails with on the actuator at id 1 of bus `arm`,
+/// held faulted: `dxl_rs_v2` refuses its torque, nothing sent.
+fn refused() -> crate::dynamixel::DynamixelError {
+    crate::dynamixel::DynamixelError::Actuator {
+        actuator: 0,
+        bus: "arm",
+        id: 1,
+        source: BackendError::Faulted { id: 1 },
+    }
+}
+
+/// Scripts, from packet `first`, the replies `torque_on` reads from the
+/// AX-12A at id 1 still held faulted, clean again: present position 512,
+/// then its start goal written. Torque Enable must never follow.
+// DECISION: clean replies, so only the fault the bus holds stands before
+// its torque: a flagged present position read would fail `torque_on`
+// first and hide a torque let through.
+fn ax_clean_start(line: &mut Line<'_>, first: usize) {
+    line.reply_to(first, status1(1, &[0x00, 0x02]).bytes())
+        .reply_to(first + 1, status1(1, &[]).bytes());
+}
+
+/// SRS FR-5.2, FR-6.1: `voltage_limits(9.0, 13.0)` brings up the AX-12A that
+/// Setup holds faulted at 10.1 V below its 10.5 V Min Voltage Limit.
 #[test]
-fn only_an_input_voltage_fault_is_tolerated_on_a_limit_write() {
-    let voltage = Fault::Voltage {
-        measured_dv: 101,
-        min_dv: 105,
-        max_dv: 130,
-    };
-    let tolerated = [
-        BackendError::Fault(voltage),
-        BackendError::Fault(Fault::Hardware { status: 0x01 }),
-    ];
-    let refused = [
-        BackendError::Fault(Fault::Hardware { status: 0x05 }),
-        BackendError::Fault(Fault::Temperature {
-            measured_c: 85,
-            limit_c: 80,
-        }),
-        BackendError::Status(0x01),
-        BackendError::Timeout,
-    ];
-    assert!(tolerated.iter().all(input_voltage_only));
-    assert!(!refused.iter().any(input_voltage_only));
+fn an_ax12a_below_its_voltage_limits_comes_up_once_voltage_limits_are_written() {
+    use kmr_core::hal::Hal;
+
+    let time = MockTime::new();
+    let mut one = ax_at_10_1_v(&time);
+    // Min Voltage Limit 9.0 V, answered still flagged: measured 10.1 V,
+    // inside 9.0–13.0 V. Then Max Voltage Limit 13.0 V, and the clean ping
+    // of `clear_fault`.
+    one.reply_to(5, fault1(1, 0x01, &[]).bytes())
+        .reply_to(6, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(7, fault1(1, 0x01, &[90]).bytes())
+        .reply_to(8, fault1(1, 0x01, &[130]).bytes())
+        .reply_to(9, status1(1, &[]).bytes())
+        .reply_to(10, status1(1, &[]).bytes())
+        // Health: voltage, temperature, its limit, Min and Max Voltage Limit.
+        .reply_to(11, status1(1, &[101]).bytes())
+        .reply_to(12, status1(1, &[30]).bytes())
+        .reply_to(13, status1(1, &[70]).bytes())
+        .reply_to(14, status1(1, &[90]).bytes())
+        .reply_to(15, status1(1, &[130]).bytes())
+        // Torque on: present position 512, the start goal, Torque Enable.
+        .reply_to(16, status1(1, &[0x00, 0x02]).bytes())
+        .reply_to(17, status1(1, &[]).bytes())
+        .reply_to(18, status1(1, &[]).bytes());
+    let placement = one_ax(voltage_limits(90, 130));
+    let mut adapter = brought_up(placement, one, Line::with_capacity(&time));
+    assert!(adapter.backend.faulted(0, AX, 1));
+
+    assert_eq!(adapter.health(), Ok(()));
+    assert!(!adapter.backend.faulted(0, AX, 1));
+    assert_eq!(adapter.configure(), Ok(()));
+    assert_eq!(adapter.torque_on(), Ok(()));
+
+    let (one, two) = lines(&mut adapter.backend);
+    let sent = one.sent();
+    let min_at = find(sent, p1(1, &[0x03, 12, 90]).bytes());
+    let max_at = find(sent, p1(1, &[0x03, 13, 130]).bytes());
+    let goal_at = find(sent, p1(1, &[0x03, 30, 0x00, 0x02]).bytes());
+    let torque_at = find(sent, p1(1, &[0x03, 24, 1]).bytes());
+    assert!(min_at.is_some() && min_at < max_at && max_at < goal_at && goal_at < torque_at);
+    assert_eq!((one.unread(), two.sent().len()), (0, 0));
+}
+
+/// SRS FR-5.2: the same AX-12A with no voltage limits set stays faulted and
+/// fails health with its voltage measured; its torque is refused, never
+/// written, even once its replies are clean.
+#[test]
+fn an_ax12a_below_its_voltage_limits_with_none_set_fails_health_torque_off() {
+    use kmr_core::hal::Hal;
+
+    use crate::dynamixel::{DynamixelError, Settings};
+
+    let time = MockTime::new();
+    let mut one = ax_at_10_1_v(&time);
+    // `clear_fault`'s ping, still flagged, then the fault measured.
+    one.reply_to(5, fault1(1, 0x01, &[]).bytes())
+        .reply_to(6, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(7, fault1(1, 0x01, &[105]).bytes())
+        .reply_to(8, fault1(1, 0x01, &[130]).bytes());
+    ax_clean_start(&mut one, 9);
+    let mut adapter = brought_up(one_ax(Settings::NONE), one, Line::with_capacity(&time));
+
+    let error = adapter.health();
+
+    assert_eq!(
+        error,
+        Err(DynamixelError::Voltage {
+            actuator: 0,
+            bus: "arm",
+            id: 1,
+            measured_dv: 101,
+            min_dv: 105,
+            max_dv: 130,
+        })
+    );
+    assert_eq!(
+        error.err().map(|error| error.to_string()).as_deref(),
+        Some(
+            "actuator 0: id 1 on bus arm: input voltage 10.1 V outside the actuator's limits 10.5–13.0 V"
+        )
+    );
+    assert!(adapter.backend.faulted(0, AX, 1));
+    assert_eq!(adapter.configure(), Ok(()));
+    assert_eq!(adapter.torque_on(), Err(refused()));
+    assert!(adapter.backend.faulted(0, AX, 1));
+    let (one, _) = lines(&mut adapter.backend);
+    assert!(!torque_on_sent(one.sent()));
+    assert_eq!(one.unread(), 0);
+}
+
+/// SRS FR-5.2: voltage limits written that still exclude 10.1 V leave the
+/// actuator faulted; health fails naming the limits it now holds, and its
+/// torque is refused, never written, even once its replies are clean.
+#[test]
+fn voltage_limits_that_still_exclude_its_voltage_fail_health_torque_off() {
+    use kmr_core::hal::Hal;
+
+    use crate::dynamixel::DynamixelError;
+
+    let time = MockTime::new();
+    let mut one = ax_at_10_1_v(&time);
+    // Min Voltage Limit 11.0 V: answered flagged, measured below it.
+    one.reply_to(5, fault1(1, 0x01, &[]).bytes())
+        .reply_to(6, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(7, fault1(1, 0x01, &[110]).bytes())
+        .reply_to(8, fault1(1, 0x01, &[130]).bytes())
+        // Max Voltage Limit 13.0 V, the same.
+        .reply_to(9, fault1(1, 0x01, &[]).bytes())
+        .reply_to(10, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(11, fault1(1, 0x01, &[110]).bytes())
+        .reply_to(12, fault1(1, 0x01, &[130]).bytes())
+        // `clear_fault`'s ping, still flagged.
+        .reply_to(13, fault1(1, 0x01, &[]).bytes())
+        .reply_to(14, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(15, fault1(1, 0x01, &[110]).bytes())
+        .reply_to(16, fault1(1, 0x01, &[130]).bytes());
+    ax_clean_start(&mut one, 17);
+    let mut adapter = brought_up(
+        one_ax(voltage_limits(110, 130)),
+        one,
+        Line::with_capacity(&time),
+    );
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Voltage {
+            actuator: 0,
+            bus: "arm",
+            id: 1,
+            measured_dv: 101,
+            min_dv: 110,
+            max_dv: 130,
+        })
+    );
+    assert!(adapter.backend.faulted(0, AX, 1));
+    assert_eq!(adapter.configure(), Ok(()));
+    assert_eq!(adapter.torque_on(), Err(refused()));
+    assert!(adapter.backend.faulted(0, AX, 1));
+    let (one, _) = lines(&mut adapter.backend);
+    assert!(find(one.sent(), p1(1, &[0x03, 12, 110]).bytes()).is_some());
+    assert!(!torque_on_sent(one.sent()));
+    assert_eq!(one.unread(), 0);
+}
+
+/// Scripts the five replies `dxl_rs_v2`'s Setup of an XM430-W210 at id 1
+/// whose alert is raised reads: ping, Model Number 1030, Min and Max
+/// Position Limit 0 and 4095, Operating Mode 3, every one flagged.
+fn xm_alert_setup(line: &mut Line<'_>) {
+    line.reply_to(1, status2(1, 0x80, &[0x06, 0x04, 45]).bytes())
+        .reply_to(2, status2(1, 0x80, &[0x06, 0x04]).bytes())
+        .reply_to(3, status2(1, 0x80, &[0, 0, 0, 0]).bytes())
+        .reply_to(4, status2(1, 0x80, &[0xFF, 0x0F, 0, 0]).bytes())
+        .reply_to(5, status2(1, 0x80, &[3]).bytes());
+}
+
+/// Scripts, from packet `first`, a flagged reply carrying `data` then the
+/// four reads `dxl_rs_v2` measures a Protocol 2 Input Voltage fault with:
+/// Hardware Error Status 0x01, Present Input Voltage 12.0 V, Min and Max
+/// Voltage Limit 9.5 and 16.0 V.
+fn xm_voltage_alert(line: &mut Line<'_>, first: usize, data: &[u8]) {
+    line.reply_to(first, status2(1, 0x80, data).bytes())
+        .reply_to(first + 1, status2(1, 0x80, &[0x01]).bytes())
+        .reply_to(first + 2, status2(1, 0x80, &[120, 0]).bytes())
+        .reply_to(first + 3, status2(1, 0x80, &[95, 0]).bytes())
+        .reply_to(first + 4, status2(1, 0x80, &[160, 0]).bytes());
+}
+
+/// SRS FR-5.2: a Protocol 2 actuator keeps its alert after its limits are
+/// written, until it reboots: they are written, then health fails with its
+/// Hardware Error Status, its torque not read. Its torque is refused, never
+/// written, even once its replies are clean.
+#[test]
+fn an_xm430_whose_alert_persists_after_its_limits_are_written_fails_torque_off() {
+    use kmr_core::hal::Hal;
+
+    use crate::dynamixel::{DynamixelError, Placement};
+
+    let time = MockTime::new();
+    let mut two = Line::with_capacity(&time);
+    xm_alert_setup(&mut two);
+    xm_voltage_alert(&mut two, 6, &[]);
+    xm_voltage_alert(&mut two, 11, &[]);
+    // `clear_fault`: Hardware Error Status, its reply flagged, then measured.
+    xm_voltage_alert(&mut two, 16, &[0x01]);
+    // Clean again: `configure` reads Operating Mode 3 and Torque Enable 0;
+    // `torque_on` current, velocity and position 2048, then the start goal.
+    two.reply_to(21, status2(1, 0, &[3]).bytes())
+        .reply_to(22, status2(1, 0, &[0]).bytes())
+        .reply_to(23, status2(1, 0, &[0, 0]).bytes())
+        .reply_to(24, status2(1, 0, &[0, 0, 0, 0]).bytes())
+        .reply_to(25, status2(1, 0, &2048_i32.to_le_bytes()).bytes())
+        .reply_to(26, status2(1, 0, &[]).bytes());
+    let mut placement: Placement<1, 1> = one_xm();
+    placement.settings[0] = voltage_limits(95, 160);
+    let mut adapter = brought_up(placement, Line::with_capacity(&time), two);
+    assert!(adapter.backend.faulted(0, XM, 1));
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::HardwareError {
+            actuator: 0,
+            bus: "arm",
+            id: 1,
+            status: 0x01,
+        })
+    );
+    assert_eq!(adapter.configure(), Ok(()));
+    assert_eq!(adapter.torque_on(), Err(refused()));
+    assert!(adapter.backend.faulted(0, XM, 1));
+    let (_, two) = lines(&mut adapter.backend);
+    let sent = two.sent();
+    let min_at = find(sent, write2(1, 34, &[95, 0]).bytes());
+    let max_at = find(sent, write2(1, 32, &[160, 0]).bytes());
+    // The first Torque Enable read is `configure`'s, after the limits.
+    let torque_read_at = find(sent, p2(1, &[0x02, 64, 0, 1, 0]).bytes());
+    assert!(min_at.is_some() && min_at < max_at && max_at < torque_read_at);
+    assert!(find(sent, write2(1, 64, &[1]).bytes()).is_none());
+    assert_eq!(two.unread(), 0);
 }

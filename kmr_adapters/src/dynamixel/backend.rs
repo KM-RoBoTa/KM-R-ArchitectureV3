@@ -209,8 +209,8 @@ pub(crate) enum Wire {
 
 /// A hardware fault an actuator reports, measured against its own limits.
 #[cfg_attr(
-    not(feature = "dynamixel"),
-    expect(dead_code, reason = "only the SDK backend measures faults")
+    not(any(test, feature = "dynamixel")),
+    expect(dead_code, reason = "only the backends measure faults")
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum Fault {
@@ -544,9 +544,21 @@ pub(crate) trait Backend {
 
     /// Sets up the actuators of `port`, in id order: each answers its ping
     /// and reports the Model Number of its declared model, then is held,
-    /// its torque state off. Stops at the first that fails. Replaces what
-    /// the port held; every later call names an actuator held here.
+    /// its torque state off, or [`faulted`](Backend::faulted) when its
+    /// replies report only a hardware fault. Stops at the first that fails.
+    /// Replaces what the port held; every later call names an actuator held
+    /// here.
     fn declare(&mut self, port: usize, actuators: &[(u8, Model)]) -> Result<(), Undeclared>;
+
+    /// Whether `port` holds actuator `id` faulted: a reply of its reported a
+    /// hardware fault, at `declare` or since, that no `clear_fault` cleared.
+    /// Its torque and goals are refused until then. No I/O.
+    fn faulted(&self, port: usize, model: Model, id: u8) -> bool;
+
+    /// Asks actuator `id` whether its fault is gone and, if so, holds it
+    /// with its torque off. While it still reports one, it fails with the
+    /// fault measured, and the actuator stays faulted.
+    fn clear_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
     /// Present position of one actuator.
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError>;

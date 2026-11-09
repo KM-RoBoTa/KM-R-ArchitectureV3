@@ -4268,6 +4268,323 @@ fn check_refuses_crossed_or_too_wide_voltage_limits_before_any_io() {
     assert!(adapter.check(Overrides::default()).is_ok());
 }
 
+// ── An actuator held faulted at ping: health clears it or fails ─────────────
+
+/// What the AX-12A at id 1 answers: 10.1 V against the voltage limits
+/// 10.5–13.0 V its EEPROM holds.
+const BELOW_ITS_LIMITS: Health = Health {
+    voltage_dv: 101,
+    min_voltage_dv: 105,
+    max_voltage_dv: 130,
+    ..HEALTHY
+};
+
+/// Message of the warning `ping` logs per actuator it holds faulted.
+const HELD_FAULTED: &str = "reported a hardware fault at setup";
+
+/// Message of the warning `health` logs for a Protocol 2 actuator whose
+/// fault outlives its limits.
+const REBOOT: &str = "keeps a hardware error until the actuator reboots";
+
+/// Pings `adapter`, its actuator `index` answering `health`; the warnings
+/// logged that one is held faulted. The backend log is cleared afterwards.
+fn ping_answering<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB, N>,
+    index: usize,
+    health: Health,
+) -> Result<usize, DynamixelError> {
+    let actuator = *adapter.actuators.get(index).unwrap();
+    adapter.backend.health(actuator.bus, actuator.id, health);
+    let mut ping = Ok(());
+    let warned = warnings(HELD_FAULTED, || ping = adapter.ping());
+    ping?;
+    adapter.backend.clear_log();
+    Ok(warned)
+}
+
+/// Whether the backend holds `adapter`'s actuator `index` faulted.
+fn faulted<const NB: usize>(adapter: &Dynamixel<Scripted, NB, N>, index: usize) -> bool {
+    let actuator = adapter.actuators.get(index).unwrap();
+    adapter
+        .backend
+        .faulted(actuator.bus, actuator.model, actuator.id)
+}
+
+/// Whether `adapter`'s actuator `index` is still held faulted, its torque
+/// never asked on nor set.
+fn still_faulted_off<const NB: usize>(adapter: &Dynamixel<Scripted, NB, N>, index: usize) -> bool {
+    let actuator = adapter.actuators.get(index).unwrap();
+    let (bus, id) = (actuator.bus, actuator.id);
+    faulted(adapter, index)
+        && !adapter.backend.torqued(bus, id)
+        && !torque_asked(&adapter.backend, bus, id, true)
+}
+
+/// `configure` then `torque_on`, actuator `index` of `adapter` answering
+/// `clean` and asked nothing since it was held faulted; `torque_on`'s
+/// result.
+// DECISION: its replies clean again, so only the fault it is held with
+// stands before its torque: an earlier step failing on a flagged reply
+// would hide a torque let through.
+fn torque_on_answering<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB, N>,
+    index: usize,
+    clean: Health,
+) -> Result<Result<(), DynamixelError>, DynamixelError> {
+    let actuator = *adapter.actuators.get(index).unwrap();
+    adapter.backend.health(actuator.bus, actuator.id, clean);
+    adapter.configure()?;
+    Ok(adapter.torque_on())
+}
+
+/// The error `torque_on` fails with on actuator `index` of bus `bus` held
+/// faulted: its torque refused.
+fn refused(bus: &'static str, index: usize) -> DynamixelError {
+    DynamixelError::Actuator {
+        actuator: index,
+        bus,
+        id: id(index),
+        source: BackendError::Faulted { id: id(index) },
+    }
+}
+
+/// Calls recorded naming `id` on bus 0, in call order.
+fn calls_on(backend: &Scripted, id: u8) -> impl Iterator<Item = Call> + '_ {
+    backend
+        .calls()
+        .iter()
+        .filter(move |record| record.port == 0 && record.id == id)
+        .map(|record| record.call)
+}
+
+/// SRS FR-5.2, FR-6.1: `voltage_limits(9.0, 13.0)` brings up the AX-12A at
+/// 10.1 V: held faulted at ping with one warning, its limits written then
+/// its fault cleared by health, then switched on.
+#[test]
+fn an_ax12a_below_its_voltage_limits_comes_up_once_voltage_limits_are_written()
+-> Result<(), DynamixelError> {
+    let nine_to_thirteen = Settings {
+        voltage_limits_dv: Some((90, 130)),
+        ..Settings::NONE
+    };
+    let mut adapter = voltage_rig(AX_TABLE, 0, nine_to_thirteen);
+    assert_eq!(ping_answering(&mut adapter, 0, BELOW_ITS_LIMITS)?, 1);
+    assert!(faulted(&adapter, 0));
+
+    adapter.health()?;
+
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::WriteVoltageLimits,
+        Call::ClearFault,
+        Call::ReadHealth
+    ]));
+    let limits = held(&adapter, 0);
+    assert_eq!((limits.min_voltage_dv, limits.max_voltage_dv), (90, 130));
+    assert!(!faulted(&adapter, 0));
+    adapter.configure()?;
+    adapter.read_all(Slot::filled(0.0).sample())?;
+    adapter.torque_on()?;
+    assert!(torque_asked(&adapter.backend, 0, id(0), true));
+    assert!(adapter.backend.torqued(0, id(0)));
+    Ok(())
+}
+
+/// SRS FR-5.2: the same AX-12A with no voltage limits set stays faulted:
+/// health fails with its voltage measured, nothing read beside the fault;
+/// its torque is refused, even once its supply is raised to 12.0 V.
+#[test]
+fn an_ax12a_below_its_voltage_limits_with_none_set_fails_health_still_faulted()
+-> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(AX_TABLE, 0, Settings::NONE);
+    ping_answering(&mut adapter, 0, BELOW_ITS_LIMITS)?;
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Voltage {
+            actuator: 0,
+            bus: "ax",
+            id: id(0),
+            measured_dv: 101,
+            min_dv: 105,
+            max_dv: 130,
+        })
+    );
+    assert!(calls_on(&adapter.backend, id(0)).eq([Call::ClearFault]));
+    assert!(still_faulted_off(&adapter, 0));
+    let raised = Health {
+        voltage_dv: 120,
+        ..BELOW_ITS_LIMITS
+    };
+    let torque_on = torque_on_answering(&mut adapter, 0, raised)?;
+    assert_eq!(torque_on, Err(refused("ax", 0)));
+    assert!(faulted(&adapter, 0) && !adapter.backend.torqued(0, id(0)));
+    Ok(())
+}
+
+/// SRS FR-5.2, FR-6.1: voltage limits that still exclude 10.1 V are
+/// written, then health fails naming the limits the actuator now holds;
+/// its torque is refused, even once its supply is raised inside them.
+#[test]
+fn voltage_limits_that_still_exclude_its_voltage_fail_health_still_faulted()
+-> Result<(), DynamixelError> {
+    let eleven_to_thirteen = Settings {
+        voltage_limits_dv: Some((110, 130)),
+        ..Settings::NONE
+    };
+    let mut adapter = voltage_rig(AX_TABLE, 0, eleven_to_thirteen);
+    ping_answering(&mut adapter, 0, BELOW_ITS_LIMITS)?;
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Voltage {
+            actuator: 0,
+            bus: "ax",
+            id: id(0),
+            measured_dv: 101,
+            min_dv: 110,
+            max_dv: 130,
+        })
+    );
+    assert!(calls_on(&adapter.backend, id(0)).eq([Call::WriteVoltageLimits, Call::ClearFault]));
+    assert!(still_faulted_off(&adapter, 0));
+    let raised = Health {
+        voltage_dv: 120,
+        min_voltage_dv: 110,
+        ..BELOW_ITS_LIMITS
+    };
+    let torque_on = torque_on_answering(&mut adapter, 0, raised)?;
+    assert_eq!(torque_on, Err(refused("ax", 0)));
+    assert!(faulted(&adapter, 0) && !adapter.backend.torqued(0, id(0)));
+    Ok(())
+}
+
+/// SRS FR-5.2, FR-6.1: a Protocol 2 actuator keeps its latched Input
+/// Voltage alert after its voltage limits are written, its voltage inside
+/// them: no Torque Enable read beside the fault, the limits written, then
+/// health fails with its Hardware Error Status and one warning to reboot it.
+/// Its torque is refused, even once a reboot cleared its alert.
+#[test]
+fn a_protocol_2_alert_kept_after_its_voltage_limits_fails_health_asking_for_a_reboot()
+-> Result<(), DynamixelError> {
+    let latched = Health {
+        error_status: 0x01,
+        ..HEALTHY
+    };
+    let mut adapter = voltage_rig(X_TABLE, 0, VOLTAGES);
+    assert_eq!(ping_answering(&mut adapter, 0, latched)?, 1);
+
+    let mut health = Ok(());
+    let warned = warnings(REBOOT, || health = adapter.health());
+
+    let error = DynamixelError::HardwareError {
+        actuator: 0,
+        bus: "x",
+        id: id(0),
+        status: 0x01,
+    };
+    assert_eq!((health, warned), (Err(error), 1));
+    assert!(calls_on(&adapter.backend, id(0)).eq([Call::WriteVoltageLimits, Call::ClearFault]));
+    assert_eq!(held(&adapter, 0).min_voltage_dv, LIMITS.min_voltage_dv);
+    assert!(still_faulted_off(&adapter, 0));
+    let rebooted = Health {
+        min_voltage_dv: LIMITS.min_voltage_dv,
+        max_voltage_dv: LIMITS.max_voltage_dv,
+        ..HEALTHY
+    };
+    let torque_on = torque_on_answering(&mut adapter, 0, rebooted)?;
+    assert_eq!(torque_on, Err(refused("x", 0)));
+    assert!(faulted(&adapter, 0) && !adapter.backend.torqued(0, id(0)));
+    Ok(())
+}
+
+/// SRS FR-5.2, FR-6.1: an actuator clean at ping whose own voltage limit
+/// write leaves its 12.0 V outside the limits written is faulted by it:
+/// health fails with its voltage measured by `clear_fault`, nothing read
+/// beside the fault, and its torque is refused.
+#[test]
+fn a_voltage_limit_write_that_excludes_its_voltage_faults_it_and_fails_health()
+-> Result<(), DynamixelError> {
+    let thirteen_to_sixteen = Settings {
+        voltage_limits_dv: Some((130, 160)),
+        ..Settings::NONE
+    };
+    let mut adapter = voltage_rig(AX_TABLE, 0, thirteen_to_sixteen);
+    assert_eq!(ping_answering(&mut adapter, 0, HEALTHY)?, 0);
+    assert!(!faulted(&adapter, 0));
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::Voltage {
+            actuator: 0,
+            bus: "ax",
+            id: id(0),
+            measured_dv: 120,
+            min_dv: 130,
+            max_dv: 160,
+        })
+    );
+    assert!(calls_on(&adapter.backend, id(0)).eq([Call::WriteVoltageLimits, Call::ClearFault]));
+    assert!(still_faulted_off(&adapter, 0));
+    let raised = Health {
+        voltage_dv: 140,
+        min_voltage_dv: 130,
+        max_voltage_dv: 160,
+        ..HEALTHY
+    };
+    let torque_on = torque_on_answering(&mut adapter, 0, raised)?;
+    assert_eq!(torque_on, Err(refused("ax", 0)));
+    assert!(faulted(&adapter, 0) && !adapter.backend.torqued(0, id(0)));
+    Ok(())
+}
+
+/// SRS FR-5.2: the same path for another fault and model: a Protocol 1
+/// RX-28 at 65 °C against a Temperature Limit of 60 °C is held at ping,
+/// then cleared once the placement's health limits raise it to 70 °C.
+#[test]
+fn a_protocol_1_actuator_hot_against_a_low_temperature_limit_is_cleared_by_health_limits()
+-> Result<(), DynamixelError> {
+    // DECISION: an RX-28, not the AX-12A, so the test pins that nothing in
+    // the path is tied to one model or to the voltage.
+    let mut adapter = limited_rig(RX_TABLE);
+    let hot = Health {
+        temperature_c: 65,
+        temperature_limit_c: 60,
+        ..HEALTHY
+    };
+    assert_eq!(ping_answering(&mut adapter, 0, hot)?, 1);
+
+    adapter.health()?;
+
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::WriteHealthLimits,
+        Call::ClearFault,
+        Call::ReadHealth
+    ]));
+    assert_eq!(held(&adapter, 0), LIMITS);
+    assert!(!faulted(&adapter, 0));
+    Ok(())
+}
+
+/// SRS FR-5.2: a fault gone by health, the supply raised to 12.0 V after
+/// ping, is cleared with no limit written, then checked as any actuator.
+#[test]
+fn a_fault_gone_by_health_is_cleared_with_no_limit_written() -> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(AX_TABLE, 0, Settings::NONE);
+    ping_answering(&mut adapter, 0, BELOW_ITS_LIMITS)?;
+    let raised = Health {
+        voltage_dv: 120,
+        ..BELOW_ITS_LIMITS
+    };
+    adapter.backend.health(0, id(0), raised);
+
+    adapter.health()?;
+
+    assert!(calls_on(&adapter.backend, id(0)).eq([Call::ClearFault, Call::ReadHealth]));
+    assert_eq!(adapter.backend.count(Call::ClearFault), 1);
+    assert!(!faulted(&adapter, 0));
+    Ok(())
+}
+
 // ── A table built at run time ───────────────────────────────────────────────
 
 /// Bus slots of [`declared`]: more than the backend opens, one in use.

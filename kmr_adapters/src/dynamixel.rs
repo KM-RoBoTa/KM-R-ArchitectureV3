@@ -1168,6 +1168,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// again, up to [`PING_ATTEMPTS`] times, without sleep; another model
     /// found is refused at once. No register is read through the declared
     /// table before that.
+    ///
+    /// One whose replies report only a hardware fault is held faulted, its
+    /// torque refused, with one warning: `health` clears it or fails.
     fn ping(&mut self) -> Result<(), DynamixelError> {
         for bus in 0..self.live {
             let mut owned = [(0, Model::Xm430W210); N];
@@ -1197,6 +1200,20 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 }
             }
             answer.map_err(|failure| self.undeclared(bus, failure))?;
+            let held = self
+                .actuators
+                .iter()
+                .filter(|(_, actuator)| actuator.bus == bus);
+            for (index, actuator) in held {
+                if self.backend.faulted(bus, actuator.model, actuator.id) {
+                    warn!(
+                        actuator = index,
+                        bus = self.label(bus),
+                        id = actuator.id,
+                        "reported a hardware fault at setup: held with its torque off until health clears it"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -1209,6 +1226,10 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     ///
     /// Limits are written with the torque off and read back equal, else the
     /// error names both (D18).
+    ///
+    /// An actuator held faulted, at `ping` or by a limit write, is asked
+    /// after its limits are written: one that still reports its fault fails
+    /// with it measured, its torque still refused.
     fn health(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (model, id) = (actuator.model, actuator.id);
@@ -1228,7 +1249,12 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 // switched off here: it may be holding a load, and cutting
                 // torque is the loop's safety call, not the bring-up's.
                 // Protocol 1 has no torque read and no EEPROM lock.
-                if model.protocol() == Protocol::Two {
+                // DECISION: a faulted one is not asked: dxl_rs_v2 returns no
+                // register value beside a fault. Powered, it refuses the
+                // EEPROM write itself, and `clear_fault` below fails on the
+                // alert a Protocol 2 actuator keeps until it reboots.
+                let faulted = self.backend.faulted(actuator.bus, model, id);
+                if model.protocol() == Protocol::Two && !faulted {
                     let on = self
                         .backend
                         .read_setting(actuator.bus, model, id, Setting::TorqueEnable)
@@ -1254,11 +1280,26 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 };
                 write.map_err(|error| self.actuator_error(index, error))?;
             }
+            let bus = self.label(actuator.bus);
+            if self.backend.faulted(actuator.bus, model, id) {
+                if let Err(error) = self.backend.clear_fault(actuator.bus, model, id) {
+                    if model.protocol() == Protocol::Two && matches!(error, BackendError::Fault(_))
+                    {
+                        warn!(
+                            actuator = index,
+                            bus,
+                            id,
+                            "Protocol 2 keeps a hardware error until the actuator reboots: power-cycle it once its cause is gone"
+                        );
+                    }
+                    return Err(self.actuator_error(index, error));
+                }
+                debug!(actuator = index, bus, id, "hardware fault cleared");
+            }
             let health = self
                 .backend
                 .read_health(actuator.bus, model, id)
                 .map_err(|error| self.actuator_error(index, error))?;
-            let bus = self.label(actuator.bus);
             let read = HealthLimits {
                 min_voltage_dv: health.min_voltage_dv,
                 max_voltage_dv: health.max_voltage_dv,

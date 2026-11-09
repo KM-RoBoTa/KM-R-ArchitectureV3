@@ -16,8 +16,8 @@ use ::dxl_rs_v2::field::{
 };
 use ::dxl_rs_v2::{
     ActuatorRef, Bus, Clock, Config, Error, FaultError, Gain, Id, IdSet, ModelNumber, P1, P2,
-    ProtocolError, SerialTransport, SetupError, StatusReport, StdClock, TemperatureError,
-    TorqueState, Transport, TransportError, ValidationError, VoltageError,
+    ProtocolError, SerialTransport, SetupError, SetupReport, StatusReport, StdClock,
+    TemperatureError, TorqueState, Transport, TransportError, ValidationError, VoltageError,
 };
 
 use super::backend::{
@@ -213,7 +213,8 @@ fn held<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock, const N: usize>(
         .ok_or(BackendError::NotDeclared { id: id.get() })
 }
 
-/// Sets up `list` on `bus`, replacing what it held.
+/// Sets up `list` on `bus`, replacing what it held; an actuator whose
+/// replies report only a hardware fault is held faulted.
 fn declare_on<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock, const N: usize>(
     bus: &mut Bus<P, T, C, N>,
     list: &[(u8, Model)],
@@ -231,10 +232,16 @@ fn declare_on<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock, const N: usize>(
         .iter()
         .filter(|(_, model)| model.protocol() == protocol)
         .filter_map(|&(id, model)| Some((Id::new(id).ok()?, ModelNumber(model.number()))));
-    bus.declare(entries).map(drop).map_err(|error| Undeclared {
-        id: failing_id(&error),
-        source: backend_error(error),
-    })
+    match bus.declare(entries) {
+        // DECISION: the report's faulted set is not copied: the bus keeps the
+        // torque state of each actuator it holds, which `faulted` reads, so a
+        // fault reported after Setup counts as well.
+        Ok(SetupReport { .. }) => Ok(()),
+        Err(error) => Err(Undeclared {
+            id: failing_id(&error),
+            source: backend_error(error),
+        }),
+    }
 }
 
 /// Reads `register`, at most two bytes, from `actuator`.
@@ -271,38 +278,23 @@ fn write_register<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
         .map_err(backend_error)
 }
 
-/// Hardware Error Status bit of an input voltage outside the limits.
-const INPUT_VOLTAGE: u8 = 0x01;
-
 /// Writes `value` to limit register `register` of `actuator`, as
-/// [`write_register`]; a reply whose only fault is the input voltage counts
+/// [`write_register`]; a reply reporting a hardware fault, measured, counts
 /// as written.
-// DECISION: the actuator runs a write whose reply flags only its input
-// voltage, so a limit that brings the voltage back inside can be written;
-// the read back in `health` decides. Unverified on hardware until dxl_rs_v2
-// holds a faulted actuator (docs/deferred.md, the B2 row).
+// DECISION: a limit is written to fix the fault the actuator reports (its
+// voltage or temperature outside the limits it holds), so its reply still
+// carries it: on Protocol 1 voltage or heat, on Protocol 2 the latched alert.
+// `health` decides with `clear_fault` and the read back, which also catch a
+// write that did not run beside the fault (Instruction, Range or Access).
 fn write_limit<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
     actuator: &mut ActuatorRef<'_, P, T, C>,
     register: Register,
     value: u16,
 ) -> Result<(), BackendError> {
     match write_register(actuator, register, value) {
-        Err(error) if input_voltage_only(&error) => Ok(()),
+        Err(BackendError::Fault(_)) => Ok(()),
         written => written,
     }
-}
-
-/// Whether `error` is a fault reply whose only fault is the input voltage.
-fn input_voltage_only(error: &BackendError) -> bool {
-    matches!(
-        error,
-        BackendError::Fault(
-            Fault::Voltage { .. }
-                | Fault::Hardware {
-                    status: INPUT_VOLTAGE
-                }
-        )
-    )
 }
 
 /// `value`, read from `register`, as a `U`.
@@ -574,6 +566,27 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
         open.started = IdSet::new();
         declare_on(&mut open.one, actuators, Protocol::One)?;
         declare_on(&mut open.two, actuators, Protocol::Two)
+    }
+
+    /// Whether the bus of `model`'s protocol holds `id` faulted.
+    fn faulted(&self, port: usize, model: Model, id: u8) -> bool {
+        let (Some(Some(open)), Ok(target)) = (self.ports.get(port), Id::new(id)) else {
+            return false;
+        };
+        let state = match model.protocol() {
+            Protocol::One => open.one.torque_state(target),
+            Protocol::Two => open.two.torque_state(target),
+        };
+        state == Some(TorqueState::Faulted)
+    }
+
+    /// `dxl_rs_v2`'s `clear_fault`: one read of Hardware Error Status, or a
+    /// ping where the model has none; a fault still reported is measured.
+    fn clear_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        on_bus!(open, model, |bus| held(bus, target)?
+            .clear_fault()
+            .map_err(backend_error))
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
@@ -1023,6 +1036,14 @@ impl<const N: usize> Backend for DxlRsV2<N> {
 
     fn declare(&mut self, port: usize, actuators: &[(u8, Model)]) -> Result<(), Undeclared> {
         self.0.declare(port, actuators)
+    }
+
+    fn faulted(&self, port: usize, model: Model, id: u8) -> bool {
+        self.0.faulted(port, model, id)
+    }
+
+    fn clear_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.0.clear_fault(port, model, id)
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
