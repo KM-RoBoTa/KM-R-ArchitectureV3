@@ -102,6 +102,22 @@ impl Ids {
         }
     }
 
+    /// Writes these Min and Max Voltage Limits, in volts, to the actuators' EEPROM at bring-up,
+    /// torque off, then reads them back; their Temperature Limit is left as it is. `run()`
+    /// refuses a min above the max and, on Protocol 1, a limit above 25.5 V.
+    pub fn voltage_limits(self, min: f32, max: f32) -> Self {
+        // DECISION: rounded to the 0.1 V register; `as` saturates, so NaN or a negative limit
+        // reaches the actuator as 0, which it refuses at bring-up.
+        let decivolts = |volts: f32| (volts * 10.0).round() as u16;
+        Self {
+            settings: Settings {
+                voltage_limits_dv: Some((decivolts(min), decivolts(max))),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
     /// These actuators on `bus`.
     pub fn on(self, bus: BusHandle) -> Actuators {
         Actuators {

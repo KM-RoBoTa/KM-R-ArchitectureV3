@@ -271,6 +271,40 @@ fn write_register<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
         .map_err(backend_error)
 }
 
+/// Hardware Error Status bit of an input voltage outside the limits.
+const INPUT_VOLTAGE: u8 = 0x01;
+
+/// Writes `value` to limit register `register` of `actuator`, as
+/// [`write_register`]; a reply whose only fault is the input voltage counts
+/// as written.
+// DECISION: the actuator runs a write whose reply flags only its input
+// voltage, so a limit that brings the voltage back inside can be written;
+// the read back in `health` decides. Unverified on hardware until dxl_rs_v2
+// holds a faulted actuator (docs/deferred.md, the B2 row).
+fn write_limit<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
+    actuator: &mut ActuatorRef<'_, P, T, C>,
+    register: Register,
+    value: u16,
+) -> Result<(), BackendError> {
+    match write_register(actuator, register, value) {
+        Err(error) if input_voltage_only(&error) => Ok(()),
+        written => written,
+    }
+}
+
+/// Whether `error` is a fault reply whose only fault is the input voltage.
+fn input_voltage_only(error: &BackendError) -> bool {
+    matches!(
+        error,
+        BackendError::Fault(
+            Fault::Voltage { .. }
+                | Fault::Hardware {
+                    status: INPUT_VOLTAGE
+                }
+        )
+    )
+}
+
 /// `value`, read from `register`, as a `U`.
 fn narrow<U: TryFrom<i32>>(register: &'static str, value: i32) -> Result<U, BackendError> {
     U::try_from(value).map_err(|_| BackendError::Overflow { register, value })
@@ -913,20 +947,44 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
     ) -> Result<(), BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
         let registers = LimitRegisters::of(model);
-        if !registers.fit(limits) {
+        if !registers.fit(limits.min_voltage_dv, limits.max_voltage_dv) {
             return Err(BackendError::Refused {
                 reason: "a voltage limit wider than its one-byte register",
             });
         }
         on_bus!(open, model, |bus| {
             let mut actuator = held(bus, target)?;
-            write_register(
+            write_limit(
                 &mut actuator,
                 registers.temperature,
                 u16::from(limits.temperature_c),
             )?;
-            write_register(&mut actuator, registers.min_voltage, limits.min_voltage_dv)?;
-            write_register(&mut actuator, registers.max_voltage, limits.max_voltage_dv)
+            write_limit(&mut actuator, registers.min_voltage, limits.min_voltage_dv)?;
+            write_limit(&mut actuator, registers.max_voltage, limits.max_voltage_dv)
+        })
+    }
+
+    /// Two raw writes, Min Voltage Limit first. A voltage wider than its
+    /// one-byte Protocol 1 register is refused before any write.
+    fn write_voltage_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        min_dv: u16,
+        max_dv: u16,
+    ) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        let registers = LimitRegisters::of(model);
+        if !registers.fit(min_dv, max_dv) {
+            return Err(BackendError::Refused {
+                reason: "a voltage limit wider than its one-byte register",
+            });
+        }
+        on_bus!(open, model, |bus| {
+            let mut actuator = held(bus, target)?;
+            write_limit(&mut actuator, registers.min_voltage, min_dv)?;
+            write_limit(&mut actuator, registers.max_voltage, max_dv)
         })
     }
 
@@ -1062,6 +1120,17 @@ impl<const N: usize> Backend for DxlRsV2<N> {
         limits: HealthLimits,
     ) -> Result<(), BackendError> {
         self.0.write_health_limits(port, model, id, limits)
+    }
+
+    fn write_voltage_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        min_dv: u16,
+        max_dv: u16,
+    ) -> Result<(), BackendError> {
+        self.0.write_voltage_limits(port, model, id, min_dv, max_dv)
     }
 
     fn read_angle_limits(

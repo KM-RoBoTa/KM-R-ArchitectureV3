@@ -226,14 +226,36 @@ mod tests {
                 d: 4000,
             }),
             led: Some(true),
+            voltage_limits_dv: None,
         };
         let dark = Settings {
             gains: None,
             led: Some(false),
+            voltage_limits_dv: None,
         };
         assert_eq!(
             declared.settings(),
             &[tuned, tuned, Settings::default(), dark]
+        );
+    }
+
+    #[test]
+    fn voltage_limits_reach_their_declaration_in_0_1_v_rounded() {
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        let declared = lower::<4>(
+            vec![
+                Ax12a::ids(1..=2).voltage_limits(9.5, 13.0).on(arm),
+                Ax12a::id(3).voltage_limits(9.46, 12.04).on(arm),
+                Ax12a::id(4).on(arm),
+            ],
+            REVOLUTE,
+        )
+        .expect("valid declarations");
+
+        let limits = declared.settings().map(|set| set.voltage_limits_dv);
+        assert_eq!(
+            limits,
+            [Some((95, 130)), Some((95, 130)), Some((95, 120)), None]
         );
     }
 

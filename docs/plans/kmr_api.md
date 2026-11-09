@@ -75,6 +75,7 @@ in [`specs/004-kmr-api/`](../../specs/004-kmr-api/).
 ## Added 2026-11-05 (dxl_rs_v2 migration phase 3)
 
 - [x] T070 [2026-11-05] Agent. `.gains(p, i, d)` and `.led(on)` on `dynamixel::Ids`, raw register values, lowered by `actuator::lower` into the adapter's `Declared::with_settings` (kmr_adapters T075); refused at `run()` before any I/O on a model without the register or above its range. Test: `gains_and_led_reach_each_actuator_of_their_declaration_only`. Contract: specs/004-kmr-api/contracts/builder.md § Dynamixel declarations
+- [x] T071 [2026-11-05] Agent. `.voltage_limits(min, max)` on `dynamixel::Ids`, volts rounded to 0.1 V, lowered into `Settings::voltage_limits_dv`; the adapter writes Min and Max Voltage Limit in `health` torque off and reads them back, Temperature Limit untouched; refused at `run()` before any I/O when crossed or above a Protocol 1 register. Bench check waits on docs/deferred.md B2 row. Test: `voltage_limits_reach_their_declaration_in_0_1_v_rounded`. Contract: specs/004-kmr-api/contracts/builder.md § Dynamixel declarations
 
 ## Added 2026-10-29 (D17, set of drivers)
 

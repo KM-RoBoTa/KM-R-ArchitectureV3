@@ -726,14 +726,18 @@ pub struct HealthLimits {
     pub temperature_c: u8,
 }
 
-/// RAM settings written to an actuator in `configure`, PostInit, before the
-/// torque goes on, then read back. `None` leaves the register as it is.
+/// Settings written to an actuator at bring-up, torque off, then read back:
+/// the RAM ones in `configure`, the voltage limits to EEPROM in `health`,
+/// both PostInit. `None` leaves the registers as they are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     /// P, I and D Gain; Position P, I and D Gain on Protocol 2.
     pub gains: Option<Gains>,
     /// LED on or off.
     pub led: Option<bool>,
+    /// Min and Max Voltage Limit, in 0.1 V; the Temperature Limit is left as
+    /// it is.
+    pub voltage_limits_dv: Option<(u16, u16)>,
 }
 
 impl Settings {
@@ -741,6 +745,7 @@ impl Settings {
     pub(crate) const NONE: Self = Self {
         gains: None,
         led: None,
+        voltage_limits_dv: None,
     };
 }
 
@@ -771,7 +776,7 @@ pub struct Placement<const NB: usize, const M: usize> {
     /// Health limits written to each actuator of `table` at bring-up;
     /// `None` leaves its registers as they are.
     pub(crate) limits: [Option<HealthLimits>; M],
-    /// RAM settings written to each actuator of `table` at bring-up.
+    /// Settings written to each actuator of `table` at bring-up.
     pub(crate) settings: [Settings; M],
 }
 
@@ -1180,7 +1185,7 @@ impl<const NB: usize, const M: usize> Declared<NB, M> {
         &self.placement.table
     }
 
-    /// RAM settings written to each actuator at bring-up, in table order.
+    /// Settings written to each actuator at bring-up, in table order.
     pub const fn settings(&self) -> &[Settings; M] {
         &self.placement.settings
     }
@@ -1218,7 +1223,7 @@ pub(crate) struct Placed<const N: usize> {
     past: Option<(usize, usize)>,
     /// Health limits to write at each engine index.
     limits: [Option<HealthLimits>; N],
-    /// RAM settings to write at each engine index.
+    /// Settings to write at each engine index.
     settings: [Settings; N],
 }
 
@@ -1266,7 +1271,7 @@ impl<const N: usize> Placed<N> {
         self.limits.get(index).copied().flatten()
     }
 
-    /// RAM settings to write to the actuator at engine index `index`.
+    /// Settings to write to the actuator at engine index `index`.
     pub(crate) fn settings(&self, index: usize) -> Settings {
         self.settings.get(index).copied().unwrap_or_default()
     }

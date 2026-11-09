@@ -4103,6 +4103,171 @@ fn the_fake_refuses_limits_as_the_actuator_does() {
     );
 }
 
+// ── Voltage limits set on the actuators declared in `main.rs` ──────────────
+
+/// Settings giving only the voltages of [`LIMITS`].
+const VOLTAGES: Settings = Settings {
+    voltage_limits_dv: Some((LIMITS.min_voltage_dv, LIMITS.max_voltage_dv)),
+    ..Settings::NONE
+};
+
+/// An adapter for `table` in order, actuator `row` given `settings`, its
+/// scripted ports open and its claim made.
+fn voltage_rig<const NB: usize>(
+    table: Table<NB, N>,
+    row: usize,
+    settings: Settings,
+) -> Dynamixel<Scripted, NB, N> {
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(table, row, settings));
+    adapter.check(Overrides::default()).unwrap();
+    mark_open(&mut adapter);
+    adapter
+}
+
+#[test]
+fn voltage_limits_are_written_torque_off_and_leave_the_temperature_limit()
+-> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(X_TABLE, 2, VOLTAGES);
+
+    adapter.health()?;
+
+    assert_eq!(
+        held(&adapter, 2),
+        HealthLimits {
+            temperature_c: HEALTHY.temperature_limit_c,
+            ..LIMITS
+        }
+    );
+    assert_eq!(held(&adapter, 1).min_voltage_dv, HEALTHY.min_voltage_dv);
+    assert!(!adapter.backend.torqued(0, id(2)));
+    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 0);
+    let order = adapter
+        .backend
+        .calls()
+        .iter()
+        .filter(|record| record.id == id(2))
+        .map(|record| record.call);
+    assert!(order.eq([
+        Call::ReadSetting,
+        Call::WriteVoltageLimits,
+        Call::ReadHealth
+    ]));
+    Ok(())
+}
+
+#[test]
+fn protocol_1_voltage_limits_are_written_with_no_torque_read() -> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(AX_TABLE, 0, VOLTAGES);
+
+    adapter.health()?;
+
+    assert_eq!(adapter.backend.count(Call::ReadSetting), 0);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 1);
+    assert_eq!(held(&adapter, 0).max_voltage_dv, LIMITS.max_voltage_dv);
+    Ok(())
+}
+
+#[test]
+fn voltage_limits_for_a_powered_actuator_are_refused() {
+    let mut adapter = voltage_rig(X_TABLE, 0, VOLTAGES);
+    adapter.backend.already_on(0, id(0));
+
+    assert_eq!(
+        adapter.health(),
+        Err(DynamixelError::LimitsTorqueOn {
+            actuator: 0,
+            bus: "x",
+            id: id(0),
+        })
+    );
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 0);
+    assert!(adapter.backend.torqued(0, id(0)));
+}
+
+#[test]
+fn voltage_limits_read_back_other_than_written_name_the_voltages() {
+    let mut adapter = voltage_rig(X_TABLE, 1, VOLTAGES);
+    adapter.backend.stuck_limits(0, id(1));
+
+    let error = adapter.health().unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "actuator 1: id 2 on bus x: health limits read back 6.0–19.0 V, 80 °C, written 10.0–14.0 V, 80 °C"
+    );
+}
+
+#[test]
+fn voltage_limits_override_the_voltages_of_the_placement_s_limits() -> Result<(), DynamixelError> {
+    let mut placement = X_TABLE.in_order().health_limits(LIMITS);
+    placement.settings[3] = Settings {
+        voltage_limits_dv: Some((95, 130)),
+        ..Settings::NONE
+    };
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.health()?;
+
+    let expected = HealthLimits {
+        min_voltage_dv: 95,
+        max_voltage_dv: 130,
+        ..LIMITS
+    };
+    assert_eq!(held(&adapter, 3), expected);
+    assert_eq!(held(&adapter, 2), LIMITS);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 0);
+    Ok(())
+}
+
+#[test]
+fn check_refuses_crossed_or_too_wide_voltage_limits_before_any_io() {
+    let crossed = Settings {
+        voltage_limits_dv: Some((130, 95)),
+        ..Settings::NONE
+    };
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 1, crossed));
+    let error = adapter.check(Overrides::default()).unwrap_err();
+    assert_eq!(
+        error,
+        DynamixelError::VoltageLimitsCrossed {
+            actuator: 1,
+            bus: "x",
+            id: id(1),
+            min_dv: 130,
+            max_dv: 95,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "actuator 1: id 2 on bus x: Min Voltage Limit 13.0 V above Max Voltage Limit 9.5 V"
+    );
+    assert!(adapter.backend.calls().is_empty());
+
+    let wide = Settings {
+        voltage_limits_dv: Some((60, 300)),
+        ..Settings::NONE
+    };
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(AX_TABLE, 0, wide));
+    assert_eq!(
+        adapter.check(Overrides::default()).err(),
+        Some(DynamixelError::SettingRange {
+            actuator: 0,
+            bus: "ax",
+            id: id(0),
+            model: Model::Ax12a,
+            register: "Max Voltage Limit",
+            value: 300,
+            max: 255,
+        })
+    );
+    assert!(adapter.backend.calls().is_empty());
+
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 0, wide));
+    assert!(adapter.check(Overrides::default()).is_ok());
+}
+
 // ── A table built at run time ───────────────────────────────────────────────
 
 /// Bus slots of [`declared`]: more than the backend opens, one in use.
@@ -4472,6 +4637,7 @@ fn configure_writes_the_settings_torque_off_then_reads_each_back() -> Result<(),
     let settings = Settings {
         gains: Some(GAINS),
         led: Some(true),
+        voltage_limits_dv: None,
     };
     let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 2, settings));
     adapter.check(Overrides::default())?;
@@ -4528,6 +4694,7 @@ fn protocol_1_mx64_gains_are_written_too() -> Result<(), DynamixelError> {
     let settings = Settings {
         gains: Some(gains),
         led: None,
+        voltage_limits_dv: None,
     };
     let placement = set(chain_of(Model::Mx64).check(), 0, settings);
     let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
@@ -4546,6 +4713,7 @@ fn a_setting_read_back_other_than_written_is_an_error_naming_the_register() {
     let settings = Settings {
         gains: Some(GAINS),
         led: None,
+        voltage_limits_dv: None,
     };
     let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 1, settings));
     adapter.check(Overrides::default()).unwrap();
@@ -4576,10 +4744,12 @@ fn check_refuses_a_setting_the_model_has_no_register_for_before_any_io() {
     let led = Settings {
         gains: None,
         led: Some(true),
+        voltage_limits_dv: None,
     };
     let gains = Settings {
         gains: Some(GAINS),
         led: None,
+        voltage_limits_dv: None,
     };
     let cases = [
         (
@@ -4629,6 +4799,7 @@ fn check_refuses_a_gain_above_the_model_s_range() {
     let wide = |gains| Settings {
         gains: Some(gains),
         led: None,
+        voltage_limits_dv: None,
     };
     let mx = set(
         chain_of(Model::Mx64).check(),

@@ -337,13 +337,6 @@ impl Reading {
 }
 
 /// Address and width of one register.
-#[cfg_attr(
-    not(any(test, feature = "dynamixel")),
-    expect(
-        dead_code,
-        reason = "only the backends use them, and both are compiled out"
-    )
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Register {
     /// Address in the control table.
@@ -354,13 +347,6 @@ pub(crate) struct Register {
 
 /// The three health limit registers of a model, all EEPROM: written with
 /// the torque off only on Protocol 2.
-#[cfg_attr(
-    not(any(test, feature = "dynamixel")),
-    expect(
-        dead_code,
-        reason = "only the backends use them, and both are compiled out"
-    )
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LimitRegisters {
     /// Temperature Limit; Highest Limit Temperature on Protocol 1.
@@ -371,13 +357,6 @@ pub(crate) struct LimitRegisters {
     pub(crate) max_voltage: Register,
 }
 
-#[cfg_attr(
-    not(any(test, feature = "dynamixel")),
-    expect(
-        dead_code,
-        reason = "only the backends use them, and both are compiled out"
-    )
-)]
 impl LimitRegisters {
     /// The registers of `model`: AX, RX and Protocol 1 MX at 11, 12 and 13,
     /// one byte each; X series and MX(2.0) at 31, 34 and 32, the voltages
@@ -400,13 +379,13 @@ impl LimitRegisters {
         }
     }
 
-    /// Whether every value of `limits` fits its register.
-    pub(crate) const fn fit(self, limits: HealthLimits) -> bool {
+    /// Whether a Min and Max Voltage Limit of `min_dv` and `max_dv` fit
+    /// their registers.
+    pub(crate) const fn fit(self, min_dv: u16, max_dv: u16) -> bool {
         const fn fits(register: Register, value: u16) -> bool {
             register.size >= 2 || value <= u8::MAX as u16
         }
-        fits(self.min_voltage, limits.min_voltage_dv)
-            && fits(self.max_voltage, limits.max_voltage_dv)
+        fits(self.min_voltage, min_dv) && fits(self.max_voltage, max_dv)
     }
 }
 
@@ -670,6 +649,17 @@ pub(crate) trait Backend {
         model: Model,
         id: u8,
         limits: HealthLimits,
+    ) -> Result<(), BackendError>;
+
+    /// Writes the Min and Max Voltage Limit of one actuator, in 0.1 V, its
+    /// Temperature Limit left as it is; refused as `write_health_limits` is.
+    fn write_voltage_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        min_dv: u16,
+        max_dv: u16,
     ) -> Result<(), BackendError>;
 
     /// Position limits of one actuator, raw, `(low, high)`: CW and CCW Angle

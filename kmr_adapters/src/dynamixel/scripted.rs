@@ -31,7 +31,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 16;
+const KINDS: usize = 17;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Variants of [`GoalRegister`].
@@ -102,6 +102,8 @@ pub(crate) enum Call {
     ReadAngleLimits,
     /// [`Backend::write_health_limits`].
     WriteHealthLimits,
+    /// [`Backend::write_voltage_limits`].
+    WriteVoltageLimits,
     /// [`Backend::write_ram`]; its entry is `(id, value)`.
     WriteRam,
     /// [`Backend::read_ram`].
@@ -1060,7 +1062,7 @@ impl Backend for Scripted {
         if model.protocol() == Protocol::Two && get(&self.torque, port, id) {
             return Err(BackendError::Status(ACCESS_ERROR));
         }
-        if !LimitRegisters::of(model).fit(limits) {
+        if !LimitRegisters::of(model).fit(limits.min_voltage_dv, limits.max_voltage_dv) {
             return Err(BackendError::Status(RANGE_ERROR));
         }
         if get(&self.stuck, port, id) {
@@ -1070,6 +1072,32 @@ impl Backend for Scripted {
             health.min_voltage_dv = limits.min_voltage_dv;
             health.max_voltage_dv = limits.max_voltage_dv;
             health.temperature_limit_c = limits.temperature_c;
+        }
+        Ok(())
+    }
+
+    /// Refused as `write_health_limits` is.
+    fn write_voltage_limits(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        min_dv: u16,
+        max_dv: u16,
+    ) -> Result<(), BackendError> {
+        self.one(Call::WriteVoltageLimits, port, model, id, false)?;
+        if model.protocol() == Protocol::Two && get(&self.torque, port, id) {
+            return Err(BackendError::Status(ACCESS_ERROR));
+        }
+        if !LimitRegisters::of(model).fit(min_dv, max_dv) {
+            return Err(BackendError::Status(RANGE_ERROR));
+        }
+        if get(&self.stuck, port, id) {
+            return Ok(());
+        }
+        if let Some(health) = at(&mut self.vitals, port, id) {
+            health.min_voltage_dv = min_dv;
+            health.max_voltage_dv = max_dv;
         }
         Ok(())
     }

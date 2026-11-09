@@ -132,7 +132,12 @@ fn p1(id: u8, body: &[u8]) -> Packet {
 
 /// A Protocol 1 status packet of `id`: error byte 0, then `data`.
 fn status1(id: u8, data: &[u8]) -> Packet {
-    p1(id, Packet::of(&[&[0x00], data]).bytes())
+    fault1(id, 0x00, data)
+}
+
+/// A Protocol 1 status packet of `id`: error byte `error`, then `data`.
+fn fault1(id: u8, error: u8, data: &[u8]) -> Packet {
+    p1(id, Packet::of(&[&[error], data]).bytes())
 }
 
 /// Where `needle` first starts in `haystack`.
@@ -729,4 +734,73 @@ fn ram_settings_are_written_then_read_back_at_their_addresses() {
         assert!(find(two.sent(), write.bytes()).is_some(), "{setting:?}");
     }
     assert_eq!(two.unread(), 0);
+}
+
+/// A Protocol 1 line whose AX-12A at id 1 comes up, then answers the Min
+/// Voltage Limit write with error byte `error`.
+fn ax_limit_line<'t>(time: &'t MockTime, error: u8) -> Line<'t> {
+    let mut one = Line::with_capacity(time);
+    one.reply_to(1, status1(1, &[]).bytes())
+        .reply_to(2, status1(1, &[12, 0]).bytes())
+        .reply_to(3, status1(1, &[0, 0]).bytes())
+        .reply_to(4, status1(1, &[0xFF, 0x03]).bytes())
+        .reply_to(5, fault1(1, error, &[]).bytes());
+    one
+}
+
+#[test]
+fn a_limit_write_whose_reply_flags_only_the_input_voltage_counts_as_written() {
+    let time = MockTime::new();
+    let mut one = ax_limit_line(&time, 0x01);
+    // The fault measured: Present Voltage 10.1 V, inside the limits written.
+    one.reply_to(6, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(7, fault1(1, 0x01, &[95]).bytes())
+        .reply_to(8, fault1(1, 0x01, &[130]).bytes())
+        .reply_to(9, status1(1, &[]).bytes());
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+
+    assert_eq!(backend.write_voltage_limits(0, AX, 1, 95, 130), Ok(()));
+
+    let (one, _) = lines(&mut backend);
+    let min_at = find(one.sent(), p1(1, &[0x03, 12, 95]).bytes());
+    let max_at = find(one.sent(), p1(1, &[0x03, 13, 130]).bytes());
+    assert!(min_at.is_some() && min_at < max_at);
+}
+
+#[test]
+fn a_limit_write_refused_by_the_actuator_fails() {
+    let time = MockTime::new();
+    let one = ax_limit_line(&time, 0x08);
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+
+    assert_eq!(
+        backend.write_voltage_limits(0, AX, 1, 95, 130),
+        Err(BackendError::Status(0x08))
+    );
+}
+
+#[test]
+fn only_an_input_voltage_fault_is_tolerated_on_a_limit_write() {
+    let voltage = Fault::Voltage {
+        measured_dv: 101,
+        min_dv: 105,
+        max_dv: 130,
+    };
+    let tolerated = [
+        BackendError::Fault(voltage),
+        BackendError::Fault(Fault::Hardware { status: 0x01 }),
+    ];
+    let refused = [
+        BackendError::Fault(Fault::Hardware { status: 0x05 }),
+        BackendError::Fault(Fault::Temperature {
+            measured_c: 85,
+            limit_c: 80,
+        }),
+        BackendError::Status(0x01),
+        BackendError::Timeout,
+    ];
+    assert!(tolerated.iter().all(input_voltage_only));
+    assert!(!refused.iter().any(input_voltage_only));
 }

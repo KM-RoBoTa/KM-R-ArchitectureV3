@@ -29,7 +29,8 @@ use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
 use backend::{
-    Backend, BackendError, Fault, POSITION_MODE, PortSpec, RamSetting, Setting, Undeclared,
+    Backend, BackendError, Fault, LimitRegisters, POSITION_MODE, PortSpec, RamSetting, Setting,
+    Undeclared,
 };
 use io::{Goals, Groups, Outcome};
 use port::DevicePath;
@@ -286,6 +287,24 @@ pub enum DynamixelError {
         written: HealthLimits,
         /// Limits read back.
         read: HealthLimits,
+    },
+    /// Voltage limits set with the min above the max.
+    #[error(
+        "actuator {actuator}: id {id} on bus {bus}: Min Voltage Limit {} V above Max Voltage Limit {} V",
+        Volts(*.min_dv),
+        Volts(*.max_dv)
+    )]
+    VoltageLimitsCrossed {
+        /// Engine index.
+        actuator: usize,
+        /// Bus label.
+        bus: &'static str,
+        /// Firmware id.
+        id: u8,
+        /// Min Voltage Limit set, in 0.1 V.
+        min_dv: u16,
+        /// Max Voltage Limit set, in 0.1 V.
+        max_dv: u16,
     },
     /// A setting for a model whose control table has no register for it.
     #[error(
@@ -876,11 +895,34 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         ]
     }
 
-    /// The `check` error of actuator `index`'s settings, if any: a register
-    /// its model lacks, or a gain above its range. No I/O.
+    /// The `check` error of actuator `index`'s settings, if any: voltage
+    /// limits crossed or wider than their registers, a register its model
+    /// lacks, or a gain above its range. No I/O.
     fn refused_setting(&self, index: usize) -> Option<DynamixelError> {
         let actuator = self.actuators.get(index)?;
         let (bus, id, model) = (self.label(actuator.bus), actuator.id, actuator.model);
+        if let Some((min_dv, max_dv)) = self.actuators.settings(index).voltage_limits_dv {
+            if min_dv > max_dv {
+                return Some(DynamixelError::VoltageLimitsCrossed {
+                    actuator: index,
+                    bus,
+                    id,
+                    min_dv,
+                    max_dv,
+                });
+            }
+            if !LimitRegisters::of(model).fit(min_dv, max_dv) {
+                return Some(DynamixelError::SettingRange {
+                    actuator: index,
+                    bus,
+                    id,
+                    model,
+                    register: "Max Voltage Limit",
+                    value: max_dv,
+                    max: u16::from(u8::MAX),
+                });
+            }
+        }
         self.ram_writes(index)
             .into_iter()
             .flatten()
@@ -1159,10 +1201,10 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         Ok(())
     }
 
-    /// Writes the health limits its [`Placement`] sets for an actuator, then
-    /// reads every actuator's voltage and temperature and checks them
-    /// against the limits it holds in its own control table, and on
-    /// Protocol 2 its Hardware Error Status. Inside those limits but outside
+    /// Writes the health limits its [`Placement`] and the voltage limits its
+    /// [`Settings`] set for an actuator, then reads every actuator's voltage
+    /// and temperature and checks them against the limits it holds in its
+    /// own control table, and on Protocol 2 its Hardware Error Status. Inside those limits but outside
     /// the model's datasheet range is one warning per value, no error.
     ///
     /// Limits are written with the torque off and read back equal, else the
@@ -1170,8 +1212,18 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     fn health(&mut self) -> Result<(), DynamixelError> {
         for (index, actuator) in self.actuators.iter() {
             let (model, id) = (actuator.model, actuator.id);
-            let written = self.actuators.limits(index);
-            if let Some(limits) = written {
+            let voltages = self.actuators.settings(index).voltage_limits_dv;
+            // DECISION: `voltage_limits` overrides the voltages of the
+            // placement's limits: it is the narrower knob.
+            let limits = self.actuators.limits(index).map(|limits| match voltages {
+                Some((min_voltage_dv, max_voltage_dv)) => HealthLimits {
+                    min_voltage_dv,
+                    max_voltage_dv,
+                    ..limits
+                },
+                None => limits,
+            });
+            if limits.is_some() || voltages.is_some() {
                 // DECISION: an actuator found powered is refused, never
                 // switched off here: it may be holding a load, and cutting
                 // torque is the loop's safety call, not the bring-up's.
@@ -1189,9 +1241,18 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                         });
                     }
                 }
-                self.backend
-                    .write_health_limits(actuator.bus, model, id, limits)
-                    .map_err(|error| self.actuator_error(index, error))?;
+                let write = match (limits, voltages) {
+                    (Some(limits), _) => {
+                        self.backend
+                            .write_health_limits(actuator.bus, model, id, limits)
+                    }
+                    (None, Some((min_dv, max_dv))) => {
+                        self.backend
+                            .write_voltage_limits(actuator.bus, model, id, min_dv, max_dv)
+                    }
+                    (None, None) => Ok(()),
+                };
+                write.map_err(|error| self.actuator_error(index, error))?;
             }
             let health = self
                 .backend
@@ -1202,6 +1263,16 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 min_voltage_dv: health.min_voltage_dv,
                 max_voltage_dv: health.max_voltage_dv,
                 temperature_c: health.temperature_limit_c,
+            };
+            // DECISION: voltage limits alone expect the Temperature Limit
+            // read, so a mismatch names the voltages only.
+            let written = match (limits, voltages) {
+                (None, Some((min_voltage_dv, max_voltage_dv))) => Some(HealthLimits {
+                    min_voltage_dv,
+                    max_voltage_dv,
+                    temperature_c: read.temperature_c,
+                }),
+                _ => limits,
             };
             if let Some(written) = written
                 && written != read
