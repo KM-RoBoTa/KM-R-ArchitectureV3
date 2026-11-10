@@ -32,7 +32,7 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use super::backend::{
     Backend, BackendError, GoalRegister, Health, PortSpec, RamSetting, RawState, Vital, Wire,
 };
-use super::scripted::{self, Call, HEALTHY, Record, Scripted};
+use super::scripted::{Call, HEALTHY, Record, Scripted};
 use super::telemetry::TELEMETRY_EVERY;
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Gains, HealthLimits, Mode, Model,
@@ -3924,7 +3924,14 @@ fn limits_are_written_torque_off_then_read_back_by_health() -> Result<(), Dynami
         .iter()
         .map(|record| (record.call, record.id));
     let expected = (0..N).flat_map(|index| {
-        [Call::ReadSetting, Call::WriteHealthLimits, Call::ReadHealth].map(|call| (call, id(index)))
+        [
+            Call::ReadSetting,
+            Call::ConfirmTorqueOff,
+            Call::WriteTemperatureLimit,
+            Call::WriteVoltageLimits,
+            Call::ReadHealth,
+        ]
+        .map(|call| (call, id(index)))
     });
     assert!(order.eq(expected));
     Ok(())
@@ -3982,32 +3989,55 @@ fn a_limit_read_back_other_than_written_is_an_error_naming_both() {
     );
 }
 
-#[test]
-fn limits_for_a_powered_actuator_are_refused_and_its_torque_left_alone() {
-    let mut adapter = limited_rig(X_TABLE);
-    adapter.backend.already_on(0, id(0));
-
-    assert_eq!(
-        adapter.health(),
-        Err(DynamixelError::LimitsTorqueOn {
-            actuator: 0,
-            bus: "x",
-            id: id(0),
-        })
-    );
-    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 0);
-    assert_eq!(adapter.backend.count(Call::ForceTorqueOff), 0);
-    assert!(adapter.backend.torqued(0, id(0)));
+/// Whether `backend` was asked no limit write and no torque write.
+fn nothing_written(backend: &Scripted) -> bool {
+    [
+        Call::ConfirmTorqueOff,
+        Call::ForceTorqueOff,
+        Call::Torque,
+        Call::WriteVoltageLimits,
+        Call::WriteTemperatureLimit,
+    ]
+    .iter()
+    .all(|&call| backend.count(call) == 0)
 }
 
 #[test]
-fn protocol_1_limits_are_written_with_no_torque_read() -> Result<(), DynamixelError> {
+fn limits_for_a_powered_actuator_are_refused_and_its_torque_left_alone() {
+    for (table, bus) in [(X_TABLE, "x"), (AX_TABLE, "ax")] {
+        let mut adapter = limited_rig(table);
+        adapter.backend.already_on(0, id(0));
+
+        let error = adapter.health().unwrap_err();
+
+        assert_eq!(
+            error,
+            DynamixelError::LimitsTorqueOn {
+                actuator: 0,
+                bus,
+                id: id(0),
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("torque is already on: turn it off before configuring")
+        );
+        assert!(nothing_written(&adapter.backend), "{bus}");
+        assert!(adapter.backend.torqued(0, id(0)), "{bus}");
+    }
+}
+
+#[test]
+fn protocol_1_limits_are_written_once_its_torque_reads_off() -> Result<(), DynamixelError> {
     let mut adapter = limited_rig(AX_TABLE);
 
     adapter.health()?;
 
-    assert_eq!(adapter.backend.count(Call::ReadSetting), 0);
-    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), N);
+    assert_eq!(adapter.backend.count(Call::ReadSetting), N);
+    assert_eq!(adapter.backend.count(Call::ConfirmTorqueOff), N);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), N);
+    assert_eq!(adapter.backend.count(Call::WriteTemperatureLimit), N);
     for index in 0..N {
         assert_eq!(held(&adapter, index), LIMITS);
     }
@@ -4022,7 +4052,7 @@ fn no_limits_set_writes_none() -> Result<(), DynamixelError> {
 
     adapter.health()?;
 
-    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 0);
+    assert!(nothing_written(&adapter.backend));
     assert_eq!(adapter.backend.count(Call::ReadSetting), 0);
     Ok(())
 }
@@ -4036,11 +4066,11 @@ fn limits_of_one_row_reach_that_actuator_only() -> Result<(), DynamixelError> {
 
     adapter.health()?;
 
-    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 1);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 1);
     assert_eq!(
         adapter
             .backend
-            .last(Call::WriteHealthLimits)
+            .last(Call::WriteVoltageLimits)
             .map(|record| record.id),
         Some(id(1))
     );
@@ -4052,7 +4082,7 @@ fn limits_of_one_row_reach_that_actuator_only() -> Result<(), DynamixelError> {
 fn a_failed_limit_write_names_the_actuator() {
     let mut adapter = limited_rig(X_TABLE);
     adapter.backend.fail(
-        Call::WriteHealthLimits,
+        Call::WriteVoltageLimits,
         0,
         id(3),
         BackendError::Status(0x02),
@@ -4070,36 +4100,54 @@ fn a_failed_limit_write_names_the_actuator() {
 }
 
 #[test]
-fn the_fake_refuses_limits_as_the_actuator_does() {
+fn the_fake_refuses_limits_as_dxl_rs_v2_does() {
     let mut backend = Scripted::new();
     let specs = [PortSpec {
         path: Path::new(NULL),
         baud: 1_000_000,
     }];
     assert_eq!(backend.open_ports(&specs), Ok(()));
-    backend.already_on(0, 1);
+    let xm = Model::Xm430W210;
+    backend
+        .declare(0, &[(1, xm), (2, Model::Rx28), (3, xm)])
+        .unwrap();
+
+    assert_eq!(
+        backend.write_voltage_limits(0, xm, 1, 100, 140),
+        Err(BackendError::TorqueUnconfirmed { id: 1 })
+    );
+    assert_eq!(
+        backend.write_temperature_limit(0, xm, 1, 70),
+        Err(BackendError::TorqueUnconfirmed { id: 1 })
+    );
+    for (id, model) in [(1, xm), (2, Model::Rx28), (3, xm)] {
+        assert_eq!(backend.confirm_torque_off(0, model, id), Ok(()));
+    }
+    assert_eq!(
+        backend.write_voltage_limits(0, Model::Rx28, 2, 100, 300),
+        Err(BackendError::Refused {
+            reason: "a voltage limit wider than its one-byte register"
+        })
+    );
+    assert_eq!(backend.write_voltage_limits(0, xm, 3, 100, 300), Ok(()));
+    assert_eq!(backend.write_temperature_limit(0, xm, 3, 70), Ok(()));
     let wide = HealthLimits {
         min_voltage_dv: 100,
         max_voltage_dv: 300,
         temperature_c: 70,
     };
-
-    assert_eq!(
-        backend.write_health_limits(0, Model::Xm430W210, 1, LIMITS),
-        Err(BackendError::Status(scripted::ACCESS_ERROR))
-    );
-    assert_eq!(
-        backend.write_health_limits(0, Model::Rx28, 2, wide),
-        Err(BackendError::Status(scripted::RANGE_ERROR))
-    );
-    assert_eq!(
-        backend.write_health_limits(0, Model::Xm430W210, 2, wide),
-        Ok(())
-    );
-    assert_eq!(backend.limits(0, 2), Some(wide));
+    assert_eq!(backend.limits(0, 3), Some(wide));
     assert_eq!(
         backend.limits(0, 1).map(|held| held.max_voltage_dv),
         Some(190)
+    );
+    let start = [(3, 0)];
+    backend
+        .sync_write_start_goal(0, xm, GoalRegister::Position, &start)
+        .unwrap();
+    assert_eq!(
+        backend.write_temperature_limit(0, xm, 3, 75),
+        Err(BackendError::TorqueUnconfirmed { id: 3 })
     );
 }
 
@@ -4140,7 +4188,7 @@ fn voltage_limits_are_written_torque_off_and_leave_the_temperature_limit()
     );
     assert_eq!(held(&adapter, 1).min_voltage_dv, HEALTHY.min_voltage_dv);
     assert!(!adapter.backend.torqued(0, id(2)));
-    assert_eq!(adapter.backend.count(Call::WriteHealthLimits), 0);
+    assert_eq!(adapter.backend.count(Call::WriteTemperatureLimit), 0);
     let order = adapter
         .backend
         .calls()
@@ -4149,6 +4197,7 @@ fn voltage_limits_are_written_torque_off_and_leave_the_temperature_limit()
         .map(|record| record.call);
     assert!(order.eq([
         Call::ReadSetting,
+        Call::ConfirmTorqueOff,
         Call::WriteVoltageLimits,
         Call::ReadHealth
     ]));
@@ -4156,13 +4205,17 @@ fn voltage_limits_are_written_torque_off_and_leave_the_temperature_limit()
 }
 
 #[test]
-fn protocol_1_voltage_limits_are_written_with_no_torque_read() -> Result<(), DynamixelError> {
+fn protocol_1_voltage_limits_are_written_once_its_torque_reads_off() -> Result<(), DynamixelError> {
     let mut adapter = voltage_rig(AX_TABLE, 0, VOLTAGES);
 
     adapter.health()?;
 
-    assert_eq!(adapter.backend.count(Call::ReadSetting), 0);
-    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 1);
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ReadSetting,
+        Call::ConfirmTorqueOff,
+        Call::WriteVoltageLimits,
+        Call::ReadHealth
+    ]));
     assert_eq!(held(&adapter, 0).max_voltage_dv, LIMITS.max_voltage_dv);
     Ok(())
 }
@@ -4180,7 +4233,7 @@ fn voltage_limits_for_a_powered_actuator_are_refused() {
             id: id(0),
         })
     );
-    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 0);
+    assert!(nothing_written(&adapter.backend));
     assert!(adapter.backend.torqued(0, id(0)));
 }
 
@@ -4217,7 +4270,7 @@ fn voltage_limits_override_the_voltages_of_the_placement_s_limits() -> Result<()
     };
     assert_eq!(held(&adapter, 3), expected);
     assert_eq!(held(&adapter, 2), LIMITS);
-    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 0);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), N);
     Ok(())
 }
 
@@ -4374,6 +4427,7 @@ fn an_ax12a_below_its_voltage_limits_comes_up_once_voltage_limits_are_written()
     adapter.health()?;
 
     assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ConfirmTorqueOff,
         Call::WriteVoltageLimits,
         Call::ClearFault,
         Call::ReadHealth
@@ -4445,7 +4499,11 @@ fn voltage_limits_that_still_exclude_its_voltage_fail_health_still_faulted()
             max_dv: 130,
         })
     );
-    assert!(calls_on(&adapter.backend, id(0)).eq([Call::WriteVoltageLimits, Call::ClearFault]));
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ConfirmTorqueOff,
+        Call::WriteVoltageLimits,
+        Call::ClearFault
+    ]));
     assert!(still_faulted_off(&adapter, 0));
     let raised = Health {
         voltage_dv: 120,
@@ -4483,7 +4541,11 @@ fn a_protocol_2_alert_kept_after_its_voltage_limits_fails_health_asking_for_a_re
         status: 0x01,
     };
     assert_eq!((health, warned), (Err(error), 1));
-    assert!(calls_on(&adapter.backend, id(0)).eq([Call::WriteVoltageLimits, Call::ClearFault]));
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ConfirmTorqueOff,
+        Call::WriteVoltageLimits,
+        Call::ClearFault
+    ]));
     assert_eq!(held(&adapter, 0).min_voltage_dv, LIMITS.min_voltage_dv);
     assert!(still_faulted_off(&adapter, 0));
     let rebooted = Health {
@@ -4523,7 +4585,12 @@ fn a_voltage_limit_write_that_excludes_its_voltage_faults_it_and_fails_health()
             max_dv: 160,
         })
     );
-    assert!(calls_on(&adapter.backend, id(0)).eq([Call::WriteVoltageLimits, Call::ClearFault]));
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ReadSetting,
+        Call::ConfirmTorqueOff,
+        Call::WriteVoltageLimits,
+        Call::ClearFault
+    ]));
     assert!(still_faulted_off(&adapter, 0));
     let raised = Health {
         voltage_dv: 140,
@@ -4556,7 +4623,9 @@ fn a_protocol_1_actuator_hot_against_a_low_temperature_limit_is_cleared_by_healt
     adapter.health()?;
 
     assert!(calls_on(&adapter.backend, id(0)).eq([
-        Call::WriteHealthLimits,
+        Call::ConfirmTorqueOff,
+        Call::WriteTemperatureLimit,
+        Call::WriteVoltageLimits,
         Call::ClearFault,
         Call::ReadHealth
     ]));
@@ -4582,6 +4651,307 @@ fn a_fault_gone_by_health_is_cleared_with_no_limit_written() -> Result<(), Dynam
     assert!(calls_on(&adapter.backend, id(0)).eq([Call::ClearFault, Call::ReadHealth]));
     assert_eq!(adapter.backend.count(Call::ClearFault), 1);
     assert!(!faulted(&adapter, 0));
+    Ok(())
+}
+
+// ── T083: a temperature limit on the declared ids, typed writes ─────────────
+
+/// Settings giving only a Temperature Limit of 70 °C.
+const COOLER: Settings = Settings {
+    temperature_limit_c: Some(70),
+    ..Settings::NONE
+};
+
+#[test]
+fn a_temperature_limit_alone_is_written_torque_off_and_leaves_the_voltages()
+-> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(X_TABLE, 1, COOLER);
+
+    adapter.health()?;
+
+    assert_eq!(
+        held(&adapter, 1),
+        HealthLimits {
+            temperature_c: 70,
+            ..HEALTHY_LIMITS
+        }
+    );
+    assert!(calls_on(&adapter.backend, id(1)).eq([
+        Call::ReadSetting,
+        Call::ConfirmTorqueOff,
+        Call::WriteTemperatureLimit,
+        Call::ReadHealth
+    ]));
+    let write = adapter.backend.last(Call::WriteTemperatureLimit).unwrap();
+    assert_eq!(adapter.backend.written(write), Some(70));
+    Ok(())
+}
+
+#[test]
+fn limits_go_out_as_the_typed_setters_take_them() -> Result<(), DynamixelError> {
+    let mut adapter = limited_rig(AX_TABLE);
+
+    adapter.health()?;
+
+    let voltages = adapter.backend.last(Call::WriteVoltageLimits).unwrap();
+    assert_eq!(adapter.backend.written(voltages), Some(100 << 16 | 140));
+    let temperature = adapter.backend.last(Call::WriteTemperatureLimit).unwrap();
+    assert_eq!(adapter.backend.written(temperature), Some(70));
+    Ok(())
+}
+
+#[test]
+fn a_temperature_limit_setting_overrides_the_placement_s() -> Result<(), DynamixelError> {
+    let mut placement = X_TABLE.in_order().health_limits(LIMITS);
+    placement.settings[3] = Settings {
+        temperature_limit_c: Some(75),
+        ..Settings::NONE
+    };
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+    adapter.check(Overrides::default())?;
+    mark_open(&mut adapter);
+
+    adapter.health()?;
+
+    let expected = HealthLimits {
+        temperature_c: 75,
+        ..LIMITS
+    };
+    assert_eq!(held(&adapter, 3), expected);
+    assert_eq!(held(&adapter, 2), LIMITS);
+    Ok(())
+}
+
+#[test]
+fn a_temperature_limit_read_back_other_than_written_names_it() {
+    let mut adapter = voltage_rig(X_TABLE, 1, COOLER);
+    adapter.backend.stuck_limits(0, id(1));
+
+    let error = adapter.health().unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "actuator 1: id 2 on bus x: health limits read back 6.0–19.0 V, 80 °C, written 6.0–19.0 V, 70 °C"
+    );
+}
+
+// ── T084: limits widened for one run, restored after ────────────────────────
+
+/// The limits of a scripted actuator until written: [`HEALTHY`]'s.
+const HEALTHY_LIMITS: HealthLimits = HealthLimits {
+    min_voltage_dv: HEALTHY.min_voltage_dv,
+    max_voltage_dv: HEALTHY.max_voltage_dv,
+    temperature_c: HEALTHY.temperature_limit_c,
+};
+
+/// `settings` with `restore_limits` set.
+const fn restored(settings: Settings) -> Settings {
+    Settings {
+        restore_limits: true,
+        ..settings
+    }
+}
+
+/// Message of the warning `close` logs per limit it could not put back.
+const NOT_RESTORED: &str = "not restored";
+
+/// `torque_off` then `close`, as the engine ends every bring-up; the
+/// warnings logged that a limit was not put back.
+fn shut<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB, N>) -> usize {
+    warnings(NOT_RESTORED, || {
+        adapter.torque_off();
+        adapter.close();
+    })
+}
+
+#[test]
+fn restore_puts_back_only_the_registers_written_after_torque_off() -> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(X_TABLE, 2, restored(VOLTAGES));
+
+    adapter.health()?;
+    assert_eq!(held(&adapter, 2).min_voltage_dv, LIMITS.min_voltage_dv);
+    adapter.backend.clear_log();
+    assert_eq!(shut(&mut adapter), 0);
+
+    assert_eq!(held(&adapter, 2), HEALTHY_LIMITS);
+    assert!(calls_on(&adapter.backend, id(2)).eq([Call::ForceTorqueOff, Call::WriteVoltageLimits]));
+    let restore = adapter.backend.last(Call::WriteVoltageLimits).unwrap();
+    assert_eq!(adapter.backend.written(restore), Some(60 << 16 | 190));
+    assert_eq!(adapter.backend.count(Call::WriteTemperatureLimit), 0);
+    assert_eq!(last_call(&adapter.backend), Some(Call::ClosePorts));
+    Ok(())
+}
+
+#[test]
+fn restore_saves_each_register_read_just_before_its_write() -> Result<(), DynamixelError> {
+    let both = Settings {
+        voltage_limits_dv: Some((90, 130)),
+        ..COOLER
+    };
+    let mut adapter = voltage_rig(X_TABLE, 0, restored(both));
+
+    adapter.health()?;
+
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ReadSetting,
+        Call::ConfirmTorqueOff,
+        Call::ReadTemperatureLimit,
+        Call::ReadVoltageLimits,
+        Call::WriteTemperatureLimit,
+        Call::WriteVoltageLimits,
+        Call::ReadHealth
+    ]));
+    shut(&mut adapter);
+    assert_eq!(held(&adapter, 0), HEALTHY_LIMITS);
+    Ok(())
+}
+
+#[test]
+fn no_limit_is_read_or_restored_without_restore_limits() -> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(X_TABLE, 2, VOLTAGES);
+
+    adapter.health()?;
+    shut(&mut adapter);
+
+    assert_eq!(adapter.backend.count(Call::ReadVoltageLimits), 0);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 1);
+    assert_eq!(held(&adapter, 2).min_voltage_dv, LIMITS.min_voltage_dv);
+    Ok(())
+}
+
+#[test]
+fn a_failed_restore_is_tried_once_warned_and_close_still_closes() -> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(X_TABLE, 2, restored(VOLTAGES));
+    adapter.health()?;
+    adapter
+        .backend
+        .fail(Call::WriteVoltageLimits, 0, id(2), BackendError::Timeout);
+    adapter.backend.clear_log();
+
+    assert_eq!(shut(&mut adapter), 1);
+
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 1);
+    assert_eq!(last_call(&adapter.backend), Some(Call::ClosePorts));
+    assert!(!adapter.backend.is_open());
+    Ok(())
+}
+
+#[test]
+fn a_restore_after_a_failed_torque_off_is_refused_unconfirmed_and_warned()
+-> Result<(), DynamixelError> {
+    let mut adapter = voltage_rig(X_TABLE, 2, restored(VOLTAGES));
+    adapter.ping()?;
+    adapter.health()?;
+    adapter.configure()?;
+    adapter.read_all(Slot::filled(0.0).sample())?;
+    adapter.torque_on()?;
+    adapter
+        .backend
+        .fail(Call::ForceTorqueOff, 0, id(2), BackendError::Timeout);
+
+    adapter.torque_off();
+    let model = Model::Xm430W210;
+    assert_eq!(
+        adapter
+            .backend
+            .write_voltage_limits(0, model, id(2), 60, 190),
+        Err(BackendError::TorqueUnconfirmed { id: id(2) })
+    );
+    adapter.backend.clear_log();
+
+    let warned = warnings(NOT_RESTORED, || adapter.close());
+
+    assert_eq!(warned, 1);
+    assert_eq!(adapter.backend.count(Call::WriteVoltageLimits), 1);
+    assert_eq!(held(&adapter, 2).min_voltage_dv, LIMITS.min_voltage_dv);
+    assert_eq!(last_call(&adapter.backend), Some(Call::ClosePorts));
+    Ok(())
+}
+
+#[test]
+fn a_failed_bring_up_restores_what_it_wrote_and_nothing_else() {
+    let mut placement = X_TABLE.in_order();
+    placement.settings = [restored(VOLTAGES); N];
+    let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
+    adapter.check(Overrides::default()).unwrap();
+    mark_open(&mut adapter);
+    let hot = Health {
+        temperature_c: 90,
+        ..HEALTHY
+    };
+    adapter.backend.health(0, id(2), hot);
+
+    assert!(matches!(
+        adapter.health(),
+        Err(DynamixelError::Temperature { actuator: 2, .. })
+    ));
+    adapter.backend.clear_log();
+    assert_eq!(shut(&mut adapter), 0);
+
+    for index in 0..=2 {
+        assert_eq!(held(&adapter, index), HEALTHY_LIMITS, "actuator {index}");
+    }
+    let restored_ids = adapter
+        .backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::WriteVoltageLimits)
+        .map(|record| record.id);
+    assert!(restored_ids.eq([id(0), id(1), id(2)]));
+}
+
+/// SRS FR-5.2, FR-6.1: the bench AX-12A at 10.1 V, its EEPROM at
+/// 10.5–13.0 V and 80 °C, given `voltage_limits(9.0, 13.0)`,
+/// `temperature_limit(70)` and `restore_limits()`. Held faulted, its
+/// voltages are saved from the fault and written first; `clear_fault`
+/// clears it, then its Temperature Limit is read clean, saved and written.
+/// After torque off both go back, voltages first, the fault the voltage
+/// write answers with counted as written.
+#[test]
+fn a_faulted_actuator_saves_from_its_fault_first_and_gets_both_back() -> Result<(), DynamixelError>
+{
+    let bench = Settings {
+        voltage_limits_dv: Some((90, 130)),
+        ..restored(COOLER)
+    };
+    let mut adapter = voltage_rig(AX_TABLE, 0, bench);
+    assert_eq!(ping_answering(&mut adapter, 0, BELOW_ITS_LIMITS)?, 1);
+
+    adapter.health()?;
+
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ConfirmTorqueOff,
+        Call::ReadTemperatureLimit,
+        Call::ReadVoltageLimits,
+        Call::WriteVoltageLimits,
+        Call::ClearFault,
+        Call::ReadTemperatureLimit,
+        Call::WriteTemperatureLimit,
+        Call::ReadHealth
+    ]));
+    assert_eq!(
+        held(&adapter, 0),
+        HealthLimits {
+            min_voltage_dv: 90,
+            max_voltage_dv: 130,
+            temperature_c: 70,
+        }
+    );
+    adapter.backend.clear_log();
+    assert_eq!(shut(&mut adapter), 0);
+    assert!(calls_on(&adapter.backend, id(0)).eq([
+        Call::ForceTorqueOff,
+        Call::WriteVoltageLimits,
+        Call::WriteTemperatureLimit
+    ]));
+    assert_eq!(
+        held(&adapter, 0),
+        HealthLimits {
+            min_voltage_dv: 105,
+            max_voltage_dv: 130,
+            temperature_c: 80,
+        }
+    );
     Ok(())
 }
 

@@ -9,6 +9,7 @@ mod config;
 #[cfg(feature = "dynamixel")]
 mod dxl_rs_v2;
 mod io;
+mod limits;
 mod port;
 mod telemetry;
 mod units;
@@ -29,8 +30,8 @@ use tracing::{debug, warn};
 
 use crate::binding::{self, Binding, Port};
 use backend::{
-    Backend, BackendError, Fault, LimitRegisters, POSITION_MODE, PortSpec, RamSetting, Setting,
-    Undeclared,
+    Backend, BackendError, Fault, POSITION_MODE, PortSpec, RamSetting, Setting, Undeclared,
+    voltage_limits_fit,
 };
 use io::{Goals, Groups, Outcome};
 use port::DevicePath;
@@ -253,10 +254,10 @@ pub enum DynamixelError {
         /// The actuator's Temperature Limit, in °C.
         limit_c: u8,
     },
-    /// Health limits set for an actuator whose torque is on: its EEPROM
-    /// takes no write then (Protocol 2).
+    /// Limits set for an actuator found powered at bring-up: another process
+    /// left it on, and the bring-up never switches it off to write them.
     #[error(
-        "actuator {actuator}: id {id} on bus {bus}: torque on, its health limits are not written; switch it off first"
+        "actuator {actuator}: id {id} on bus {bus}: torque is already on: turn it off before configuring its limits"
     )]
     LimitsTorqueOn {
         /// Engine index.
@@ -653,6 +654,9 @@ pub struct Dynamixel<B, const NB: usize, const N: usize> {
     reads: u64,
     /// Where the telemetry rounds stand.
     rounds: telemetry::Rounds,
+    /// Per engine index, the limit registers `health` replaced, kept for
+    /// `close` to put back when the actuator's settings ask for it.
+    saved: [limits::Limits; N],
 }
 
 impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
@@ -673,6 +677,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             open: false,
             reads: 0,
             rounds: telemetry::Rounds::NEW,
+            saved: [limits::Limits::NONE; N],
         }
     }
 
@@ -911,7 +916,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
                     max_dv,
                 });
             }
-            if !LimitRegisters::of(model).fit(min_dv, max_dv) {
+            if !voltage_limits_fit(model, min_dv, max_dv) {
                 return Some(DynamixelError::SettingRange {
                     actuator: index,
                     bus,
@@ -1218,84 +1223,35 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         Ok(())
     }
 
-    /// Writes the health limits its [`Placement`] and the voltage limits its
-    /// [`Settings`] set for an actuator, then reads every actuator's voltage
-    /// and temperature and checks them against the limits it holds in its
-    /// own control table, and on Protocol 2 its Hardware Error Status. Inside those limits but outside
-    /// the model's datasheet range is one warning per value, no error.
+    /// Writes the health limits its [`Placement`] and the voltage and
+    /// temperature limits its [`Settings`] set for an actuator, then reads
+    /// every actuator's voltage and temperature and checks them against the
+    /// limits it holds in its own control table, and on Protocol 2 its
+    /// Hardware Error Status. Inside those limits but outside the model's
+    /// datasheet range is one warning per value, no error.
     ///
     /// Limits are written with the torque off and read back equal, else the
-    /// error names both (D18).
+    /// error names both (D18). An actuator found powered is refused, never
+    /// switched off. With `restore_limits` set, the values they replace are
+    /// kept for [`close`](Hal::close) to put back.
     ///
     /// An actuator held faulted, at `ping` or by a limit write, is asked
     /// after its limits are written: one that still reports its fault fails
     /// with it measured, its torque still refused.
     fn health(&mut self) -> Result<(), DynamixelError> {
-        for (index, actuator) in self.actuators.iter() {
+        for index in self.actuators.owned().iter() {
+            let Some(&actuator) = self.actuators.get(index) else {
+                continue;
+            };
             let (model, id) = (actuator.model, actuator.id);
-            let voltages = self.actuators.settings(index).voltage_limits_dv;
-            // DECISION: `voltage_limits` overrides the voltages of the
-            // placement's limits: it is the narrower knob.
-            let limits = self.actuators.limits(index).map(|limits| match voltages {
-                Some((min_voltage_dv, max_voltage_dv)) => HealthLimits {
-                    min_voltage_dv,
-                    max_voltage_dv,
-                    ..limits
-                },
-                None => limits,
-            });
-            if limits.is_some() || voltages.is_some() {
-                // DECISION: an actuator found powered is refused, never
-                // switched off here: it may be holding a load, and cutting
-                // torque is the loop's safety call, not the bring-up's.
-                // Protocol 1 has no torque read and no EEPROM lock.
-                // DECISION: a faulted one is not asked: dxl_rs_v2 returns no
-                // register value beside a fault. Powered, it refuses the
-                // EEPROM write itself, and `clear_fault` below fails on the
-                // alert a Protocol 2 actuator keeps until it reboots.
-                let faulted = self.backend.faulted(actuator.bus, model, id);
-                if model.protocol() == Protocol::Two && !faulted {
-                    let on = self
-                        .backend
-                        .read_setting(actuator.bus, model, id, Setting::TorqueEnable)
-                        .map_err(|error| self.actuator_error(index, error))?;
-                    if on != 0 {
-                        return Err(DynamixelError::LimitsTorqueOn {
-                            actuator: index,
-                            bus: self.label(actuator.bus),
-                            id,
-                        });
-                    }
-                }
-                let write = match (limits, voltages) {
-                    (Some(limits), _) => {
-                        self.backend
-                            .write_health_limits(actuator.bus, model, id, limits)
-                    }
-                    (None, Some((min_dv, max_dv))) => {
-                        self.backend
-                            .write_voltage_limits(actuator.bus, model, id, min_dv, max_dv)
-                    }
-                    (None, None) => Ok(()),
-                };
-                write.map_err(|error| self.actuator_error(index, error))?;
+            let writes = self.limit_writes(index);
+            if !writes.is_empty() {
+                self.write_limits(index, actuator, writes)?;
+            }
+            if self.backend.faulted(actuator.bus, model, id) {
+                self.clear_fault(index, actuator)?;
             }
             let bus = self.label(actuator.bus);
-            if self.backend.faulted(actuator.bus, model, id) {
-                if let Err(error) = self.backend.clear_fault(actuator.bus, model, id) {
-                    if model.protocol() == Protocol::Two && matches!(error, BackendError::Fault(_))
-                    {
-                        warn!(
-                            actuator = index,
-                            bus,
-                            id,
-                            "Protocol 2 keeps a hardware error until the actuator reboots: power-cycle it once its cause is gone"
-                        );
-                    }
-                    return Err(self.actuator_error(index, error));
-                }
-                debug!(actuator = index, bus, id, "hardware fault cleared");
-            }
             let health = self
                 .backend
                 .read_health(actuator.bus, model, id)
@@ -1305,26 +1261,10 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 max_voltage_dv: health.max_voltage_dv,
                 temperature_c: health.temperature_limit_c,
             };
-            // DECISION: voltage limits alone expect the Temperature Limit
-            // read, so a mismatch names the voltages only.
-            let written = match (limits, voltages) {
-                (None, Some((min_voltage_dv, max_voltage_dv))) => Some(HealthLimits {
-                    min_voltage_dv,
-                    max_voltage_dv,
-                    temperature_c: read.temperature_c,
-                }),
-                _ => limits,
-            };
-            if let Some(written) = written
-                && written != read
-            {
-                return Err(DynamixelError::LimitsMismatch {
-                    actuator: index,
-                    bus,
-                    id,
-                    written,
-                    read,
-                });
+            // DECISION: a register left alone is expected as read, so a
+            // mismatch names the written ones only.
+            if let Some(mismatch) = self.mismatch(index, writes, read) {
+                return Err(mismatch);
             }
             if model.protocol() == Protocol::Two && health.error_status != 0 {
                 return Err(DynamixelError::HardwareError {
@@ -1625,8 +1565,14 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         }
     }
 
-    /// Flushes every resolved port, then closes them all (SRS FR-5.6).
+    /// Puts back the limits `health` replaced on an actuator whose settings
+    /// ask for it, once each, a failure only warned; then flushes every
+    /// resolved port and closes them all (SRS FR-5.6). After `torque_off`,
+    /// a failed bring-up included, so a partial one restores what it wrote.
     fn close(&mut self) {
+        if self.open {
+            self.restore_limits();
+        }
         for (bus, device) in self.devices.iter().enumerate() {
             if let Some(device) = device
                 && port::flush(device.as_path()).is_err()

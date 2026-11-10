@@ -12,8 +12,8 @@ thiserror.workspace = true
 tracing.workspace = true
 rustix.workspace = true
 # The AX, RX, MX and X tables. `partial-reads` keeps a stale flag per actuator (SRS FR-2.6);
-# `raw-registers` writes the start goal with the torque off and reads the registers dxl_rs_v2
-# has no field for (Operating Mode, Torque Enable, the health limits).
+# `raw-registers` writes the start goal with the torque off and the registers dxl_rs_v2 has no
+# field for (Operating Mode, Torque Enable, I Gain); the limits go through its typed setters.
 dxl_rs_v2 = { workspace = true, optional = true, features = ["std", "ax", "mx", "rx", "x-series", "partial-reads", "raw-registers"] }
 socketcan = { workspace = true, optional = true }
 

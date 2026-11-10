@@ -11,20 +11,21 @@ use core::time::Duration;
 use std::io::ErrorKind;
 
 use ::dxl_rs_v2::field::{
-    DGain, HardwareErrorStatus, Led, PGain, PresentCurrent, PresentPosition, PresentTemperature,
-    PresentVelocity, PresentVoltage, Raw,
+    DGain, HardwareErrorStatus, Led, MaxVoltageLimit, MinVoltageLimit, PGain, PresentCurrent,
+    PresentPosition, PresentTemperature, PresentVelocity, PresentVoltage, Raw, TemperatureLimit,
 };
 use ::dxl_rs_v2::{
     ActuatorRef, Bus, Clock, Config, Error, FaultError, Gain, Id, IdSet, ModelNumber, P1, P2,
-    ProtocolError, SerialTransport, SetupError, SetupReport, StatusReport, StdClock,
-    TemperatureError, TorqueState, Transport, TransportError, ValidationError, VoltageError,
+    ProtocolError, SerialTransport, SetupError, SetupReport, StatusReport, StdClock, Temperature,
+    TemperatureError, TorqueState, Transport, TransportError, ValidationError, Voltage,
+    VoltageError,
 };
 
 use super::backend::{
-    Backend, BackendError, Fault, GoalRegister, Health, LimitRegisters, OpenFailure, PortSpec,
-    RamSetting, RawState, Reading, Register, Reply, Setting, Undeclared, Vital, Wire,
+    Backend, BackendError, Fault, GoalRegister, Health, OpenFailure, PortSpec, RamSetting,
+    RawState, Reading, Reply, Setting, Undeclared, Vital, Wire, voltage_limits_fit,
 };
-use super::config::{HealthLimits, Model, Protocol};
+use super::config::{Model, Protocol};
 
 #[cfg(test)]
 mod contract;
@@ -45,6 +46,8 @@ const REPLY_BYTES: u64 = 20;
 const OPERATING_MODE: u16 = 11;
 /// Torque Enable, Protocol 2: one byte at 64.
 const TORQUE_ENABLE: u16 = 64;
+/// Torque Enable, Protocol 1: one byte at 24 (AX, RX and MX tables).
+const P1_TORQUE_ENABLE: u16 = 24;
 /// Torque Ctrl Mode Enable, Protocol 1 MX-64: one byte at 70.
 const TORQUE_CTRL_MODE_ENABLE: u16 = 70;
 /// Present Voltage then Present Temperature, Protocol 1: one byte each from
@@ -52,6 +55,15 @@ const TORQUE_CTRL_MODE_ENABLE: u16 = 70;
 // DECISION: one raw read of both, as the backend author advises: dxl_rs_v2
 // has no read of two fields on Protocol 1, and two reads double the cost.
 const P1_VITALS: u16 = 42;
+
+/// Address and width of one register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Register {
+    /// Address in the control table.
+    address: u16,
+    /// Width, in bytes.
+    size: u16,
+}
 
 /// Goal Position of `model`: address and width.
 const fn goal_position(model: Model) -> Register {
@@ -278,23 +290,98 @@ fn write_register<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
         .map_err(backend_error)
 }
 
-/// Writes `value` to limit register `register` of `actuator`, as
-/// [`write_register`]; a reply reporting a hardware fault, measured, counts
-/// as written.
+/// What a typed limit write answered: a reply reporting a hardware fault,
+/// measured, counts as written.
 // DECISION: a limit is written to fix the fault the actuator reports (its
 // voltage or temperature outside the limits it holds), so its reply still
-// carries it: on Protocol 1 voltage or heat, on Protocol 2 the latched alert.
-// `health` decides with `clear_fault` and the read back, which also catch a
-// write that did not run beside the fault (Instruction, Range or Access).
-fn write_limit<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
-    actuator: &mut ActuatorRef<'_, P, T, C>,
-    register: Register,
-    value: u16,
-) -> Result<(), BackendError> {
-    match write_register(actuator, register, value) {
-        Err(BackendError::Fault(_)) => Ok(()),
-        written => written,
+// carries it: dxl_rs_v2 then returns the fault of a write that ran. `health`
+// decides with `clear_fault` and the read back.
+fn limit_written(answer: Result<(), Error>) -> Result<(), BackendError> {
+    match answer {
+        Ok(()) | Err(Error::Fault(_)) => Ok(()),
+        Err(Error::Validation(ValidationError::NoUnit { .. })) => Err(BackendError::Refused {
+            reason: "a limit dxl_rs_v2 has no unit for on this model",
+        }),
+        Err(Error::Validation(ValidationError::OutOfLimits { raw, min, max, .. })) => {
+            Err(BackendError::LimitOutsideRange {
+                value: raw,
+                min,
+                max,
+            })
+        }
+        Err(error) => Err(backend_error(error)),
     }
+}
+
+/// `voltage` in 0.1 V, the unit of its register.
+fn decivolts(voltage: Voltage) -> Result<u16, BackendError> {
+    let tenths = (voltage.volts() * 10.0).round();
+    if (0.0..=f32::from(u16::MAX)).contains(&tenths) {
+        Ok(tenths as u16)
+    } else {
+        Err(BackendError::Overflow {
+            register: "Voltage Limit",
+            value: tenths as i32,
+        })
+    }
+}
+
+/// `temperature` in °C, the unit of its register.
+fn degrees(temperature: Temperature) -> Result<u8, BackendError> {
+    let celsius = temperature.celsius().round();
+    if (0.0..=f32::from(u8::MAX)).contains(&celsius) {
+        Ok(celsius as u8)
+    } else {
+        Err(BackendError::Overflow {
+            register: "Temperature Limit",
+            value: celsius as i32,
+        })
+    }
+}
+
+/// Min and Max Voltage Limit of `actuator`, in 0.1 V: `voltage_limits`, or
+/// both fields raw where its table gives them no unit.
+// DECISION: the raw field read on `NoUnit` is what dxl_rs_v2's getter
+// prescribes: its XM430-W210 and XW540 tables give the limits no unit, and
+// health reads them on every actuator.
+fn voltage_limits_of<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
+    actuator: &mut ActuatorRef<'_, P, T, C>,
+) -> Result<(u16, u16), BackendError> {
+    match actuator.voltage_limits() {
+        Err(Error::Validation(ValidationError::NoUnit { .. })) => {
+            let min = actuator.read(Raw(MinVoltageLimit)).map_err(backend_error)?;
+            let max = actuator.read(Raw(MaxVoltageLimit)).map_err(backend_error)?;
+            Ok((
+                narrow("Min Voltage Limit", min)?,
+                narrow("Max Voltage Limit", max)?,
+            ))
+        }
+        read => {
+            let (min, max) = read.map_err(backend_error)?;
+            Ok((decivolts(min)?, decivolts(max)?))
+        }
+    }
+}
+
+/// Temperature Limit of `actuator`, in °C, as [`voltage_limits_of`] reads
+/// the voltages.
+fn temperature_limit_of<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
+    actuator: &mut ActuatorRef<'_, P, T, C>,
+) -> Result<u8, BackendError> {
+    match actuator.temperature_limit() {
+        Err(Error::Validation(ValidationError::NoUnit { .. })) => {
+            let limit = actuator
+                .read(Raw(TemperatureLimit))
+                .map_err(backend_error)?;
+            narrow("Temperature Limit", limit)
+        }
+        read => degrees(read.map_err(backend_error)?),
+    }
+}
+
+/// `dv` tenths of a volt.
+fn volts(dv: u16) -> Voltage {
+    Voltage::from_volts(f32::from(dv) / 10.0)
 }
 
 /// `value`, read from `register`, as a `U`.
@@ -315,15 +402,15 @@ fn health_of<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
     let temperature = actuator
         .read(Raw(PresentTemperature))
         .map_err(backend_error)?;
-    let limits = LimitRegisters::of(model);
-    let temperature_limit = read_register(actuator, limits.temperature)?;
+    let temperature_limit_c = temperature_limit_of(actuator)?;
+    let (min_voltage_dv, max_voltage_dv) = voltage_limits_of(actuator)?;
     Ok(Health {
         error_status,
         voltage_dv: narrow("Present Input Voltage", voltage)?,
         temperature_c: narrow("Present Temperature", temperature)?,
-        min_voltage_dv: read_register(actuator, limits.min_voltage)?,
-        max_voltage_dv: read_register(actuator, limits.max_voltage)?,
-        temperature_limit_c: narrow("Temperature Limit", i32::from(temperature_limit))?,
+        min_voltage_dv,
+        max_voltage_dv,
+        temperature_limit_c,
     })
 }
 
@@ -429,6 +516,10 @@ fn backend_error(error: Error) -> BackendError {
         Error::Validation(refusal) => match refusal {
             ValidationError::ActuatorIsOff { id } => BackendError::NotPowered { id: id.get() },
             ValidationError::ActuatorFaulted { id } => BackendError::Faulted { id: id.get() },
+            ValidationError::ActuatorIsOn { id, .. } => BackendError::TorqueOn { id: id.get() },
+            ValidationError::TorqueUnconfirmed { id, .. } => {
+                BackendError::TorqueUnconfirmed { id: id.get() }
+            }
             ValidationError::OutOfLimits { raw, min, max, .. } => BackendError::GoalOutsideLimits {
                 goal: raw,
                 min,
@@ -454,7 +545,7 @@ fn refusal_reason(refusal: &ValidationError) -> &'static str {
         ValidationError::NotPositionMode { .. } => "a goal position outside position mode",
         ValidationError::Unsupported { .. } => "a register the model does not have",
         ValidationError::NoUnit { .. } => "a register with no unit in this mode",
-        ValidationError::InvertedLimits { .. } => "position limits min above max",
+        ValidationError::InvertedLimits { .. } => "limits with the min above the max",
         _ => "a request the SDK does not send",
     }
 }
@@ -850,7 +941,26 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
         })
     }
 
+    /// `disable_torque`; the fault a faulted actuator answers with is the
+    /// confirmation `dxl_rs_v2` takes.
+    fn confirm_torque_off(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        open.started.remove(target);
+        match on_bus!(open, model, |bus| held(bus, target)?.disable_torque()) {
+            Ok(()) | Err(Error::Fault(_)) => Ok(()),
+            Err(error) => Err(backend_error(error)),
+        }
+    }
+
     /// One raw read of the register: `dxl_rs_v2` has no field for these.
+    // DECISION: Torque Enable is read raw on Protocol 1 too, at 24: dxl_rs_v2
+    // reads no Torque Enable of its own, and a raw read leaves the torque off
+    // it confirmed as it was.
     fn read_setting(
         &mut self,
         port: usize,
@@ -865,10 +975,11 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
                     register: setting.name(),
                 });
             }
-            Setting::OperatingMode | Setting::TorqueEnable if model.protocol() != Protocol::Two => {
+            Setting::OperatingMode if model.protocol() != Protocol::Two => {
                 return Err(BackendError::NoSetting { setting });
             }
             Setting::OperatingMode => OPERATING_MODE,
+            Setting::TorqueEnable if model.protocol() == Protocol::One => P1_TORQUE_ENABLE,
             Setting::TorqueEnable => TORQUE_ENABLE,
             Setting::TorqueCtrlModeEnable => TORQUE_CTRL_MODE_ENABLE,
         };
@@ -942,42 +1053,41 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
     }
 
     /// Hardware Error Status (Protocol 2), Present Input Voltage and Present
-    /// Temperature through their fields, the three limits raw: six reads on
-    /// Protocol 2, five on Protocol 1.
+    /// Temperature through their fields, then `temperature_limit` and
+    /// `voltage_limits`: five reads on Protocol 2, four on Protocol 1, one
+    /// more where the voltage limits are read raw.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
         on_bus!(open, model, |bus| health_of(&mut held(bus, target)?, model))
     }
 
-    /// Three raw writes, Temperature Limit first. A voltage wider than its
-    /// one-byte Protocol 1 register is refused before any write.
-    fn write_health_limits(
+    /// `voltage_limits`: one read of both, or two raw.
+    fn read_voltage_limits(
         &mut self,
         port: usize,
         model: Model,
         id: u8,
-        limits: HealthLimits,
-    ) -> Result<(), BackendError> {
+    ) -> Result<(u16, u16), BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
-        let registers = LimitRegisters::of(model);
-        if !registers.fit(limits.min_voltage_dv, limits.max_voltage_dv) {
-            return Err(BackendError::Refused {
-                reason: "a voltage limit wider than its one-byte register",
-            });
-        }
-        on_bus!(open, model, |bus| {
-            let mut actuator = held(bus, target)?;
-            write_limit(
-                &mut actuator,
-                registers.temperature,
-                u16::from(limits.temperature_c),
-            )?;
-            write_limit(&mut actuator, registers.min_voltage, limits.min_voltage_dv)?;
-            write_limit(&mut actuator, registers.max_voltage, limits.max_voltage_dv)
-        })
+        on_bus!(open, model, |bus| voltage_limits_of(&mut held(
+            bus, target
+        )?))
     }
 
-    /// Two raw writes, Min Voltage Limit first. A voltage wider than its
+    /// `temperature_limit`.
+    fn read_temperature_limit(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u8, BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        on_bus!(open, model, |bus| temperature_limit_of(&mut held(
+            bus, target
+        )?))
+    }
+
+    /// `set_voltage_limits`: one write of both. A voltage wider than its
     /// one-byte Protocol 1 register is refused before any write.
     fn write_voltage_limits(
         &mut self,
@@ -988,17 +1098,29 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
         max_dv: u16,
     ) -> Result<(), BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
-        let registers = LimitRegisters::of(model);
-        if !registers.fit(min_dv, max_dv) {
+        if !voltage_limits_fit(model, min_dv, max_dv) {
             return Err(BackendError::Refused {
                 reason: "a voltage limit wider than its one-byte register",
             });
         }
-        on_bus!(open, model, |bus| {
-            let mut actuator = held(bus, target)?;
-            write_limit(&mut actuator, registers.min_voltage, min_dv)?;
-            write_limit(&mut actuator, registers.max_voltage, max_dv)
-        })
+        on_bus!(open, model, |bus| limit_written(
+            held(bus, target)?.set_voltage_limits(volts(min_dv), volts(max_dv))
+        ))
+    }
+
+    /// `set_temperature_limit`.
+    fn write_temperature_limit(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        celsius: u8,
+    ) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        let limit = Temperature::from_celsius(f32::from(celsius));
+        on_bus!(open, model, |bus| limit_written(
+            held(bus, target)?.set_temperature_limit(limit)
+        ))
     }
 
     /// The limits `dxl_rs_v2` read at Setup: no I/O.
@@ -1098,6 +1220,15 @@ impl<const N: usize> Backend for DxlRsV2<N> {
         self.0.force_torque_off(port, model, id)
     }
 
+    fn confirm_torque_off(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<(), BackendError> {
+        self.0.confirm_torque_off(port, model, id)
+    }
+
     fn read_setting(
         &mut self,
         port: usize,
@@ -1133,14 +1264,22 @@ impl<const N: usize> Backend for DxlRsV2<N> {
         self.0.read_health(port, model, id)
     }
 
-    fn write_health_limits(
+    fn read_voltage_limits(
         &mut self,
         port: usize,
         model: Model,
         id: u8,
-        limits: HealthLimits,
-    ) -> Result<(), BackendError> {
-        self.0.write_health_limits(port, model, id, limits)
+    ) -> Result<(u16, u16), BackendError> {
+        self.0.read_voltage_limits(port, model, id)
+    }
+
+    fn read_temperature_limit(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u8, BackendError> {
+        self.0.read_temperature_limit(port, model, id)
     }
 
     fn write_voltage_limits(
@@ -1152,6 +1291,16 @@ impl<const N: usize> Backend for DxlRsV2<N> {
         max_dv: u16,
     ) -> Result<(), BackendError> {
         self.0.write_voltage_limits(port, model, id, min_dv, max_dv)
+    }
+
+    fn write_temperature_limit(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        celsius: u8,
+    ) -> Result<(), BackendError> {
+        self.0.write_temperature_limit(port, model, id, celsius)
     }
 
     fn read_angle_limits(

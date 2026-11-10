@@ -8,7 +8,7 @@ use core::fmt;
 use std::io::ErrorKind;
 use std::path::Path;
 
-use super::config::{HealthLimits, Model, Protocol};
+use super::config::{Model, Protocol};
 
 /// Why a backend call failed: one variant per cause, with its data. `Io` is
 /// the serial line failing, nothing else.
@@ -117,6 +117,30 @@ pub(crate) enum BackendError {
         /// Lowest raw goal.
         min: i32,
         /// Highest raw goal.
+        max: i32,
+    },
+    /// A limit write to an actuator the SDK holds powered: its EEPROM takes
+    /// no write then.
+    #[error("id {id} is powered; its limits are not written")]
+    TorqueOn {
+        /// Firmware id.
+        id: u8,
+    },
+    /// A limit write to an actuator whose torque the SDK has not seen
+    /// switched off since its setup, its last torque on or a raw write.
+    #[error("id {id}: torque not confirmed off; its limits are not written")]
+    TorqueUnconfirmed {
+        /// Firmware id.
+        id: u8,
+    },
+    /// A limit outside the range the model's e-Manual gives it.
+    #[error("limit {value} outside the e-Manual range {min}–{max}")]
+    LimitOutsideRange {
+        /// Raw limit.
+        value: i32,
+        /// Lowest raw limit.
+        min: i32,
+        /// Highest raw limit.
         max: i32,
     },
     /// A goal register written before the torque that the backend does not
@@ -336,56 +360,13 @@ impl Reading {
     }
 }
 
-/// Address and width of one register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Register {
-    /// Address in the control table.
-    pub(crate) address: u16,
-    /// Width, in bytes.
-    pub(crate) size: u16,
-}
-
-/// The three health limit registers of a model, all EEPROM: written with
-/// the torque off only on Protocol 2.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LimitRegisters {
-    /// Temperature Limit; Highest Limit Temperature on Protocol 1.
-    pub(crate) temperature: Register,
-    /// Min Voltage Limit; Lowest Limit Voltage on Protocol 1.
-    pub(crate) min_voltage: Register,
-    /// Max Voltage Limit; Highest Limit Voltage on Protocol 1.
-    pub(crate) max_voltage: Register,
-}
-
-impl LimitRegisters {
-    /// The registers of `model`: AX, RX and Protocol 1 MX at 11, 12 and 13,
-    /// one byte each; X series and MX(2.0) at 31, 34 and 32, the voltages
-    /// two bytes (ROBOTIS e-Manual).
-    pub(crate) const fn of(model: Model) -> Self {
-        const fn at(address: u16, size: u16) -> Register {
-            Register { address, size }
-        }
-        match model.protocol() {
-            Protocol::One => Self {
-                temperature: at(11, 1),
-                min_voltage: at(12, 1),
-                max_voltage: at(13, 1),
-            },
-            Protocol::Two => Self {
-                temperature: at(31, 1),
-                min_voltage: at(34, 2),
-                max_voltage: at(32, 2),
-            },
-        }
-    }
-
-    /// Whether a Min and Max Voltage Limit of `min_dv` and `max_dv` fit
-    /// their registers.
-    pub(crate) const fn fit(self, min_dv: u16, max_dv: u16) -> bool {
-        const fn fits(register: Register, value: u16) -> bool {
-            register.size >= 2 || value <= u8::MAX as u16
-        }
-        fits(self.min_voltage, min_dv) && fits(self.max_voltage, max_dv)
+/// Whether a Min and Max Voltage Limit of `min_dv` and `max_dv` fit the
+/// registers of `model`: one byte each on Protocol 1, two on Protocol 2
+/// (ROBOTIS e-Manual).
+pub(crate) const fn voltage_limits_fit(model: Model, min_dv: u16, max_dv: u16) -> bool {
+    match model.protocol() {
+        Protocol::One => min_dv <= u8::MAX as u16 && max_dv <= u8::MAX as u16,
+        Protocol::Two => true,
     }
 }
 
@@ -394,7 +375,7 @@ impl LimitRegisters {
 pub(crate) enum Setting {
     /// Operating Mode, Protocol 2; 3 is position mode.
     OperatingMode,
-    /// Torque Enable, Protocol 2; 1 is powered.
+    /// Torque Enable, both protocols; 1 is powered.
     TorqueEnable,
     /// Torque Ctrl Mode Enable (70), Protocol 1 MX-64 only; 1 drives Goal
     /// Torque and ignores Goal Position.
@@ -617,8 +598,14 @@ pub(crate) trait Backend {
     /// backend switched it on, and whether or not its port holds it.
     fn force_torque_off(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
-    /// One setting of one actuator: Operating Mode and Torque Enable on
-    /// Protocol 2, Torque Ctrl Mode Enable on the Protocol 1 MX-64.
+    /// Writes Torque Enable = 0 to held actuator `id`, so the SDK takes its
+    /// limit writes: a reply reporting only a hardware fault confirms it too,
+    /// and answers `Ok`.
+    fn confirm_torque_off(&mut self, port: usize, model: Model, id: u8)
+    -> Result<(), BackendError>;
+
+    /// One setting of one actuator: Operating Mode on Protocol 2, Torque
+    /// Enable on both, Torque Ctrl Mode Enable on the Protocol 1 MX-64.
     fn read_setting(
         &mut self,
         port: usize,
@@ -652,19 +639,28 @@ pub(crate) trait Backend {
     /// voltage and temperature limits.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError>;
 
-    /// Writes the Min and Max Voltage Limit and the Temperature Limit of one
-    /// actuator ([`LimitRegisters`]). On Protocol 2 the actuator refuses it
-    /// while its torque is on; reading them back is `read_health`.
-    fn write_health_limits(
+    /// Min and Max Voltage Limit of one actuator, in 0.1 V. A held faulted
+    /// one fails with its fault measured.
+    fn read_voltage_limits(
         &mut self,
         port: usize,
         model: Model,
         id: u8,
-        limits: HealthLimits,
-    ) -> Result<(), BackendError>;
+    ) -> Result<(u16, u16), BackendError>;
 
-    /// Writes the Min and Max Voltage Limit of one actuator, in 0.1 V, its
-    /// Temperature Limit left as it is; refused as `write_health_limits` is.
+    /// Temperature Limit of one actuator, in °C; fails as
+    /// `read_voltage_limits` does.
+    fn read_temperature_limit(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<u8, BackendError>;
+
+    /// Writes the Min and Max Voltage Limit of one actuator, in 0.1 V.
+    /// Refused before sending unless `confirm_torque_off` answered since its
+    /// setup, its last torque on or a raw write. A reply reporting only a
+    /// hardware fault counts as written: reading them back is `read_health`.
     fn write_voltage_limits(
         &mut self,
         port: usize,
@@ -672,6 +668,16 @@ pub(crate) trait Backend {
         id: u8,
         min_dv: u16,
         max_dv: u16,
+    ) -> Result<(), BackendError>;
+
+    /// Writes the Temperature Limit of one actuator, in °C, as
+    /// `write_voltage_limits` does.
+    fn write_temperature_limit(
+        &mut self,
+        port: usize,
+        model: Model,
+        id: u8,
+        celsius: u8,
     ) -> Result<(), BackendError>;
 
     /// Position limits of one actuator, raw, `(low, high)`: CW and CCW Angle

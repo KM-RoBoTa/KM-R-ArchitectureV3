@@ -376,10 +376,11 @@ fn a_setup_reply_with_an_error_beside_the_fault_fails_with_the_fault_measured() 
 }
 
 #[test]
-fn health_reads_its_registers_and_the_limits_raw() {
+fn health_reads_its_registers_and_the_limits_through_their_getters() {
     let time = MockTime::new();
     let mut two = Line::with_capacity(&time);
     xm_setup(&mut two, 1, 1);
+    // dxl_rs_v2 gives the XM430-W210's limits no unit: each read raw.
     two.reply_to(5, status2(1, 0, &[0]).bytes())
         .reply_to(6, status2(1, 0, &[121, 0]).bytes())
         .reply_to(7, status2(1, 0, &[31]).bytes())
@@ -401,6 +402,12 @@ fn health_reads_its_registers_and_the_limits_raw() {
         })
     );
     assert_eq!(backend.read_angle_limits(0, XM, 1), Ok((0, 4095)));
+    let (_, two) = lines(&mut backend);
+    for (address, size) in [(31, 1), (34, 2), (32, 2)] {
+        let read = p2(1, &[0x02, address, 0, size, 0]);
+        assert!(find(two.sent(), read.bytes()).is_some(), "{address}");
+    }
+    assert_eq!(two.unread(), 0);
 }
 
 #[test]
@@ -755,36 +762,93 @@ fn ram_settings_are_written_then_read_back_at_their_addresses() {
     assert_eq!(two.unread(), 0);
 }
 
-/// A Protocol 1 line whose AX-12A at id 1 comes up, then answers the Min
-/// Voltage Limit write with error byte `error`.
+/// A Protocol 1 line whose AX-12A at id 1 comes up, answers the Torque
+/// Enable = 0 write, then answers the voltage limit write with error byte
+/// `error`.
 fn ax_limit_line<'t>(time: &'t MockTime, error: u8) -> Line<'t> {
     let mut one = Line::with_capacity(time);
     one.reply_to(1, status1(1, &[]).bytes())
         .reply_to(2, status1(1, &[12, 0]).bytes())
         .reply_to(3, status1(1, &[0, 0]).bytes())
         .reply_to(4, status1(1, &[0xFF, 0x03]).bytes())
-        .reply_to(5, fault1(1, error, &[]).bytes());
+        .reply_to(5, status1(1, &[]).bytes())
+        .reply_to(6, fault1(1, error, &[]).bytes());
     one
 }
+
+/// Bytes `dxl_rs_v2` sends to set up one AX-12A: a ping, then three reads.
+const AX_SETUP_BYTES: usize = 6 + 3 * 8;
 
 #[test]
 fn a_limit_write_whose_reply_reports_the_voltage_fault_it_fixes_counts_as_written() {
     let time = MockTime::new();
     let mut one = ax_limit_line(&time, 0x01);
     // The fault measured: Present Voltage 10.1 V, inside the limits written.
-    one.reply_to(6, fault1(1, 0x01, &[101]).bytes())
-        .reply_to(7, fault1(1, 0x01, &[95]).bytes())
-        .reply_to(8, fault1(1, 0x01, &[130]).bytes())
-        .reply_to(9, status1(1, &[]).bytes());
+    one.reply_to(7, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(8, fault1(1, 0x01, &[95]).bytes())
+        .reply_to(9, fault1(1, 0x01, &[130]).bytes());
     let mut backend = backend(one, Line::with_capacity(&time));
     backend.declare(0, &[(1, AX)]).unwrap();
 
+    assert_eq!(backend.confirm_torque_off(0, AX, 1), Ok(()));
     assert_eq!(backend.write_voltage_limits(0, AX, 1, 95, 130), Ok(()));
 
     let (one, _) = lines(&mut backend);
-    let min_at = find(one.sent(), p1(1, &[0x03, 12, 95]).bytes());
-    let max_at = find(one.sent(), p1(1, &[0x03, 13, 130]).bytes());
-    assert!(min_at.is_some() && min_at < max_at);
+    let off_at = find(one.sent(), p1(1, &[0x03, 24, 0]).bytes());
+    let both_at = find(one.sent(), p1(1, &[0x03, 12, 95, 130]).bytes());
+    assert!(
+        off_at.is_some() && off_at < both_at,
+        "set_voltage_limits: one write of both"
+    );
+    assert!(find(one.sent(), p1(1, &[0x03, 13, 130]).bytes()).is_none());
+    assert_eq!(one.unread(), 0);
+}
+
+#[test]
+fn a_limit_write_before_the_torque_is_confirmed_off_sends_nothing() {
+    let time = MockTime::new();
+    let one = ax_limit_line(&time, 0x00);
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+
+    assert_eq!(
+        backend.write_voltage_limits(0, AX, 1, 95, 130),
+        Err(BackendError::TorqueUnconfirmed { id: 1 })
+    );
+    assert_eq!(
+        backend.write_temperature_limit(0, AX, 1, 70),
+        Err(BackendError::TorqueUnconfirmed { id: 1 })
+    );
+    assert_eq!(backend.confirm_torque_off(0, AX, 1), Ok(()));
+    assert_eq!(
+        backend.write_voltage_limits(0, AX, 1, 95, 170),
+        Err(BackendError::LimitOutsideRange {
+            value: 170,
+            min: 50,
+            max: 160
+        })
+    );
+
+    let (one, _) = lines(&mut backend);
+    assert_eq!(one.sent().len(), AX_SETUP_BYTES + 8, "the torque off alone");
+}
+
+#[test]
+fn torque_enable_is_read_raw_at_24_on_protocol_1() {
+    let time = MockTime::new();
+    let mut one = Line::with_capacity(&time);
+    one.reply_to(1, status1(1, &[]).bytes())
+        .reply_to(2, status1(1, &[12, 0]).bytes())
+        .reply_to(3, status1(1, &[0, 0]).bytes())
+        .reply_to(4, status1(1, &[0xFF, 0x03]).bytes())
+        .reply_to(5, status1(1, &[1]).bytes());
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+
+    assert_eq!(backend.read_setting(0, AX, 1, Setting::TorqueEnable), Ok(1));
+
+    let (one, _) = lines(&mut backend);
+    assert!(find(one.sent(), p1(1, &[0x02, 24, 1]).bytes()).is_some());
 }
 
 #[test]
@@ -795,26 +859,24 @@ fn a_temperature_limit_written_to_an_overheating_actuator_counts_as_written() {
         .reply_to(2, status1(1, &[12, 0]).bytes())
         .reply_to(3, status1(1, &[0, 0]).bytes())
         .reply_to(4, status1(1, &[0xFF, 0x03]).bytes())
-        // Temperature Limit 80 °C, answered Overheating; measured 75 °C
-        // against the 80 °C now held.
-        .reply_to(5, fault1(1, 0x04, &[]).bytes())
-        .reply_to(6, fault1(1, 0x04, &[75]).bytes())
-        .reply_to(7, fault1(1, 0x04, &[80]).bytes())
-        .reply_to(8, status1(1, &[]).bytes())
+        // Torque Enable 0, then Temperature Limit 80 °C, answered
+        // Overheating; measured 75 °C against the 80 °C now held. Then both
+        // voltage limits.
+        .reply_to(5, status1(1, &[]).bytes())
+        .reply_to(6, fault1(1, 0x04, &[]).bytes())
+        .reply_to(7, fault1(1, 0x04, &[75]).bytes())
+        .reply_to(8, fault1(1, 0x04, &[80]).bytes())
         .reply_to(9, status1(1, &[]).bytes());
     let mut backend = backend(one, Line::with_capacity(&time));
     backend.declare(0, &[(1, AX)]).unwrap();
-    let limits = HealthLimits {
-        min_voltage_dv: 95,
-        max_voltage_dv: 130,
-        temperature_c: 80,
-    };
 
-    assert_eq!(backend.write_health_limits(0, AX, 1, limits), Ok(()));
+    assert_eq!(backend.confirm_torque_off(0, AX, 1), Ok(()));
+    assert_eq!(backend.write_temperature_limit(0, AX, 1, 80), Ok(()));
+    assert_eq!(backend.write_voltage_limits(0, AX, 1, 95, 130), Ok(()));
 
     let (one, _) = lines(&mut backend);
     assert!(find(one.sent(), p1(1, &[0x03, 11, 80]).bytes()).is_some());
-    assert!(find(one.sent(), p1(1, &[0x03, 13, 130]).bytes()).is_some());
+    assert!(find(one.sent(), p1(1, &[0x03, 12, 95, 130]).bytes()).is_some());
     assert_eq!(one.unread(), 0);
 }
 
@@ -824,6 +886,7 @@ fn a_limit_write_refused_by_the_actuator_fails() {
     let one = ax_limit_line(&time, 0x08);
     let mut backend = backend(one, Line::with_capacity(&time));
     backend.declare(0, &[(1, AX)]).unwrap();
+    backend.confirm_torque_off(0, AX, 1).unwrap();
 
     assert_eq!(
         backend.write_voltage_limits(0, AX, 1, 95, 130),
@@ -877,6 +940,16 @@ fn ax_at_10_1_v(time: &MockTime) -> Line<'_> {
     one
 }
 
+/// Scripts, from packet `first`, a reply flagged Input Voltage then the
+/// three reads `dxl_rs_v2` measures it with: Present Voltage 10.1 V, Min
+/// Voltage Limit `min_dv`, Max Voltage Limit 13.0 V.
+fn ax_low_voltage(line: &mut Line<'_>, first: usize, min_dv: u8) {
+    line.reply_to(first, fault1(1, 0x01, &[]).bytes())
+        .reply_to(first + 1, fault1(1, 0x01, &[101]).bytes())
+        .reply_to(first + 2, fault1(1, 0x01, &[min_dv]).bytes())
+        .reply_to(first + 3, fault1(1, 0x01, &[130]).bytes());
+}
+
 /// The adapter for `placement` on lines `one` and `two`, checked, its port
 /// open and set up.
 fn brought_up<'t>(
@@ -928,25 +1001,21 @@ fn an_ax12a_below_its_voltage_limits_comes_up_once_voltage_limits_are_written() 
 
     let time = MockTime::new();
     let mut one = ax_at_10_1_v(&time);
-    // Min Voltage Limit 9.0 V, answered still flagged: measured 10.1 V,
-    // inside 9.0–13.0 V. Then Max Voltage Limit 13.0 V, and the clean ping
-    // of `clear_fault`.
-    one.reply_to(5, fault1(1, 0x01, &[]).bytes())
-        .reply_to(6, fault1(1, 0x01, &[101]).bytes())
-        .reply_to(7, fault1(1, 0x01, &[90]).bytes())
-        .reply_to(8, fault1(1, 0x01, &[130]).bytes())
-        .reply_to(9, status1(1, &[]).bytes())
-        .reply_to(10, status1(1, &[]).bytes())
-        // Health: voltage, temperature, its limit, Min and Max Voltage Limit.
-        .reply_to(11, status1(1, &[101]).bytes())
-        .reply_to(12, status1(1, &[30]).bytes())
-        .reply_to(13, status1(1, &[70]).bytes())
-        .reply_to(14, status1(1, &[90]).bytes())
-        .reply_to(15, status1(1, &[130]).bytes())
+    // Torque Enable 0, answered flagged: measured 10.1 V below 10.5 V.
+    ax_low_voltage(&mut one, 5, 105);
+    // Both voltage limits, 9.0–13.0 V, answered still flagged: measured
+    // 10.1 V inside them. Then the clean ping of `clear_fault`.
+    ax_low_voltage(&mut one, 9, 90);
+    one.reply_to(13, status1(1, &[]).bytes())
+        // Health: voltage, temperature, its limit, both voltage limits.
+        .reply_to(14, status1(1, &[101]).bytes())
+        .reply_to(15, status1(1, &[30]).bytes())
+        .reply_to(16, status1(1, &[70]).bytes())
+        .reply_to(17, status1(1, &[90, 130]).bytes())
         // Torque on: present position 512, the start goal, Torque Enable.
-        .reply_to(16, status1(1, &[0x00, 0x02]).bytes())
-        .reply_to(17, status1(1, &[]).bytes())
-        .reply_to(18, status1(1, &[]).bytes());
+        .reply_to(18, status1(1, &[0x00, 0x02]).bytes())
+        .reply_to(19, status1(1, &[]).bytes())
+        .reply_to(20, status1(1, &[]).bytes());
     let placement = one_ax(voltage_limits(90, 130));
     let mut adapter = brought_up(placement, one, Line::with_capacity(&time));
     assert!(adapter.backend.faulted(0, AX, 1));
@@ -958,11 +1027,11 @@ fn an_ax12a_below_its_voltage_limits_comes_up_once_voltage_limits_are_written() 
 
     let (one, two) = lines(&mut adapter.backend);
     let sent = one.sent();
-    let min_at = find(sent, p1(1, &[0x03, 12, 90]).bytes());
-    let max_at = find(sent, p1(1, &[0x03, 13, 130]).bytes());
+    let off_at = find(sent, p1(1, &[0x03, 24, 0]).bytes());
+    let limits_at = find(sent, p1(1, &[0x03, 12, 90, 130]).bytes());
     let goal_at = find(sent, p1(1, &[0x03, 30, 0x00, 0x02]).bytes());
     let torque_at = find(sent, p1(1, &[0x03, 24, 1]).bytes());
-    assert!(min_at.is_some() && min_at < max_at && max_at < goal_at && goal_at < torque_at);
+    assert!(off_at.is_some() && off_at < limits_at && limits_at < goal_at && goal_at < torque_at);
     assert_eq!((one.unread(), two.sent().len()), (0, 0));
 }
 
@@ -1024,21 +1093,12 @@ fn voltage_limits_that_still_exclude_its_voltage_fail_health_torque_off() {
 
     let time = MockTime::new();
     let mut one = ax_at_10_1_v(&time);
-    // Min Voltage Limit 11.0 V: answered flagged, measured below it.
-    one.reply_to(5, fault1(1, 0x01, &[]).bytes())
-        .reply_to(6, fault1(1, 0x01, &[101]).bytes())
-        .reply_to(7, fault1(1, 0x01, &[110]).bytes())
-        .reply_to(8, fault1(1, 0x01, &[130]).bytes())
-        // Max Voltage Limit 13.0 V, the same.
-        .reply_to(9, fault1(1, 0x01, &[]).bytes())
-        .reply_to(10, fault1(1, 0x01, &[101]).bytes())
-        .reply_to(11, fault1(1, 0x01, &[110]).bytes())
-        .reply_to(12, fault1(1, 0x01, &[130]).bytes())
-        // `clear_fault`'s ping, still flagged.
-        .reply_to(13, fault1(1, 0x01, &[]).bytes())
-        .reply_to(14, fault1(1, 0x01, &[101]).bytes())
-        .reply_to(15, fault1(1, 0x01, &[110]).bytes())
-        .reply_to(16, fault1(1, 0x01, &[130]).bytes());
+    // Torque Enable 0, then both voltage limits 11.0–13.0 V: each answered
+    // flagged, measured below the Min Voltage Limit held. Then
+    // `clear_fault`'s ping, still flagged.
+    ax_low_voltage(&mut one, 5, 105);
+    ax_low_voltage(&mut one, 9, 110);
+    ax_low_voltage(&mut one, 13, 110);
     ax_clean_start(&mut one, 17);
     let mut adapter = brought_up(
         one_ax(voltage_limits(110, 130)),
@@ -1062,7 +1122,7 @@ fn voltage_limits_that_still_exclude_its_voltage_fail_health_torque_off() {
     assert_eq!(adapter.torque_on(), Err(refused()));
     assert!(adapter.backend.faulted(0, AX, 1));
     let (one, _) = lines(&mut adapter.backend);
-    assert!(find(one.sent(), p1(1, &[0x03, 12, 110]).bytes()).is_some());
+    assert!(find(one.sent(), p1(1, &[0x03, 12, 110, 130]).bytes()).is_some());
     assert!(!torque_on_sent(one.sent()));
     assert_eq!(one.unread(), 0);
 }
@@ -1071,8 +1131,14 @@ fn voltage_limits_that_still_exclude_its_voltage_fail_health_torque_off() {
 /// whose alert is raised reads: ping, Model Number 1030, Min and Max
 /// Position Limit 0 and 4095, Operating Mode 3, every one flagged.
 fn xm_alert_setup(line: &mut Line<'_>) {
-    line.reply_to(1, status2(1, 0x80, &[0x06, 0x04, 45]).bytes())
-        .reply_to(2, status2(1, 0x80, &[0x06, 0x04]).bytes())
+    alert_setup(line, Model::Xm430W210);
+}
+
+/// [`xm_alert_setup`] for `model`, its Model Number in the first two replies.
+fn alert_setup(line: &mut Line<'_>, model: Model) {
+    let [low, high] = model.number().to_le_bytes();
+    line.reply_to(1, status2(1, 0x80, &[low, high, 45]).bytes())
+        .reply_to(2, status2(1, 0x80, &[low, high]).bytes())
         .reply_to(3, status2(1, 0x80, &[0, 0, 0, 0]).bytes())
         .reply_to(4, status2(1, 0x80, &[0xFF, 0x0F, 0, 0]).bytes())
         .reply_to(5, status2(1, 0x80, &[3]).bytes());
@@ -1094,15 +1160,19 @@ fn xm_voltage_alert(line: &mut Line<'_>, first: usize, data: &[u8]) {
 /// written, until it reboots: they are written, then health fails with its
 /// Hardware Error Status, its torque not read. Its torque is refused, never
 /// written, even once its replies are clean.
+// DECISION: an MX-64(2.0): dxl_rs_v2 gives the XM430-W210's limits no unit,
+// so its typed setter refuses them (see the test below).
 #[test]
-fn an_xm430_whose_alert_persists_after_its_limits_are_written_fails_torque_off() {
+fn a_protocol_2_actuator_whose_alert_persists_after_its_limits_are_written_fails_torque_off() {
     use kmr_core::hal::Hal;
 
     use crate::dynamixel::{DynamixelError, Placement};
 
+    const MX: Model = Model::Mx64V2;
     let time = MockTime::new();
     let mut two = Line::with_capacity(&time);
-    xm_alert_setup(&mut two);
+    alert_setup(&mut two, MX);
+    // Torque Enable 0, then both voltage limits, each answered flagged.
     xm_voltage_alert(&mut two, 6, &[]);
     xm_voltage_alert(&mut two, 11, &[]);
     // `clear_fault`: Hardware Error Status, its reply flagged, then measured.
@@ -1116,9 +1186,10 @@ fn an_xm430_whose_alert_persists_after_its_limits_are_written_fails_torque_off()
         .reply_to(25, status2(1, 0, &2048_i32.to_le_bytes()).bytes())
         .reply_to(26, status2(1, 0, &[]).bytes());
     let mut placement: Placement<1, 1> = one_xm();
+    placement.table.actuators[0].model = MX;
     placement.settings[0] = voltage_limits(95, 160);
     let mut adapter = brought_up(placement, Line::with_capacity(&time), two);
-    assert!(adapter.backend.faulted(0, XM, 1));
+    assert!(adapter.backend.faulted(0, MX, 1));
 
     assert_eq!(
         adapter.health(),
@@ -1131,14 +1202,82 @@ fn an_xm430_whose_alert_persists_after_its_limits_are_written_fails_torque_off()
     );
     assert_eq!(adapter.configure(), Ok(()));
     assert_eq!(adapter.torque_on(), Err(refused()));
-    assert!(adapter.backend.faulted(0, XM, 1));
+    assert!(adapter.backend.faulted(0, MX, 1));
     let (_, two) = lines(&mut adapter.backend);
     let sent = two.sent();
-    let min_at = find(sent, write2(1, 34, &[95, 0]).bytes());
-    let max_at = find(sent, write2(1, 32, &[160, 0]).bytes());
+    let off_at = find(sent, write2(1, 64, &[0]).bytes());
+    // Max then Min Voltage Limit, adjacent at 32: one write of both.
+    let limits_at = find(sent, write2(1, 32, &[160, 0, 95, 0]).bytes());
     // The first Torque Enable read is `configure`'s, after the limits.
     let torque_read_at = find(sent, p2(1, &[0x02, 64, 0, 1, 0]).bytes());
-    assert!(min_at.is_some() && min_at < max_at && max_at < torque_read_at);
+    assert!(off_at.is_some() && off_at < limits_at && limits_at < torque_read_at);
     assert!(find(sent, write2(1, 64, &[1]).bytes()).is_none());
     assert_eq!(two.unread(), 0);
+}
+
+/// SRS FR-5.2, FR-6.1 (T084): `voltage_limits(9.0, 13.0).restore_limits()`
+/// on the AX-12A at 10.1 V. The limits it held, 10.5–13.0 V, come from the
+/// fault its read answers with; the run's are written, its fault cleared,
+/// and after torque off the old ones go back, the fault in that reply only
+/// counted as written.
+#[test]
+fn the_bench_ax12a_gets_its_voltage_limits_back_after_torque_off() {
+    use kmr_core::hal::Hal;
+
+    let time = MockTime::new();
+    let mut one = ax_at_10_1_v(&time);
+    // Torque Enable 0; the voltage limits read, answered with the fault
+    // carrying them; then both written, 9.0–13.0 V.
+    ax_low_voltage(&mut one, 5, 105);
+    ax_low_voltage(&mut one, 9, 105);
+    ax_low_voltage(&mut one, 13, 90);
+    // `clear_fault`'s clean ping, then health's four reads.
+    one.reply_to(17, status1(1, &[]).bytes())
+        .reply_to(18, status1(1, &[101]).bytes())
+        .reply_to(19, status1(1, &[30]).bytes())
+        .reply_to(20, status1(1, &[70]).bytes())
+        .reply_to(21, status1(1, &[90, 130]).bytes())
+        // Torque off, then the old limits written back, answered flagged.
+        .reply_to(22, status1(1, &[]).bytes());
+    ax_low_voltage(&mut one, 23, 105);
+    let mut settings = voltage_limits(90, 130);
+    settings.restore_limits = true;
+    let mut adapter = brought_up(one_ax(settings), one, Line::with_capacity(&time));
+
+    assert_eq!(adapter.health(), Ok(()));
+    adapter.torque_off();
+    adapter.restore_limits();
+
+    let (one, _) = lines(&mut adapter.backend);
+    let sent = one.sent();
+    let read_at = find(sent, p1(1, &[0x02, 12, 2]).bytes());
+    let run_at = find(sent, p1(1, &[0x03, 12, 90, 130]).bytes());
+    let off_at = sent
+        .windows(p1(1, &[0x03, 24, 0]).bytes().len())
+        .rposition(|window| window == p1(1, &[0x03, 24, 0]).bytes());
+    let back_at = find(sent, p1(1, &[0x03, 12, 105, 130]).bytes());
+    assert!(read_at.is_some() && read_at < run_at && run_at < off_at && off_at < back_at);
+    assert_eq!(one.unread(), 0);
+}
+
+/// dxl_rs_v2 at e53b249 gives the XM430-W210's limits no unit: its typed
+/// setters refuse them with nothing sent, and kmr says why.
+#[test]
+fn an_xm430_limit_write_is_refused_without_a_unit() {
+    let time = MockTime::new();
+    let mut two = Line::with_capacity(&time);
+    xm_setup(&mut two, 1, 1);
+    two.reply_to(5, status2(1, 0, &[]).bytes());
+    let mut backend = backend(Line::with_capacity(&time), two);
+    backend.declare(0, &[(1, XM)]).unwrap();
+    backend.confirm_torque_off(0, XM, 1).unwrap();
+
+    let refused = Err(BackendError::Refused {
+        reason: "a limit dxl_rs_v2 has no unit for on this model",
+    });
+    assert_eq!(backend.write_voltage_limits(0, XM, 1, 95, 160), refused);
+    assert_eq!(backend.write_temperature_limit(0, XM, 1, 70), refused);
+    let (_, two) = lines(&mut backend);
+    assert_eq!(two.unread(), 0);
+    assert_eq!(two.flushes(), 5, "Setup and the torque off alone");
 }
