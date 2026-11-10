@@ -659,8 +659,9 @@ pub(crate) trait Backend {
 
     /// Writes the Min and Max Voltage Limit of one actuator, in 0.1 V.
     /// Refused before sending unless `confirm_torque_off` answered since its
-    /// setup, its last torque on or a raw write. A reply reporting only a
-    /// hardware fault counts as written: reading them back is `read_health`.
+    /// setup, its last torque on or a raw write. A reply reporting a
+    /// hardware fault fails with it measured: the write may have run or not,
+    /// which only a read back tells.
     fn write_voltage_limits(
         &mut self,
         port: usize,

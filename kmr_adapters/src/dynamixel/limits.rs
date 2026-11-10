@@ -5,8 +5,12 @@
 use tracing::{debug, warn};
 
 use super::backend::{Backend, BackendError, Fault, Setting};
-use super::config::{Actuator, HealthLimits, Protocol};
+use super::config::{Actuator, HealthLimits, Model, Protocol};
 use super::{Dynamixel, DynamixelError};
+
+/// A typed write of one limit register to the actuator at `(bus, model,
+/// id)`.
+type LimitWrite<B, T> = fn(&mut B, (usize, Model, u8), T) -> Result<(), BackendError>;
 
 /// Limit registers of one actuator, each `None` where it is left alone:
 /// what `health` writes, or what it found there before writing.
@@ -101,7 +105,10 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         // here: another process left it on, it may be holding a load, and
         // cutting torque is the loop's safety call, not the bring-up's.
         // DECISION: a faulted one is not asked: dxl_rs_v2 returns no register
-        // value beside a fault.
+        // value beside a fault. So a held faulted one is switched off below
+        // even if powered: on Protocol 1 only the faults set in Alarm
+        // Shutdown cut torque (the AX-12A's default leaves Input Voltage
+        // out), and the bench AX-12A at 10.1 V is held faulted.
         if !self.backend.faulted(bus, model, id) {
             let on = self
                 .backend
@@ -188,57 +195,109 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         Ok(())
     }
 
-    /// Puts back every limit register `health` saved, voltages first: one
-    /// attempt each, a warning for each that fails, and the saved values
-    /// forgotten.
+    /// Puts back every limit register `health` saved, Temperature Limit
+    /// first: one attempt each, a warning for each that fails or that a
+    /// read back does not confirm, and the saved values forgotten.
+    // DECISION: Temperature Limit first: putting back the voltages is what
+    // brings back the bench AX-12A's voltage fault, and that fault carries
+    // the voltages their read back needs; a temperature read back beside it
+    // would fail unconfirmed.
     pub(super) fn restore_limits(&mut self) {
         for index in self.actuators.owned().iter() {
             let saved = self.saved.get_mut(index).map(core::mem::take);
             let (Some(saved), Some(&actuator)) = (saved, self.actuators.get(index)) else {
                 continue;
             };
-            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            let label = self.label(bus);
-            if let Some((min_dv, max_dv)) = saved.voltage_dv {
-                match self
-                    .backend
-                    .write_voltage_limits(bus, model, id, min_dv, max_dv)
-                {
-                    Ok(()) => debug!(actuator = index, bus = label, id, "voltage limits restored"),
-                    Err(error) => warn!(
-                        actuator = index,
-                        bus = label,
-                        id,
-                        %error,
-                        "voltage limits not restored"
-                    ),
-                }
-            }
             if let Some(celsius) = saved.temperature_c {
-                match self
-                    .backend
-                    .write_temperature_limit(bus, model, id, celsius)
-                {
-                    Ok(()) => debug!(
-                        actuator = index,
-                        bus = label,
-                        id,
-                        "temperature limit restored"
-                    ),
-                    Err(error) => warn!(
-                        actuator = index,
-                        bus = label,
-                        id,
-                        %error,
-                        "temperature limit not restored"
-                    ),
-                }
+                self.restore(
+                    index,
+                    actuator,
+                    "Temperature Limit",
+                    celsius,
+                    |backend, (bus, model, id), celsius| {
+                        backend.write_temperature_limit(bus, model, id, celsius)
+                    },
+                    Self::old_temperature,
+                );
+            }
+            if let Some(voltages) = saved.voltage_dv {
+                self.restore(
+                    index,
+                    actuator,
+                    "Min and Max Voltage Limit",
+                    voltages,
+                    |backend, (bus, model, id), (min_dv, max_dv)| {
+                        backend.write_voltage_limits(bus, model, id, min_dv, max_dv)
+                    },
+                    Self::old_voltages,
+                );
             }
         }
     }
 
+    /// Writes `saved` back to `register` of `actuator` at engine index
+    /// `index` once; a reply carrying a fault is checked by one `read`, which
+    /// a fault carrying the register answers too. Warns unless put back.
+    // DECISION: a fault reply is doubted: dxl_rs_v2 measures a reply that
+    // carries a hardware fault beside an instruction error into the same
+    // fault as one whose write ran.
+    fn restore<T: PartialEq + Copy>(
+        &mut self,
+        index: usize,
+        actuator: Actuator,
+        register: &'static str,
+        saved: T,
+        write: LimitWrite<B, T>,
+        read: fn(&mut Self, Actuator) -> Result<T, BackendError>,
+    ) {
+        let (bus, id) = (actuator.bus, actuator.id);
+        let label = self.label(bus);
+        let fault = match write(&mut self.backend, (bus, actuator.model, id), saved) {
+            Ok(()) => {
+                debug!(
+                    actuator = index,
+                    bus = label,
+                    id,
+                    register,
+                    "limit restored"
+                );
+                return;
+            }
+            Err(error @ BackendError::Fault(_)) => error,
+            Err(error) => {
+                warn!(actuator = index, bus = label, id, register, %error, "limit not restored");
+                return;
+            }
+        };
+        match read(self, actuator) {
+            Ok(held) if held == saved => {
+                debug!(actuator = index, bus = label, id, register, %fault, "limit restored");
+            }
+            Ok(_) => warn!(
+                actuator = index,
+                bus = label,
+                id,
+                register,
+                %fault,
+                "limit not restored: its reply carried a fault and its read back finds another value"
+            ),
+            Err(error) => warn!(
+                actuator = index,
+                bus = label,
+                id,
+                register,
+                %fault,
+                %error,
+                "limit maybe not restored: its reply carried a fault and its read back failed"
+            ),
+        }
+    }
+
     /// Writes `limits` to `actuator` at engine index `index`, Temperature
-    /// Limit first.
+    /// Limit first; a reply carrying a fault counts as written, `clear_fault`
+    /// and the read back decide.
+    // DECISION: a limit is written to fix the fault the actuator reports, so
+    // its reply still carries it.
     fn send_limits(
         &mut self,
         index: usize,
@@ -247,14 +306,16 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     ) -> Result<(), DynamixelError> {
         let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
         if let Some(celsius) = limits.temperature_c {
-            self.backend
-                .write_temperature_limit(bus, model, id, celsius)
-                .map_err(|error| self.actuator_error(index, error))?;
+            let answer = self
+                .backend
+                .write_temperature_limit(bus, model, id, celsius);
+            written(answer).map_err(|error| self.actuator_error(index, error))?;
         }
         if let Some((min_dv, max_dv)) = limits.voltage_dv {
-            self.backend
-                .write_voltage_limits(bus, model, id, min_dv, max_dv)
-                .map_err(|error| self.actuator_error(index, error))?;
+            let answer = self
+                .backend
+                .write_voltage_limits(bus, model, id, min_dv, max_dv);
+            written(answer).map_err(|error| self.actuator_error(index, error))?;
         }
         Ok(())
     }
@@ -288,5 +349,13 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             Err(BackendError::Fault(Fault::Voltage { min_dv, max_dv, .. })) => Ok((min_dv, max_dv)),
             read => read,
         }
+    }
+}
+
+/// `answer` with a fault reply taken as written.
+fn written(answer: Result<(), BackendError>) -> Result<(), BackendError> {
+    match answer {
+        Err(BackendError::Fault(_)) => Ok(()),
+        answer => answer,
     }
 }

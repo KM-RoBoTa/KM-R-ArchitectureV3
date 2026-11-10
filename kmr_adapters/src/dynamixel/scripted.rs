@@ -795,7 +795,8 @@ impl Scripted {
 
     /// Records a limit write of `value` to actuator `id`, then refuses it
     /// as `DxlRsV2` does before sending: powered here, its torque off not
-    /// confirmed, or `refused` (a value its register does not take).
+    /// confirmed, a model whose limits [`limits_have_units`] says no to, or
+    /// `refused` (a value its register does not take).
     fn limit_write(
         &mut self,
         call: Call,
@@ -810,6 +811,11 @@ impl Scripted {
         }
         if !get(&self.confirmed, port, id) {
             return Err(BackendError::TorqueUnconfirmed { id });
+        }
+        if !limits_have_units(model) {
+            return Err(BackendError::Refused {
+                reason: "a limit dxl_rs_v2 has no unit for on this model",
+            });
         }
         if let Some(reason) = refused {
             return Err(BackendError::Refused { reason });
@@ -833,11 +839,11 @@ impl Scripted {
     /// Answers a limit write to actuator `id`: `apply`d to its script unless
     /// refused or its limits are stuck, then held faulted while its script
     /// reports a fault, as `dxl_rs_v2` holds one whose reply reports it.
-    /// `refusal` fails it, unless that reply reports a fault.
+    /// `refusal` fails it; a reply reporting a fault fails with that fault
+    /// instead, applied or not.
     // DECISION: a refusal whose reply carries a fault is not applied and
-    // counts as written: `DxlRsV2` measures that reply into a fault, which
-    // its limit write tolerates whatever error code is beside it; health's
-    // `clear_fault` and read back then decide.
+    // fails with the fault: `DxlRsV2` measures that reply into a fault
+    // whatever error code is beside it; the caller's read back decides.
     fn answer_limits(
         &mut self,
         port: usize,
@@ -856,9 +862,10 @@ impl Scripted {
         if let (Some(_), Some(faulted)) = (fault, at(&mut self.faulted, port, id)) {
             *faulted = true;
         }
-        match refusal {
-            Some(status) if fault.is_none() => Err(BackendError::Status(status)),
-            _ => Ok(()),
+        match (fault, refusal) {
+            (Some(fault), _) => Err(BackendError::Fault(fault)),
+            (None, Some(status)) => Err(BackendError::Status(status)),
+            (None, None) => Ok(()),
         }
     }
 
@@ -895,6 +902,16 @@ impl Scripted {
             *slot = raw;
         }
     }
+}
+
+/// Whether `dxl_rs_v2`'s table for `model` gives its limit registers a
+/// unit, so its typed setters take them: at e53b249 not the XM430-W210 and
+/// XW540s (`DxlRsV2` does not declare the XW430-T200 at all).
+const fn limits_have_units(model: Model) -> bool {
+    !matches!(
+        model,
+        Model::Xm430W210 | Model::Xw540T140 | Model::Xw540T260
+    )
 }
 
 /// Entry of `(port, id)` in a per-actuator table; `None` outside the script.

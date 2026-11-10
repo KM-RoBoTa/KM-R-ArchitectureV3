@@ -780,7 +780,7 @@ fn ax_limit_line<'t>(time: &'t MockTime, error: u8) -> Line<'t> {
 const AX_SETUP_BYTES: usize = 6 + 3 * 8;
 
 #[test]
-fn a_limit_write_whose_reply_reports_the_voltage_fault_it_fixes_counts_as_written() {
+fn a_limit_write_whose_reply_reports_the_voltage_fault_it_fixes_returns_that_fault() {
     let time = MockTime::new();
     let mut one = ax_limit_line(&time, 0x01);
     // The fault measured: Present Voltage 10.1 V, inside the limits written.
@@ -791,7 +791,11 @@ fn a_limit_write_whose_reply_reports_the_voltage_fault_it_fixes_counts_as_writte
     backend.declare(0, &[(1, AX)]).unwrap();
 
     assert_eq!(backend.confirm_torque_off(0, AX, 1), Ok(()));
-    assert_eq!(backend.write_voltage_limits(0, AX, 1, 95, 130), Ok(()));
+    // Inside the limits written, the voltage measures as no voltage fault.
+    assert_eq!(
+        backend.write_voltage_limits(0, AX, 1, 95, 130),
+        Err(BackendError::Fault(Fault::Hardware { status: 0x01 }))
+    );
 
     let (one, _) = lines(&mut backend);
     let off_at = find(one.sent(), p1(1, &[0x03, 24, 0]).bytes());
@@ -852,7 +856,7 @@ fn torque_enable_is_read_raw_at_24_on_protocol_1() {
 }
 
 #[test]
-fn a_temperature_limit_written_to_an_overheating_actuator_counts_as_written() {
+fn a_temperature_limit_written_to_an_overheating_actuator_returns_the_fault() {
     let time = MockTime::new();
     let mut one = Line::with_capacity(&time);
     one.reply_to(1, status1(1, &[]).bytes())
@@ -871,7 +875,10 @@ fn a_temperature_limit_written_to_an_overheating_actuator_counts_as_written() {
     backend.declare(0, &[(1, AX)]).unwrap();
 
     assert_eq!(backend.confirm_torque_off(0, AX, 1), Ok(()));
-    assert_eq!(backend.write_temperature_limit(0, AX, 1, 80), Ok(()));
+    assert_eq!(
+        backend.write_temperature_limit(0, AX, 1, 80),
+        Err(BackendError::Fault(Fault::Hardware { status: 0x04 }))
+    );
     assert_eq!(backend.write_voltage_limits(0, AX, 1, 95, 130), Ok(()));
 
     let (one, _) = lines(&mut backend);
@@ -1218,10 +1225,12 @@ fn a_protocol_2_actuator_whose_alert_persists_after_its_limits_are_written_fails
 /// SRS FR-5.2, FR-6.1 (T084): `voltage_limits(9.0, 13.0).restore_limits()`
 /// on the AX-12A at 10.1 V. The limits it held, 10.5–13.0 V, come from the
 /// fault its read answers with; the run's are written, its fault cleared,
-/// and after torque off the old ones go back, the fault in that reply only
-/// counted as written.
+/// and it runs: torque on, which voids `dxl_rs_v2`'s torque-off mark, then
+/// torque off, which sets it again. The old limits then go back; that reply
+/// carries the voltage fault again, so they are read back once, from it,
+/// with no warning.
 #[test]
-fn the_bench_ax12a_gets_its_voltage_limits_back_after_torque_off() {
+fn the_bench_ax12a_gets_its_voltage_limits_back_after_a_run() {
     use kmr_core::hal::Hal;
 
     let time = MockTime::new();
@@ -1237,47 +1246,75 @@ fn the_bench_ax12a_gets_its_voltage_limits_back_after_torque_off() {
         .reply_to(19, status1(1, &[30]).bytes())
         .reply_to(20, status1(1, &[70]).bytes())
         .reply_to(21, status1(1, &[90, 130]).bytes())
+        // Torque on: present position 512, the start goal, Torque Enable.
+        .reply_to(22, status1(1, &[0x00, 0x02]).bytes())
+        .reply_to(23, status1(1, &[]).bytes())
+        .reply_to(24, status1(1, &[]).bytes())
         // Torque off, then the old limits written back, answered flagged.
-        .reply_to(22, status1(1, &[]).bytes());
-    ax_low_voltage(&mut one, 23, 105);
+        .reply_to(25, status1(1, &[]).bytes());
+    ax_low_voltage(&mut one, 26, 105);
+    // Their read back, answered with the fault carrying them.
+    ax_low_voltage(&mut one, 30, 105);
     let mut settings = voltage_limits(90, 130);
     settings.restore_limits = true;
     let mut adapter = brought_up(one_ax(settings), one, Line::with_capacity(&time));
 
     assert_eq!(adapter.health(), Ok(()));
-    adapter.torque_off();
-    adapter.restore_limits();
+    assert_eq!(adapter.configure(), Ok(()));
+    assert_eq!(adapter.torque_on(), Ok(()));
+    let warned = crate::dynamixel::tests::warnings("restored", || {
+        adapter.torque_off();
+        adapter.restore_limits();
+    });
 
+    assert_eq!(warned, 0);
     let (one, _) = lines(&mut adapter.backend);
     let sent = one.sent();
     let read_at = find(sent, p1(1, &[0x02, 12, 2]).bytes());
     let run_at = find(sent, p1(1, &[0x03, 12, 90, 130]).bytes());
+    let on_at = find(sent, p1(1, &[0x03, 24, 1]).bytes());
     let off_at = sent
         .windows(p1(1, &[0x03, 24, 0]).bytes().len())
         .rposition(|window| window == p1(1, &[0x03, 24, 0]).bytes());
     let back_at = find(sent, p1(1, &[0x03, 12, 105, 130]).bytes());
-    assert!(read_at.is_some() && read_at < run_at && run_at < off_at && off_at < back_at);
+    let reread_at = sent
+        .windows(p1(1, &[0x02, 12, 2]).bytes().len())
+        .rposition(|window| window == p1(1, &[0x02, 12, 2]).bytes());
+    assert!(read_at.is_some() && read_at < run_at && run_at < on_at);
+    assert!(on_at < off_at && off_at < back_at && back_at < reread_at);
     assert_eq!(one.unread(), 0);
 }
 
-/// dxl_rs_v2 at e53b249 gives the XM430-W210's limits no unit: its typed
-/// setters refuse them with nothing sent, and kmr says why.
+/// dxl_rs_v2 at e53b249 gives the limits of the XM430-W210 and XW540s no
+/// unit: its typed setters refuse them with nothing sent, and kmr
+/// says why. The fake refuses the same models (`limits_have_units`).
 #[test]
-fn an_xm430_limit_write_is_refused_without_a_unit() {
-    let time = MockTime::new();
-    let mut two = Line::with_capacity(&time);
-    xm_setup(&mut two, 1, 1);
-    two.reply_to(5, status2(1, 0, &[]).bytes());
-    let mut backend = backend(Line::with_capacity(&time), two);
-    backend.declare(0, &[(1, XM)]).unwrap();
-    backend.confirm_torque_off(0, XM, 1).unwrap();
+fn an_x_series_limit_write_is_refused_without_a_unit() {
+    for model in [XM, Model::Xw540T140, Model::Xw540T260] {
+        let time = MockTime::new();
+        let mut two = Line::with_capacity(&time);
+        let [low, high] = model.number().to_le_bytes();
+        // Setup as `xm_setup` scripts it, the model's number in the ping.
+        two.reply_to(1, status2(1, 0, &[low, high, 45]).bytes())
+            .reply_to(2, status2(1, 0, &[0, 0, 0, 0]).bytes())
+            .reply_to(3, status2(1, 0, &[0xFF, 0x0F, 0, 0]).bytes())
+            .reply_to(4, status2(1, 0, &[3]).bytes())
+            .reply_to(5, status2(1, 0, &[]).bytes());
+        let mut backend = backend(Line::with_capacity(&time), two);
+        backend.declare(0, &[(1, model)]).unwrap();
+        backend.confirm_torque_off(0, model, 1).unwrap();
 
-    let refused = Err(BackendError::Refused {
-        reason: "a limit dxl_rs_v2 has no unit for on this model",
-    });
-    assert_eq!(backend.write_voltage_limits(0, XM, 1, 95, 160), refused);
-    assert_eq!(backend.write_temperature_limit(0, XM, 1, 70), refused);
-    let (_, two) = lines(&mut backend);
-    assert_eq!(two.unread(), 0);
-    assert_eq!(two.flushes(), 5, "Setup and the torque off alone");
+        let refused = Err(BackendError::Refused {
+            reason: "a limit dxl_rs_v2 has no unit for on this model",
+        });
+        assert_eq!(backend.write_voltage_limits(0, model, 1, 95, 160), refused);
+        assert_eq!(backend.write_temperature_limit(0, model, 1, 70), refused);
+        let (_, two) = lines(&mut backend);
+        assert_eq!(two.unread(), 0, "{model:?}");
+        assert_eq!(
+            two.flushes(),
+            5,
+            "{model:?}: Setup and the torque off alone"
+        );
+    }
 }

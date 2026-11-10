@@ -290,15 +290,14 @@ fn write_register<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
         .map_err(backend_error)
 }
 
-/// What a typed limit write answered: a reply reporting a hardware fault,
-/// measured, counts as written.
-// DECISION: a limit is written to fix the fault the actuator reports (its
-// voltage or temperature outside the limits it holds), so its reply still
-// carries it: dxl_rs_v2 then returns the fault of a write that ran. `health`
-// decides with `clear_fault` and the read back.
-fn limit_written(answer: Result<(), Error>) -> Result<(), BackendError> {
+/// What a typed limit write answered, a reply reporting a hardware fault
+/// returned as that fault, measured.
+// DECISION: the fault is passed on, not taken as written: dxl_rs_v2 measures
+// a reply carrying a hardware fault beside an instruction error into the
+// same fault as one that ran, so only the caller's read back can tell.
+fn limit_answer(answer: Result<(), Error>) -> Result<(), BackendError> {
     match answer {
-        Ok(()) | Err(Error::Fault(_)) => Ok(()),
+        Ok(()) => Ok(()),
         Err(Error::Validation(ValidationError::NoUnit { .. })) => Err(BackendError::Refused {
             reason: "a limit dxl_rs_v2 has no unit for on this model",
         }),
@@ -1103,7 +1102,7 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
                 reason: "a voltage limit wider than its one-byte register",
             });
         }
-        on_bus!(open, model, |bus| limit_written(
+        on_bus!(open, model, |bus| limit_answer(
             held(bus, target)?.set_voltage_limits(volts(min_dv), volts(max_dv))
         ))
     }
@@ -1118,7 +1117,7 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
     ) -> Result<(), BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
         let limit = Temperature::from_celsius(f32::from(celsius));
-        on_bus!(open, model, |bus| limit_written(
+        on_bus!(open, model, |bus| limit_answer(
             held(bus, target)?.set_temperature_limit(limit)
         ))
     }
