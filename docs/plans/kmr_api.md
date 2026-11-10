@@ -74,6 +74,8 @@ in [`specs/004-kmr-api/`](../../specs/004-kmr-api/).
 
 ## Added 2026-11-09 (limits widened for one run, restored after)
 
+On hold (2026-11-10): see the same section in docs/plans/kmr_adapters.md.
+
 - [ ] T082 Agent. Decided by the maintainer 2026-11-09: `Ids::temperature_limit(celsius: u8)` and `Ids::restore_limits()`, declared ids only (`Placement::restore_limits()` was proposed, not approved: it waits on the maintainer), lowered into two new pub fields of the adapter's `Settings`, `temperature_limit_c: Option<u8>` and `restore_limits: bool`. `temperature_limit` is written to EEPROM in `health` torque off and read back like `voltage_limits`, and overrides a placement's Temperature Limit as `voltage_limits` overrides its voltages. `restore_limits` is opt-in: without it the EEPROM keeps what `health` wrote, as today; with it, the values `health` overwrote are written back at the end of the run (kmr_adapters T084). `restore_limits` with no limit to write warns at bring-up and restores nothing, no new error. Docs say: on Protocol 2, restored limits that exclude the supply latch an alert, so the next run needs a power cycle, and an alert latched before the run outlives it, so recover it once without `restore_limits`; on Protocol 1 the next Setup holds the actuator faulted and kmr_adapters T078 recovers it. Contract: specs/004-kmr-api/contracts/builder.md § Dynamixel declarations, one row each. Tests: both lowered into `Settings`
 
 ## Added 2026-11-05 (dxl_rs_v2 migration phase 3)
