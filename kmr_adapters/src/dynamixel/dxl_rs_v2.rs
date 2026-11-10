@@ -38,6 +38,12 @@ const MAX_PORTS: usize = 4;
 // the 0.5 ms factory Return Delay Time. v2's 10 ms default loses ten ticks per
 // silent actuator at 1 kHz; the bench (T063) may shorten it.
 const REPLY_WAIT: Duration = Duration::from_micros(1_500);
+/// Pause after a limit write that reached the line, before the next
+/// exchange: the actuator answers nothing while it stores the value.
+// DECISION: 20 ms: the bench AX-12A chain (2026-11-10) stayed silent past
+// 6 ms after an EEPROM write and answered at 10 ms; the e-Manual gives no
+// figure. Twice the longest seen, paid at bring-up and close only.
+pub(super) const EEPROM_SETTLE: Duration = Duration::from_millis(20);
 /// Bytes of the longest reply the backend waits for: a Protocol 2 status
 /// packet with 4 data bytes is 15.
 const REPLY_BYTES: u64 = 20;
@@ -288,6 +294,15 @@ fn write_register<P: ::dxl_rs_v2::Protocol, T: Transport, C: Clock>(
     actuator
         .write_raw(register.address, data)
         .map_err(backend_error)
+}
+
+/// `answer`, after [`EEPROM_SETTLE`] unless `dxl_rs_v2` refused the write
+/// before sending it.
+fn settled(answer: Result<(), Error>) -> Result<(), Error> {
+    if !matches!(answer, Err(Error::Validation(_))) {
+        std::thread::sleep(EEPROM_SETTLE);
+    }
+    answer
 }
 
 /// What a typed limit write answered, a reply reporting a hardware fault
@@ -1102,9 +1117,9 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
                 reason: "a voltage limit wider than its one-byte register",
             });
         }
-        on_bus!(open, model, |bus| limit_answer(
+        on_bus!(open, model, |bus| limit_answer(settled(
             held(bus, target)?.set_voltage_limits(volts(min_dv), volts(max_dv))
-        ))
+        )))
     }
 
     /// `set_temperature_limit`.
@@ -1117,9 +1132,9 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
     ) -> Result<(), BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
         let limit = Temperature::from_celsius(f32::from(celsius));
-        on_bus!(open, model, |bus| limit_answer(
+        on_bus!(open, model, |bus| limit_answer(settled(
             held(bus, target)?.set_temperature_limit(limit)
-        ))
+        )))
     }
 
     /// The limits `dxl_rs_v2` read at Setup: no I/O.

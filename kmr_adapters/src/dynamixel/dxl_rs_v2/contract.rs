@@ -838,6 +838,33 @@ fn a_limit_write_before_the_torque_is_confirmed_off_sends_nothing() {
 }
 
 #[test]
+fn a_limit_write_that_reached_the_line_waits_for_the_eeprom() {
+    let time = MockTime::new();
+    let mut one = ax_limit_line(&time, 0x00);
+    one.reply_to(7, status1(1, &[]).bytes());
+    let mut backend = backend(one, Line::with_capacity(&time));
+    backend.declare(0, &[(1, AX)]).unwrap();
+
+    let refused = std::time::Instant::now();
+    assert_eq!(
+        backend.write_voltage_limits(0, AX, 1, 95, 130),
+        Err(BackendError::TorqueUnconfirmed { id: 1 })
+    );
+    assert!(
+        refused.elapsed() < super::EEPROM_SETTLE,
+        "nothing sent, no pause"
+    );
+
+    backend.confirm_torque_off(0, AX, 1).unwrap();
+    let voltages = std::time::Instant::now();
+    assert_eq!(backend.write_voltage_limits(0, AX, 1, 95, 130), Ok(()));
+    assert!(voltages.elapsed() >= super::EEPROM_SETTLE);
+    let temperature = std::time::Instant::now();
+    assert_eq!(backend.write_temperature_limit(0, AX, 1, 70), Ok(()));
+    assert!(temperature.elapsed() >= super::EEPROM_SETTLE);
+}
+
+#[test]
 fn torque_enable_is_read_raw_at_24_on_protocol_1() {
     let time = MockTime::new();
     let mut one = Line::with_capacity(&time);
