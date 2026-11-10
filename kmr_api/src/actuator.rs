@@ -227,11 +227,13 @@ mod tests {
             }),
             led: Some(true),
             voltage_limits_dv: None,
+            ..Settings::default()
         };
         let dark = Settings {
             gains: None,
             led: Some(false),
             voltage_limits_dv: None,
+            ..Settings::default()
         };
         assert_eq!(
             declared.settings(),
@@ -256,6 +258,41 @@ mod tests {
         assert_eq!(
             limits,
             [Some((95, 130)), Some((95, 130)), Some((95, 120)), None]
+        );
+    }
+
+    #[test]
+    fn a_temperature_limit_and_restore_limits_reach_their_declaration_only() {
+        use kmr_adapters::dynamixel::Settings;
+
+        let spine = Plugin::by_id("AL02L1KL").baud(1_000_000).build();
+        let declared = lower::<4>(
+            vec![
+                Ax12a::ids(1..=2)
+                    .voltage_limits(9.0, 13.0)
+                    .temperature_limit(70)
+                    .restore_limits()
+                    .on(spine),
+                Ax12a::id(3).temperature_limit(65).on(spine),
+                Ax12a::id(4).on(spine),
+            ],
+            REVOLUTE,
+        )
+        .expect("valid declarations");
+
+        let bench = Settings {
+            voltage_limits_dv: Some((90, 130)),
+            temperature_limit_c: Some(70),
+            restore_limits: true,
+            ..Settings::default()
+        };
+        let warm = Settings {
+            temperature_limit_c: Some(65),
+            ..Settings::default()
+        };
+        assert_eq!(
+            declared.settings(),
+            &[bench, bench, warm, Settings::default()]
         );
     }
 

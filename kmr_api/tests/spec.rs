@@ -397,3 +397,19 @@ mod health_limits {
         );
     }
 }
+
+mod declared_limits {
+    use kmr_api::dynamixel::Ax12a;
+
+    /// The bench declaration (T082): its limits widened for one run, then put back.
+    #[test]
+    fn the_bench_chain_widens_the_limits_for_one_run() {
+        let spine = kmr_api::Bus::by_id("AL02L1KL").baud(1_000_000).build();
+        let widened = Ax12a::ids(1..=10).voltage_limits(9.0, 13.0);
+        let bench = widened.clone().temperature_limit(70).restore_limits();
+
+        assert_ne!(bench, widened);
+        assert_ne!(bench, widened.clone().temperature_limit(70));
+        let _ = bench.on(spine);
+    }
+}

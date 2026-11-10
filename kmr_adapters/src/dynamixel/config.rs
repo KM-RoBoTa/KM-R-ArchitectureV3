@@ -727,17 +727,21 @@ pub struct HealthLimits {
 }
 
 /// Settings written to an actuator at bring-up, torque off, then read back:
-/// the RAM ones in `configure`, the voltage limits to EEPROM in `health`,
-/// both PostInit. `None` leaves the registers as they are.
+/// the RAM ones in `configure`, the limits to EEPROM in `health`, both
+/// PostInit. `None` leaves the registers as they are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     /// P, I and D Gain; Position P, I and D Gain on Protocol 2.
     pub gains: Option<Gains>,
     /// LED on or off.
     pub led: Option<bool>,
-    /// Min and Max Voltage Limit, in 0.1 V; the Temperature Limit is left as
-    /// it is.
+    /// Min and Max Voltage Limit, in 0.1 V.
     pub voltage_limits_dv: Option<(u16, u16)>,
+    /// Temperature Limit, in °C.
+    pub temperature_limit_c: Option<u8>,
+    /// Whether the limit registers written at bring-up are put back as they
+    /// were when the hardware closes, after torque off.
+    pub restore_limits: bool,
 }
 
 impl Settings {
@@ -746,6 +750,8 @@ impl Settings {
         gains: None,
         led: None,
         voltage_limits_dv: None,
+        temperature_limit_c: None,
+        restore_limits: false,
     };
 }
 

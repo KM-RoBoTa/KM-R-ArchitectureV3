@@ -4955,6 +4955,7 @@ fn configure_writes_the_settings_torque_off_then_reads_each_back() -> Result<(),
         gains: Some(GAINS),
         led: Some(true),
         voltage_limits_dv: None,
+        ..Settings::NONE
     };
     let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 2, settings));
     adapter.check(Overrides::default())?;
@@ -5012,6 +5013,7 @@ fn protocol_1_mx64_gains_are_written_too() -> Result<(), DynamixelError> {
         gains: Some(gains),
         led: None,
         voltage_limits_dv: None,
+        ..Settings::NONE
     };
     let placement = set(chain_of(Model::Mx64).check(), 0, settings);
     let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), placement);
@@ -5031,6 +5033,7 @@ fn a_setting_read_back_other_than_written_is_an_error_naming_the_register() {
         gains: Some(GAINS),
         led: None,
         voltage_limits_dv: None,
+        ..Settings::NONE
     };
     let mut adapter = Dynamixel::<_, _, N>::new(Scripted::new(), set(X_TABLE, 1, settings));
     adapter.check(Overrides::default()).unwrap();
@@ -5062,11 +5065,13 @@ fn check_refuses_a_setting_the_model_has_no_register_for_before_any_io() {
         gains: None,
         led: Some(true),
         voltage_limits_dv: None,
+        ..Settings::NONE
     };
     let gains = Settings {
         gains: Some(GAINS),
         led: None,
         voltage_limits_dv: None,
+        ..Settings::NONE
     };
     let cases = [
         (
@@ -5117,6 +5122,7 @@ fn check_refuses_a_gain_above_the_model_s_range() {
         gains: Some(gains),
         led: None,
         voltage_limits_dv: None,
+        ..Settings::NONE
     };
     let mx = set(
         chain_of(Model::Mx64).check(),

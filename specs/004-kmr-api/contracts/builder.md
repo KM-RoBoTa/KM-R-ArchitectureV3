@@ -43,7 +43,9 @@ lowered into the adapter's `Declared` at `run()`.
 | `.mode(Mode)`, `.read_only()`, `.zero(Zero)` | existing | SRS FR-6.1, FR-5.8 |
 | `.gains(p: u16, i: u16, d: u16)` | raw register values, written in `configure` torque off and read back; refused at `check` on AX and RX (no register) and above the model's range (254 on the MX-64, 16383 on Protocol 2) | SRS FR-5.2, FR-6.1 |
 | `.led(on: bool)` | written and read back in `configure`; refused at `check` on the XW series (no LED) | SRS FR-5.2, FR-6.1 |
-| `.voltage_limits(min: f32, max: f32)` | volts, rounded to the 0.1 V register; Min and Max Voltage Limit written to EEPROM in `health` torque off and read back, Temperature Limit left as it is; refused at `check` when min is above max and on Protocol 1 above 25.5 V (one-byte register) | SRS FR-5.2, FR-6.1 |
+| `.voltage_limits(min: f32, max: f32)` | volts, rounded to the 0.1 V register; Min and Max Voltage Limit written to EEPROM in `health` through dxl_rs_v2's typed setter, torque off, and read back; refused at `check` when min is above max and on Protocol 1 above 25.5 V (one-byte register); bring-up refuses an actuator found powered, never switching it off | SRS FR-5.2, FR-6.1 |
+| `.temperature_limit(celsius: u8)` | Temperature Limit written to EEPROM in `health` as `voltage_limits` writes those, overriding a placement's Temperature Limit; lowered into `Settings::temperature_limit_c` (T082) | SRS FR-5.2, FR-6.1 |
+| `.restore_limits()` | opt-in: the limit registers `health` writes are saved first and written back in `close()`, after torque off, a failed bring-up included; one attempt each, a failure warned; lowered into `Settings::restore_limits` (T082) | SRS FR-5.2, FR-5.6 |
 
 ## Registrations (grow the type-state)
 

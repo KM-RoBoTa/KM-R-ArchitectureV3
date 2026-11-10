@@ -103,8 +103,8 @@ impl Ids {
     }
 
     /// Writes these Min and Max Voltage Limits, in volts, to the actuators' EEPROM at bring-up,
-    /// torque off, then reads them back; their Temperature Limit is left as it is. `run()`
-    /// refuses a min above the max and, on Protocol 1, a limit above 25.5 V.
+    /// torque off, then reads them back. `run()` refuses a min above the max and, on Protocol 1,
+    /// a limit above 25.5 V; bring-up refuses an actuator found powered, never switching it off.
     pub fn voltage_limits(self, min: f32, max: f32) -> Self {
         // DECISION: rounded to the 0.1 V register; `as` saturates, so NaN or a negative limit
         // reaches the actuator as 0, which it refuses at bring-up.
@@ -112,6 +112,31 @@ impl Ids {
         Self {
             settings: Settings {
                 voltage_limits_dv: Some((decivolts(min), decivolts(max))),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Writes this Temperature Limit, in °C, to the actuators' EEPROM at bring-up, as
+    /// [`voltage_limits`](Self::voltage_limits) writes those.
+    pub fn temperature_limit(self, celsius: u8) -> Self {
+        Self {
+            settings: Settings {
+                temperature_limit_c: Some(celsius),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Puts back, when the hardware closes after torque off, the limits written at bring-up as
+    /// the actuators held them: limits widened for one run only. A failed bring-up included;
+    /// a limit not put back is a warning.
+    pub fn restore_limits(self) -> Self {
+        Self {
+            settings: Settings {
+                restore_limits: true,
                 ..self.settings
             },
             ..self
