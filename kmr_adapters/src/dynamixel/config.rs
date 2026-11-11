@@ -105,6 +105,22 @@ impl Model {
         }
     }
 
+    /// The model that answers with Model Number `number`, if the adapter
+    /// drives it.
+    pub(crate) const fn from_number(number: u16) -> Option<Self> {
+        Some(match number {
+            12 => Self::Ax12a,
+            28 => Self::Rx28,
+            310 => Self::Mx64,
+            311 => Self::Mx64V2,
+            1030 => Self::Xm430W210,
+            1280 => Self::Xw430T200,
+            1180 => Self::Xw540T140,
+            1170 => Self::Xw540T260,
+            _ => return None,
+        })
+    }
+
     /// Protocol the model speaks.
     pub const fn protocol(self) -> Protocol {
         match self {
@@ -1591,6 +1607,14 @@ mod tests {
             buses: [BUS],
             actuators,
         }
+    }
+
+    #[test]
+    fn each_model_is_found_by_its_model_number() {
+        for model in MODELS {
+            assert_eq!(Model::from_number(model.number()), Some(model));
+        }
+        assert_eq!(Model::from_number(0), None);
     }
 
     #[test]

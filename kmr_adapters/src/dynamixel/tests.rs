@@ -33,6 +33,7 @@ use super::backend::{
     Backend, BackendError, GoalRegister, Health, PortSpec, RamSetting, RawState, Vital, Wire,
 };
 use super::scripted::{Call, HEALTHY, Record, Scripted};
+use super::status::{Instruction, P1Error, P1Errors, P2Error, Request, StatusError, StatusReport};
 use super::telemetry::TELEMETRY_EVERY;
 use super::{
     Actuator, Bus, DEFAULT_READ_EVERY, Dynamixel, DynamixelError, Gains, HealthLimits, Mode, Model,
@@ -1583,7 +1584,7 @@ fn a_hardware_error_is_named_with_its_bits() -> Result<(), DynamixelError> {
     let message = error.err().map(|error| error.to_string());
     assert_eq!(
         message.as_deref(),
-        Some("actuator 2: id 3 on bus x: Hardware Error Status 0b00100100 (overheating, overload)")
+        Some("actuator 2: id 3 on bus x: hardware error: overheating, overload")
     );
     Ok(())
 }
@@ -1869,6 +1870,50 @@ fn a_port_that_fails_to_open_is_named_with_its_bus_and_serial() -> io::Result<()
     Ok(())
 }
 
+/// The status error of a Protocol 2 read of Hardware Error Status the
+/// actuator could not process.
+const fn unprocessed_read() -> BackendError {
+    BackendError::Status(StatusError {
+        report: StatusReport::P2 {
+            alert: false,
+            code: Some(P2Error::ResultFail),
+        },
+        request: Request {
+            instruction: Some(Instruction::Read),
+            register: Some("Hardware Error Status"),
+            addr: Some(70),
+        },
+    })
+}
+
+/// The status error of a Protocol 1 read of Model Number reporting `error`.
+fn model_number_read(error: P1Error) -> BackendError {
+    BackendError::Status(StatusError {
+        report: StatusReport::P1(P1Errors::default().with(error)),
+        request: Request {
+            instruction: Some(Instruction::Read),
+            register: Some("Model Number"),
+            addr: Some(0),
+        },
+    })
+}
+
+/// The status error of a Protocol 2 write of the voltage limits outside
+/// the registers' range.
+const fn out_of_range_write() -> BackendError {
+    BackendError::Status(StatusError {
+        report: StatusReport::P2 {
+            alert: false,
+            code: Some(P2Error::DataRange),
+        },
+        request: Request {
+            instruction: Some(Instruction::Write),
+            register: Some("Max Voltage Limit"),
+            addr: None,
+        },
+    })
+}
+
 #[test]
 fn a_failed_health_read_names_the_actuator() -> Result<(), DynamixelError> {
     let mut adapter = rig(X_TABLE);
@@ -1876,7 +1921,7 @@ fn a_failed_health_read_names_the_actuator() -> Result<(), DynamixelError> {
     mark_open(&mut adapter);
     adapter
         .backend
-        .fail(Call::ReadHealth, 0, id(1), BackendError::Status(0x20));
+        .fail(Call::ReadHealth, 0, id(1), unprocessed_read());
 
     let error = adapter.health();
 
@@ -1886,13 +1931,16 @@ fn a_failed_health_read_names_the_actuator() -> Result<(), DynamixelError> {
             actuator: 1,
             bus: "x",
             id: id(1),
-            source: BackendError::Status(0x20)
+            source: unprocessed_read()
         })
     );
     let message = error.err().map(|error| error.to_string());
     assert_eq!(
         message.as_deref(),
-        Some("actuator 1: id 2 on bus x: status packet error 0x20")
+        Some(
+            "actuator 1: id 2 on bus x: the actuator refused the instruction: result fail \
+             (it could not process it), in reply to Read Hardware Error Status"
+        )
     );
     Ok(())
 }
@@ -3721,7 +3769,9 @@ fn an_ax12_answering_as_a_declared_mx64_fails_ping_before_any_torque() {
     );
     assert_eq!(
         error.map(|error| error.to_string()).as_deref(),
-        Some("actuator 3: id 4 on bus mx: Model Number 12, expected 310 for the declared MX-64")
+        Some(
+            "actuator 3: id 4 on bus mx: Model Number 12 (AX-12A), expected 310 for the declared MX-64"
+        )
     );
     let backend = &adapter.backend;
     assert_eq!(backend.count(Call::Declare), 2);
@@ -3749,16 +3799,35 @@ fn an_mx64_answering_as_a_declared_ax12_fails_ping_before_any_torque() {
     );
     assert_eq!(
         error.map(|error| error.to_string()).as_deref(),
-        Some("actuator 0: id 1 on bus ax: Model Number 310, expected 12 for the declared AX-12A")
+        Some(
+            "actuator 0: id 1 on bus ax: Model Number 310 (MX-64), expected 12 for the declared AX-12A"
+        )
     );
     assert_eq!(adapter.backend.count(Call::ReadHealth), 0);
     assert!(nothing_powered(&adapter.backend));
 }
 
 #[test]
+fn a_model_number_read_is_named_when_the_adapter_drives_it() {
+    assert_eq!(
+        BackendError::WrongModel { found: 1030 }.to_string(),
+        "Model Number 1030 (XM430-W210) answers"
+    );
+    assert_eq!(
+        BackendError::WrongModel { found: 77 }.to_string(),
+        "Model Number 77 answers"
+    );
+}
+
+#[test]
 fn a_failed_model_number_read_names_the_actuator() {
     let (adapter, result) = bring_up_ax_beside_mx(|backend| {
-        backend.fail(Call::Declare, 1, id(1), BackendError::Status(0x04));
+        backend.fail(
+            Call::Declare,
+            1,
+            id(1),
+            model_number_read(P1Error::Overheating),
+        );
     });
 
     assert_eq!(
@@ -3767,10 +3836,35 @@ fn a_failed_model_number_read_names_the_actuator() {
             actuator: 1,
             bus: "mx",
             id: id(1),
-            source: BackendError::Status(0x04),
+            source: model_number_read(P1Error::Overheating),
         })
     );
     assert!(nothing_powered(&adapter.backend));
+}
+
+#[test]
+fn a_p1_input_voltage_error_at_bring_up_is_named_in_words() {
+    let failure = model_number_read(P1Error::InputVoltage);
+    let (_, result) = bring_up_ax_beside_mx(|backend| {
+        backend.fail(Call::Declare, 1, id(1), failure);
+    });
+    let Err(error) = result else {
+        panic!("bring-up passed an input voltage error");
+    };
+    let name = core::any::type_name::<Dynamixel<Scripted, 2, N>>();
+    let hardware: HardwareError<MemberError<DynamixelError, core::convert::Infallible>> =
+        HardwareError::Member(MemberError::Head { name, error });
+
+    let message = hardware.to_string();
+
+    assert_eq!(
+        message,
+        format!(
+            "member 0 ({name}): actuator 1: id 2 on bus mx: the actuator reports an input \
+             voltage error, in reply to Read Model Number"
+        )
+    );
+    assert!(!message.contains("0x"), "{message}");
 }
 
 #[test]
@@ -4156,12 +4250,9 @@ fn limits_of_one_row_reach_that_actuator_only() -> Result<(), DynamixelError> {
 #[test]
 fn a_failed_limit_write_names_the_actuator() {
     let mut adapter = limited_rig(MX2_TABLE);
-    adapter.backend.fail(
-        Call::WriteVoltageLimits,
-        0,
-        id(3),
-        BackendError::Status(0x02),
-    );
+    adapter
+        .backend
+        .fail(Call::WriteVoltageLimits, 0, id(3), out_of_range_write());
 
     assert_eq!(
         adapter.health(),
@@ -4169,7 +4260,7 @@ fn a_failed_limit_write_names_the_actuator() {
             actuator: 3,
             bus: "mx",
             id: id(3),
-            source: BackendError::Status(0x02),
+            source: out_of_range_write(),
         })
     );
 }

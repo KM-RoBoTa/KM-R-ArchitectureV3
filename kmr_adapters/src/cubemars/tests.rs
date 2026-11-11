@@ -722,3 +722,15 @@ fn an_actuator_without_a_reply_since_the_last_call_keeps_its_telemetry() {
     assert!(fresh.iter().eq([0, 1]));
     assert_eq!(telemetry.temperature_c(2), Ok(Some(30.0)));
 }
+
+#[test]
+fn an_os_error_is_worded_by_the_os_not_numbered() {
+    assert_eq!(
+        TransportError::Io(5).to_string(),
+        format!("CAN I/O failed: {}", std::io::Error::from_raw_os_error(5))
+    );
+    assert_eq!(
+        TransportError::Io(0).to_string(),
+        "CAN I/O failed: no OS error code"
+    );
+}

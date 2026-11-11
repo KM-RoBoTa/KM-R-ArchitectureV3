@@ -26,6 +26,7 @@ use super::backend::{
     RawState, Reading, Reply, Setting, Undeclared, Vital, Wire, voltage_limits_fit,
 };
 use super::config::{Model, Protocol};
+use super::status::{self, Instruction, P1Errors, P2Error, Request, StatusError};
 
 #[cfg(test)]
 mod contract;
@@ -513,7 +514,7 @@ fn backend_error(error: Error) -> BackendError {
             BackendError::Reply(Reply::Corrupt)
         }
         Error::Protocol(_) => BackendError::Reply(Reply::Malformed),
-        Error::Status(status) => BackendError::Status(status_byte(status.report)),
+        Error::Status(status) => BackendError::Status(status_of(status)),
         Error::Fault(fault) => BackendError::Fault(fault_of(fault)),
         Error::Setup(setup) => match setup {
             SetupError::Missing { .. } => BackendError::Timeout,
@@ -564,27 +565,61 @@ fn refusal_reason(refusal: &ValidationError) -> &'static str {
     }
 }
 
-/// The error byte of a status packet, as the actuator sent it.
-fn status_byte(report: StatusReport) -> u8 {
+/// The status error of a `dxl_rs_v2` one: its report and the request it
+/// answered.
+fn status_of(status: ::dxl_rs_v2::StatusError) -> StatusError {
+    StatusError {
+        report: report_of(status.report),
+        request: request_of(status.request),
+    }
+}
+
+/// A `dxl_rs_v2` status report, decoded the same way.
+fn report_of(report: StatusReport) -> status::StatusReport {
     use ::dxl_rs_v2::P2Code;
     match report {
-        StatusReport::P1(flags) => flags.0,
+        StatusReport::P1(flags) => status::StatusReport::P1(P1Errors::from_bits(flags.0)),
         StatusReport::P2 { alert, code } => {
             let code = match code {
-                None => 0,
-                Some(P2Code::ResultFail) => 1,
-                Some(P2Code::Instruction) => 2,
-                Some(P2Code::Crc) => 3,
-                Some(P2Code::DataRange) => 4,
-                Some(P2Code::DataLength) => 5,
-                Some(P2Code::DataLimit) => 6,
-                Some(P2Code::Access) => 7,
-                Some(P2Code::Unknown(bits)) => bits,
-                Some(_) => 0x7F,
+                None => None,
+                Some(P2Code::ResultFail) => Some(P2Error::ResultFail),
+                Some(P2Code::Instruction) => Some(P2Error::Instruction),
+                Some(P2Code::Crc) => Some(P2Error::Crc),
+                Some(P2Code::DataRange) => Some(P2Error::DataRange),
+                Some(P2Code::DataLength) => Some(P2Error::DataLength),
+                Some(P2Code::DataLimit) => Some(P2Error::DataLimit),
+                Some(P2Code::Access) => Some(P2Error::Access),
+                Some(P2Code::Unknown(code)) => Some(P2Error::Unknown(code)),
+                // DECISION: a code added to the SDK later keeps the alert
+                // bit beside it, so a hardware fault is never dropped.
+                Some(_) => Some(P2Error::Unnamed),
             };
-            u8::from(alert) << 7 | code
+            status::StatusReport::P2 { alert, code }
         }
-        _ => 0,
+        _ => status::StatusReport::Unnamed,
+    }
+}
+
+/// What a `dxl_rs_v2` request did: its instruction, register and address.
+fn request_of(request: ::dxl_rs_v2::Request) -> Request {
+    use ::dxl_rs_v2::Instruction as I;
+    let instruction = request.instruction.and_then(|instruction| {
+        Some(match instruction {
+            I::Ping => Instruction::Ping,
+            I::Read => Instruction::Read,
+            I::Write => Instruction::Write,
+            I::Reboot => Instruction::Reboot,
+            I::SyncRead => Instruction::SyncRead,
+            I::SyncWrite => Instruction::SyncWrite,
+            I::BulkRead => Instruction::BulkRead,
+            I::BulkWrite => Instruction::BulkWrite,
+            _ => return None,
+        })
+    });
+    Request {
+        instruction,
+        register: request.register,
+        addr: request.addr,
     }
 }
 
