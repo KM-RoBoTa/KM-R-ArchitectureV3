@@ -338,8 +338,8 @@ the adapter, `joint_limit` and `envelope` from the limit stage) and its
 A new slot starts with none set. `faults(depth)` and `tick_flags(depth)` read
 them; controllers cannot set or clear one. `read` faults show at depth 0 from
 `First` on; `write` and limit faults, and `OVERRUN`, at depth 1 on the next
-tick. The engine has no home state: homing is a kmr_api preset (SRS FR-2.7);
-the core's two `StateError::Undecided` home stubs are leftovers.
+tick. The engine has no home state and no out-of-place check: homing is a
+kmr_api preset (SRS FR-2.7, FR-5.2).
 
 ## Robot model
 

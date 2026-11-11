@@ -532,8 +532,6 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>
             return Ok(signal);
         }
     }
-    // The seed would be compared with the home state here (SRS FR-5.2).
-    warn!("out-of-place check skipped: SRS FR-2.7 home state open");
     // A pending signal, a shutdown included, never powers the actuators
     // (SRS FR-4.2).
     if let Some(signal) = host.poll() {
@@ -1493,19 +1491,6 @@ mod tests {
 
             assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
             assert_eq!(seen.get().map(NonZeroU32::get), Some(3));
-        }
-
-        #[test]
-        fn the_skipped_out_of_place_check_warns_once_per_run() {
-            static WARNINGS: AtomicU32 = AtomicU32::new(0);
-            let log = Log::new();
-            let mut robot = recording_robot!(log);
-            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + PER_TICK);
-            let counter = Counter::new("out-of-place check skipped", &WARNINGS);
-
-            tracing::subscriber::with_default(counter, || simulated(&mut robot, &mut host));
-
-            assert_eq!(WARNINGS.load(Ordering::Relaxed), 1);
         }
 
         /// Logs each stage into the shared log.

@@ -22,12 +22,12 @@ scan() {
 }
 
 code="$(scan)"
-markers="$(grep -cE 'unimplemented!\("SRS|Undecided\("SRS' <<<"$code" || true)"
+markers="$(grep -cE 'unimplemented!\("SRS' <<<"$code" || true)"
 echo "SRS markers in $root: $markers"
-grep -E 'unimplemented!\("SRS|Undecided\("SRS' <<<"$code" || true
+grep -E 'unimplemented!\("SRS' <<<"$code" || true
 
 banned="$(grep -E '\.unwrap\(\)|\.expect\(|panic!\(' <<<"$code" |
-    grep -vE 'unimplemented!\("SRS|Undecided\("SRS' || true)"
+    grep -vE 'unimplemented!\("SRS' || true)"
 if [[ -n "$banned" ]]; then
     echo "unwrap, expect or panic! outside an SRS marker:"
     echo "$banned"

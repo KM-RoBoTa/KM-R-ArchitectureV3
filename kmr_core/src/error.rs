@@ -42,10 +42,6 @@ pub enum StateError {
     #[error("Value requested is unavailable.")]
     CriticalValueMissing,
 
-    /// The behaviour is not decided yet; the text names the open SRS item.
-    #[error("not decided yet: {0}")]
-    Undecided(&'static str),
-
     /// No sample of the actuator exists `depth` ticks back: it was not read
     /// yet then, or never (a run without hardware).
     #[error("no sample {depth} ticks back: the actuator had not been read yet")]

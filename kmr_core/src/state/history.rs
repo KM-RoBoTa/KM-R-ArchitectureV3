@@ -1,7 +1,6 @@
 use circular_buffer::FixedCircularBuffer;
 
 use super::joint_state::{Kd, Kp, Q, Qd, Tau};
-use crate::error::StateError;
 use crate::hal::{Faults, TickFlags};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,11 +28,6 @@ pub(crate) struct State<const N: usize> {
 }
 
 impl<const N: usize> State<N> {
-    /// The robot model's home state; its source is still open in the SRS.
-    pub(crate) fn home_state() -> Result<Self, StateError> {
-        Err(StateError::Undecided("SRS FR-2.7: home state source"))
-    }
-
     /// Returns a completely zeroed-out state.
     ///
     /// It is only meant to be used ONCE at the initialization phase.

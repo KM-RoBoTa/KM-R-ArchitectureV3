@@ -75,12 +75,6 @@ impl<const N: usize> RobotState<N> {
     }
 
     // ── State getters ───────────────────────────────────────────────────
-    /// Returns the array [`StateField`] defined as the home position for the
-    /// current robot model.
-    pub(crate) fn home_state<T: StateField>(&self) -> Result<[T; N], StateError> {
-        Err(StateError::Undecided("SRS FR-2.7: home state source"))
-    }
-
     /// Newest entry's slot for field type `T`. None if history is empty or
     /// an actuator has no sample yet.
     pub fn current<T: StateField>(&self) -> Option<&[T; N]> {
