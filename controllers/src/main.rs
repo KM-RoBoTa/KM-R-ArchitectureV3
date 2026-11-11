@@ -28,13 +28,56 @@ kmr_api::robot!(model = "models/ax_12_12act_an_rx28_10act.urdf");
 /// AX-12A and RX-28 middle: raw 512, which the adapter calls 0 rad.
 const CENTER: Q = Q(0.0);
 
-/// Time `HOME` takes to ramp to the centre; the sine starts after it.
+/// Time `HOME` takes to ramp to the centre; the sines start after it.
 const HOME_TIME: Duration = Duration::from_secs(3);
 
-/// A small sine around the centre. Behind `HOME.then`, its time starts at zero once home.
-fn sine_all(time: &Time, robot: &mut State, _sensors: &Sensors) {
-    let offset = Q(0.15 * (TAU * 0.5 * time.elapsed().as_secs_f32()).sin());
-    robot.set_all_q([CENTER + offset; N]);
+/// Ramps every actuator from where it was at the first tick to the centre.
+const HOME: Home<N> = Home::new([CENTER; N], HOME_TIME);
+
+/// AX-12A count: the URDF's first actuators.
+const AX_COUNT: usize = 12;
+
+/// The AX-12A snake.
+const AX: [usize; AX_COUNT] = from(0);
+
+/// The RX-28 snake: every actuator after the AX-12A.
+const RX: [usize; N - AX_COUNT] = from(AX_COUNT);
+
+/// `K` consecutive actuator indices from `first`.
+const fn from<const K: usize>(first: usize) -> [usize; K] {
+    let mut indices = [0; K];
+    let mut i = 0;
+    while i < K {
+        indices[i] = first + i;
+        i += 1;
+    }
+    indices
+}
+
+/// Amplitude of the AX-12A sine; the RX-28 sine has twice it.
+const AMPLITUDE: f32 = 0.15;
+
+/// A 0.5 Hz sine of `amplitude` around the centre. Behind `HOME.then`, its time starts at zero
+/// once home.
+fn sine(amplitude: f32, time: &Time) -> Q {
+    CENTER + Q(amplitude * (TAU * 0.5 * time.elapsed().as_secs_f32()).sin())
+}
+
+fn sine_ax(time: &Time, robot: &mut State, _sensors: &Sensors) {
+    if let Err(e) = robot.group(AX).set_all_q([sine(AMPLITUDE, time); AX.len()]) {
+        eprintln!("{e}");
+        shutdown!("AX-12A group write failed");
+    }
+}
+
+fn sine_rx(time: &Time, robot: &mut State, _sensors: &Sensors) {
+    if let Err(e) = robot
+        .group(RX)
+        .set_all_q([sine(2.0 * AMPLITUDE, time); RX.len()])
+    {
+        eprintln!("{e}");
+        shutdown!("RX-28 group write failed");
+    }
 }
 
 // DECISION: 20 s, not 2: the run has to outlast HOME_TIME for the sine to start.
@@ -60,8 +103,10 @@ fn main() {
         .add_actuator(kmr_api::dynamixel::Ax12a::ids(1..=12).on(ax_snake))
         .add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(rx_snake))
         // .add_controller(EachTick, nudge_first_joint)
-        // .add_controller(EachTick, HOME.then(sine_all))
-        .add_controller(EachTick, Home::new([CENTER; N], HOME_TIME).then(sine_all))
+        // DECISION: one HOME per snake controller; both ramps write the same line, so the
+        // duplicate write during the ramp changes nothing.
+        .add_controller(EachTick, HOME.then(sine_ax))
+        .add_controller(EachTick, HOME.then(sine_rx))
         .add_controller(EachTick, shutdown_after_some_time)
         .run()
     {
