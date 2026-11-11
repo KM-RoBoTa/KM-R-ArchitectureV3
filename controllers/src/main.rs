@@ -43,6 +43,9 @@ const AX: [usize; AX_COUNT] = from(0);
 /// The RX-28 snake: every actuator after the AX-12A.
 const RX: [usize; N - AX_COUNT] = from(AX_COUNT);
 
+/// Amplitude of the AX-12A sine; the RX-28 sine has twice it.
+const AMPLITUDE: f32 = 0.15;
+
 /// `K` consecutive actuator indices from `first`.
 const fn from<const K: usize>(first: usize) -> [usize; K] {
     let mut indices = [0; K];
@@ -54,9 +57,6 @@ const fn from<const K: usize>(first: usize) -> [usize; K] {
     indices
 }
 
-/// Amplitude of the AX-12A sine; the RX-28 sine has twice it.
-const AMPLITUDE: f32 = 0.15;
-
 /// A 0.5 Hz sine of `amplitude` around the centre. Behind `HOME.then`, its time starts at zero
 /// once home.
 fn sine(amplitude: f32, time: &Time) -> Q {
@@ -64,7 +64,10 @@ fn sine(amplitude: f32, time: &Time) -> Q {
 }
 
 fn sine_ax(time: &Time, robot: &mut State, _sensors: &Sensors) {
-    if let Err(e) = robot.group(AX).set_all_q([sine(AMPLITUDE, time); AX.len()]) {
+    if let Err(e) = robot
+        .group(AX)
+        .set_all_q([sine(2.0 * AMPLITUDE, time); AX.len()])
+    {
         eprintln!("{e}");
         shutdown!("AX-12A group write failed");
     }
@@ -73,7 +76,7 @@ fn sine_ax(time: &Time, robot: &mut State, _sensors: &Sensors) {
 fn sine_rx(time: &Time, robot: &mut State, _sensors: &Sensors) {
     if let Err(e) = robot
         .group(RX)
-        .set_all_q([sine(2.0 * AMPLITUDE, time); RX.len()])
+        .set_all_q([sine(1.0 * AMPLITUDE, time); RX.len()])
     {
         eprintln!("{e}");
         shutdown!("RX-28 group write failed");
@@ -96,8 +99,8 @@ fn main() {
     let rx_snake = kmr_api::Bus::by_id("AL02L1EU").baud(1_000_000).build();
 
     if let Err(e) = Robot::new()
-        .set_dt(Duration::from_millis(40))
-        .set_hold(Duration::from_millis(500))
+        .set_dt(Duration::from_millis(5))
+        .set_hold(Duration::from_millis(50))
         .set_limit_policy_all(kmr_api::Policy::Clamp)
         // Declaration order is the URDF's actuated-joint order: AX joints first, then RX.
         .add_actuator(
