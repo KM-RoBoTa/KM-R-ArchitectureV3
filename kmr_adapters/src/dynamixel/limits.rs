@@ -346,16 +346,23 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     fn old_voltages(&mut self, actuator: Actuator) -> Result<(u16, u16), BackendError> {
         let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
         match self.backend.read_voltage_limits(bus, model, id) {
-            Err(BackendError::Fault(Fault::Voltage { min_dv, max_dv, .. })) => Ok((min_dv, max_dv)),
+            Err(BackendError::Fault(
+                Fault::Voltage { min_dv, max_dv, .. } | Fault::VoltageInside { min_dv, max_dv, .. },
+            )) => Ok((min_dv, max_dv)),
             read => read,
         }
     }
 }
 
-/// `answer` with a fault reply taken as written.
+/// `answer` with a reply reporting only a hardware fault taken as written:
+/// the actuator ran it, and the caller's read back confirms the value.
+// DECISION: a status reply counts too. The actuator builds it before the new
+// limit applies, so the write that lowers the Min Voltage Limit below a low
+// supply answers with the Input Voltage bit it is about to clear.
 fn written(answer: Result<(), BackendError>) -> Result<(), BackendError> {
     match answer {
         Err(BackendError::Fault(_)) => Ok(()),
+        Err(BackendError::Status(status)) if status.report.hardware_only() => Ok(()),
         answer => answer,
     }
 }

@@ -249,6 +249,23 @@ pub(crate) enum Fault {
         /// Max Voltage Limit, in 0.1 V.
         max_dv: u16,
     },
+    /// An input voltage error, though the voltage read after it is inside
+    /// the limits: it sits at a limit, or dipped.
+    #[cfg_attr(
+        not(feature = "dynamixel"),
+        expect(dead_code, reason = "only dxl_rs_v2 measures a flag inside the limits")
+    )]
+    #[error(
+        "input voltage error, though it reads {measured_dv} dV inside {min_dv}–{max_dv} dV now"
+    )]
+    VoltageInside {
+        /// Present input voltage, in 0.1 V.
+        measured_dv: u16,
+        /// Min Voltage Limit, in 0.1 V.
+        min_dv: u16,
+        /// Max Voltage Limit, in 0.1 V.
+        max_dv: u16,
+    },
     /// The temperature is above its limit.
     #[error("temperature {measured_c} °C above {limit_c} °C")]
     Temperature {
