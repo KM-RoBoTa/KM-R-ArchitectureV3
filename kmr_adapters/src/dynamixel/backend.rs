@@ -9,6 +9,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 use super::config::{Model, Protocol};
+use super::status::StatusError;
 
 /// Why a backend call failed: one variant per cause, with its data. `Io` is
 /// the serial line failing, nothing else.
@@ -30,9 +31,9 @@ pub(crate) enum BackendError {
     /// The serial line failed.
     #[error("serial line failed: {0}")]
     Io(Wire),
-    /// The actuator answered with these error bits set.
-    #[error("status packet error {0:#04x}")]
-    Status(u8),
+    /// The actuator's status packet reported an error.
+    #[error("{0}")]
+    Status(StatusError),
     /// The actuator reports a hardware fault.
     #[error("{0}")]
     Fault(Fault),
@@ -44,7 +45,7 @@ pub(crate) enum BackendError {
         id: u8,
     },
     /// Another model answers at the id.
-    #[error("Model Number {found} answers")]
+    #[error("Model Number {} answers", ModelNumber(*.found))]
     WrongModel {
         /// Model Number read.
         found: u16,
@@ -257,7 +258,7 @@ pub(crate) enum Fault {
         limit_c: u8,
     },
     /// Any other fault, or one the measure no longer shows.
-    #[error("Hardware Error Status {status:#010b}")]
+    #[error("hardware error: {}", super::Alarms(*.status))]
     Hardware {
         /// Hardware Error Status bits, X series layout.
         status: u8,
@@ -367,6 +368,19 @@ pub(crate) const fn voltage_limits_fit(model: Model, min_dv: u16, max_dv: u16) -
     match model.protocol() {
         Protocol::One => min_dv <= u8::MAX as u16 && max_dv <= u8::MAX as u16,
         Protocol::Two => true,
+    }
+}
+
+/// A Model Number read, with the model's name when the adapter drives it:
+/// `12 (AX-12A)`.
+pub(crate) struct ModelNumber(pub(crate) u16);
+
+impl fmt::Display for ModelNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match Model::from_number(self.0) {
+            Some(model) => write!(f, "{} ({})", self.0, model.name()),
+            None => write!(f, "{}", self.0),
+        }
     }
 }
 

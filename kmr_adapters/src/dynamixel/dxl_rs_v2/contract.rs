@@ -924,8 +924,116 @@ fn a_limit_write_refused_by_the_actuator_fails() {
 
     assert_eq!(
         backend.write_voltage_limits(0, AX, 1, 95, 130),
-        Err(BackendError::Status(0x08))
+        Err(BackendError::Status(StatusError {
+            report: status::StatusReport::P1(P1Errors::default().with(status::P1Error::Range)),
+            request: Request {
+                instruction: Some(Instruction::Write),
+                register: Some("Min Voltage Limit"),
+                addr: Some(12),
+            },
+        }))
     );
+}
+
+#[test]
+fn a_p1_status_report_maps_each_bit_and_several_at_once() {
+    use ::dxl_rs_v2::P1Flags;
+    use status::P1Error;
+    for (bit, error) in P1Error::ALL.into_iter().enumerate() {
+        assert_eq!(
+            report_of(StatusReport::P1(P1Flags(1 << bit))),
+            status::StatusReport::P1(P1Errors::default().with(error)),
+            "{error:?}"
+        );
+    }
+    let several = P1Errors::default()
+        .with(P1Error::InputVoltage)
+        .with(P1Error::Overheating)
+        .with(P1Error::Overload);
+    assert_eq!(
+        report_of(StatusReport::P1(P1Flags(0x25))),
+        status::StatusReport::P1(several)
+    );
+    assert_eq!(
+        report_of(StatusReport::P1(P1Flags(0x80))),
+        status::StatusReport::P1(P1Errors::from_bits(0x80))
+    );
+}
+
+#[test]
+fn a_p2_status_report_maps_each_code_the_alert_and_an_unknown_code() {
+    use ::dxl_rs_v2::P2Code;
+    let codes = [
+        (P2Code::ResultFail, P2Error::ResultFail),
+        (P2Code::Instruction, P2Error::Instruction),
+        (P2Code::Crc, P2Error::Crc),
+        (P2Code::DataRange, P2Error::DataRange),
+        (P2Code::DataLength, P2Error::DataLength),
+        (P2Code::DataLimit, P2Error::DataLimit),
+        (P2Code::Access, P2Error::Access),
+        (P2Code::Unknown(9), P2Error::Unknown(9)),
+    ];
+    for alert in [false, true] {
+        for (code, error) in codes {
+            assert_eq!(
+                report_of(StatusReport::P2 {
+                    alert,
+                    code: Some(code)
+                }),
+                status::StatusReport::P2 {
+                    alert,
+                    code: Some(error)
+                }
+            );
+        }
+    }
+    assert_eq!(
+        report_of(StatusReport::P2 {
+            alert: true,
+            code: None
+        }),
+        status::StatusReport::P2 {
+            alert: true,
+            code: None
+        }
+    );
+    assert_eq!(P2Code::from_bits(0x7F), Some(P2Code::Unknown(0x7F)));
+}
+
+#[test]
+fn a_request_maps_its_instruction_register_and_address() {
+    use ::dxl_rs_v2::{Instruction as I, Request as R};
+    let write = R::NONE
+        .instruction(I::Write)
+        .id(Id::new(12).unwrap())
+        .register("Torque Enable")
+        .addr(24)
+        .len(1);
+    assert_eq!(
+        request_of(write),
+        Request {
+            instruction: Some(Instruction::Write),
+            register: Some("Torque Enable"),
+            addr: Some(24),
+        }
+    );
+    let instructions = [
+        (I::Ping, Instruction::Ping),
+        (I::Read, Instruction::Read),
+        (I::Write, Instruction::Write),
+        (I::Reboot, Instruction::Reboot),
+        (I::SyncRead, Instruction::SyncRead),
+        (I::SyncWrite, Instruction::SyncWrite),
+        (I::BulkRead, Instruction::BulkRead),
+        (I::BulkWrite, Instruction::BulkWrite),
+    ];
+    for (theirs, ours) in instructions {
+        assert_eq!(
+            request_of(R::NONE.instruction(theirs)).instruction,
+            Some(ours)
+        );
+    }
+    assert_eq!(request_of(R::NONE), Request::NONE);
 }
 
 // ── An actuator held faulted at Setup (docs/deferred.md, the B2 row) ──────

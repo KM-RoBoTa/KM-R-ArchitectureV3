@@ -11,6 +11,7 @@ mod dxl_rs_v2;
 mod io;
 mod limits;
 mod port;
+mod status;
 mod telemetry;
 mod units;
 
@@ -366,7 +367,7 @@ pub enum DynamixelError {
     /// The actuator reports a hardware error: Hardware Error Status on
     /// Protocol 2, its status packet's error bits on Protocol 1.
     #[error(
-        "actuator {actuator}: id {id} on bus {bus}: Hardware Error Status {}",
+        "actuator {actuator}: id {id} on bus {bus}: hardware error: {}",
         Alarms(*.status)
     )]
     HardwareError {
@@ -496,7 +497,8 @@ pub enum DynamixelError {
     /// The Model Number read is not the declared model's: another model
     /// answers at that id, its registers at another scale.
     #[error(
-        "actuator {actuator}: id {id} on bus {bus}: Model Number {found}, expected {expected} for the declared {}",
+        "actuator {actuator}: id {id} on bus {bus}: Model Number {}, expected {expected} for the declared {}",
+        backend::ModelNumber(*.found),
         .declared.name()
     )]
     ModelMismatch {
@@ -588,37 +590,38 @@ impl fmt::Display for ModeName {
     }
 }
 
-/// What each bit of the X series Hardware Error Status reports, bit 0 first.
-const ALARMS: [&str; 8] = [
-    "input voltage",
-    "bit 1",
-    "overheating",
-    "motor encoder",
-    "electrical shock",
-    "overload",
-    "bit 6",
-    "bit 7",
+/// What each bit of the X series Hardware Error Status reports, bit 0 first;
+/// `None` for a bit the e-Manual leaves undefined.
+const ALARMS: [Option<&str>; 8] = [
+    Some("input voltage"),
+    None,
+    Some("overheating"),
+    Some("motor encoder"),
+    Some("electrical shock"),
+    Some("overload"),
+    None,
+    None,
 ];
 
-/// Hardware Error Status bits, printed with what each set bit reports:
-/// `0b00100100 (overheating, overload)`.
+/// Hardware Error Status bits, named: `overheating, overload`.
 struct Alarms(u8);
 
 impl fmt::Display for Alarms {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#010b}", self.0)?;
-        let mut separator = " (";
+        if self.0 == 0 {
+            return f.write_str("no bit set");
+        }
+        let mut separator = "";
         for (bit, alarm) in ALARMS.iter().enumerate() {
             if self.0 & (1 << bit) != 0 {
-                write!(f, "{separator}{alarm}")?;
+                match alarm {
+                    Some(alarm) => write!(f, "{separator}{alarm}")?,
+                    None => write!(f, "{separator}undefined bit {bit}")?,
+                }
                 separator = ", ";
             }
         }
-        if self.0 == 0 {
-            Ok(())
-        } else {
-            f.write_str(")")
-        }
+        Ok(())
     }
 }
 

@@ -17,13 +17,13 @@ pub(crate) enum TransportError {
     #[error("no network interface has this name")]
     NoInterface,
     /// The CAN socket could not be opened.
-    #[error("the CAN socket could not be opened (errno {0})")]
+    #[error("the CAN socket could not be opened: {}", OsError(*.0))]
     Socket(i32),
     /// The kernel's transmit queue is full: the frame was not queued.
     #[error("the transmit queue is full")]
     Full,
     /// A send or a receive failed.
-    #[error("CAN I/O failed (errno {0})")]
+    #[error("CAN I/O failed: {}", OsError(*.0))]
     Io(i32),
     /// The call names a bus that is not open.
     #[error("bus {bus} is not open")]
@@ -31,6 +31,18 @@ pub(crate) enum TransportError {
         /// Index of the bus.
         bus: usize,
     },
+}
+
+/// An OS error number as the OS words it; 0 is a failure the OS did not report.
+struct OsError(i32);
+
+impl core::fmt::Display for OsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            0 => f.write_str("no OS error code"),
+            errno => std::io::Error::from_raw_os_error(errno).fmt(f),
+        }
+    }
 }
 
 /// The CAN bus as the adapter drives it: 8-byte data frames, standard ids.

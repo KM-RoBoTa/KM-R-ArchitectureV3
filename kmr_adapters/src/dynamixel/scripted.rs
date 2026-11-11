@@ -23,6 +23,7 @@ use super::backend::{
     RamSetting, RawState, Reading, Setting, Undeclared, Vital, Wire, voltage_limits_fit,
 };
 use super::config::{HealthLimits, Model, Protocol};
+use super::status::{Instruction, P2Error, Request, StatusError, StatusReport};
 use super::units;
 
 /// Calls recorded; later ones are only counted.
@@ -60,9 +61,21 @@ pub(crate) const HEALTHY: Health = Health {
     temperature_limit_c: 80,
 };
 
-/// Protocol 2 status error of a write the actuator refuses: Access Error,
-/// an EEPROM register written with the torque on.
-pub(crate) const ACCESS_ERROR: u8 = 0x07;
+/// Protocol 2 status error of a write to `register` the actuator refuses:
+/// Access Error, an EEPROM register written with the torque on.
+const fn access_error(register: &'static str) -> StatusError {
+    StatusError {
+        report: StatusReport::P2 {
+            alert: false,
+            code: Some(P2Error::Access),
+        },
+        request: Request {
+            instruction: Some(Instruction::Write),
+            register: Some(register),
+            addr: None,
+        },
+    }
+}
 /// Hardware Error Status bit of an input voltage outside the limits.
 const INPUT_VOLTAGE: u8 = 0x01;
 /// Hardware Error Status bit of a temperature above the limit.
@@ -825,8 +838,15 @@ impl Scripted {
 
     /// The status a limit write to actuator `id` is refused with by the
     /// actuator: Access Error with its torque on on Protocol 2.
-    fn limit_refusal(&self, port: usize, model: Model, id: u8) -> Option<u8> {
-        (model.protocol() == Protocol::Two && get(&self.torque, port, id)).then_some(ACCESS_ERROR)
+    fn limit_refusal(
+        &self,
+        port: usize,
+        model: Model,
+        id: u8,
+        register: &'static str,
+    ) -> Option<StatusError> {
+        (model.protocol() == Protocol::Two && get(&self.torque, port, id))
+            .then_some(access_error(register))
     }
 
     /// Marks the torque of actuator `id` confirmed off, or not.
@@ -849,7 +869,7 @@ impl Scripted {
         port: usize,
         model: Model,
         id: u8,
-        refusal: Option<u8>,
+        refusal: Option<StatusError>,
         apply: impl FnOnce(&mut Health),
     ) -> Result<(), BackendError> {
         if refusal.is_none()
@@ -1325,7 +1345,9 @@ impl Backend for Scripted {
         let value = u32::from(min_dv) << 16 | u32::from(max_dv);
         let call = Call::WriteVoltageLimits;
         self.limit_write(call, (port, model, id), value, refused)?;
-        let refusal = self.limit_refusal(port, model, id);
+        // DECISION: `dxl_rs_v2` names the lower register of the pair it
+        // writes at once, Max Voltage Limit on Protocol 2.
+        let refusal = self.limit_refusal(port, model, id, "Max Voltage Limit");
         self.answer_limits(port, model, id, refusal, |health| {
             health.min_voltage_dv = min_dv;
             health.max_voltage_dv = max_dv;
@@ -1342,7 +1364,7 @@ impl Backend for Scripted {
     ) -> Result<(), BackendError> {
         let call = Call::WriteTemperatureLimit;
         self.limit_write(call, (port, model, id), u32::from(celsius), None)?;
-        let refusal = self.limit_refusal(port, model, id);
+        let refusal = self.limit_refusal(port, model, id, "Temperature Limit");
         self.answer_limits(port, model, id, refusal, |health| {
             health.temperature_limit_c = celsius;
         })
@@ -1417,6 +1439,18 @@ mod tests {
     const MODEL: Model = Model::Xm430W210;
     /// A failed transaction, as scripted faults inject it.
     const IO: BackendError = BackendError::Io(Wire::Closed);
+    /// A read the actuator could not process, as scripted faults inject it.
+    const UNPROCESSED: BackendError = BackendError::Status(StatusError {
+        report: StatusReport::P2 {
+            alert: false,
+            code: Some(P2Error::ResultFail),
+        },
+        request: Request {
+            instruction: Some(Instruction::Read),
+            register: Some("Present Input Voltage"),
+            addr: None,
+        },
+    });
 
     /// Declares actuator `id` of `model` alone on `port`: its ping, as the
     /// fake answers it.
@@ -1554,7 +1588,7 @@ mod tests {
             .fail_sync_write(0)
             .fail_sync_read(1)
             .fail_ping(0, 4)
-            .fail(Call::ReadHealth, 0, 4, BackendError::Status(0x20))
+            .fail(Call::ReadHealth, 0, 4, UNPROCESSED)
             .health(0, 5, hot);
         assert_eq!(backend.open_ports(&[]), Ok(()));
         assert_eq!(start(&mut backend, 4), Ok(()));
@@ -1569,10 +1603,7 @@ mod tests {
             Err(BackendError::Io(Wire::Closed))
         );
         assert_eq!(ping(&mut backend, 0, MODEL, 4), Err(BackendError::Timeout));
-        assert_eq!(
-            backend.read_health(0, MODEL, 4),
-            Err(BackendError::Status(0x20))
-        );
+        assert_eq!(backend.read_health(0, MODEL, 4), Err(UNPROCESSED));
         assert_eq!(backend.read_position(0, MODEL, 4), Ok(0));
         assert_eq!(backend.read_health(0, MODEL, 5), Ok(hot));
         assert_eq!(
