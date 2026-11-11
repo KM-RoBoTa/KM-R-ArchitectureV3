@@ -40,8 +40,8 @@ mod preset {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_driver_is_dynamixel() {
-        use kmr_api::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs<N>, 1, N>, HNil>> =
+        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
+        let _: Option<HCons<Dynamixel<DxlRsV2<N>, 1, N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
     }
 
@@ -97,8 +97,8 @@ mod model {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_driver_is_dynamixel_on_n_bus_slots() {
-        use kmr_api::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs<N>, N, N>, HNil>> =
+        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
+        let _: Option<HCons<Dynamixel<DxlRsV2<N>, N, N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
     }
 
@@ -183,8 +183,8 @@ mod placed {
     #[cfg(feature = "dynamixel")]
     #[test]
     fn with_the_feature_the_member_is_dynamixel_and_a_plugin_binds() {
-        use kmr_api::dynamixel::{DxlRs, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRs<N>, 2, N>, HNil>> =
+        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
+        let _: Option<HCons<Dynamixel<DxlRsV2<N>, 2, N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
         assert!(__Spec::bind(&LABELLED).is_ok());
     }
@@ -395,5 +395,21 @@ mod health_limits {
             __hardware::dynamixel::__PART.limits(),
             &[Some(LIMITS), Some(LIMITS), Some(LIMITS), Some(COOL)]
         );
+    }
+}
+
+mod declared_limits {
+    use kmr_api::dynamixel::Ax12a;
+
+    /// The bench declaration (T082): its limits widened for one run, then put back.
+    #[test]
+    fn the_bench_chain_widens_the_limits_for_one_run() {
+        let spine = kmr_api::Bus::by_id("AL02L1KL").baud(1_000_000).build();
+        let widened = Ax12a::ids(1..=10).voltage_limits(9.0, 13.0);
+        let bench = widened.clone().temperature_limit(70).restore_limits();
+
+        assert_ne!(bench, widened);
+        assert_ne!(bench, widened.clone().temperature_limit(70));
+        let _ = bench.on(spine);
     }
 }

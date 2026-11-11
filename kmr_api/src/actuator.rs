@@ -3,7 +3,9 @@
 use core::ops::RangeInclusive;
 
 use kmr_adapters::binding::Port;
-use kmr_adapters::dynamixel::{Actuator, Bus, Declared, Mode, Model, Table, Torque, Zero};
+use kmr_adapters::dynamixel::{
+    Actuator, Bus, Declared, Mode, Model, Settings, Table, Torque, Zero,
+};
 
 use crate::{BusHandle, MASK_WORDS, UserError};
 
@@ -48,6 +50,7 @@ pub(crate) enum Driver {
         mode: Mode,
         torque: Torque,
         zero: Zero,
+        settings: Settings,
     },
 }
 
@@ -83,6 +86,7 @@ pub(crate) fn lower<const N: usize>(
     }
     let mut handles: Vec<BusHandle> = Vec::new();
     let mut actuators = Vec::with_capacity(N);
+    let mut settings = Vec::with_capacity(N);
     for declaration in &declarations {
         // An empty range names no bus: every live bus carries an actuator.
         if declaration.len(N) == 0 {
@@ -111,6 +115,7 @@ pub(crate) fn lower<const N: usize>(
             mode,
             torque,
             zero,
+            settings: set,
         } = declaration.driver;
         actuators.extend(declaration.ids.resolve(N).map(|id| Actuator {
             bus,
@@ -120,6 +125,7 @@ pub(crate) fn lower<const N: usize>(
             torque,
             zero,
         }));
+        settings.extend(declaration.ids.resolve(N).map(|_| set));
     }
     let unused = Bus {
         label: "",
@@ -145,12 +151,20 @@ pub(crate) fn lower<const N: usize>(
                 declared,
                 expected: N,
             })?;
+    let settings: [Settings; N] =
+        settings
+            .try_into()
+            .map_err(|_: Vec<Settings>| UserError::ActuatorCount {
+                declared,
+                expected: N,
+            })?;
     let rejected = |source| UserError::HardwareRejected {
         source: Box::new(source),
     };
     Declared::new(Table { buses, actuators }, ports, handles.len())
         .map_err(rejected)?
         .check_kinds(prismatic)
+        .map(|declared| declared.with_settings(settings))
         .map_err(rejected)
 }
 
@@ -210,6 +224,98 @@ mod tests {
         assert_eq!(
             table.buses.map(|b| (b.label, b.baud))[..2],
             [("/dev/ttyUSB1", 57_600), ("ARM00001", 1_000_000)]
+        );
+    }
+
+    #[test]
+    fn gains_and_led_reach_each_actuator_of_their_declaration_only() {
+        use kmr_adapters::dynamixel::{Gains, Settings};
+
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        let declared = lower::<4>(
+            vec![
+                Xm430W210::ids(1..=2).gains(800, 20, 4000).led(true).on(arm),
+                Xm430W210::id(3).on(arm),
+                Xm430W210::id(4).led(false).on(arm),
+            ],
+            REVOLUTE,
+        )
+        .expect("valid declarations");
+
+        let tuned = Settings {
+            gains: Some(Gains {
+                p: 800,
+                i: 20,
+                d: 4000,
+            }),
+            led: Some(true),
+            voltage_limits_dv: None,
+            ..Settings::default()
+        };
+        let dark = Settings {
+            gains: None,
+            led: Some(false),
+            voltage_limits_dv: None,
+            ..Settings::default()
+        };
+        assert_eq!(
+            declared.settings(),
+            &[tuned, tuned, Settings::default(), dark]
+        );
+    }
+
+    #[test]
+    fn voltage_limits_reach_their_declaration_in_0_1_v_rounded() {
+        let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+        let declared = lower::<4>(
+            vec![
+                Ax12a::ids(1..=2).voltage_limits(9.5, 13.0).on(arm),
+                Ax12a::id(3).voltage_limits(9.46, 12.04).on(arm),
+                Ax12a::id(4).on(arm),
+            ],
+            REVOLUTE,
+        )
+        .expect("valid declarations");
+
+        let limits = declared.settings().map(|set| set.voltage_limits_dv);
+        assert_eq!(
+            limits,
+            [Some((95, 130)), Some((95, 130)), Some((95, 120)), None]
+        );
+    }
+
+    #[test]
+    fn a_temperature_limit_and_restore_limits_reach_their_declaration_only() {
+        use kmr_adapters::dynamixel::Settings;
+
+        let spine = Plugin::by_id("AL02L1KL").baud(1_000_000).build();
+        let declared = lower::<4>(
+            vec![
+                Ax12a::ids(1..=2)
+                    .voltage_limits(9.0, 13.0)
+                    .temperature_limit(70)
+                    .restore_limits()
+                    .on(spine),
+                Ax12a::id(3).temperature_limit(65).on(spine),
+                Ax12a::id(4).on(spine),
+            ],
+            REVOLUTE,
+        )
+        .expect("valid declarations");
+
+        let bench = Settings {
+            voltage_limits_dv: Some((90, 130)),
+            temperature_limit_c: Some(70),
+            restore_limits: true,
+            ..Settings::default()
+        };
+        let warm = Settings {
+            temperature_limit_c: Some(65),
+            ..Settings::default()
+        };
+        assert_eq!(
+            declared.settings(),
+            &[bench, bench, warm, Settings::default()]
         );
     }
 

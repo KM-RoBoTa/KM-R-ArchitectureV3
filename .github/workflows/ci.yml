@@ -80,23 +80,26 @@ jobs:
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
-      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-      CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
-      CXX_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-g++
+      # dxl_rs_v2's serial port crate links the target's libudev, found through pkg-config.
+      PKG_CONFIG_ALLOW_CROSS: "1"
+      PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+      PKG_CONFIG_PATH_armv7_unknown_linux_gnueabihf: /usr/lib/arm-linux-gnueabihf/pkgconfig
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf
       - uses: Swatinem/rust-cache@v2
-      # dxl_rs compiles the DynamixelSDK C sources and runs bindgen (libclang).
-      - run: >-
-          sudo apt-get update && sudo apt-get install -y libclang-dev
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+      # The runner's mirror serves amd64 only: arm64 and armhf come from ports.ubuntu.com.
+      - run: |
+          sudo sed -i 's/^Types: deb$/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: %s %s-updates %s-security\nComponents: main universe\nArchitectures: arm64 armhf\n' \
+            "$(lsb_release -cs)" "$(lsb_release -cs)" "$(lsb_release -cs)" | sudo tee /etc/apt/sources.list.d/ports.sources
+          sudo dpkg --add-architecture arm64
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf libudev-dev:arm64 libudev-dev:armhf
       # The robot binary with the real SDK, on a runner with no serial device
-      # (kmr_adapters SC-007, SRS NFR-5). A build on the no-op stub bindings fails it.
-      - run: cargo build -p controllers --features kmr_api/dynamixel --target aarch64-unknown-linux-gnu 2>&1 | tee aarch64.log
-      - run: cargo build -p controllers --features kmr_api/dynamixel --target armv7-unknown-linux-gnueabihf 2>&1 | tee armv7.log
-      - run: "! grep -h 'Using stub DynamixelSDK bindings' aarch64.log armv7.log"
+      # (kmr_adapters SC-007, SRS NFR-5).
+      - run: cargo build -p controllers --features kmr_api/dynamixel --target aarch64-unknown-linux-gnu
+      - run: cargo build -p controllers --features kmr_api/dynamixel --target armv7-unknown-linux-gnueabihf

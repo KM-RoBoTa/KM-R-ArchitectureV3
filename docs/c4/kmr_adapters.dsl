@@ -13,8 +13,8 @@
     adaptersUnits = component "kmr_adapters: units" "Raw register values to SI per model and back, position through each actuator's zero; a value with no raw counterpart is None, never clamped." "Rust"
     adaptersPort = component "kmr_adapters: port" "Resolves a plugin's port to one device, checks it is a readable and writable character device, flushes it and sets the 1 ms USB latency timer (SRS FR-5.10)." "Rust, rustix"
     adaptersBackend = component "kmr_adapters: backend seam" "The private trait between the member and a Dynamixel SDK, values raw, one error variant per cause." "Rust trait"
-    adaptersDxlRs = component "kmr_adapters: DxlRs" "The Backend over dxl_rs and the ROBOTIS C SDK, behind the dynamixel feature; the SDK boundary exemption bends only its call sites." "Rust, dxl_rs, C SDK"
-    adaptersScripted = component "kmr_adapters: scripted backend" "The test Backend: refuses what DxlRs refuses, logs every call, scripts answers and failures. Test builds only." "Rust, cfg(test)"
+    adaptersDxlRs = component "kmr_adapters: DxlRs" "DxlRsV2: the Backend over dxl_rs_v2, the pure-Rust SDK, behind the dynamixel feature; every dxl_rs_v2 call and type stays in its file." "Rust, dxl_rs_v2"
+    adaptersScripted = component "kmr_adapters: scripted backend" "The test Backend: refuses what DxlRsV2 refuses, logs every call, scripts answers and failures. Test builds only." "Rust, cfg(test)"
     adaptersCubeTable = component "kmr_adapters: CubeMars table" "The CubeMars hardware of a robot as a const: CAN interfaces by label; per actuator interface, CAN id and the gains sent on a tick that writes none (AK60-6 default 150 and 1). check() rejects a bad table at compile time (SRS FR-6.4)." "Rust, const fn"
     adaptersCubeMember = component "kmr_adapters: CubeMars member" "Implements Hal for AK60-6 actuators in MIT mode, one group per CAN interface, read every tick: bring-up asked limp with the exit frame, positions offset from Init (the zero frame is never sent), enter then a start command at the measured position, one frame per actuator per tick, replies drained one tick old, exit frame at torque off (SRS FR-5.1, FR-5.3, FR-5.6)." "Rust"
     adaptersMit = component "kmr_adapters: MIT frames" "p/v/kp/kd/t packed 16/12/12/12/12 bits over the AK60-6 ranges, signs negated both ways, ported from cubemars_rs; a value out of range is refused, never clipped." "Rust"
@@ -131,7 +131,7 @@
     }
 
     group "kmr_adapters: DxlRs" {
-        adaptersDxlRsType = component "kmr_adapters::dynamixel::DxlRs" "Claims the C SDK once per process, keeps the handles of the actuators it powered." "Rust struct" {
+        adaptersDxlRsType = component "kmr_adapters::dynamixel::DxlRs" "DxlRsV2: one dxl_rs_v2 bus per protocol on each port, and the start goals written since each torque switch." "Rust struct" {
             tags "Code"
         }
     }

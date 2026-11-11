@@ -51,7 +51,26 @@ pub fn sample_age(&self) -> Option<u32>;                                       /
 pub fn faults(&self, depth: usize) -> Result<&Faults<N>, StateError>;        // M4
 pub fn tick_flags(&self, depth: usize) -> Result<TickFlags, StateError>;      // M4
 pub fn cadence(&self, index: usize) -> Result<NonZeroU32, StateError>;        // M3, from Layout
+pub fn telemetry(&self) -> &Telemetry<N>;                                      // SRS FR-5.11
 ```
+
+## Telemetry (telemetry.rs, SRS FR-5.11, 2026-11-05)
+
+```rust
+pub struct Telemetry<const N: usize>;                  // private fields; Clone, Copy, Debug, PartialEq, Default
+impl<const N: usize> Telemetry<N> {
+    pub fn temperature_c(&self, index: usize) -> Result<Option<f32>, StateError>;
+    pub fn voltage_v(&self, index: usize) -> Result<Option<f32>, StateError>;
+    pub fn hardware_error(&self, index: usize) -> Result<Option<u8>, StateError>;
+    pub fn age(&self, index: usize) -> Result<Option<u64>, StateError>;        // ticks
+    pub fn set_temperature_c(&mut self, index: usize, celsius: f32);           // adapter side;
+    pub fn set_voltage_v(&mut self, index: usize, volts: f32);                 // index past N
+    pub fn set_hardware_error(&mut self, index: usize, bits: u8);              // ignored
+}
+```
+
+Not a `StateField`, never in Desired or History. Controllers get `&Telemetry` only, so the
+setters are the adapters' (`Hal::telemetry`).
 
 No getter on Desired, no setter on History, no field access (SC-008 (SRS NFR-3)).
 
@@ -92,7 +111,8 @@ Human-readable `Display`; release builds hide internal causes (FR-055 (SRS NFR-2
 ## For `kmr_adapters`
 
 The whole of [hal.md](hal.md): `Hal<N>`, `seal::Adapter`, `Mask<N>`, `Written<N>`, `Faults<N>`,
-`Layout<N>`, `Group`, `Overrides`, `Command`, `Sample`, `Batch`, `Runs`, `NoHardware`.
+`Layout<N>`, `Group`, `Overrides`, `Command`, `Sample`, `Batch`, `Runs`, `NoHardware`,
+`telemetry::Telemetry<N>`.
 
 ## For `kmr_ffi`
 

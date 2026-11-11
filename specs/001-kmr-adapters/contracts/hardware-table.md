@@ -64,6 +64,32 @@ An unknown label or an index past N, in a group too, is a compile error naming i
 `main.rs` syntax that reaches these (by index or through a group slice) is kmr_api's
 `robot!(.., hardware = |hw| ..)` (kmr_api FR-020; D7 A, assumed, pending human).
 
+## RAM settings (2026-11-05, dxl_rs_v2 migration phase 3)
+
+```rust
+pub mod dynamixel {
+    #[derive(Default)] pub struct Settings { pub gains: Option<Gains>, pub led: Option<bool> }
+    pub struct Gains { pub p: u16, pub i: u16, pub d: u16 }      // raw register values
+    impl<const NB: usize, const M: usize> Declared<NB, M> {
+        pub const fn with_settings(self, settings: [Settings; M]) -> Self;
+        pub const fn settings(&self) -> &[Settings; M];
+    }
+    pub enum DynamixelError {
+        // added:
+        NoSettingRegister { actuator, bus, id, model, register },   // at check, no I/O
+        SettingRange { actuator, bus, id, model, register, value, max }, // at check, no I/O
+        SettingMismatch { actuator, bus, id, register, written, read },  // at configure
+        ..
+    }
+}
+```
+
+What `kmr_api`'s `Ids::gains` and `Ids::led` lower to. `configure` writes them after every mode
+check, the torque still off, then reads each back. No `Placement` builder yet: a preset table sets
+none. Speed limit and the EEPROM settings (limits, Operating Mode, return delay) are not here:
+the speed limit has no plain unit in `dxl_rs_v2` (`SpeedLimit` in rad/s or unlimited, Moving
+Speed or Profile Velocity by protocol), the EEPROM ones wait for B3.
+
 ## Presets
 
 ```rust

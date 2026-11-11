@@ -1,7 +1,9 @@
 # Contract: the private SDK seam and the strict fake
 
-`dynamixel::backend::Backend` is `pub(crate)`. Two implementations: `DxlRs` (feature
-`dynamixel`) and `Scripted` (tests). Values are raw; the adapter converts units.
+`dynamixel::backend::Backend` is `pub(crate)`. Two implementations: `DxlRsV2` (feature
+`dynamixel`, on `dxl_rs_v2`; `DxlRs` on the C SDK until 2026-11-05) and `Scripted` (tests).
+Values are raw; the adapter converts units. The sections below up to the last one are the
+`DxlRs` history.
 
 ## Change: `force_torque_off` (step A3)
 
@@ -81,3 +83,75 @@ State the fake tracks per (port, id), separately:
 | `a_read_only_actuator_left_powered_comes_up_off` | replaces `a_read_only_actuator_left_powered_fails_configure` | `configure` is `Ok`, warns; id off after `torque_on` |
 | `torque_off_before_open_sends_nothing` | `open` fails | no `ForceTorqueOff`, `ClosePorts` once |
 | `torque_off_twice_is_harmless` | after shutdown, call again | no panic, no error |
+
+## Change: `dxl_rs_v2` replaces `dxl_rs` (2026-11-05)
+
+`DxlRsV2` (kmr_adapters/src/dynamixel/dxl_rs_v2.rs) holds one `dxl_rs_v2` bus per protocol on
+each port, two handles of one device. Seam changes:
+
+- `ping` and `read_model_number` are gone. `declare(port, &[(id, model)])` sets a port up in id
+  order (ping, Model Number, limits, mode) and returns `Undeclared { id, source }` at the first
+  failure. The adapter's `ping` calls it once per bus, again up to `PING_ATTEMPTS` times while the
+  failure is `Timeout`. `WrongModel { found }` becomes `ModelMismatch`, a measured `Fault` becomes
+  `Voltage`, `Temperature` or `HardwareError`.
+- `supports(model)`: `check` refuses a model the backend has no table for, before any I/O.
+- `read_angle_limits` answers on Protocol 2 too (Min/Max Position Limit); `configure` keeps them,
+  so a goal outside is `rejected` alone where `dxl_rs_v2` would refuse the whole sync write.
+- `sync_read_state`: three partial sync reads (`partial-reads`), one result per actuator; `Err`
+  only when the line failed. `dxl_rs_v2` has no partial read of several fields at once.
+- `sync_write_start_goal`: one acknowledged `write_raw` of Goal Position per actuator
+  (`raw-registers`): `dxl_rs_v2` refuses goals with the torque off (B1). Other registers:
+  `Unwritable`.
+- `force_torque_off` on an actuator its port does not hold (a failed `declare`) declares it alone
+  first, then writes Torque Enable = 0.
+- `sync_write_goal` leaves out an actuator `dxl_rs_v2` marked faulted and sends the rest.
+- C-SDK errors (`SdkClaimed`, `PathNul`, `BaudTooHigh`, `MixedProtocols`, `SyncGroup`,
+  `GoalTooWide`, handle bookkeeping) are gone; `Reply`, `Wire`, `Fault` map `dxl_rs_v2`'s
+  errors, whose types never leave the file.
+
+Strictness, two departures of the fake: it answers an actuator no `declare` named, and a scripted
+health fault fails `read_health`, never `declare` (`dxl_rs_v2` fails Setup on a faulted actuator,
+B2). The `DxlRsV2` side is pinned by contract tests on `dxl_rs_v2`'s `MockTransport`
+(kmr_adapters/src/dynamixel/dxl_rs_v2/contract.rs).
+
+## Change: `read_vitals` (2026-11-05, telemetry, SRS FR-5.11)
+
+```rust
+/// Telemetry of one group: `out[i]` answers `ids[i]`. Protocol 2 reads `vital` of every id in
+/// one sync read; Protocol 1 reads the voltage and the temperature of each id in one read,
+/// whatever `vital`, and the fault bits its status packet carries. `Err` when the line failed
+/// under the whole group.
+fn read_vitals(&mut self, port: usize, model: Model, vital: Vital, ids: &[u8],
+    out: &mut [Result<Reading, BackendError>]) -> Result<(), BackendError>;
+```
+
+`Vital` is Present Input Voltage, Present Temperature or Hardware Error Status; `Reading` holds
+each value the read carried, in register units (0.1 V, °C, X series error bits), `None` for the
+rest. `DxlRsV2`: one `read_field_partial` of `Raw(..)` on Protocol 2; one `read_raw(42, 2)` per
+id on Protocol 1, Hardware Error Status 0 on a clean reply. A slot whose actuator reported a
+fault is `Ok`, with what `dxl_rs_v2` measured: its error bits, and the voltage or the
+temperature of a voltage or temperature fault. The measurement costs `dxl_rs_v2`'s diagnosis
+reads, on the fault path only. The fake answers from its health script, one record per
+transaction, and refuses a slot count other than the ids'.
+
+The adapter's `telemetry` reads every step once in PostInit, then one step (one transaction) at
+most every `TELEMETRY_EVERY` (50) ticks, round-robin: per Protocol 2 group voltage, temperature,
+then error status; per Protocol 1 actuator one read. A step whose bus the tick's state read took
+waits one tick when the bus cadence leaves any. A failed read sets `offline` or `bus_error` as
+`read` does, never `stale`, and leaves the previous values.
+
+## Change: `write_ram`, `read_ram` (2026-11-05, RAM settings)
+
+```rust
+fn write_ram(&mut self, port: usize, model: Model, id: u8, setting: RamSetting, value: u16)
+    -> Result<(), BackendError>;
+fn read_ram(&mut self, port: usize, model: Model, id: u8, setting: RamSetting)
+    -> Result<u16, BackendError>;
+```
+
+`RamSetting` is P, I or D Gain (Position P, I, D Gain on Protocol 2) or LED. A model without the
+register is refused before sending, `NoRegister`, on both backends. `DxlRsV2`: P and D Gain and
+LED through `dxl_rs_v2`'s typed fields (`PGain`, `DGain` with a raw `Gain`, `Led`); I Gain raw at
+27 (one byte, Protocol 1 MX-64) or 82 (two bytes), since `dxl_rs_v2` has no I gain field; a RAM
+register, so no cache of v2 goes stale. The fake keeps the registers per actuator and can be
+scripted to ignore writes (`stuck_ram`).

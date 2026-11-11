@@ -67,7 +67,7 @@ fi
 ws=$work/ws
 mkdir -p "$ws"
 git archive HEAD | tar -x -C "$ws"
-# Sibling path dependencies (../dxl_rs-agent): linked, read only, so the copy resolves them.
+# Sibling path dependencies (../dxl_rs_v2-kmr): linked, read only, so the copy resolves them.
 sed -n 's/.*path *= *"\.\.\/\([^"]*\)".*/\1/p' Cargo.toml | while read -r sib; do
     if [[ -e $repo/../$sib ]]; then ln -s "$(cd "$repo/../$sib" && pwd)" "$work/$sib"; fi
 done

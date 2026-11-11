@@ -271,6 +271,9 @@ default. `HISTORY_DEPTH` stays a fixed const, public as
 MASK_WORDS])`, `MASK_WORDS = 1`: N above 64 fails the build. Users never touch raw fields
 (`robot.desired.q[0] = ..` is a compile error). Access is setters/getters
 only, all speaking typed newtypes `Q`/`Qd`/`Tau` — never bare `f32`.
+Actuator telemetry (temperature, voltage, hardware error) is a separate
+read-only `Telemetry<N>` block next to History (`telemetry.rs`), filled by
+adapters in `Hal::telemetry`, never a `StateField` (SRS FR-5.11).
 
 **The field set is sealed** (`state/field.rs`): a private `sealed::Slot` trait
 routes each field type to its storage slot; the public `StateField:

@@ -51,19 +51,16 @@ a runtime entity registry — keep the 1kHz hot path static.
       plugins bound by label; torque off on every actuator; software zero
     - the bench run of the first motor (shutdown, emergency stop, read-only
       actuator, ten runs in a row, the missing udev rule)
-    - `dxl_rs`: push the branch the adapter uses (`force_torque_off`,
-      Protocol 1 register reads) and depend on it by git at a pinned rev; one
-      10-byte sync read per group instead of three; fail the build instead of
-      falling back to stub bindings when the C SDK is missing
+    - done 2026-11-05: `dxl_rs` (C SDK) replaced by `dxl_rs_v2` behind the
+      `Backend` trait; no C build, no per-tick allocation in the SDK
+    - `dxl_rs_v2`: depend on it by git at a pinned rev once it is pushed;
+      one state read per group instead of three partial sync reads
     - CI: cross-build `controllers` with the `dynamixel` feature for aarch64
       and armv7
     - measure the read and write cost on the bench and pick the default read
       cadence, a placeholder of 4 ticks today
     - velocity and current modes: need the operating-mode register, which
-      `dxl_rs` does not expose (SRS section 8)
-    - swap `dxl_rs` for `dxl_rs_v2` behind the `Backend` trait once it has a
-      bus: removes the SDK's per-tick allocations and its ~34 ms stall on a
-      missing servo
+      `dxl_rs_v2` does not write yet (SRS section 8)
     - accept or overrule the SRS deviations listed in decision 0002 (brought
       up to date with the list of members and the adapter items 2026-11-03)
 - [ ] Robot model (`kmr_model`), what this version leaves out:

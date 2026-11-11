@@ -3,6 +3,7 @@
 
 use kmr_core::hal::{Batch, Command, Faults, Group, Hal, Layout, Mask, Overrides, Sample, Written};
 use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
+use kmr_core::telemetry::Telemetry;
 
 use super::frame::{self, ENTER, EXIT, Feedback, Mit};
 use super::scripted::{Call, Scripted};
@@ -671,4 +672,53 @@ fn nothing_is_sent_before_open() {
     adapter.torque_off();
     adapter.hold(Desired::default().command());
     assert_eq!(adapter.transport().calls().count(), 0);
+}
+
+/// One `telemetry` call into `telemetry`, with its faults.
+fn refresh(adapter: &mut CubeMars<Scripted, 1, N>, telemetry: &mut Telemetry<N>) -> Mask<N> {
+    let mut faults = Faults::default();
+    let fresh = adapter.telemetry(telemetry, &mut faults);
+    assert_eq!(faults, Faults::default());
+    fresh
+}
+
+#[test]
+fn telemetry_copies_each_fresh_reply_s_temperature_and_error_code_without_bus_io() {
+    let (mut adapter, layout) = powered([0.0; N]);
+    let mut telemetry = Telemetry::default();
+    let calls = adapter.transport().calls().count();
+
+    assert_eq!(refresh(&mut adapter, &mut telemetry), Mask::ALL);
+    assert_eq!(adapter.transport().calls().count(), calls);
+    assert_eq!(telemetry.temperature_c(0), Ok(Some(30.0)));
+    assert_eq!(telemetry.hardware_error(0), Ok(Some(0)));
+    assert_eq!(telemetry.voltage_v(0), Ok(None));
+    assert_eq!(refresh(&mut adapter, &mut telemetry), Mask::NONE);
+
+    adapter.read(Slot::default().sample(), &mut Faults::default());
+    adapter.transport().motor(0, 2).state.temperature = 45;
+    adapter.transport().motor(0, 2).state.fault = 3;
+    write(&mut adapter, &layout, &Desired::default());
+    adapter.read(Slot::default().sample(), &mut Faults::default());
+
+    assert_eq!(refresh(&mut adapter, &mut telemetry), Mask::ALL);
+    assert_eq!(telemetry.temperature_c(1), Ok(Some(45.0)));
+    assert_eq!(telemetry.hardware_error(1), Ok(Some(3)));
+}
+
+#[test]
+fn an_actuator_without_a_reply_since_the_last_call_keeps_its_telemetry() {
+    let (mut adapter, layout) = powered([0.0; N]);
+    let mut telemetry = Telemetry::default();
+    adapter.read(Slot::default().sample(), &mut Faults::default());
+    refresh(&mut adapter, &mut telemetry);
+    adapter.transport().motor(0, 3).answers = false;
+    adapter.transport().motor(0, 3).state.temperature = 70;
+    write(&mut adapter, &layout, &Desired::default());
+    adapter.read(Slot::default().sample(), &mut Faults::default());
+
+    let fresh = refresh(&mut adapter, &mut telemetry);
+
+    assert!(fresh.iter().eq([0, 1]));
+    assert_eq!(telemetry.temperature_c(2), Ok(Some(30.0)));
 }

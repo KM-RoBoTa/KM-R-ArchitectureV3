@@ -117,9 +117,9 @@ impl Model {
         }
     }
 
-    /// Control table family. `dxl_rs` has no RX-28 table: the RX-28 shares
-    /// the AX one, as in v2 (research R7). The Protocol 1 MX-64 shares it
-    /// too, so it shares the AX sync write on its bus.
+    /// Control table family: every register the adapter touches sits at
+    /// the AX address and size on the RX-28 and the Protocol 1 MX-64 too
+    /// (research R7), so they share the AX sync write on their bus.
     pub const fn series(self) -> Series {
         match self {
             Self::Ax12a | Self::Rx28 | Self::Mx64 => Series::Ax,
@@ -192,6 +192,27 @@ impl Model {
     /// it drive Goal Torque and ignore Goal Position.
     pub(crate) const fn has_torque_ctrl_mode(self) -> bool {
         matches!(self, Self::Mx64)
+    }
+
+    /// Highest value of its P, I and D Gain registers (Position P, I and D
+    /// Gain on Protocol 2), ROBOTIS e-Manual; `None` on AX and RX, which have
+    /// compliance registers instead.
+    pub(crate) const fn max_gain(self) -> Option<u16> {
+        match self {
+            Self::Ax12a | Self::Rx28 => None,
+            Self::Mx64 => Some(254),
+            Self::Mx64V2
+            | Self::Xm430W210
+            | Self::Xw430T200
+            | Self::Xw540T140
+            | Self::Xw540T260 => Some(16_383),
+        }
+    }
+
+    /// Whether its control table has an LED register: every model but the
+    /// XW series.
+    pub(crate) const fn has_led(self) -> bool {
+        !matches!(self, Self::Xw430T200 | Self::Xw540T140 | Self::Xw540T260)
     }
 
     /// CW and CCW Angle Limit that, both at this value, select multi-turn
@@ -317,7 +338,7 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     ///
     /// Rejects no bus, an empty label, a label two buses share, a bus index
     /// out of range, an id above 252, an id taken twice on one bus, a mode or
-    /// a baud the model lacks, every mode but `Position` (`dxl_rs` cannot
+    /// a baud the model lacks, every mode but `Position` (`dxl_rs_v2` cannot
     /// write the operating mode register, SRS section 8), and a
     /// [`Zero::Raw`] outside the model's position range.
     ///
@@ -478,7 +499,7 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
 /// const _: Table<1, 4> = XmBench::HARDWARE.baud("bus0", 500_000);
 /// ```
 ///
-/// A mode other than `Position`, which `dxl_rs` cannot write:
+/// A mode other than `Position`, which `dxl_rs_v2` cannot write:
 ///
 /// ```compile_fail,E0080
 /// # use kmr_adapters::{dynamixel::{Mode, Table}, presets::XmBench};
@@ -705,6 +726,49 @@ pub struct HealthLimits {
     pub temperature_c: u8,
 }
 
+/// Settings written to an actuator at bring-up, torque off, then read back:
+/// the RAM ones in `configure`, the limits to EEPROM in `health`, both
+/// PostInit. `None` leaves the registers as they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// P, I and D Gain; Position P, I and D Gain on Protocol 2.
+    pub gains: Option<Gains>,
+    /// LED on or off.
+    pub led: Option<bool>,
+    /// Min and Max Voltage Limit, in 0.1 V.
+    pub voltage_limits_dv: Option<(u16, u16)>,
+    /// Temperature Limit, in °C.
+    pub temperature_limit_c: Option<u8>,
+    /// Whether the limit registers written at bring-up are put back as they
+    /// were when the hardware closes, after torque off.
+    pub restore_limits: bool,
+}
+
+impl Settings {
+    /// Every register left as it is.
+    pub(crate) const NONE: Self = Self {
+        gains: None,
+        led: None,
+        voltage_limits_dv: None,
+        temperature_limit_c: None,
+        restore_limits: false,
+    };
+}
+
+/// Position gains as the registers hold them: 0 to 254 on the Protocol 1
+/// MX-64, 0 to 16383 on Protocol 2 (ROBOTIS e-Manual).
+// DECISION: raw register values, not SI: `dxl_rs_v2`'s `Gain` is raw too,
+// and the e-Manual's factor to Kp differs by series and is no SI unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gains {
+    /// P Gain.
+    pub p: u16,
+    /// I Gain.
+    pub i: u16,
+    /// D Gain.
+    pub d: u16,
+}
+
 /// A checked [`Table`] placed in the robot: the engine index of each of its
 /// actuators, in table order. The Dynamixel member owns these indices and no
 /// other (SRS FR-5.1). Built through [`Table::at`] or [`Table::in_order`].
@@ -718,6 +782,8 @@ pub struct Placement<const NB: usize, const M: usize> {
     /// Health limits written to each actuator of `table` at bring-up;
     /// `None` leaves its registers as they are.
     pub(crate) limits: [Option<HealthLimits>; M],
+    /// Settings written to each actuator of `table` at bring-up.
+    pub(crate) settings: [Settings; M],
 }
 
 impl<const NB: usize, const M: usize> Placement<NB, M> {
@@ -1022,6 +1088,7 @@ impl<const NB: usize, const M: usize> Table<NB, M> {
             table,
             at,
             limits: [None; M],
+            settings: [Settings::NONE; M],
         }
     }
 
@@ -1085,6 +1152,7 @@ impl<const NB: usize, const M: usize> Declared<NB, M> {
             table,
             at,
             limits: [None; M],
+            settings: [Settings::NONE; M],
         };
         Ok(Self {
             placement,
@@ -1110,9 +1178,22 @@ impl<const NB: usize, const M: usize> Declared<NB, M> {
         Ok(self)
     }
 
+    /// The declaration, actuator `k` given `settings[k]`, written at
+    /// bring-up. No check here: the adapter's `check` refuses a setting the
+    /// model has no register for, or a value above its range.
+    pub const fn with_settings(mut self, settings: [Settings; M]) -> Self {
+        self.placement.settings = settings;
+        self
+    }
+
     /// The table; bus slots past [`live`](Self::live) are unused.
     pub const fn table(&self) -> &Table<NB, M> {
         &self.placement.table
+    }
+
+    /// Settings written to each actuator at bring-up, in table order.
+    pub const fn settings(&self) -> &[Settings; M] {
+        &self.placement.settings
     }
 
     /// Port of each live bus, by bus index.
@@ -1148,6 +1229,8 @@ pub(crate) struct Placed<const N: usize> {
     past: Option<(usize, usize)>,
     /// Health limits to write at each engine index.
     limits: [Option<HealthLimits>; N],
+    /// Settings to write at each engine index.
+    settings: [Settings; N],
 }
 
 impl<const N: usize> Placed<N> {
@@ -1155,6 +1238,7 @@ impl<const N: usize> Placed<N> {
     pub(crate) const fn new<const NB: usize, const M: usize>(placement: &Placement<NB, M>) -> Self {
         let mut slots = [None; N];
         let mut limits = [None; N];
+        let mut settings = [Settings::NONE; N];
         let mut past = None;
         let mut row = 0;
         let mut rest: &[Actuator] = &placement.table.actuators;
@@ -1163,10 +1247,12 @@ impl<const N: usize> Placed<N> {
             match (
                 slots.split_at_mut_checked(*index),
                 limits.split_at_mut_checked(*index),
+                settings.split_at_mut_checked(*index),
             ) {
-                (Some((_, [slot, ..])), Some((_, [limit, ..]))) => {
+                (Some((_, [slot, ..])), Some((_, [limit, ..])), Some((_, [setting, ..]))) => {
                     *slot = Some(*actuator);
                     *limit = placement.limits[row];
+                    *setting = placement.settings[row];
                 }
                 _ => {
                     if past.is_none() {
@@ -1182,12 +1268,18 @@ impl<const N: usize> Placed<N> {
             slots,
             past,
             limits,
+            settings,
         }
     }
 
     /// Health limits to write to the actuator at engine index `index`.
     pub(crate) fn limits(&self, index: usize) -> Option<HealthLimits> {
         self.limits.get(index).copied().flatten()
+    }
+
+    /// Settings to write to the actuator at engine index `index`.
+    pub(crate) fn settings(&self, index: usize) -> Settings {
+        self.settings.get(index).copied().unwrap_or_default()
     }
 
     /// The first table row placed past the robot's `N` actuators, and its
@@ -1345,7 +1437,7 @@ const fn check_actuator(
     }
     if !matches!(actuator.mode, Mode::Position) {
         return Err(Message::actuator(index).text(
-            "SRS section 8: Dynamixel mode register cannot be written, dxl_rs has no write for it",
+            "SRS section 8: Dynamixel mode register cannot be written, dxl_rs_v2 has no write for it",
         ));
     }
     let max = units::max_position(actuator.model);
@@ -1674,7 +1766,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "actuator 1: SRS section 8: Dynamixel mode register")]
-    fn velocity_is_rejected_until_dxl_rs_writes_the_mode() {
+    fn velocity_is_rejected_until_dxl_rs_v2_writes_the_mode() {
         let mut actuators = chain(Model::Xm430W210);
         actuators[1].mode = Mode::Velocity;
         table(actuators).check();

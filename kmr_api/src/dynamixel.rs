@@ -8,15 +8,15 @@
 //! Robot::new().add_actuator(kmr_api::dynamixel::Rx28::all().on(spine))
 //! ```
 //!
-//! Each declared actuator is powered, in position mode, zero at the model's centre, unless set
-//! otherwise before [`on`](Ids::on). Declaring needs no feature; driving them needs
-//! `kmr_api/dynamixel`.
+//! Each declared actuator is powered, in position mode, zero at the model's centre, its gains and
+//! LED as it holds them, unless set otherwise before [`on`](Ids::on). Declaring needs no feature;
+//! driving them needs `kmr_api/dynamixel`.
 
 use core::ops::RangeInclusive;
 
-/// The `dxl_rs` backend of the Dynamixel driver.
+/// The `dxl_rs_v2` backend of the Dynamixel driver.
 #[cfg(feature = "dynamixel")]
-pub use kmr_adapters::dynamixel::DxlRs;
+pub use kmr_adapters::dynamixel::DxlRsV2;
 /// The Dynamixel driver [`Bound::drivers`](crate::Bound::drivers) hands out.
 pub use kmr_adapters::dynamixel::Dynamixel;
 /// Why a Dynamixel bind or bring-up failed; reach it with `downcast_ref`.
@@ -31,6 +31,8 @@ pub use kmr_adapters::dynamixel::{
     Actuator, Bus, DEFAULT_READ_EVERY, Mode, Model, Placement, Table, Torque, Zero,
 };
 
+use kmr_adapters::dynamixel::{Gains, Settings};
+
 use crate::BusHandle;
 use crate::actuator::{Actuators, Driver, IdSet};
 
@@ -42,6 +44,7 @@ pub struct Ids {
     mode: Mode,
     torque: Torque,
     zero: Zero,
+    settings: Settings,
 }
 
 impl Ids {
@@ -53,6 +56,7 @@ impl Ids {
             mode: Mode::Position,
             torque: Torque::On,
             zero: Zero::DEFAULT,
+            settings: Settings::default(),
         }
     }
 
@@ -74,6 +78,78 @@ impl Ids {
         Self { zero, ..self }
     }
 
+    /// Writes these P, I and D gains at bring-up, before the torque goes on, as register values:
+    /// 0 to 254 on the MX-64, 0 to 16383 on Protocol 2. `run()` refuses them on the AX-12A and
+    /// RX-28, which have no gain register, and above the model's range.
+    pub fn gains(self, p: u16, i: u16, d: u16) -> Self {
+        let gains = Some(Gains { p, i, d });
+        Self {
+            settings: Settings {
+                gains,
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Switches the LED on or off at bring-up. `run()` refuses it on the XW series, which has no
+    /// LED.
+    pub fn led(self, on: bool) -> Self {
+        Self {
+            settings: Settings {
+                led: Some(on),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Writes these Min and Max Voltage Limits, in volts, to the actuators' EEPROM at bring-up,
+    /// torque off, then reads them back. `run()` refuses a min above the max and, on Protocol 1,
+    /// a limit above 25.5 V; bring-up refuses an actuator found powered, never switching it off.
+    pub fn voltage_limits(self, min: f32, max: f32) -> Self {
+        // DECISION: rounded to the 0.1 V register; `as` saturates, so NaN or a negative limit
+        // reaches the actuator as 0, which it refuses at bring-up.
+        let decivolts = |volts: f32| (volts * 10.0).round() as u16;
+        Self {
+            settings: Settings {
+                voltage_limits_dv: Some((decivolts(min), decivolts(max))),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Writes this Temperature Limit, in °C, to the actuators' EEPROM at bring-up, as
+    /// [`voltage_limits`](Self::voltage_limits) writes those.
+    pub fn temperature_limit(self, celsius: u8) -> Self {
+        Self {
+            settings: Settings {
+                temperature_limit_c: Some(celsius),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Puts back, when the hardware closes after torque off, the limits written at bring-up as
+    /// the actuators held them: limits widened for one run only. A failed bring-up included;
+    /// a limit not put back is a warning.
+    pub fn restore_limits(self) -> Self {
+        // BUG: if on torque OFF, but torque OFF is requested for an effect,
+        // then the effect would be ruined by the I/O of the limit restoration.
+        // -- As a general rule, the "settings" and "eeprom" shouldnt be
+        // touched by a function call that can be used at the runtime of the
+        // control loop.
+        Self {
+            settings: Settings {
+                restore_limits: true,
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
     /// These actuators on `bus`.
     pub fn on(self, bus: BusHandle) -> Actuators {
         Actuators {
@@ -84,6 +160,7 @@ impl Ids {
                 mode: self.mode,
                 torque: self.torque,
                 zero: self.zero,
+                settings: self.settings,
             },
         }
     }

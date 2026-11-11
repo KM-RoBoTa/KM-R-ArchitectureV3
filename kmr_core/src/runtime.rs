@@ -221,6 +221,22 @@ fn stray_stop(audit: &mut Audit) -> Option<Signal> {
     })
 }
 
+/// [`Drivers::telemetry`] into the state's block, beside the newest slot's
+/// faults; the refreshed actuators are stamped with `tick` (SRS FR-5.11).
+fn refresh_telemetry<const N: usize, D: Drivers<N>>(
+    hal: &mut D,
+    state: &mut RobotState<N>,
+    layout: &Layout<N>,
+    audit: &mut Audit,
+    tick: u64,
+) {
+    let (telemetry, faults) = state.telemetry_mut();
+    let mut spare = Faults::default();
+    let faults = faults.unwrap_or(&mut spare);
+    let refreshed = hal.telemetry(telemetry, faults, layout.slots(), audit);
+    telemetry.stamp(refreshed, tick);
+}
+
 /// Keeps the signal only if it is an emergency stop: mid-tick checks let a
 /// shutdown finish its tick.
 fn estop(signal: Option<Signal>) -> Option<Signal> {
@@ -402,8 +418,8 @@ mod ctrl_phase {
     }
 }
 
-/// The tick loop: read, the three buckets, write. Returns the signal that
-/// ended it.
+/// The tick loop: read, the three buckets, write, telemetry. Returns the
+/// signal that ended it.
 fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
     robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
@@ -418,6 +434,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
             break signal;
         }
         robot.config.time.begin_tick(host.now());
+        state.set_tick(robot.config.time.tick());
 
         // The faults go to the new slot, where controllers read them (SRS FR-13.4).
         let mut audit = Audit::default();
@@ -468,6 +485,8 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
                 *slot = faults;
             }
         }
+        // Every tick, written or not: the adapter keeps its own cadence.
+        refresh_telemetry(hal, state, layout, &mut audit, robot.config.time.tick());
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
         }
@@ -528,6 +547,13 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>
         let mut audit = Audit::default();
         let read = powered.0.read_all(sample, layout.slots(), &mut audit)?;
         state.refreshed(read);
+        refresh_telemetry(
+            powered.0,
+            state,
+            layout,
+            &mut audit,
+            robot.config.time.tick(),
+        );
         if let Some(signal) = stray_stop(&mut audit) {
             return Ok(signal);
         }
@@ -1531,6 +1557,116 @@ mod tests {
             );
             // The inbound write reaches the tick's command.
             assert_eq!(log.write.get().map(|w| w.q[2]), Some(Q(7.0)));
+        }
+
+        #[test]
+        fn telemetry_runs_after_read_all_then_once_per_tick_after_the_write() {
+            let log = Log::new();
+            let mut robot =
+                recording_robot!(log).add_controller(crate::EachTick, |time, state, _se| {
+                    if time.tick() == 0 {
+                        state.set_at(Q(5.0), 1).expect("in range");
+                    }
+                });
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST + PER_TICK);
+            let recorder = Recorder {
+                temperature: Some(40.0),
+                ..Recorder::new(&log)
+            };
+
+            let result = run_with(&mut robot, &mut host, &mut one(recorder));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(
+                *log.calls(),
+                [
+                    Check,
+                    PreInit,
+                    Open,
+                    Zero,
+                    Init,
+                    Ping,
+                    Health,
+                    Configure,
+                    ReadAll,
+                    Call::Telemetry,
+                    TorqueOn,
+                    PostInit,
+                    Read,
+                    First,
+                    EachTick,
+                    Last,
+                    Write,
+                    Call::Telemetry, // tick 0 wrote
+                    Read,
+                    First,
+                    EachTick,
+                    Last,
+                    Call::Telemetry, // nothing written
+                    TorqueOff,
+                    Close,
+                ]
+            );
+        }
+
+        #[test]
+        fn a_reading_shows_from_the_next_tick_on_with_its_age() {
+            let log = Log::new();
+            // (temperature, age) of actuator 0, seen in `First` of each tick.
+            let seen = Cell::new([(None, None); 3]);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::First,
+                |time: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                    let mut all = seen.get();
+                    let telemetry = state.telemetry();
+                    if let Some(slot) = all.get_mut(time.tick() as usize) {
+                        *slot = (
+                            telemetry.temperature_c(0).ok().flatten(),
+                            telemetry.age(0).ok().flatten(),
+                        );
+                    }
+                    seen.set(all);
+                },
+            );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST + 2 * PER_TICK);
+            let recorder = Recorder {
+                temperature: Some(40.0),
+                ..Recorder::new(&log)
+            };
+
+            run_with(&mut robot, &mut host, &mut one(recorder)).expect("recorder");
+
+            // PostInit reads 40, stamped tick 0; tick k reads 41 + k after its write.
+            assert_eq!(
+                seen.get(),
+                [
+                    (Some(40.0), Some(0)),
+                    (Some(41.0), Some(1)),
+                    (Some(42.0), Some(1))
+                ]
+            );
+        }
+
+        #[test]
+        fn the_default_telemetry_leaves_every_reading_none() {
+            let seen = Cell::new(None);
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::EachTick,
+                |_t, state: &mut RobotState<N>, _se| {
+                    seen.set(Some(*state.telemetry()));
+                },
+            );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + PER_TICK);
+
+            simulated(&mut robot, &mut host);
+
+            let telemetry = seen.get().expect("a tick ran");
+            for actuator in 0..N {
+                assert_eq!(telemetry.temperature_c(actuator), Ok(None));
+                assert_eq!(telemetry.voltage_v(actuator), Ok(None));
+                assert_eq!(telemetry.hardware_error(actuator), Ok(None));
+                assert_eq!(telemetry.age(actuator), Ok(None));
+            }
         }
 
         const LIMIT: crate::limits::Limit = crate::limits::Limit {

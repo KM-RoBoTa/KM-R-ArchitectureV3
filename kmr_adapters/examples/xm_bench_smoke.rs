@@ -21,14 +21,14 @@ use std::process::ExitCode;
 use std::thread;
 
 use kmr_adapters::binding::{Binding, Port};
-use kmr_adapters::dynamixel::{DxlRs, Dynamixel, DynamixelError, Table};
+use kmr_adapters::dynamixel::{DxlRsV2, Dynamixel, DynamixelError, Table};
 use kmr_adapters::presets::{Rx28Chain, XmBench};
 use kmr_core::hal::{Hal, Overrides, Sample};
 use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 
-/// The adapter on the `dxl_rs` SDK for the one bus of a preset of `N`
+/// The adapter on the `dxl_rs_v2` SDK for the one bus of a preset of `N`
 /// actuators.
-type Hardware<const N: usize> = Dynamixel<DxlRs<N>, 1, N>;
+type Hardware<const N: usize> = Dynamixel<DxlRsV2<N>, 1, N>;
 
 /// Time between two reads while the torque is on.
 const PERIOD: Duration = Duration::from_millis(100);
@@ -142,7 +142,7 @@ fn run<const N: usize>(table: Table<1, N>, port: Port, torque: bool) -> Result<(
     };
     let mut hardware = step(
         "bind",
-        Hardware::<N>::bind(DxlRs::new(), table.in_order(), &[plugin]),
+        Hardware::<N>::bind(DxlRsV2::new(), table.in_order(), &[plugin]),
     )?;
     let layout = step("check", hardware.check(Overrides::default()))?;
     println!(
@@ -167,7 +167,7 @@ fn run<const N: usize>(table: Table<1, N>, port: Port, torque: bool) -> Result<(
         return Ok(());
     }
     println!(
-        "torque_on: Goal Position = present position, then torque on; dxl_rs writes the goal one write after the torque"
+        "torque_on: Goal Position = present position, written with the torque off, then torque on"
     );
     step("torque_on", hal.torque_on())?;
     for read in 1..=READS {

@@ -100,8 +100,18 @@ fn main() {
         .set_hold(Duration::from_millis(500))
         .set_limit_policy_all(kmr_api::Policy::Clamp)
         // Declaration order is the URDF's actuated-joint order: AX joints first, then RX.
-        .add_actuator(kmr_api::dynamixel::Ax12a::ids(1..=12).on(ax_snake))
-        .add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(rx_snake))
+        .add_actuator(
+            kmr_api::dynamixel::Ax12a::ids(1..=12)
+                .voltage_limits(9.0, 13.0)
+                .restore_limits()
+                .on(ax_snake),
+        )
+        .add_actuator(
+            kmr_api::dynamixel::Rx28::ids(1..=10)
+                .voltage_limits(8.0, 18.5)
+                .restore_limits()
+                .on(rx_snake),
+        )
         // .add_controller(EachTick, nudge_first_joint)
         // DECISION: one HOME per snake controller; both ramps write the same line, so the
         // duplicate write during the ramp changes nothing.

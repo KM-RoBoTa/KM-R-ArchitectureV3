@@ -158,6 +158,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 * FR-5.8 Torque enable is per actuator and chosen by the user at bring-up (default on). Read-only actuators (torque off, state still read, as in a leader arm for tele-op) are a first-class case, not a patch.
 * FR-5.9 The user may reach the HAL directly from user code when the API is not enough; nothing is obfuscated.
 * FR-5.10 v2 bring-up lessons, binding on adapters: USB latency timer set to 1 ms (the 16 ms default cost 128 ms per tick); flush the serial bus before open and on close; register all Dynamixel ports before opening any; never sleep or retry on the hot path (retries only in bring-up and ping); arm the clock after bring-up; pre-flight check before entering any C SDK that can segfault.
+* FR-5.11 Actuator telemetry (temperature, input voltage, raw hardware error status) is out-of-band and read-only, like the fault flags: one block per robot next to History, never a state field, never in Desired, never commandable. Each adapter fills it at its own cadence, at most one bus transaction every few ticks (NFR-1), through a HAL telemetry operation the engine calls once in PostInit after the full read and once per tick after the write; the engine stamps each refreshed actuator with the tick. Controllers read each value and its age in ticks; a value the adapter never reported reads as none, so does every value on a run without hardware.
 
 **FR-6 Model and configuration**
 
@@ -241,7 +242,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 | --- | --- | --- | --- |
 | User API | `kmr_api` | user → engine | `robot!` macro in main.rs (preset or descriptor, FR-6.1); builder: bus plugins (`add_plugins(Bus::by_id(..))`, FR-6.3), `dt`, controller registrations; `run()` finalizes (there is no `build()`) and runs the loop, returning `Result` |
 | Controller | user's controller crate, through `kmr_api` (types defined in `kmr_core`, re-exported and wrapped with QoL alias and wrapper methods, so kmr\_core stays clean while kmr\_api does the heavy lifting of ergonomics; the user never touches `kmr_core`) | engine → user | `fn(&Time, &mut State, &Sensors)`; context variant fn(&mut T, &Time, &mut State, &Sensors); threaded fn(&mut T, &Time), TBD (FR-1.2); called per phase |
-| HAL | `kmr_core` | engine → adapter | Trait set (sealed per FR-5.1) for a set of adapters, fanned out per call: bus init, ping, health-check, mode config, read sample with declared cadence, bulked write from the write mask, hold, torque on/off per actuator, close |
+| HAL | `kmr_core` | engine → adapter | Trait set (sealed per FR-5.1) for a set of adapters, fanned out per call: bus init, ping, health-check, mode config, read sample with declared cadence, bulked write from the write mask, telemetry at the adapter's cadence (FR-5.11), hold, torque on/off per actuator, close |
 | Zenoh | `kmr_api`, opt-in feature | both | `History` latest sample published per tick, full ring on request; `Desired` subscribed and applied on the tick it arrives, then dropped (no hold); key layout per instance and group |
 | Config | `kmr_api` (`robot!`), `kmr_model` | main.rs → compile time (descriptor, hardware) / bring-up (port) | Descriptor or preset named by `robot!` and validated at compile time; ports bound by builder plugins and resolved at bring-up; no config file |
 | FFI | `kmr_ffi` | controller → foreign code | C ABI for state types, called from inside Rust controllers; Python and C++ on top; the builder is never exposed |
@@ -331,7 +332,7 @@ NFR-5 (portability) and NFR-6 (maintainability) bind every module below.
 
 Paths: `kmr_core/**`
 
-Covers: FR-1, FR-2, FR-3, FR-4, FR-5.1 to FR-5.9 (contract side), FR-13.4; NFR-1, NFR-2, NFR-3, NFR-7, NFR-9, NFR-10, NFR-11. Delivery steps 1, 3, 4. No-go files per AGENTS.md: `state/field.rs`, `sealed.rs`, `signal.rs`, `schedule.rs`, `controllers.rs` unless a task names them.
+Covers: FR-1, FR-2, FR-3, FR-4, FR-5.1 to FR-5.9 and FR-5.11 (contract side), FR-13.4; NFR-1, NFR-2, NFR-3, NFR-7, NFR-9, NFR-10, NFR-11. Delivery steps 1, 3, 4. No-go files per AGENTS.md: `state/field.rs`, `sealed.rs`, `signal.rs`, `schedule.rs`, `controllers.rs` unless a task names them.
 
 ## Module: kmr\_model
 
@@ -343,13 +344,13 @@ Covers: FR-6, FR-8.1, FR-8.3; descriptor parsing at compile time for `kmr_api::r
 
 Paths: `kmr_adapters/**`
 
-Covers: FR-5.3 (cadence, bulked write), FR-5.10, the adapter side of FR-5.1 and FR-5.8; NFR-10, NFR-11; one adapter per vendor, any number of them per robot (FR-5.1), Dynamixel first. Delivery step 1.
+Covers: FR-5.3 (cadence, bulked write), FR-5.10, the adapter side of FR-5.1, FR-5.8 and FR-5.11; NFR-10, NFR-11; one adapter per vendor, any number of them per robot (FR-5.1), Dynamixel first. Delivery step 1.
 
 ## Module: kmr\_api
 
 Paths: `kmr_api/**`
 
-Covers: FR-2.7 home preset, FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7.
+Covers: FR-2.7 home preset, FR-5.11 telemetry getters, FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7.
 
 ## Module: controllers
 

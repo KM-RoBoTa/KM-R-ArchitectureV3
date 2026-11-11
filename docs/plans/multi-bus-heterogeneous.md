@@ -1,4 +1,4 @@
-# Multi-bus, heterogeneous robot from one URDF (D-06) Implementation Plan
+# Multi-bus, heterogeneous robot from one URDF (D-26) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -103,7 +103,7 @@ on its own bus), Index space (Definitions, line 76), § 8 open item "Multi-robot
   actuators, and fix the header comment (ids 1..=10, one tree under `world`).
 - [ ] **Step 4: Verify** `cargo build -p controllers`. The URDF error is gone, and the next
   error is the `ActuatorCount` refusal at run time or a clean build.
-- [ ] **Step 5: Commit** `fix(controllers): D-06 one tree and distinct actuators in the two-snake URDF`
+- [ ] **Step 5: Commit** `fix(controllers): D-26 one tree and distinct actuators in the two-snake URDF`
   plus the SRS edit as `docs(srs): FR-6.5 a multi-robot URDF has a common root link`.
 
 ### Task 2: `lower` takes two buses, two models, overlapping ids
@@ -119,7 +119,7 @@ on its own bus), Index space (Definitions, line 76), § 8 open item "Multi-robot
   `declared.live() == 2`. `declared.ports() == [Port::ById("AL02L1KL"), Port::ById("AL02L1EU")]`.
 - [ ] **Step 2: Run** `cargo test -p kmr_api --features dynamixel two_snakes`. Expected: PASS
   (pin). A failure is a bug: report it and fix it in `lower`.
-- [ ] **Step 3: Commit** `test(api): D-06 two snakes, two models, same ids on two buses`.
+- [ ] **Step 3: Commit** `test(api): D-26 two snakes, two models, same ids on two buses`.
 
 ### Task 3: The adapter drives the two Protocol-1 snakes
 
@@ -136,7 +136,7 @@ in Position mode, where `N` is the file's test N.
   has no grouped read) and refreshes `Mask::ALL`.
 - [ ] **Step 2: Run** `cargo test -p kmr_adapters two_protocol_one_snakes`. Expected: PASS
   (pin). If the read count differs, note it in the commit body: it sets Q4.
-- [ ] **Step 3: Commit** `test(adapters): D-06 two Protocol 1 snakes, one write group per bus`.
+- [ ] **Step 3: Commit** `test(adapters): D-26 two Protocol 1 snakes, one write group per bus`.
 
 ### Task 4: `main.rs` declares the two snakes
 
@@ -152,13 +152,13 @@ in Position mode, where `N` is the file's test N.
 - [ ] **Step 3: Bench (maintainer).** `cargo run -p controllers --features hardware`: both
   snakes home in 3 s and run the sine, no overrun warnings, clean torque-off at 20 s. If it
   overruns, raise dt and record the measured read time in the comment.
-- [ ] **Step 4: Commit** `feat(controllers): D-06 twelve AX-12A and ten RX-28 on two buses`.
+- [ ] **Step 4: Commit** `feat(controllers): D-26 twelve AX-12A and ten RX-28 on two buses`.
 
 ### Task 5: Bookkeeping
 
 - [ ] Run the full oracle (Global Constraints) and write the date and result in the ROADMAP
   rows for kmr_model, kmr_api, kmr_adapters and controllers.
-- [ ] Mark D-06 resolved in `docs/deferred.md` with one line on what closed it (this needs
+- [ ] Mark D-26 resolved in `docs/deferred.md` with one line on what closed it (this needs
   the maintainer's go-ahead: `/issue` never edits other lines, a resolution does).
-- [ ] Commit `chore(cycle): D-06 two-snake robot runs`, then merge `fix/multi-bus-urdf` into
+- [ ] Commit `chore(cycle): D-26 two-snake robot runs`, then merge `fix/multi-bus-urdf` into
   `dev` locally.

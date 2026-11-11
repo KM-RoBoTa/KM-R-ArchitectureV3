@@ -1022,6 +1022,96 @@ mod scripted {
         assert_eq!(seen[0].elapsed, Duration::ZERO);
         assert_eq!(seen[1].elapsed, DT * 2);
     }
+
+    /// What a `First` controller read of the telemetry on one tick.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct Readings {
+        temperature: Option<crate::Celsius>,
+        age: Option<u64>,
+        voltage: Option<crate::Volts>,
+        error: Option<u8>,
+        all: [Option<crate::Celsius>; 4],
+        group: [Option<crate::Celsius>; 2],
+        past_n: bool,
+    }
+
+    /// The telemetry a `First` controller reads on ticks 0 and 1, on `recorder` or without
+    /// hardware.
+    fn telemetry(recorder: Option<Recorder<'_, 4>>) -> [Readings; 2] {
+        let seen = RefCell::new([Readings::default(); 2]);
+        let tick = Cell::new(0_usize);
+        let mut robot = Robot::<4, TestSpec>::new().set_dt(DT).add_controller(
+            First,
+            |_: &Time, state: &mut State<'_, 4>, _: &Sensors| {
+                let group = state.group([3, 9]).temperatures();
+                if let Some(slot) = seen.borrow_mut().get_mut(tick.get()) {
+                    *slot = Readings {
+                        temperature: state.temperature_at(0).ok().flatten(),
+                        age: state.telemetry_age_at(0).ok().flatten(),
+                        voltage: state.voltage_at(0).ok().flatten(),
+                        error: state.hardware_error_at(0).ok().flatten(),
+                        all: state.temperatures(),
+                        group,
+                        past_n: state.temperature_at(4).is_err(),
+                    };
+                }
+                tick.set(tick.get() + 1);
+            },
+        );
+        let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + PER_TICK);
+        let signal = match recorder {
+            Some(recorder) => run_scripted(
+                &mut robot.inner,
+                &mut host,
+                &mut HCons {
+                    head: recorder,
+                    tail: HNil,
+                },
+            )
+            .map_err(|_| ()),
+            None => run_scripted(&mut robot.inner, &mut host, &mut simulated()).map_err(|_| ()),
+        };
+        assert!(signal.is_ok());
+        seen.into_inner()
+    }
+
+    #[test]
+    fn a_temperature_read_in_a_tick_shows_on_the_state_and_its_groups_from_the_next_one() {
+        use crate::Celsius;
+
+        let log = Log::new();
+        let recorder = Recorder {
+            temperature: Some(40.0),
+            ..Recorder::new(&log)
+        };
+
+        let [first, second] = telemetry(Some(recorder));
+
+        // PostInit reads 40 before tick 0; tick 0 reads 41 after its write.
+        assert_eq!(
+            (first.temperature, first.age),
+            (Some(Celsius(40.0)), Some(0))
+        );
+        assert_eq!(
+            (second.temperature, second.age),
+            (Some(Celsius(41.0)), Some(1))
+        );
+        assert_eq!(second.all, [Some(Celsius(41.0)); 4]);
+        assert_eq!(second.group, [Some(Celsius(41.0)), None]);
+        assert_eq!((second.voltage, second.error), (None, None));
+        assert!(second.past_n);
+    }
+
+    #[test]
+    fn a_run_without_hardware_has_no_telemetry() {
+        let seen = telemetry(None);
+
+        assert_eq!(
+            seen.map(|s| (s.temperature, s.age, s.all)),
+            [(None, None, [None; 4]); 2]
+        );
+        assert!(seen.iter().all(|s| s.past_n));
+    }
 }
 
 /// Fallbacks and envelopes on the core's scripted host and recording adapter (quickstart
