@@ -150,14 +150,20 @@ controllers never receive `State`: robot state stays single-writer on the main
 loop, so actuator-write races are impossible by construction.
 
 ```rust
+const HOME: Home<N> = Home::new([Q(0.0); N], Duration::from_secs(3));
+
 Robot::new()
     .set_dt(Duration::from_millis(1))
-    .add_controller(Init, home)
-    .add_controller(EachTick, track_reference)
+    .add_controller(EachTick, HOME.then(track_reference))
     .add_controller_with(EachTick, pad.clone(), use_gamepad)
     .add_controller_as_thread(EachTick, pad, read_gamepad)
     .run()?;
 ```
+
+Homing is optional: `kmr_api::presets::home::Home` is a controller preset,
+registered on a tick phase because startup writes are discarded (SRS FR-2.7,
+FR-5.2). `HOME.then(f)` ramps to the pose, then hands every tick to `f`, its
+time from zero; `HOME.controller()` ramps, then holds the pose.
 
 See [`kmr_api/examples/complete_api_example.rs`](../kmr_api/examples/complete_api_example.rs)
 for a guided tour.
@@ -332,7 +338,8 @@ the adapter, `joint_limit` and `envelope` from the limit stage) and its
 A new slot starts with none set. `faults(depth)` and `tick_flags(depth)` read
 them; controllers cannot set or clear one. `read` faults show at depth 0 from
 `First` on; `write` and limit faults, and `OVERRUN`, at depth 1 on the next
-tick. The home state is `StateError::Undecided` (core T031).
+tick. The engine has no home state: homing is a kmr_api preset (SRS FR-2.7);
+the core's two `StateError::Undecided` home stubs are leftovers.
 
 ## Robot model
 

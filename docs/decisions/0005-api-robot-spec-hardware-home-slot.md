@@ -1,5 +1,9 @@
 # 0005 — kmr_api: the robot as a type parameter, its hardware argument, the home marker, the Zenoh slot
 
+**Superseded 2026-11-11, point 5 only.** SRS FR-2.7 closed home as a kmr_api
+controller preset, `kmr_api::presets::home::Home<N>`; `initial_state()`,
+`go_home()` and `HomeDecided` are gone. The rest of this record stands.
+
 Status: **proposed**, drafted by an agent, waiting for the maintainer's
 decision. Two points rest on pending decisions (D5, D7) and one on an
 unwritten human task (T029), see [Pending](#pending).

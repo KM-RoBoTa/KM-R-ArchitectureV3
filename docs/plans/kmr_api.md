@@ -82,5 +82,5 @@ Decided with the maintainer in `docs/plans/home-and-startup-phases.md` (not trac
 branch): home is a kmr_api controller preset, registered with plain `add_controller`.
 
 - [x] T090 Contract (step 4): `kmr_api::presets` becomes a kmr_api module (`pub use kmr_adapters::presets::*`, `pub mod home`); `presets::home::Home<N>` with `const fn new(pose, ramp)`, `controller(self)` and `then(self, f)`, bodies `todo!()`; ten test names. `HomeDecided`, `State::go_home`, `State::initial_state` and `tests/ui/home_state` removed. SRS: FR-2.7 closed, FR-1.1 exception for kmr_api presets (run state in a captured `Cell`), FR-5.2 and the Bring-up definition drop "flag out-of-place ones", § 8 item ticked, kmr_api `Covers:` FR-2.7. C4 `kmr_api.dsl`: home box, `HomeDecided` gone
-- [ ] T091 Build: fill `kmr_api/src/presets/home.rs` and its ten tests; `then`'s `Time` starts at zero on the hand-over tick (private offset in `kmr_api/src/time.rs`)
-- [ ] T092 Docs: the home comments of `kmr_api/examples/complete_api_example.rs`, `docs/ARCHITECTURE.md` (`add_controller(Init, home)`), `docs/ROADMAP.md`, decision 0005 (superseded note), `docs/class-diagram.drawio` home rows
+- [x] T091 Build: fill `kmr_api/src/presets/home.rs` and its ten tests; `then`'s `Time` starts at zero on the hand-over tick (private offset in `kmr_api/src/time.rs`)
+- [x] T092 Docs: the home comments of `kmr_api/examples/complete_api_example.rs`, `docs/ARCHITECTURE.md` (`add_controller(Init, home)`), `docs/ROADMAP.md`, decision 0005 (superseded note), `docs/class-diagram.drawio` home rows
