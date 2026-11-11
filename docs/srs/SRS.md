@@ -67,7 +67,7 @@ Lifecycle moments and naming, used consistently from here on:
 | --- | --- |
 | Compile time | `cargo build`: descriptor parsed, N fixed, schedule resolved. Groups are never fixed by the descriptor (FR-6.2). Errors here are compile errors. |
 | run() finalization | There is no build(): run() finalizes the builder, then runs the loop. Finalization happens inside run() before any hardware I/O: `dt` checked, contexts allocated, controllers assembled. Errors here are returned by run(), never panicked. |
-| Bring-up | The engine's hardware work inside the once-phases, always run before that phase's user controllers. `PreInit`: software only (tracing, Time, History, Sensors built), no hardware touched. `Init`: actuators (including brand-specific zeroing), sensors, payloads, battery initialized and registered, not yet checked or powered. `PostInit`: ping and health-check everything, read positions and flag out-of-place ones, double-check zeros, register modes, apply power on/off from defaults or user values. See FR-5.2. |
+| Bring-up | The engine's hardware work inside the once-phases, always run before that phase's user controllers. `PreInit`: software only (tracing, Time, History, Sensors built), no hardware touched. `Init`: actuators (including brand-specific zeroing), sensors, payloads, battery initialized and registered, not yet checked or powered. `PostInit`: ping and health-check everything, read positions, double-check zeros, register modes, apply power on/off from defaults or user values. See FR-5.2. |
 | Engine | `kmr_core` and the sub-crates it depends on (section 4). "Core" and "loop" mean the same thing. |
 | API | `kmr_api`, the only crate user code imports. |
 | Context | A user-defined struct (any `T`; e.g. a tracker holding `[Q; N]`, camera flags, counters), sized at compile time, built by the user and moved in at registration; the engine owns it from then on. Inline-with-context: exclusive `&mut T`, one instance per registration, never shared, never locked. Threaded-with-context: the thread owns its instance and exchanges with the loop only through the hand-off of section 8, never through a lock the loop must take; between threaded controllers `Arc<Mutex<T>>` is acceptable. |
@@ -109,7 +109,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 **FR-1 Controllers**
 
-- FR-1.1 A controller is a plain function or a closure (any Fn, not FnMut) registered against a schedule phase; no trait to implement. Captured values are immutable config; mutable per-controller state goes through the context variants, never through captures.
+- FR-1.1 A controller is a plain function or a closure (any Fn, not FnMut) registered against a schedule phase; no trait to implement. Captured values are immutable config; mutable per-controller state goes through the context variants, never through captures. One exception: a kmr\_api controller preset (FR-2.7) keeps its run state in a `Cell` it captures, never a lock (NFR-1), so it registers with plain `add_controller`.
 - FR-1.2 Three forms: inline, inline with user context, threaded with context. Threaded controllers are TBD as a whole (section 8): the code labels them with a phase (the example passes EachTick) while this document said not phase-bound; what the label means, when they spawn (after PostInit is the working assumption), the hand-off and the &Time data race are all open. Fixed already: std-only, never a lock the loop must take, never the State handle.
 - FR-1.3 The same function may be registered several times.
 - FR-1.4 Static mode (default, this version): within a phase, controllers run in declaration order. Phases: `PreInit`, `Init`, `PostInit` once; `First`, `EachTick`, `Last` every tick.
@@ -127,7 +127,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 - FR-2.5 Desired state is shoot-and-forget: written during the tick, applied once at the end of the tick, then cleared. It is decoupled from History; what was applied is recorded there, not in Desired. An actuator not written this tick (write mask, Definitions) receives no new command. **Decided 2026-10-16.**
 - FR-2.6 A failed read keeps the last good sample, never zeros, and sets a per-actuator stale flag.
 
-* FR-2.7 Home state. The example calls `initial_state()` and `go_home(ramp)`; where home comes from (descriptor, first read, user) is open (section 8). Until decided those paths are `unimplemented!`.
+* FR-2.7 Home state. Home is a kmr\_api controller preset (`kmr_api::presets::home`), not engine state: a robot needs no home position. `Home::new(pose, ramp)` is a `const fn`, the pose one `Q` per actuator, the ramp a `Duration`. Registered on a tick phase (startup writes are discarded, FR-5.2), it writes the straight line from the first sample to the pose, reached at the ramp; `then(f)` hands every later tick to `f`, whose time starts at zero. No per-preset rate (FR-1.5), no group variant yet. Decided 2026-11-10.
 
 **FR-3 Timing**
 
@@ -148,7 +148,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 **FR-5 Hardware**
 
 - FR-5.1 The core never imports a vendor SDK; adapters implement a sealed contract (adapter pattern: the core is hardware-agnostic, one adapter per vendor or bus, inside kmr\_adapters). Sealed means closed to the controllers crate and open to adapter crates: the trait is public with a #\[doc(hidden)\] supertrait in kmr\_core, since v2 learned a true seal blocks cross-crate adapters. A robot may mix any number of adapters, of any vendor, one or more buses each: each adapter owns a set of actuator indices, together they cover 0..N exactly once (checked at run() finalization, before any port opens), the engine drives them all in the same tick and cuts torque on all of them at every exit. Decided 2026-10-29.
-- FR-5.2 Bring-up runs inside the once-phases, engine work first, then that phase's user controllers. PreInit: software only, no hardware touched. Init: open buses, initialize and register actuators (brand-specific zeroing where needed), sensors, payloads, battery; nothing checked or powered yet. PostInit: ping and health-check all devices, read positions and flag out-of-place ones, double-check zeros, register modes, apply power on/off from defaults or user values. No tick-0 seed: Desired is shoot-and-forget, so the first tick commands nothing unless a controller writes.
+- FR-5.2 Bring-up runs inside the once-phases, engine work first, then that phase's user controllers. PreInit: software only, no hardware touched. Init: open buses, initialize and register actuators (brand-specific zeroing where needed), sensors, payloads, battery; nothing checked or powered yet. PostInit: ping and health-check all devices, read positions (no out-of-place check: the engine has no home, FR-2.7), double-check zeros, register modes, apply power on/off from defaults or user values. No tick-0 seed: Desired is shoot-and-forget, so the first tick commands nothing unless a controller writes.
 - FR-5.3 Per tick and per (bus, series): one read transaction and one bulked write transaction where the protocol allows it (Dynamixel Protocol 2 sync read/write); where it does not (Protocol 1: AX-12A, RX-28, one round trip per actuator) the adapter declares its cadence and cost. The engine pre-sorts the written actuators by (bus, series) from the write mask before handing them to the adapter; this extra CPU work is accepted because I/O is the expensive part, and the gain is measured on the NFR-1 bench. The hardware read is opt-in and its cadence is decided per adapter, because on some hardware it is slow: Dynamixel adapters do not read every tick, others may. No general rule in the engine; the adapter declares its read cadence and the engine exposes it
 - FR-5.4 A bus is an electrical concept, declared per actuator, not tied to groups.
 - FR-5.5 Presence is checked at bring-up, not at compile time or run() finalization; a binary cross-compiles without the robot plugged in.
@@ -304,7 +304,7 @@ Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are n
 * [ ] Multi-robot descriptor (FR-6.5): one URDF with a common root link, or a `.ron` composing several URDFs; verify what URDF allows
 * [ ] Threaded context: the loop side must stay lock-free; what the threaded side gets (merged into the item above; `Arc<Mutex<T>>` between threads is fine)
 
-- [ ] Home state (FR-2.7): source of `initial_state()` / `go_home(ramp)`: descriptor, first read, or user; the example's calls are `todo!()`
+- [x] Home state (FR-2.7): a kmr\_api controller preset, not engine state (decided 2026-11-10)
 - [ ] `HISTORY_DEPTH` owner: const today, builder `history_depth()` commented out; who sets it and whether the builder call returns
 - [ ] Model crate (FR-8.3): `kmr_model` does not exist; center-of-mass recomputation waits for it
 - [ ] Payload registration (FR-8.4): builder `register_payload` is `todo!()`; example to fix
@@ -349,7 +349,7 @@ Covers: FR-5.3 (cadence, bulked write), FR-5.10, the adapter side of FR-5.1 and 
 
 Paths: `kmr_api/**`
 
-Covers: FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7.
+Covers: FR-2.7 home preset, FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7.
 
 ## Module: controllers
 

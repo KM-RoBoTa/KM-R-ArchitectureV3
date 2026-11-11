@@ -25,9 +25,6 @@ mod fallback;
 pub use fallback::Guarded;
 pub use fallback::{any_of, remote_timeout, stale_in};
 
-mod home;
-pub use home::HomeDecided;
-
 mod time;
 pub use time::Time;
 
@@ -102,8 +99,7 @@ pub use plugin::Plugin;
 
 mod robot_macro;
 
-/// The robots KM-RoBoTa ships, for [`robot!`].
-pub use kmr_adapters::presets;
+pub mod presets;
 
 pub mod dynamixel;
 
