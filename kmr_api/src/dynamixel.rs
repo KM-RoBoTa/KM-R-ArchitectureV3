@@ -134,6 +134,11 @@ impl Ids {
     /// the actuators held them: limits widened for one run only. A failed bring-up included;
     /// a limit not put back is a warning.
     pub fn restore_limits(self) -> Self {
+        // BUG: if on torque OFF, but torque OFF is requested for an effect,
+        // then the effect would be ruined by the I/O of the limit restoration.
+        // -- As a general rule, the "settings" and "eeprom" shouldnt be
+        // touched by a function call that can be used at the runtime of the
+        // control loop.
         Self {
             settings: Settings {
                 restore_limits: true,
