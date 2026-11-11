@@ -1,0 +1,402 @@
+<?xml version="1.0"?>
+<!-- Two snakes in one urdf, one tree under the link world: a snake of twelve
+     AX-12A (ROBOTIS, Protocol 1), firmware ids 1..=12 on one bus, and a snake
+     of ten RX-28 (Protocol 1), firmware ids 1..=10 on the RX bus. Two fixed
+     joints hang head and rx_head off world; they are not actuated.
+     AX-12A limits (e-Manual): +-2.618 rad, 6.178 rad/s (59 rpm), 1.5 N.m, 54.6 g.
+     RX-28 limits (e-Manual): +-2.618 rad, 5.55 rad/s (53 rpm), 2.5 N.m, 72 g.
+     Each <transmission> names the actuator behind its joint. -->
+<robot name="ax12_12act_rx28_10act">
+  <link name="world"/>
+  <joint name="world_to_ax" type="fixed">
+    <parent link="world"/>
+    <child link="head"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="world_to_rx" type="fixed">
+    <parent link="world"/>
+    <child link="rx_head"/>
+    <origin xyz="0 0.2 0" rpy="0 0 0"/>
+  </joint>
+  <link name="head">
+    <inertial><origin xyz="0 0 0"/><mass value="0.05"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="module1">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module2">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module3">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module4">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module5">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module6">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module7">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module8">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module9">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module10">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module11">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <link name="module12">
+    <inertial><origin xyz="0.03 0 0"/><mass value="0.0546"/><inertia ixx="1.2e-5" ixy="0" ixz="0" iyy="1.9e-5" iyz="0" izz="1.6e-5"/></inertial>
+    <visual><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></visual>
+    <collision><origin xyz="0.03 0 0"/><geometry><box size="0.050 0.032 0.040"/></geometry></collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="head"/>
+    <child link="module1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="module1"/>
+    <child link="module2"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <parent link="module2"/>
+    <child link="module3"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <parent link="module3"/>
+    <child link="module4"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <parent link="module4"/>
+    <child link="module5"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <parent link="module5"/>
+    <child link="module6"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint7" type="revolute">
+    <parent link="module6"/>
+    <child link="module7"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint8" type="revolute">
+    <parent link="module7"/>
+    <child link="module8"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint9" type="revolute">
+    <parent link="module8"/>
+    <child link="module9"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint10" type="revolute">
+    <parent link="module9"/>
+    <child link="module10"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint11" type="revolute">
+    <parent link="module10"/>
+    <child link="module11"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <joint name="joint12" type="revolute">
+    <parent link="module11"/>
+    <child link="module12"/>
+    <origin xyz="0.06 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="6.178" effort="1.5"/>
+  </joint>
+  <transmission name="trans1">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint1"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans2">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint2"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans3">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint3"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id3"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans4">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint4"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id4"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans5">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint5"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id5"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans6">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint6"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id6"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans7">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint7"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id7"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans8">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint8"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id8"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans9">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint9"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id9"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans10">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint10"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id10"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans11">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint11"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id11"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans12">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint12"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="ax12_bus0_id12"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+  <link name="rx_head">
+    <inertial><origin xyz="0 0 0"/><mass value="0.05"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="rx_module1">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module2">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module3">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module4">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module5">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module6">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module7">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module8">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module9">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <link name="rx_module10">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.072"/><inertia ixx="1.8e-5" ixy="0" ixz="0" iyy="2.7e-5" iyz="0" izz="2.3e-5"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.058 0.035 0.045"/></geometry></collision>
+  </link>
+  <joint name="rx_joint1" type="revolute">
+    <parent link="rx_head"/>
+    <child link="rx_module1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint2" type="revolute">
+    <parent link="rx_module1"/>
+    <child link="rx_module2"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint3" type="revolute">
+    <parent link="rx_module2"/>
+    <child link="rx_module3"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint4" type="revolute">
+    <parent link="rx_module3"/>
+    <child link="rx_module4"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint5" type="revolute">
+    <parent link="rx_module4"/>
+    <child link="rx_module5"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint6" type="revolute">
+    <parent link="rx_module5"/>
+    <child link="rx_module6"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint7" type="revolute">
+    <parent link="rx_module6"/>
+    <child link="rx_module7"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint8" type="revolute">
+    <parent link="rx_module7"/>
+    <child link="rx_module8"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint9" type="revolute">
+    <parent link="rx_module8"/>
+    <child link="rx_module9"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <joint name="rx_joint10" type="revolute">
+    <parent link="rx_module9"/>
+    <child link="rx_module10"/>
+    <origin xyz="0.07 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.618" upper="2.618" velocity="5.55" effort="2.5"/>
+  </joint>
+  <transmission name="rx_trans1">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint1"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans2">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint2"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans3">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint3"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id3"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans4">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint4"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id4"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans5">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint5"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id5"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans6">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint6"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id6"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans7">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint7"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id7"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans8">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint8"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id8"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans9">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint9"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id9"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="rx_trans10">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="rx_joint10"><hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface></joint>
+    <actuator name="rx28_bus0_id10"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+</robot>

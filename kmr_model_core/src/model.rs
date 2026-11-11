@@ -718,6 +718,25 @@ mod tests {
     }
 
     #[test]
+    fn step_9_two_chains_under_a_fixed_world_link_are_one_robot() {
+        // DECISION: the helper's `base`, `l1`, `l2` stand for world, h, a1.
+        let text = robot(
+            &("  <link name=\"rh\"/><link name=\"r1\"/>\n".to_string()
+                + &joint("world_to_h", "fixed", "base", "l1", "", "")
+                + &joint("ja", "revolute", "l1", "l2", LIMIT, "")
+                + &joint("world_to_rh", "fixed", "base", "rh", "", "")
+                + &joint("jr", "revolute", "rh", "r1", LIMIT, "")),
+        );
+        let names = check(&text).map(|r| {
+            r.actuators
+                .iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(names, Ok(vec!["ja".to_string(), "jr".to_string()]));
+    }
+
+    #[test]
     fn step_10_at_least_one_actuator() {
         let text = robot(
             &(joint("f1", "fixed", "base", "l1", "", "")
