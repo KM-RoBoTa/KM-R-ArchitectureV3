@@ -737,6 +737,37 @@ mod tests {
     }
 
     #[test]
+    fn step_9_a_loop_of_joints() {
+        let text = robot(
+            &(joint("j1", "revolute", "l1", "l2", LIMIT, "")
+                + &joint("j2", "revolute", "l2", "l1", LIMIT, "")),
+        );
+        fails(&text, "kmr: r.urdf:2: link l1: is in a loop of joints");
+    }
+
+    #[test]
+    fn actuator_order_is_joint_file_order() {
+        let t = |name: &str, j: &str| {
+            format!(
+                "<transmission name=\"{name}\"><joint name=\"{j}\"/><actuator name=\"m{j}\"/></transmission>\n"
+            )
+        };
+        let text = robot(
+            &(joint("j2", "revolute", "l1", "l2", LIMIT, "")
+                + &joint("j1", "revolute", "base", "l1", LIMIT, "")
+                + &t("t1", "j1")
+                + &t("t2", "j2")),
+        );
+        let names = check(&text).map(|r| {
+            r.actuators
+                .iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(names, Ok(vec!["j2".to_string(), "j1".to_string()]));
+    }
+
+    #[test]
     fn step_10_at_least_one_actuator() {
         let text = robot(
             &(joint("f1", "fixed", "base", "l1", "", "")
