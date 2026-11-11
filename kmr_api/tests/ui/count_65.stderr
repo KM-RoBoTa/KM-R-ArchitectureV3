@@ -1,0 +1,5 @@
+error: kmr: actuators = 65: expected 1 to 64 actuators (SRS write mask)
+ --> tests/ui/count_65.rs:3:29
+  |
+3 | kmr_api::robot!(actuators = 65);
+  |                             ^^

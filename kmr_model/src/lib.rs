@@ -21,8 +21,9 @@ use crate::input::{Input, Source};
 
 /// `N`, the `model` module and the rebuild tracking of one robot model.
 ///
-/// Called by `kmr_api::robot!` only, as `model!($crate; preset = Name)` or
-/// `model!($crate; model = "path")`; the path is relative to the calling
+/// Called by `kmr_api::robot!` only, as `model!($crate; preset = Name)`,
+/// `model!($crate; model = "path")`, or `model!($crate; actuators = 12)` for N
+/// without descriptor; the path is relative to the calling
 /// crate's `Cargo.toml`. Any fault is a compile error naming the file, the
 /// element and the reason (FR-008 (SRS FR-6.4)).
 #[proc_macro]
@@ -52,6 +53,11 @@ fn expand(input: &Input) -> syn::Result<TokenStream2> {
         Source::Preset(name) => {
             let robot = kmr_model_core::preset(&name.to_string())
                 .map_err(|msg| syn::Error::new(name.span(), msg))?;
+            Ok(emit::emit(&robot, &input.krate, None))
+        }
+        Source::Count(lit) => {
+            let n = lit.base10_parse::<usize>()?;
+            let robot = kmr_model_core::count(n).map_err(|msg| syn::Error::new(lit.span(), msg))?;
             Ok(emit::emit(&robot, &input.krate, None))
         }
     }

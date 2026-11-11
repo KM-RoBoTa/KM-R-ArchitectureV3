@@ -229,4 +229,43 @@ mod sc_009 {
     robot_of!(n_4, "tests/fixtures/four.urdf", 4);
     robot_of!(n_10, "tests/fixtures/ten.urdf", 10);
     robot_of!(n_64, "tests/fixtures/sixty_four.urdf", 64);
+
+    /// N without descriptor: `robot!(actuators = 12)`.
+    mod count {
+        use std::time::Duration;
+
+        use kmr_api::{EachTick, Q, Sensors, Time};
+
+        kmr_api::robot!(actuators = 12);
+
+        fn stop_at_tick_1(time: &Time, robot: &mut State, _s: &Sensors) {
+            robot.set_all_q([Q(0.0); N]);
+            if time.tick() >= 1 {
+                kmr_api::shutdown!("test: tick 1");
+            }
+        }
+
+        #[test]
+        fn gives_n_names_by_index_and_no_limit() {
+            use kmr_api::Spec;
+            assert_eq!(N, 12);
+            assert_eq!(model::NAMES[0], "j0");
+            assert_eq!(self::actuator!("j11"), 11);
+            const { assert!(model::PLACEHOLDER) };
+            assert!(model::LINK_NAMES.is_empty());
+            assert_eq!(<__Spec as Spec<N>>::PRISMATIC, [0]);
+        }
+
+        #[test]
+        fn builds_and_runs_until_a_shutdown() {
+            let _bus = super::BUS
+                .lock()
+                .unwrap_or_else(super::PoisonError::into_inner);
+            let result = Robot::new()
+                .set_dt(Duration::from_millis(1))
+                .add_controller(EachTick, stop_at_tick_1)
+                .run();
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
 }

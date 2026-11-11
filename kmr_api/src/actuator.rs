@@ -1,5 +1,7 @@
 //! Actuators declared in `main.rs`, lowered to the hardware table at `run()` (SRS FR-6.1).
 
+use core::ops::RangeInclusive;
+
 use kmr_adapters::binding::Port;
 use kmr_adapters::dynamixel::{Actuator, Bus, Declared, Mode, Model, Table, Torque, Zero};
 
@@ -12,8 +14,29 @@ use crate::{BusHandle, MASK_WORDS, UserError};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Actuators {
     pub(crate) bus: BusHandle,
-    pub(crate) ids: core::ops::RangeInclusive<u8>,
+    pub(crate) ids: IdSet,
     pub(crate) driver: Driver,
+}
+
+/// The firmware ids of a declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum IdSet {
+    /// These ids, in this order.
+    Range(RangeInclusive<u8>),
+    /// One actuator per model actuator, ids `1..=N`.
+    // DECISION: `all()` numbers from 1, the Dynamixel factory id, so a chain numbered 1..=N
+    // needs no range; combined with another declaration it overcounts and `run()` refuses it.
+    All,
+}
+
+impl IdSet {
+    /// The ids on a robot of `n` actuators.
+    fn resolve(&self, n: usize) -> RangeInclusive<u8> {
+        match self {
+            Self::Range(ids) => ids.clone(),
+            Self::All => 1..=u8::try_from(n).unwrap_or(u8::MAX),
+        }
+    }
 }
 
 /// The driver of a declaration, by brand, with its settings.
@@ -29,9 +52,9 @@ pub(crate) enum Driver {
 }
 
 impl Actuators {
-    /// How many actuators this declares.
-    fn len(&self) -> usize {
-        self.ids.clone().count()
+    /// How many actuators this declares on a robot of `n` actuators.
+    fn len(&self, n: usize) -> usize {
+        self.ids.resolve(n).count()
     }
 }
 
@@ -51,7 +74,7 @@ pub(crate) fn lower<const N: usize>(
     declarations: Vec<Actuators>,
     prismatic: [u64; MASK_WORDS],
 ) -> Result<DxlDeclared<N>, UserError> {
-    let declared = declarations.iter().map(Actuators::len).sum();
+    let declared = declarations.iter().map(|d| d.len(N)).sum();
     if declared != N {
         return Err(UserError::ActuatorCount {
             declared,
@@ -62,7 +85,7 @@ pub(crate) fn lower<const N: usize>(
     let mut actuators = Vec::with_capacity(N);
     for declaration in &declarations {
         // An empty range names no bus: every live bus carries an actuator.
-        if declaration.len() == 0 {
+        if declaration.len(N) == 0 {
             continue;
         }
         let bus = match handles.iter().position(|seen| *seen == declaration.bus) {
@@ -89,7 +112,7 @@ pub(crate) fn lower<const N: usize>(
             torque,
             zero,
         } = declaration.driver;
-        actuators.extend(declaration.ids.clone().map(|id| Actuator {
+        actuators.extend(declaration.ids.resolve(N).map(|id| Actuator {
             bus,
             id,
             model,
@@ -218,6 +241,48 @@ mod tests {
             .expect("the empty range is ignored");
         assert_eq!(declared.live(), 1);
         assert_eq!(declared.ports(), [Port::ById("ARM00001")]);
+    }
+
+    #[test]
+    fn all_declares_one_actuator_per_model_actuator_at_ids_from_1() {
+        all_ids::<1>();
+        all_ids::<12>();
+        all_ids::<64>();
+    }
+
+    /// The `all()` test on a robot of `N` actuators.
+    fn all_ids<const N: usize>() {
+        let spine = Plugin::by_id("SPINE001").baud(1_000_000).build();
+        let declared =
+            lower::<N>(vec![Ax12a::all().read_only().on(spine)], REVOLUTE).expect("all of N");
+        let placed = declared
+            .table()
+            .actuators
+            .map(|a| (a.bus, a.id, a.model, a.torque));
+        for (id, actuator) in (1..).zip(placed) {
+            assert_eq!(actuator, (0, id, Model::Ax12a, Torque::ReadOnly));
+        }
+        assert_eq!(declared.live(), 1);
+    }
+
+    #[test]
+    fn all_with_another_declaration_overcounts() {
+        let spine = Plugin::by_id("SPINE001").baud(1_000_000).build();
+        let tail = Plugin::by_id("TAIL0001").baud(1_000_000).build();
+        let res = lower::<4>(
+            vec![Ax12a::all().on(spine), Ax12a::id(9).on(tail)],
+            REVOLUTE,
+        );
+        assert!(
+            matches!(
+                res,
+                Err(UserError::ActuatorCount {
+                    declared: 5,
+                    expected: 4
+                })
+            ),
+            "{res:?}"
+        );
     }
 
     #[test]

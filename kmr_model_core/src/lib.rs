@@ -48,6 +48,37 @@ pub fn preset_names() -> impl Iterator<Item = &'static str> {
     presets::names()
 }
 
+/// A robot of `n` revolute actuators and no descriptor: N only.
+///
+/// Its actuators are named `j0` to `j<n-1>`, by engine index, and it has no link. It is a
+/// placeholder: it has no limit to hand the engine.
+///
+/// # Errors
+///
+/// The `robot!` message for an `n` outside `1..=64` (the SRS write mask).
+pub fn count(n: usize) -> Result<Robot, String> {
+    if !(1..=64).contains(&n) {
+        return Err(format!(
+            "kmr: actuators = {n}: expected 1 to 64 actuators (SRS write mask)"
+        ));
+    }
+    let actuators = (0..n)
+        .map(|i| CheckedActuator {
+            name: format!("j{i}"),
+            kind: Kind::Revolute,
+            lower: 0.0,
+            upper: 0.0,
+            speed: 0.0,
+            effort: 0.0,
+        })
+        .collect();
+    Ok(Robot {
+        actuators,
+        links: Vec::new(),
+        placeholder: true,
+    })
+}
+
 /// The checked robot of the descriptor file at `path`.
 ///
 /// `path` is taken as given; `robot!` joins it to the calling crate's `CARGO_MANIFEST_DIR`
@@ -126,6 +157,28 @@ fn placeholder(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_count_is_n_revolute_placeholder_actuators_named_by_index() {
+        let robot = count(3).expect("3 is in range");
+        assert_eq!(robot.n(), 3);
+        assert!(robot.placeholder);
+        assert!(robot.links.is_empty());
+        let names: Vec<_> = robot.actuators.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["j0", "j1", "j2"]);
+        assert!(robot.actuators.iter().all(|a| a.kind == Kind::Revolute));
+        assert!(count(64).is_ok());
+    }
+
+    #[test]
+    fn a_count_outside_the_write_mask_is_refused() {
+        for n in [0, 65] {
+            assert!(
+                count(n).is_err_and(|e| e.contains("expected 1 to 64")),
+                "{n}"
+            );
+        }
+    }
 
     #[test]
     fn a_placeholder_is_told_by_its_first_comment() {

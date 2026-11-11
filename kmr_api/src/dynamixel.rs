@@ -4,6 +4,8 @@
 //! ```ignore
 //! let spine = kmr_api::Bus::by_id("AL02L1KL").baud(1_000_000).build();
 //! Robot::new().add_actuator(kmr_api::dynamixel::Rx28::ids(1..=10).on(spine))
+//! // or, one per model actuator at ids 1..=N:
+//! Robot::new().add_actuator(kmr_api::dynamixel::Rx28::all().on(spine))
 //! ```
 //!
 //! Each declared actuator is powered, in position mode, zero at the model's centre, unless set
@@ -30,12 +32,12 @@ pub use kmr_adapters::dynamixel::{
 };
 
 use crate::BusHandle;
-use crate::actuator::{Actuators, Driver};
+use crate::actuator::{Actuators, Driver, IdSet};
 
 /// Actuators of one model at a range of firmware ids, not yet on a bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ids {
-    ids: RangeInclusive<u8>,
+    ids: IdSet,
     model: Model,
     mode: Mode,
     torque: Torque,
@@ -44,7 +46,7 @@ pub struct Ids {
 
 impl Ids {
     /// The actuators of `model` at `ids`, with the defaults.
-    fn new(model: Model, ids: RangeInclusive<u8>) -> Self {
+    fn new(model: Model, ids: IdSet) -> Self {
         Self {
             ids,
             model,
@@ -97,12 +99,17 @@ macro_rules! models {
         impl $name {
             /// The actuator at firmware id `id`.
             pub fn id(id: u8) -> Ids {
-                Ids::new(Model::$model, id..=id)
+                Ids::new(Model::$model, IdSet::Range(id..=id))
             }
 
             /// The actuators at firmware ids `ids`, in this order.
             pub fn ids(ids: RangeInclusive<u8>) -> Ids {
-                Ids::new(Model::$model, ids)
+                Ids::new(Model::$model, IdSet::Range(ids))
+            }
+
+            /// One actuator per actuator of the robot model, at firmware ids `1..=N`.
+            pub fn all() -> Ids {
+                Ids::new(Model::$model, IdSet::All)
             }
         }
     )*};

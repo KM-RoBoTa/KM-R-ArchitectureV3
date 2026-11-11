@@ -11,10 +11,14 @@
 /// kmr_api::robot!(XmBench);
 /// kmr_api::robot!(XmBench, hardware = |hw| hw.read_only(3).baud("bus0", 3_000_000));
 /// kmr_api::robot!(model = "models/arm.urdf");
+/// kmr_api::robot!(actuators = 12);
 /// kmr_api::robot!(model = "models/arm.urdf", hardware = ARM);
 /// kmr_api::robot!(model = "models/arm.urdf", hardware = { dynamixel: ARM.at([0, 1, 2]) });
 /// kmr_api::robot!(model = "models/gecko.urdf", hardware = { cubemars: LEG.in_order() });
 /// ```
+///
+/// `actuators = 12` gives `N` alone, without descriptor: actuators `j0` to `j11`, no link and
+/// no limit (a placeholder model); `Robot::add_actuator` declares the hardware.
 ///
 /// `|hw| ..` changes a preset's table through its `const fn` overrides; an
 /// override that names an index or a label the table does not have does not
@@ -116,25 +120,11 @@ macro_rules! robot {
     };
     (model = $path:literal) => {
         $crate::__model!($crate; model = $path);
-        $crate::__robot_items!();
-        impl $crate::Spec<{ N }> for __Spec {
-            type Drivers = $crate::HCons<$crate::__DxlAdapter<{ N }, { N }>, $crate::HNil>;
-
-            $crate::__robot_items!(@consts);
-            const PRESET: ::core::option::Option<&'static str> = ::core::option::Option::None;
-
-            fn bind(
-                plugins: &[$crate::Binding],
-            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
-                $crate::__bind_none(plugins)
-            }
-
-            fn declare(
-                declared: $crate::__Declared<{ N }>,
-            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
-                $crate::__declare_dynamixel(declared)
-            }
-        }
+        $crate::__robot_items!(@declared);
+    };
+    (actuators = $n:literal) => {
+        $crate::__model!($crate; actuators = $n);
+        $crate::__robot_items!(@declared);
     };
     (model = $path:literal, hardware = { $($brand:ident : $part:expr),+ $(,)? }) => {
         $crate::__model!($crate; model = $path);
@@ -229,7 +219,8 @@ macro_rules! robot {
 /// The items of `robot!` that do not come from the model: the aliases, `__Spec` and the
 /// checks on `N`; with `@table`, the count check and `Spec` of a one-table robot, named by
 /// the `robot!` argument that gives the table; with
-/// `@consts`, the model's facts as `Spec`'s consts. Hidden, so
+/// `@consts`, the model's facts as `Spec`'s consts; with `@declared`, the items and `Spec` of a
+/// robot whose hardware `Robot::add_actuator` declares. Hidden, so
 /// a user cannot set `N` through it (003 review #7).
 #[doc(hidden)]
 #[macro_export]
@@ -260,6 +251,27 @@ macro_rules! __robot_items {
                 _declared: $crate::__Declared<{ N }>,
             ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
                 $crate::__declare_none($hardware)
+            }
+        }
+    };
+    (@declared) => {
+        $crate::__robot_items!();
+        impl $crate::Spec<{ N }> for __Spec {
+            type Drivers = $crate::HCons<$crate::__DxlAdapter<{ N }, { N }>, $crate::HNil>;
+
+            $crate::__robot_items!(@consts);
+            const PRESET: ::core::option::Option<&'static str> = ::core::option::Option::None;
+
+            fn bind(
+                plugins: &[$crate::Binding],
+            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
+                $crate::__bind_none(plugins)
+            }
+
+            fn declare(
+                declared: $crate::__Declared<{ N }>,
+            ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
+                $crate::__declare_dynamixel(declared)
             }
         }
     };

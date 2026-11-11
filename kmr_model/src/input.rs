@@ -6,7 +6,7 @@
 
 use proc_macro2::{Ident, TokenStream, TokenTree};
 use syn::parse::{Parse, ParseStream};
-use syn::{LitStr, Token};
+use syn::{LitInt, LitStr, Token};
 
 /// Where the robot model comes from.
 pub(crate) enum Source {
@@ -14,6 +14,8 @@ pub(crate) enum Source {
     Preset(Ident),
     /// A descriptor file, relative to the calling crate's `Cargo.toml`.
     Model(LitStr),
+    /// An actuator count, without descriptor.
+    Count(LitInt),
 }
 
 /// The parsed input of `model!`.
@@ -25,7 +27,8 @@ pub(crate) struct Input {
 }
 
 /// What the user may write after the crate path.
-const FORMS: &str = "expected `PresetName` or `model = \"path/to/robot.urdf\"`";
+const FORMS: &str =
+    "expected `PresetName`, `model = \"path/to/robot.urdf\"` or `actuators = <count>`";
 
 impl Parse for Input {
     fn parse(input: ParseStream) -> syn::Result<Self> {
@@ -44,6 +47,7 @@ impl Parse for Input {
         let source = match key.to_string().as_str() {
             "preset" => Source::Preset(input.parse().map_err(kmr)?),
             "model" => Source::Model(input.parse().map_err(kmr)?),
+            "actuators" => Source::Count(input.parse().map_err(kmr)?),
             other => {
                 return Err(syn::Error::new(
                     key.span(),
@@ -102,6 +106,15 @@ mod tests {
         assert!(
             matches!(input, Ok(Input { source: Source::Model(ref l), .. }) if l.value() == "ab.urdf")
         );
+    }
+
+    #[test]
+    fn an_actuator_count() {
+        let input = parse("k; actuators = 12");
+        assert!(
+            matches!(input, Ok(Input { source: Source::Count(ref n), .. }) if n.base10_digits() == "12")
+        );
+        assert!(parse("k; actuators = \"12\"").is_err_and(|e| e.starts_with("kmr: ")));
     }
 
     #[test]
