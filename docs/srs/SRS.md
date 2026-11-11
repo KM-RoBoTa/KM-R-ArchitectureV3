@@ -166,7 +166,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 - FR-6.3 Topology is portable and compile-time; physical ports are per machine, bound in the builder (Bevy-style plugins) and resolved at bring-up: `Bus::by_id(serial)` is preferred, `Bus::by_dev(path)` is allowed but less reliable, since `/dev/ttyUSB*` numbers change across reboots. Without any bus plugin, run() simulates and warns once.
 - FR-6.4 A bad descriptor is a compile error; a bad port binding is a bring-up error; a bad dt or registration is a run() error.
 
-* FR-6.5 Two deployment patterns. (1) One host, several wired robots as a single `Robot`: N is the total actuator count, one state, one loop, one clock; each robot is a contiguous index range the user may name as a group slice, and may sit on its own bus (two snakes on two buses). (2) One instance per robot, instances exchange over Zenoh (FR-7). For (1), URDF is a single kinematic tree, so a multi-robot build needs either one URDF with a common root link or a `.ron` descriptor composing several URDFs; which one is open (section 8).
+* FR-6.5 Two deployment patterns. (1) One host, several wired robots as a single `Robot`: N is the total actuator count, one state, one loop, one clock; each robot is a contiguous index range the user may name as a group slice, and may sit on its own bus (two snakes on two buses). (2) One instance per robot, instances exchange over Zenoh (FR-7). For (1), URDF is a single kinematic tree, so a multi-robot build is one URDF with a common root link: each robot's root hangs off it by a fixed joint (decided 2026-11-11, section 8).
 
 **FR-7 Messaging**
 
@@ -301,7 +301,7 @@ Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are n
 * [ ] TO RESOLVE. Several actuators driving one joint (one lifts, one lowers the same link) cannot be expressed with the chosen data structure, two same-size actuator arrays (SoA or decoupled). No solution yet; do not redesign the arrays around it. An agent that hits it writes unimplemented!("SRS index space: multi-actuator joint") on that path and continues
 * [ ] Zenoh `Desired` apply-once (FR-7.1): likely bug nest in velocity and torque modes; solution unclear, study when it bites
 * [ ] What "hold" means per actuator mode (FR-4.1): depends on each actuator's HAL/SDK, decided per adapter, not here. Its duration is decided: `Option<Duration>`, `None` by default (2026-10-27)
-* [ ] Multi-robot descriptor (FR-6.5): one URDF with a common root link, or a `.ron` composing several URDFs; verify what URDF allows
+* [x] Multi-robot descriptor (FR-6.5): one URDF with a common root link (decided 2026-11-11). URDF tools refuse a forest; fixed joints from the root are not actuated, so N stays the actuator count
 * [ ] Threaded context: the loop side must stay lock-free; what the threaded side gets (merged into the item above; `Arc<Mutex<T>>` between threads is fine)
 
 - [x] Home state (FR-2.7): a kmr\_api controller preset, not engine state (decided 2026-11-10)
