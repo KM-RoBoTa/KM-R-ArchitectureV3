@@ -603,6 +603,9 @@ const ALARMS: [Option<&str>; 8] = [
     None,
 ];
 
+/// Hardware Error Status bit 0: the input voltage is outside its limits.
+const INPUT_VOLTAGE_ALARM: u8 = 0x01;
+
 /// Hardware Error Status bits, named: `overheating, overload`.
 struct Alarms(u8);
 
@@ -808,6 +811,21 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
                 id,
                 status,
             },
+            // Protocol 2 latches the alert until a reboot, whatever the
+            // voltage reads now.
+            BackendError::Fault(Fault::VoltageInside { .. })
+                if self
+                    .actuators
+                    .get(index)
+                    .is_some_and(|actuator| actuator.model.protocol() == Protocol::Two) =>
+            {
+                DynamixelError::HardwareError {
+                    actuator: index,
+                    bus,
+                    id,
+                    status: INPUT_VOLTAGE_ALARM,
+                }
+            }
             source => DynamixelError::Actuator {
                 actuator: index,
                 bus,

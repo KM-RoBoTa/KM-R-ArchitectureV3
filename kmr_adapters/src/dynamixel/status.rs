@@ -47,6 +47,19 @@ pub(crate) enum StatusReport {
     Unnamed,
 }
 
+impl StatusReport {
+    /// Whether it reports a hardware fault and nothing else, so the actuator
+    /// ran the instruction: on Protocol 1 only Input Voltage, Overheating or
+    /// Overload, on Protocol 2 the alert with no code (dxl_rs_v2's `ran`).
+    pub(crate) const fn hardware_only(self) -> bool {
+        match self {
+            Self::P1(errors) => errors.bits != 0 && errors.bits & !P1Errors::HARDWARE == 0,
+            Self::P2 { alert, code } => alert && code.is_none(),
+            Self::Unnamed => false,
+        }
+    }
+}
+
 impl fmt::Display for StatusReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -133,6 +146,11 @@ pub(crate) struct P1Errors {
 }
 
 impl P1Errors {
+    /// The hardware faults: Input Voltage, Overheating, Overload.
+    const HARDWARE: u8 = 1 << P1Error::InputVoltage as u8
+        | 1 << P1Error::Overheating as u8
+        | 1 << P1Error::Overload as u8;
+
     /// The errors of Protocol 1 error byte `bits`.
     pub(crate) const fn from_bits(bits: u8) -> Self {
         Self { bits }
@@ -462,5 +480,26 @@ mod tests {
         for report in reports {
             assert!(!report.to_string().contains("0x"), "{report}");
         }
+    }
+
+    #[test]
+    fn only_a_hardware_fault_means_the_instruction_ran() {
+        assert!(p1(&[P1Error::InputVoltage]).hardware_only());
+        assert!(
+            p1(&[
+                P1Error::InputVoltage,
+                P1Error::Overheating,
+                P1Error::Overload
+            ])
+            .hardware_only()
+        );
+        assert!(!p1(&[]).hardware_only());
+        assert!(!p1(&[P1Error::InputVoltage, P1Error::Range]).hardware_only());
+        assert!(!p1(&[P1Error::Instruction]).hardware_only());
+        assert!(!StatusReport::P1(P1Errors::from_bits(0x81)).hardware_only());
+        assert!(p2(true, None).hardware_only());
+        assert!(!p2(true, Some(P2Error::Access)).hardware_only());
+        assert!(!p2(false, None).hardware_only());
+        assert!(!StatusReport::Unnamed.hardware_only());
     }
 }

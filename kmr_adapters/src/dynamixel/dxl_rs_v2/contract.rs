@@ -791,10 +791,14 @@ fn a_limit_write_whose_reply_reports_the_voltage_fault_it_fixes_returns_that_fau
     backend.declare(0, &[(1, AX)]).unwrap();
 
     assert_eq!(backend.confirm_torque_off(0, AX, 1), Ok(()));
-    // Inside the limits written, the voltage measures as no voltage fault.
+    // Inside the limits written: the flag lags, the limits come with it.
     assert_eq!(
         backend.write_voltage_limits(0, AX, 1, 95, 130),
-        Err(BackendError::Fault(Fault::Hardware { status: 0x01 }))
+        Err(BackendError::Fault(Fault::VoltageInside {
+            measured_dv: 101,
+            min_dv: 95,
+            max_dv: 130
+        }))
     );
 
     let (one, _) = lines(&mut backend);
@@ -1175,6 +1179,55 @@ fn an_ax12a_below_its_voltage_limits_comes_up_once_voltage_limits_are_written() 
     let torque_at = find(sent, p1(1, &[0x03, 24, 1]).bytes());
     assert!(off_at.is_some() && off_at < limits_at && limits_at < goal_at && goal_at < torque_at);
     assert_eq!((one.unread(), two.sent().len()), (0, 0));
+}
+
+/// SRS FR-5.2, FR-6.1: the bench AX-12A whose supply sits at its 10.5 V Min
+/// Voltage Limit flags Input Voltage while it reads inside its limits:
+/// `voltage_limits(9.0, 13.0)` with `restore_limits` saves the limits the
+/// fault carries, writes the new ones, asks again while its flag lags the
+/// write, and brings it up.
+#[test]
+fn an_ax12a_flagged_at_its_min_voltage_saves_its_limits_and_comes_up() {
+    use kmr_core::hal::Hal;
+
+    let time = MockTime::new();
+    let mut one = ax_at_10_1_v(&time);
+    // Each flagged reply, then the three reads that measure it: Present
+    // Voltage 10.5 V, Min Voltage Limit `min`, Max Voltage Limit 13.0 V.
+    let at_min = |line: &mut Line<'_>, first: usize, min: u8| {
+        line.reply_to(first, fault1(1, 0x01, &[]).bytes())
+            .reply_to(first + 1, fault1(1, 0x01, &[105]).bytes())
+            .reply_to(first + 2, fault1(1, 0x01, &[min]).bytes())
+            .reply_to(first + 3, fault1(1, 0x01, &[130]).bytes());
+    };
+    // Torque Enable 0, the read of both voltage limits, then their write.
+    at_min(&mut one, 5, 105);
+    at_min(&mut one, 9, 105);
+    at_min(&mut one, 13, 90);
+    // `clear_fault`'s ping, still flagged inside the new limits, then clean
+    // when asked again; then health: voltage, temperature, its limit, both
+    // voltage limits.
+    at_min(&mut one, 17, 90);
+    one.reply_to(21, status1(1, &[]).bytes())
+        .reply_to(22, status1(1, &[105]).bytes())
+        .reply_to(23, status1(1, &[30]).bytes())
+        .reply_to(24, status1(1, &[70]).bytes())
+        .reply_to(25, status1(1, &[90, 130]).bytes());
+    ax_clean_start(&mut one, 26);
+    one.reply_to(28, status1(1, &[]).bytes());
+    let placement = one_ax(crate::dynamixel::Settings {
+        restore_limits: true,
+        ..voltage_limits(90, 130)
+    });
+    let mut adapter = brought_up(placement, one, Line::with_capacity(&time));
+
+    assert_eq!(adapter.health(), Ok(()));
+    assert!(!adapter.backend.faulted(0, AX, 1));
+    assert_eq!(adapter.configure(), Ok(()));
+    assert_eq!(adapter.torque_on(), Ok(()));
+    let (one, _) = lines(&mut adapter.backend);
+    assert!(find(one.sent(), p1(1, &[0x03, 12, 90, 130]).bytes()).is_some());
+    assert_eq!(adapter.saved[0].voltage_dv, Some((105, 130)));
 }
 
 /// SRS FR-5.2: the same AX-12A with no voltage limits set stays faulted and

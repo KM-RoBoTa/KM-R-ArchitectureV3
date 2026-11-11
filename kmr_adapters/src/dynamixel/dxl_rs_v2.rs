@@ -45,6 +45,12 @@ const REPLY_WAIT: Duration = Duration::from_micros(1_500);
 // 6 ms after an EEPROM write and answered at 10 ms; the e-Manual gives no
 // figure. Twice the longest seen, paid at bring-up and close only.
 pub(super) const EEPROM_SETTLE: Duration = Duration::from_millis(20);
+/// Pause before `clear_fault` asks again a Protocol 1 actuator whose voltage
+/// fault reads inside its limits, and how many times it asks.
+// DECISION: 50 ms, 10 times: the bench AX-12A at 10.4 V (2026-11-11) still
+// flagged Input Voltage right after its Min Voltage Limit went to 9.0 V,
+// then answered clean; its flag lags the limit write.
+const VOLTAGE_FLAG_SETTLE: (Duration, usize) = (Duration::from_millis(50), 10);
 /// Bytes of the longest reply the backend waits for: a Protocol 2 status
 /// packet with 4 data bytes is 15.
 const REPLY_BYTES: u64 = 20;
@@ -640,6 +646,13 @@ fn fault_of(fault: FaultError) -> Fault {
             min_dv: min.0,
             max_dv: max.0,
         },
+        FaultError::Voltage(VoltageError::InsideLimits {
+            measured, min, max, ..
+        }) => Fault::VoltageInside {
+            measured_dv: measured.0,
+            min_dv: min.0,
+            max_dv: max.0,
+        },
         FaultError::Temperature(TemperatureError::AboveLimit {
             measured, limit, ..
         }) => Fault::Temperature {
@@ -724,9 +737,25 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
     /// ping where the model has none; a fault still reported is measured.
     fn clear_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
         let (open, target) = (self.port(port)?, id_of(id)?);
-        on_bus!(open, model, |bus| held(bus, target)?
-            .clear_fault()
-            .map_err(backend_error))
+        let (pause, asks) = match model.protocol() {
+            Protocol::One => VOLTAGE_FLAG_SETTLE,
+            // Protocol 2 keeps its alert until a reboot: asking again is no use.
+            Protocol::Two => (Duration::ZERO, 1),
+        };
+        let mut answer = Ok(());
+        for _ in 0..asks {
+            answer = on_bus!(open, model, |bus| Ok(held(bus, target)?.clear_fault()))?;
+            if !matches!(
+                answer,
+                Err(Error::Fault(FaultError::Voltage(
+                    VoltageError::InsideLimits { .. }
+                )))
+            ) {
+                break;
+            }
+            std::thread::sleep(pause);
+        }
+        answer.map_err(backend_error)
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {

@@ -23,7 +23,7 @@ use super::backend::{
     RamSetting, RawState, Reading, Setting, Undeclared, Vital, Wire, voltage_limits_fit,
 };
 use super::config::{HealthLimits, Model, Protocol};
-use super::status::{Instruction, P2Error, Request, StatusError, StatusReport};
+use super::status::{Instruction, P1Error, P1Errors, P2Error, Request, StatusError, StatusReport};
 use super::units;
 
 /// Calls recorded; later ones are only counted.
@@ -69,6 +69,23 @@ const fn access_error(register: &'static str) -> StatusError {
             alert: false,
             code: Some(P2Error::Access),
         },
+        request: Request {
+            instruction: Some(Instruction::Write),
+            register: Some(register),
+            addr: None,
+        },
+    }
+}
+/// The Protocol 1 status a write to `register` answers with when the fault
+/// `cleared` was still set as the actuator built the reply.
+const fn stale_fault(cleared: Fault, register: &'static str) -> StatusError {
+    let error = match cleared {
+        Fault::Voltage { .. } | Fault::VoltageInside { .. } => P1Error::InputVoltage,
+        Fault::Temperature { .. } => P1Error::Overheating,
+        _ => P1Error::Overload,
+    };
+    StatusError {
+        report: StatusReport::P1(P1Errors::from_bits(1 << error as u8)),
         request: Request {
             instruction: Some(Instruction::Write),
             register: Some(register),
@@ -860,7 +877,9 @@ impl Scripted {
     /// refused or its limits are stuck, then held faulted while its script
     /// reports a fault, as `dxl_rs_v2` holds one whose reply reports it.
     /// `refusal` fails it; a reply reporting a fault fails with that fault
-    /// instead, applied or not.
+    /// instead, applied or not. On Protocol 1 a write that clears the fault
+    /// still answers with its bit, as the actuator builds the reply before
+    /// the new limit applies: a status naming `register`.
     // DECISION: a refusal whose reply carries a fault is not applied and
     // fails with the fault: `DxlRsV2` measures that reply into a fault
     // whatever error code is beside it; the caller's read back decides.
@@ -869,9 +888,10 @@ impl Scripted {
         port: usize,
         model: Model,
         id: u8,
-        refusal: Option<StatusError>,
+        (register, refusal): (&'static str, Option<StatusError>),
         apply: impl FnOnce(&mut Health),
     ) -> Result<(), BackendError> {
+        let before = self.measured(port, model, id);
         if refusal.is_none()
             && !get(&self.stuck, port, id)
             && let Some(health) = at(&mut self.vitals, port, id)
@@ -882,10 +902,16 @@ impl Scripted {
         if let (Some(_), Some(faulted)) = (fault, at(&mut self.faulted, port, id)) {
             *faulted = true;
         }
-        match (fault, refusal) {
-            (Some(fault), _) => Err(BackendError::Fault(fault)),
-            (None, Some(status)) => Err(BackendError::Status(status)),
-            (None, None) => Ok(()),
+        match (fault, refusal, before) {
+            (Some(fault), _, _) => Err(BackendError::Fault(fault)),
+            (None, Some(status), _) => Err(BackendError::Status(status)),
+            (None, None, Some(cleared)) if model.protocol() == Protocol::One => {
+                if let Some(faulted) = at(&mut self.faulted, port, id) {
+                    *faulted = true;
+                }
+                Err(BackendError::Status(stale_fault(cleared, register)))
+            }
+            (None, None, _) => Ok(()),
         }
     }
 
@@ -1348,7 +1374,11 @@ impl Backend for Scripted {
         // DECISION: `dxl_rs_v2` names the lower register of the pair it
         // writes at once, Max Voltage Limit on Protocol 2.
         let refusal = self.limit_refusal(port, model, id, "Max Voltage Limit");
-        self.answer_limits(port, model, id, refusal, |health| {
+        let register = match model.protocol() {
+            Protocol::One => "Min Voltage Limit",
+            Protocol::Two => "Max Voltage Limit",
+        };
+        self.answer_limits(port, model, id, (register, refusal), |health| {
             health.min_voltage_dv = min_dv;
             health.max_voltage_dv = max_dv;
         })
@@ -1365,7 +1395,7 @@ impl Backend for Scripted {
         let call = Call::WriteTemperatureLimit;
         self.limit_write(call, (port, model, id), u32::from(celsius), None)?;
         let refusal = self.limit_refusal(port, model, id, "Temperature Limit");
-        self.answer_limits(port, model, id, refusal, |health| {
+        self.answer_limits(port, model, id, ("Temperature Limit", refusal), |health| {
             health.temperature_limit_c = celsius;
         })
     }
