@@ -1,12 +1,26 @@
 //! Home: ramps every actuator from where it is to a home pose, on a tick phase. Optional: a
 //! robot needs no home (SRS FR-2.7).
 //!
-//! ```ignore
+//! ```no_run
+//! use std::time::Duration;
+//!
+//! use kmr_api::presets::home::Home;
+//! use kmr_api::{EachTick, Q, Sensors, Time};
+//!
+//! kmr_api::robot!(XmBench);
+//!
 //! const HOME: Home<N> = Home::new([Q(0.0); N], Duration::from_secs(3));
 //!
-//! Robot::new()
-//!     .add_controller(EachTick, HOME.then(sine_all))
-//!     .run()
+//! fn sine_all(time: &Time, robot: &mut State, _sensors: &Sensors) {
+//!     let offset = Q(0.2 * (time.elapsed().as_secs_f32()).sin());
+//!     robot.set_all_q([offset; N]);
+//! }
+//!
+//! fn main() -> Result<(), kmr_api::UserError> {
+//!     Robot::new()
+//!         .add_controller(EachTick, HOME.then(sine_all))
+//!         .run()
+//! }
 //! ```
 
 use core::cell::Cell;
@@ -72,7 +86,13 @@ impl<const N: usize> Home<N> {
         time: &Time,
         state: &mut State<'_, N>,
     ) -> Option<(Duration, u64)> {
-        let (start, begun) = match phase.get() {
+        // A run starts at tick 0: a closure registered again in a later run homes again.
+        let now = if time.tick() == 0 {
+            Phase::Waiting
+        } else {
+            phase.get()
+        };
+        let (start, begun) = match now {
             Phase::Home { elapsed, tick } => return Some((elapsed, tick)),
             Phase::Ramping { start, begun } => (start, begun),
             Phase::Waiting => (state.q()?, time.elapsed()),
@@ -103,12 +123,11 @@ enum Phase<const N: usize> {
     Home { elapsed: Duration, tick: u64 },
 }
 
-/// The point at `a`, in `[0, 1)`, of the line from `from` to `to`.
+/// The point at `a`, in `[0, 1)`, of the line from `from` to `to`. With `a` below 1,
+/// `(to - from) * a` rounds below `to - from`, so the point never passes `to`; a NaN end
+/// stays NaN, for the limit stage to refuse.
 fn lerp(from: Q, to: Q, a: f32) -> Q {
-    let (low, high) = (from.0.min(to.0), from.0.max(to.0));
-    // DECISION: min/max, not `clamp`, which panics on a NaN read; they keep rounding from
-    // taking the point past `to`.
-    Q((from.0 + (to.0 - from.0) * a).max(low).min(high))
+    Q(from.0 + (to.0 - from.0) * a)
 }
 
 #[cfg(test)]
@@ -249,6 +268,35 @@ mod tests {
         };
         last_sent(robot().add_controller(EachTick, HOME.then(clock)), 6);
         assert_eq!(seen.into_inner(), [(0, Duration::ZERO, DT), (1, DT, DT)]);
+    }
+
+    #[test]
+    fn fr_2_7_then_nests() {
+        const SHORT: Home<4> = Home::new(POSE, Duration::from_millis(2));
+        let seen = RefCell::new(Vec::new());
+        let clock = |time: &Time, _: &mut State<'_, 4>, _: &Sensors| {
+            seen.borrow_mut().push((time.tick(), time.elapsed()));
+        };
+        last_sent(
+            robot().add_controller(EachTick, HOME.then(SHORT.then(clock))),
+            8,
+        );
+        assert_eq!(seen.into_inner(), [(0, Duration::ZERO), (1, DT)]);
+    }
+
+    #[test]
+    fn fr_2_7_homes_again_on_a_new_run() {
+        let home = HOME.controller();
+        last_sent(robot().add_controller(EachTick, &home), 6);
+        assert_eq!(
+            last_sent(robot().add_controller(EachTick, &home), 1).q,
+            START
+        );
+    }
+
+    #[test]
+    fn fr_2_7_a_nan_start_stays_nan_for_the_limit_stage() {
+        assert!(super::lerp(Q(f32::NAN), Q(3.0), 0.5).0.is_nan());
     }
 
     #[test]

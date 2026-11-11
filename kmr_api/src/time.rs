@@ -3,8 +3,8 @@ use std::time::Duration;
 /// Read-only view of the runtime clock handed to a controller each tick.
 ///
 /// Borrowing newtype: it holds a `&kmr_core::Time` the runtime lends for the
-/// duration of the call, never an owned copy — so wrapping it at the boundary
-/// is free and `kmr_core::Time` never appears in a public signature.
+/// duration of the call and a zero point, never an owned copy of the clock, so
+/// `kmr_core::Time` never appears in a public signature.
 pub struct Time<'a> {
     inner: &'a kmr_core::Time,
     /// Where `elapsed` counts from: zero, or a preset's hand-over to its `then`.
@@ -34,7 +34,8 @@ impl<'a> Time<'a> {
         }
     }
 
-    /// Time since the tick grid was armed, stamped at the start of the tick.
+    /// Time since the tick grid was armed, stamped at the start of the tick; under
+    /// [`Home::then`](crate::presets::home::Home::then), since the hand-over.
     pub fn elapsed(&self) -> Duration {
         self.inner.elapsed().saturating_sub(self.origin)
     }
@@ -44,7 +45,8 @@ impl<'a> Time<'a> {
         self.inner.dt()
     }
 
-    /// Index of the tick in progress, 0 for the first one.
+    /// Index of the tick in progress, 0 for the first one; under
+    /// [`Home::then`](crate::presets::home::Home::then), 0 on the hand-over tick.
     pub fn tick(&self) -> u64 {
         self.inner.tick().saturating_sub(self.first_tick)
     }
