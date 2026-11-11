@@ -158,7 +158,7 @@ pub(crate) fn lower<const N: usize>(
 mod tests {
     use super::*;
     use crate::Bus as Plugin;
-    use crate::dynamixel::{Ax12a, Xm430W210};
+    use crate::dynamixel::{Ax12a, Rx28, Xm430W210};
 
     /// No prismatic actuator.
     const REVOLUTE: [u64; MASK_WORDS] = [0; MASK_WORDS];
@@ -282,6 +282,29 @@ mod tests {
                 })
             ),
             "{res:?}"
+        );
+    }
+
+    #[test]
+    fn two_snakes_with_overlapping_ids_on_two_buses() {
+        let ax = Plugin::by_id("AL02L1KL").baud(1_000_000).build();
+        let rx = Plugin::by_id("AL02L1EU").baud(1_000_000).build();
+        let declared = lower::<22>(
+            vec![Ax12a::ids(1..=12).on(ax), Rx28::ids(1..=10).on(rx)],
+            REVOLUTE,
+        )
+        .expect("the same id on two buses is two actuators");
+        let placed = declared.table().actuators.map(|a| (a.bus, a.id, a.model));
+        for (i, id) in (1..=12).enumerate() {
+            assert_eq!(placed[i], (0, id, Model::Ax12a));
+        }
+        for (j, id) in (1..=10).enumerate() {
+            assert_eq!(placed[12 + j], (1, id, Model::Rx28));
+        }
+        assert_eq!(declared.live(), 2);
+        assert_eq!(
+            declared.ports(),
+            [Port::ById("AL02L1KL"), Port::ById("AL02L1EU")]
         );
     }
 

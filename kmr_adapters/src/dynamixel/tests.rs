@@ -139,6 +139,36 @@ const MIX_TABLE: Table<2, N> = {
 };
 const MIX_PLUGINS: [Binding; 2] = [plugin(ARM, Some("arm")), plugin(WRIST, Some("wrist"))];
 
+/// AX-12A on bus 0 in the first [`SNAKE_AX`] slots, RX-28 on bus 1 after them.
+const SNAKE_AX: usize = N / 2;
+/// Two Protocol 1 snakes at 1 Mbit/s, read every tick, both numbered from id 1.
+const SNAKES_TABLE: Table<2, N> = {
+    let mut actuators = chain(Model::Ax12a);
+    let mut index = SNAKE_AX;
+    while index < N {
+        actuators[index].bus = 1;
+        actuators[index].id = id(index - SNAKE_AX);
+        actuators[index].model = Model::Rx28;
+        index += 1;
+    }
+    Table {
+        buses: [
+            Bus {
+                label: "ax",
+                baud: 1_000_000,
+                read_every: NonZeroU32::new(1),
+            },
+            Bus {
+                label: "rx",
+                baud: 1_000_000,
+                read_every: NonZeroU32::new(1),
+            },
+        ],
+        actuators,
+    }
+    .check()
+};
+
 /// The read-only actuator of `RO_TABLE`.
 const LAST: usize = N - 1;
 /// The Protocol 2 chain with its last actuator read-only.
@@ -597,6 +627,43 @@ fn two_bus_mix_is_one_transaction_per_group() -> Result<(), DynamixelError> {
     let (refreshed, _) = read(&mut adapter, &mut Slot::filled(0.0));
     assert_eq!(refreshed, mask(|index| !on_wrist(index)));
     assert_eq!(adapter.backend.count(Call::ReadPosition), wrist);
+    Ok(())
+}
+
+#[test]
+fn two_protocol_one_snakes_write_one_group_per_bus() -> Result<(), DynamixelError> {
+    let mut adapter = rig(SNAKES_TABLE);
+    let layout = powered(&mut adapter)?;
+
+    let faults = write(&mut adapter, &layout, &Desired::all_q());
+    assert_eq!(faults, Faults::default());
+    let writes = adapter
+        .backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::SyncWriteGoal);
+    let ports = writes.map(|record| (record.port, record.model, record.count));
+    assert!(ports.eq([
+        (0, Some(Model::Ax12a), SNAKE_AX),
+        (1, Some(Model::Rx28), N - SNAKE_AX),
+    ]));
+
+    let (refreshed, faults) = read(&mut adapter, &mut Slot::filled(0.0));
+    assert_eq!(faults, Faults::default());
+    assert_eq!(refreshed, Mask::ALL);
+    assert_eq!(adapter.backend.count(Call::ReadPosition), N);
+    assert_eq!(adapter.backend.count(Call::SyncReadState), 0);
+    let reads = adapter
+        .backend
+        .calls()
+        .iter()
+        .filter(|record| record.call == Call::ReadPosition)
+        .map(|record| (record.port, record.id));
+    let expected = (0..N).map(|index| {
+        let rx = index >= SNAKE_AX;
+        (usize::from(rx), id(index - if rx { SNAKE_AX } else { 0 }))
+    });
+    assert!(reads.eq(expected));
     Ok(())
 }
 
