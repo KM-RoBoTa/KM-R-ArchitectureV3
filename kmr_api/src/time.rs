@@ -7,18 +7,36 @@ use std::time::Duration;
 /// is free and `kmr_core::Time` never appears in a public signature.
 pub struct Time<'a> {
     inner: &'a kmr_core::Time,
+    /// Where `elapsed` counts from: zero, or a preset's hand-over to its `then`.
+    origin: Duration,
+    /// Where `tick` counts from, likewise.
+    first_tick: u64,
 }
 
 impl<'a> Time<'a> {
     /// Wrap a borrowed core clock. Called only at the api→core boundary
     /// (`ApiInline::call`); never by users.
     pub(crate) fn new(inner: &'a kmr_core::Time) -> Self {
-        Time { inner }
+        Time {
+            inner,
+            origin: Duration::ZERO,
+            first_tick: 0,
+        }
+    }
+
+    /// This clock with `elapsed` and `tick` counted from the `elapsed` and `tick` it read
+    /// then.
+    pub(crate) fn since(&self, elapsed: Duration, tick: u64) -> Self {
+        Time {
+            inner: self.inner,
+            origin: self.origin + elapsed,
+            first_tick: self.first_tick + tick,
+        }
     }
 
     /// Time since the tick grid was armed, stamped at the start of the tick.
     pub fn elapsed(&self) -> Duration {
-        self.inner.elapsed()
+        self.inner.elapsed().saturating_sub(self.origin)
     }
 
     /// The fixed tick duration.
@@ -28,7 +46,7 @@ impl<'a> Time<'a> {
 
     /// Index of the tick in progress, 0 for the first one.
     pub fn tick(&self) -> u64 {
-        self.inner.tick()
+        self.inner.tick().saturating_sub(self.first_tick)
     }
 
     /// How many ticks finished after their deadline.
