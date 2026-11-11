@@ -79,7 +79,7 @@ Expected: N, order, limits and links per specs/003-kmr-model/quickstart.md; plus
 | an override index past N | one E0080 naming the index |
 | N = 65 | "SRS write mask: more than 64 actuators" under `cargo check` |
 | `robot!(model = ..)` without hardware, with a plugin | `Err(NoHardwareDeclared)` |
-| a call to `go_home(90)` | E0277 "kmr: SRS FR-2.7: home state is open" (D5 A) |
+| a call to `go_home(90)` | E0277 "kmr: SRS FR-2.7: home state is open" (D5 A) (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.) |
 | `register_payload(Payload::medium(1.2, "nope"))` | `Err(UnknownLink { link: "nope" })` before any I/O (US7-AS2) |
 
 After the core's const generic N: the `three.urdf` case builds and runs (design step 8).

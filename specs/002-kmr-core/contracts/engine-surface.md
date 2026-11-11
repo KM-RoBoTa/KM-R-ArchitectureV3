@@ -86,7 +86,7 @@ async-signal-safe (FR-036 (SRS FR-4.4)). Foreign code reaches them through a Rus
 ## Errors (error.rs)
 
 `RunError<E> { Config(ConfigError), Hal(E) }`; `ConfigError { DtOutOfRange { dt }, NoPolicy
-{ actuator } }`; `StateError { OutOfRange { len }, NoSample { depth }, Undecided(&'static str) }`.
+{ actuator } }`; `StateError { OutOfRange { len }, NoSample { depth }, Undecided(&'static str) }`. (Superseded 2026-11-11: core T093 removed `Undecided`, nothing produced it once SRS FR-2.7 closed home as a kmr_api preset.)
 Human-readable `Display`; release builds hide internal causes (FR-055 (SRS NFR-2)).
 
 ## For `kmr_adapters`

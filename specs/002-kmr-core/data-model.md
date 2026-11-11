@@ -104,7 +104,7 @@ engine never converts. Sealed field set: `sealed::Slot` + `StateField` in **`sta
 
 ### `StateError`
 
-`OutOfRange { len }`, `NoSample { depth }` (FR-025), `Undecided(&'static str)` (D5 A, research R7).
+`OutOfRange { len }`, `NoSample { depth }` (FR-025), `Undecided(&'static str)` (D5 A, research R7). (Superseded 2026-11-11: core T093 removed `Undecided`, nothing produced it once SRS FR-2.7 closed home as a kmr_api preset.)
 
 ## Masks and flags (hal.rs)
 

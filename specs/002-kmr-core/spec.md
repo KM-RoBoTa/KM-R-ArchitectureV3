@@ -36,7 +36,7 @@ In this version the engine must:
 - stay heap-free, `dyn`-free and lock-free on the control path, with an opt-in `no_std` build.
 
 Out of scope, because the SRS keeps them open (section 8): threaded controllers as a whole (SRS
-FR-1.2), the controller label form (SRS FR-1.7), the home state (SRS FR-2.7), the joint-limit
+FR-1.2), the controller label form (SRS FR-1.7), the home state (SRS FR-2.7; superseded 2026-11-11: closed as a kmr_api preset, `kmr_api::presets::home::Home`), the joint-limit
 default (SRS FR-4.5), the `run()` result after an emergency stop, the Sensors surface (SRS FR-5.7),
 the reference MCU (SRS section 4), the `HISTORY_DEPTH` owner, a hold on a running loop and the
 sender-timestamp check (SRS FR-13.3, deferred).
@@ -357,7 +357,7 @@ not need a breaking change to add it.
   never panic.
 - **FR-026 (SRS FR-2.7, section 5 marker rule)**: The home-state calls MUST stay marked
   `unimplemented!("SRS FR-2.7: home state source")` until the SRS decides. The marker sits on the
-  home call only, never on a path every run takes.
+  home call only, never on a path every run takes. (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`; core T093 removed the stubs and `StateError::Undecided`.)
 - **FR-062 (SRS FR-10.2, FR-2.2)**: The engine MUST give each field of the sealed field set one
   public id, `FieldId` (`Q`, `Qd`, `Tau`; `Kp`, `Kd` when they land, FR-014). `kmr_api` MUST be able to
   match it exhaustively, with no wildcard arm, so a field added without its FFI line fails the
@@ -478,7 +478,7 @@ not need a breaking change to add it.
   phase's user controllers. `PreInit` touches no hardware. `read_all` seeds History before the
   `PostInit` user controllers. Sensors, payloads and battery have no contract operation yet and are
   not brought up. The out-of-place check waits for FR-026: until then it is skipped with one
-  warning, not marked.
+  warning, not marked. (Superseded 2026-11-11: SRS FR-5.2 has no out-of-place check, the engine has no home; core T093 removed the warning.)
 - **FR-049 (SRS FR-5.7)**: Every controller MUST receive a Sensors handle. Its surface stays open;
   no sensor read happens until a sensor contract exists.
 - **FR-050 (SRS FR-5.9)**: User code MUST be able to reach the adapter directly when the API is
@@ -680,7 +680,7 @@ not need a breaking change to add it.
 | FR-4.4 | FR-036, SC-005 | |
 | FR-4.5 | FR-037 | default policy: clarification |
 | FR-5.1 | FR-039, FR-040, FR-041, FR-063 | mixing vendors: SRS patch prepared 2026-10-29 |
-| FR-5.2 | FR-039, FR-048 | sensors, payloads, battery: no contract yet; out-of-place check waits for FR-2.7 |
+| FR-5.2 | FR-039, FR-048 | sensors, payloads, battery: no contract yet; out-of-place check waits for FR-2.7 (Superseded 2026-11-11: SRS FR-5.2 has no out-of-place check, the engine has no home; core T093 removed the warning.) |
 | FR-5.3 | FR-044, FR-045 | pre-sort cost: bench |
 | FR-5.4 | FR-023 | bus stays in the adapter |
 | FR-5.5 | FR-046, SC-004 | |

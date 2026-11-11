@@ -33,7 +33,7 @@ The research behind each point is in
 | `robot!(Preset, hardware = \|hw\| ..)`, `robot!(model = .., hardware = TABLE)` | written (T023, T024) |
 | `robot!(model = .., hardware = { brand: part })`, several brands | written (T069); syntax pending human |
 | `bind()` and `Bound`: the drivers before and after the run | written (T039) |
-| `initial_state()`, `go_home()` as compile errors naming SRS FR-2.7 | written (T020) |
+| `initial_state()`, `go_home()` as compile errors naming SRS FR-2.7 | written (T020); removed 2026-11-11, see the note above |
 | `Latest<T>`, the two Zenoh slots | not written: HUMAN (T029, `unsafe` if no crate fits) |
 | `Robot<N, H, C>` with a const-generic N | not written: waits on core K2.1 to K2.7 (T032) |
 

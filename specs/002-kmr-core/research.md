@@ -83,6 +83,8 @@ Assumed, pending human (not D-numbered). Each is the design's recommendation unl
 
 ## R7. SRS markers after `open`
 
+(Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`, and FR-5.2 has no out-of-place check; core T093 removed the stubs, `StateError::Undecided` and the warning.)
+
 - **Decision**: no `unimplemented!` on any path after `open`. The two `todo!()` home calls
   (`state/history.rs:24`, `state/robot_state.rs:59`) return `StateError::Undecided("SRS FR-2.7:
   home state source")`. The out-of-place check is skipped with one warning (FR-048).

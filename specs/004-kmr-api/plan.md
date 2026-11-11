@@ -64,7 +64,7 @@ recommended option and isolated (research.md):
 | --- | --- | --- |
 | D1 delivery gate | A: step 1 includes kmr_api's wiring | phase order of this plan (R21) |
 | D4 N cap | A: 64 | one assert in `robot!` `@items` (R9) |
-| D5 markers after open | A: compile-time marker for home state | `home.rs` + 2 example lines (R10) |
+| D5 markers after open | A: compile-time marker for home state | `home.rs` + 2 example lines (R10) (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.) |
 | D6 bus binding | B: `.bus("label")`, optional for one bus | `Bus::bus`; kmr_adapters `match_plugins` (R8) |
 | D7 hardware without preset (spec Q1) | A: `robot!` `hardware = ..` argument | `robot!` `hardware` arms and `@table` (R7) |
 | D3 envelope breach (spec Q3) | A: clamp + flag, in the core's stage | core stage; API passes data only (R17) |
@@ -82,7 +82,7 @@ recommended option and isolated (research.md):
 | 0. Agent trailer | **Conflict, for the human** | Constitution requires one; AGENTS.md rule (b) and the human's final decision forbid it. No commit here. Agent commits follow the human until one side is amended (R22) |
 | I. SRS authority | Pass | Every FR cites its SRS id; SRS problems in R23, not patched |
 | I. Delivery order | **Conditional on D1** | Circular for step 1. Planned with D1 A: phase A is step 1, phase B waits for the first motor (R21) |
-| I. Markers | Pass | Markers only where no torque is on: compile-time for home state (D5 A), the center-of-mass one unreachable (R10, R11) |
+| I. Markers | Pass | Markers only where no torque is on: compile-time for home state (D5 A; superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`), the center-of-mass one unreachable (R10, R11) |
 | II. Hot path | Pass | Static dispatch; `Guarded` is a named struct; slots are triple buffers (proved 0 allocations); Zenoh on its own threads |
 | II. Heap | Pass | Heap in builder data and gateway threads only; `kmr_api/clippy.toml` allows it |
 | III. No panics, errors returned | Pass | All finalization errors are `UserError`; bring-up errors come back after the core's guard cut torque |

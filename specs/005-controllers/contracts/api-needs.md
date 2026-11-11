@@ -22,7 +22,7 @@ and `main.rs` change together. Status is the repo on 2026-10-28.
 | Exactly one simulation warning, the core's | row 1 of run-behaviour | **two today** | kmr_core FR-042, kmr_api FR-026 (SRS FR-6.3) |
 
 Not called, on purpose (FR-012 (SRS FR-1.2, FR-2.7, FR-8.4)): `add_controller_as_thread`,
-`initial_state`, `go_home`, `register_payload`, groups, `Bus::by_dev`.
+`initial_state`, `go_home`, `register_payload`, groups, `Bus::by_dev`. (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 
 Under the const-generic N design, `State` becomes `kmr_api::State<'a, N>` behind the same
 alias. `main.rs` does not change.

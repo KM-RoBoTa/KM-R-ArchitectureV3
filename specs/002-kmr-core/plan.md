@@ -74,7 +74,7 @@ isolated to one place ([research.md](research.md), "assumed, pending human"):
 | D2 joint limit, no policy | B: `run()` refuses, before I/O, unless every limited actuator has a policy (same assumption in every plan) | `limits::require_policies` (finalization) |
 | D3 envelope breach | A: clamp + envelope flag | `Breach::Envelope` arm of the pre-write stage |
 | D4 N cap | A: 64, `MASK_WORDS = 1` | `hal::MASK_WORDS` and the `Mask::<N>::CHECK` assert |
-| D5 markers after `open` | A: typed error, no marker | `RobotState::home_state` returns `StateError::Undecided` |
+| D5 markers after `open` | A: typed error, no marker | `RobotState::home_state` returns `StateError::Undecided` (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`; core T093 removed the stubs and `StateError::Undecided`.) |
 | D11 pre-sort gain | B: opt-in `presort-off` feature | `Batch::new` |
 | D13 foreign stop | A: no core change | none (`signal.rs` untouched) |
 | FR-042 no-hardware seed | no sample until first read | `History::ever_read` mask gate |
@@ -224,7 +224,7 @@ K2.8 and K2.9 are not core rows; they sit here for order only. **M2 is done when
 
 | # | Item | FR | Inv | Note |
 |---|---|---|---|---|
-| K3.1 | `todo!()` in `home_state` (`history.rs:24`, `robot_state.rs:59`) → `Err(StateError::Undecided("SRS FR-2.7"))` | FR-026 (SRS FR-2.7), FR-055 | – | D5 A; completion plan #1 changed |
+| K3.1 | `todo!()` in `home_state` (`history.rs:24`, `robot_state.rs:59`) → `Err(StateError::Undecided("SRS FR-2.7"))` | FR-026 (SRS FR-2.7), FR-055 | – | D5 A; completion plan #1 changed (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`; core T093 removed the stubs and `StateError::Undecided`.) |
 | K3.2 | `dt` range [10 µs, 1 s]; unset told apart from zero (`Option<Duration>`) | FR-027 (SRS FR-3.1) | – | #6 |
 | K3.3 | `RunError<E> { Config(ConfigError), Hal(E) }`; `run_on` returns it; `run()` keeps `Result<(), RunError<Infallible>>` | FR-027, FR-041 (SRS FR-6.4) | – | #7 minus `ZeroReadCadence` |
 | K3.4 | Type-state empty check: `Robot<N, CS, E = Empty>`, sealed `HasController` with `#[diagnostic::on_unimplemented]` | FR-009 (SRS NFR-4, §8) | – (no `schedule.rs`) | #15; proved, research R8 |
