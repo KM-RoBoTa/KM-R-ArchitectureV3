@@ -177,6 +177,8 @@ Prototypes live in the scratchpad, never in the repo:
 
 ## R10. Home state markers. Assumed, pending human: D5
 
+(Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
+
 - **Decision** (D5 option A, no `unimplemented!` after `open`): `initial_state()` and
   `go_home(ramp)` keep their names and arity (the ramp becomes a type parameter), but carry a
   bound no type meets:

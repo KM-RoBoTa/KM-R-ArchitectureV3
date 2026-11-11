@@ -34,7 +34,7 @@ History is never filled, Desired is never applied. `cargo test -p kmr_core`: 74 
 | 16 | HUMAN: real-time sleep (`clock_nanosleep` absolute, or spin tail) | NFR-1: jitter measured on the RP4 bench | runtime.rs:48 | – | M | no |
 | 17 | HUMAN: no logging on the hot path (per-tick `trace!`/`debug!`) | NFR-1: no lock, no heap on the control path | runtime.rs:224, 235, 247, 284 | – | S | no |
 | 18 | HUMAN: `JOINTS` from the declared robot; drop `RobotState<DEPTH>`; depth as capacity const plus runtime check | FR-6.1: N from the descriptor; decision 0001 accepted (sec. 8) | state.rs:6, state/robot_state.rs:23, 108, hal.rs:23 | kmr_model | L | yes if N becomes generic |
-| 19 | HUMAN: home state and the out-of-place check at PostInit | FR-2.7: home source open; FR-5.2: flag out-of-place actuators | state/robot_state.rs:58, runtime.rs | 9, 18 | M | no |
+| 19 | HUMAN: home state and the out-of-place check at PostInit | FR-2.7: home source open; FR-5.2: flag out-of-place actuators (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`, and FR-5.2 has no out-of-place check; core T093 removed the stubs, `StateError::Undecided` and the warning.) | state/robot_state.rs:58, runtime.rs | 9, 18 | M | no |
 | 20 | HUMAN: pre-write limit stage: per-actuator policy clamp / warn / abort (`emergency_stop!` "JointLimit"); envelopes enforced before every write | FR-4.5: limits per actuator, default undecided; FR-13.5: envelopes before write | runtime.rs, config/user_config.rs | 9, 13, 18 | M | no |
 | 21 | HUMAN: `Kp`, `Kd` fields; `From` both ways with `f32` | FR-2.2: Kp, Kd decided; From/Into both ways | state/field.rs, state/joint_state.rs, state/desired.rs, hal.rs | 2 | M | yes |
 | 22 | HUMAN: spawn `Threaded` controllers after PostInit; `Send + 'static` bounds; a `&Time` copy, no shared clock | FR-1.2: threaded TBD, never a lock the loop takes | controllers.rs:101, robot.rs:183, runtime.rs:320 | 9 | L | yes |
@@ -48,7 +48,7 @@ History is never filled, Desired is never applied. `cargo test -p kmr_core`: 74 
 
 - #7: "Return value of run() after an emergency stop" (shape of `Ok` vs `Err`).
 - #18: "`HISTORY_DEPTH` owner"; "Multi-robot descriptor (FR-6.5)"; "Model crate (FR-8.3)": `kmr_model` does not exist. Also fix-plan decision 3 (const generic N or a build-wide const).
-- #19: "Home state (FR-2.7)".
+- #19: "Home state (FR-2.7)". (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - #20: "FR-4.5 joint-limit default policy". The mechanism can land; the default path stays `unimplemented!`.
 - #21: no decision; "Runtime operating-mode override" decides whether Kp/Kd are runtime writes.
 - #22: "Threaded controllers as a whole (FR-1.2)" and "Threaded context".

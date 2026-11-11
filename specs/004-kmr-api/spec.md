@@ -41,7 +41,7 @@ Out of scope (owned elsewhere, or open in the SRS):
 - The controller label of SRS FR-1.7 (section 8).
 - The return value of `run()` after an emergency stop (section 8).
 - The `Sensors` surface (SRS FR-5.7, section 8).
-- The home state source (SRS FR-2.7, section 8).
+- The home state source (SRS FR-2.7, section 8). (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - The multi-robot descriptor (SRS FR-6.5, section 8).
 - The joint-limit default policy (SRS FR-4.5, section 8).
 - The sender-timestamp check and the hold on a running loop (SRS FR-13.3, deferred 2026-10-27).
@@ -264,6 +264,7 @@ mount link the model does not know makes `run()` return an error naming it.
 - A degree value written to a prismatic actuator: the type does not catch it (SRS issue 4).
 - The example's `Init` controllers reach `initial_state()` / `go_home()`: they hit the SRS
   FR-2.7 marker. This happens after `Init`'s engine work; with no bus plugin nothing is powered.
+  (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - A user controller panics with torque on: the SRS covers it in NFR-2 (an abort leaves torque as
   it was). The API never hides the panic.
 - A context shared by a threaded and an inline controller through `Arc<Mutex<T>>`: the SRS
@@ -394,7 +395,7 @@ mount link the model does not know makes `run()` return an error naming it.
   user code; a user cannot add a field type.
 - **FR-036** (SRS FR-2.7): `initial_state()` and `go_home(ramp)` MUST keep the signatures the
   example uses. Their bodies are `unimplemented!("SRS FR-2.7: home state")` until section 8
-  decides.
+  decides. (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - **FR-037** (SRS section 3 Index space): Every index in the API is an actuator index, `0..N`.
   Docs say "actuator", not "joint".
 

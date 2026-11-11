@@ -35,7 +35,7 @@ descriptors.
 - The `robot!` front door itself and the aliases it emits (SRS module kmr_api, "FR-6.1 `robot!`
   macro"). kmr_model gives it the facts.
 - The joint-limit policy: clamp, warn or abort, and its default (SRS FR-4.5, open decision).
-- The home state (SRS FR-2.7, open in SRS section 8).
+- The home state (SRS FR-2.7, open in SRS section 8). (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - A `.ron` that composes several URDFs (SRS FR-6.5, open in SRS section 8).
 - Several actuators on one joint, or one actuator on several joints (SRS Definitions "Index
   space", TO RESOLVE in section 8).
@@ -421,7 +421,7 @@ otherwise:
 **Open SRS items not decided here**
 
 - Joint-limit policy and default (SRS FR-4.5, section 8).
-- Home state source (SRS FR-2.7, section 8).
+- Home state source (SRS FR-2.7, section 8). (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - Multi-robot descriptor format (SRS FR-6.5, section 8).
 - Multi-actuator joint (SRS Definitions "Index space", section 8).
 - `HISTORY_DEPTH` owner (SRS section 8). The model does not set it.
@@ -546,6 +546,6 @@ Superseded by the session above; kept for history.
 | SRS NFR-7 | FR-019, SC-006 | Not in module Covers; emitted facts need no `std` |
 | SRS NFR-10 | FR-013, FR-020 | Covered; no sparse data, so no map |
 | SRS NFR-11 | FR-018, FR-021, SC-004, SC-005 | Covered |
-| SRS FR-2.7 home state | none | Out of scope: open in section 8 |
+| SRS FR-2.7 home state | none | Out of scope: open in section 8 (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.) |
 | SRS FR-9.1 | none | Roadmap |
 | Delivery step 2 | FR-001 to FR-026 | Covered; gate "moves a motor" reported |

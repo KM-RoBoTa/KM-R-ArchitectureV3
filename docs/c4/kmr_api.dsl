@@ -16,11 +16,12 @@
     apiUnits = component "kmr_api: units" "Deg, Cm, M and their rates, converted into Q and Qd (SRS FR-2.2)." "Rust"
     apiPayloads = component "kmr_api: payloads" "Medium and heavy payloads by mass and mount link; the mount is checked against the model's links at finalization, before any I/O (SRS FR-8.1, FR-8.4)." "Rust"
     apiErrors = component "kmr_api: errors" "UserError of run() and bind(), each saying how to fix it, the adapter's error typed inside BringUp; StateError of the handles (SRS FR-6.4, NFR-2, NFR-4)." "Rust, thiserror"
-    apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, Mask, Limit, Policy, Envelope, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' presets and Dynamixel table types. Defined once, never copied." "Rust pub use"
+    apiReexports = component "kmr_api: re-exports" "kmr_core's Q, Qd, Tau, Kp, Kd, Mask, Limit, Policy, Envelope, the sealed Field bound, the schedule labels, shutdown! and emergency_stop!; kmr_adapters' Dynamixel table types; kmr_adapters' presets under kmr_api::presets, next to home. Defined once, never copied." "Rust pub use"
     apiFfi = component "kmr_api: ffi" "Features ffi, ffi-build, ffi-python, ffi-lua: kmr_ffi's surface under kmr_api::ffi, the Python and Lua bridges under ffi::python and ffi::lua, foreign! and the build helper with HISTORY_DEPTH filled in, and call(f, time, state, ctx): fills the view from State and Time (every depth, faults, ages), runs the foreign body, applies each flagged entry through the field's setter, raises shutdown! or emergency_stop! for status 1 or 2 (SRS FR-10.1, FR-10.3, FR-2.5, FR-4.1, FR-4.2)." "Rust"
     apiTestUtil = component "kmr_api: test util" "Feature test-util: the core's scripted hosts (Scripted, Ticking, RealTime) and recording adapter, the external flags, and run_scripted over a kmr_api Robot (the gateway started when plugged), for crates that depend on kmr_api only." "Rust"
     apiSlot = component "kmr_api: latest-value slot" "Latest<T>: one writer thread puts, one reader takes each value once; an untaken value overwritten is counted superseded. No lock, no allocation after it is built (SRS section 4 Constraints, NFR-1). Over the triple_buffer crate." "Rust, triple_buffer"
     apiGateway = component "kmr_api: Zenoh gateway" "Feature zenoh, off by default. The Gateway plugin: run() opens the session and declares kmr/<instance>/history, history/ring (queryable) and desired/<identity>, then a kmr-gateway thread owns them. The tick's stages put depth 0 into one Latest slot and take Desired from another; the thread publishes, keeps the ring, applies the Desired rule (sources only, seq, length) and counts every drop. Mutual TLS with a deny-by-default ACL, or loopback only (SRS FR-7.1, FR-13.2 to FR-13.5, NFR-12)." "Rust, zenoh"
+    apiHome = component "kmr_api: home preset" "presets::home: a const Home<N>, one pose per actuator and a ramp Duration. controller() and then(f) are plain add_controller fns: from the first sample, the straight line to the pose on a tick phase, then the pose or f with its time from zero. Run state in a captured Cell, no lock (SRS FR-2.7, FR-1.1)." "Rust"
     apiFake = component "kmr_api: fake brands" "Two test-only brands of fake members, so robot! expands over two brands in kmr_api's tests. Test builds only." "Rust, cfg(test)"
 
     apiMacro -> apiSpec "Emits the __Spec that implements"
@@ -45,6 +46,8 @@
     apiTestUtil -> apiBuilder "Finalizes and runs scripted"
     apiUnits -> apiReexports "Converts into Q and Qd of"
     apiFake -> apiBrands "Implements"
+    apiHome -> apiHandles "Writes the ramp through"
+    apiBuilder -> apiHome "Registers, as any controller"
 
     group "kmr_api: robot!" {
         apiRobotMacro = component "kmr_api::robot!" "Preset, model = .. and hardware = .. forms; calls kmr_model's model! for N, the model module and actuator!." "Rust macro" {
@@ -98,7 +101,7 @@
     }
 
     group "kmr_api: controller handles" {
-        apiState = component "kmr_api::State, N" "Whole-robot and per-index getters, prev_* history reads and setters for Q, Qd, Tau, Kp, Kd; age_at, sample_age, read_every, stale_at, faults and prev_faults; initial_state and go_home do not build while SRS FR-2.7 is open." "Rust struct, const" {
+        apiState = component "kmr_api::State, N" "Whole-robot and per-index getters, prev_* history reads and setters for Q, Qd, Tau, Kp, Kd; age_at, sample_age, read_every, stale_at, faults and prev_faults." "Rust struct, const" {
             tags "Code"
         }
         apiFallback = component "kmr_api::Guarded, stale_in, remote_timeout, any_of" "add_controller_or's node: each tick a predicate over the tick's Faults runs the controller or its fallback, exactly one. Named type, no dyn, no heap (SRS FR-13.5)." "Rust struct, fns" {
@@ -114,9 +117,6 @@
             tags "Code"
         }
         apiSensors = component "kmr_api::Sensors" "Read-only sensor view; no reading to forward yet." "Rust struct" {
-            tags "Code"
-        }
-        apiHomeDecided = component "kmr_api::HomeDecided" "Sealed, met by no type: stops initial_state and go_home at compile time (D5 A)." "Rust trait" {
             tags "Code"
         }
     }
@@ -186,7 +186,6 @@
     apiState -> apiGroupView "Creates"
     apiState -> apiFaults "Hands out"
     apiFallback -> apiFaults "Picks the controller by"
-    apiState -> apiHomeDecided "Bounds the home calls on"
     apiFakeTypes -> apiBrandTrait "Implements"
     apiGatewayType -> apiPluginTrait "Implements"
     apiBusType -> apiPluginTrait "Implements"

@@ -28,8 +28,16 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     fn initialization(_time: &Time, _robot: &mut State, _sensors: &Sensors) {
-        // The home state is not decided yet (SRS FR-2.7): `robot.initial_state()` and
-        // `robot.go_home(ramp)` exist, but a call to either does not build until it is.
+        // Init runs once, before the first tick, and its writes are discarded (SRS FR-5.2):
+        // no homing here. A robot needs no home (SRS FR-2.7); when you want one, register
+        // the preset `kmr_api::presets::home::Home` on a tick phase:
+        //
+        // const HOME: Home<N> = Home::new([Q(0.0); N], Duration::from_secs(3));
+        //
+        // `.add_controller(EachTick, HOME.controller())` ramps every actuator in a straight
+        // line from its first sample to the pose, reached after 3 s, then holds the pose.
+        // `.add_controller(EachTick, HOME.then(replace_all_q))` homes the same way, then
+        // hands every tick to `replace_all_q`, whose `time.elapsed()` starts at zero.
     }
 
     // How long this example runs before it stops itself.
@@ -224,15 +232,11 @@ fn main() -> color_eyre::Result<()> {
             // their tasks.
             //None => robot.q().unwrap(), // And we need to error handle again ...
 
-            // An other option would be to call `home_state()` to then command the
-            // robot to got to these. Then call an other controller that handles
-            // the motion gracefuly and stop the program entirely with a graceful
-            // shutdown call.
+            // An other option would be to stop the program entirely with a graceful
+            // shutdown call. Homing would not help here: the home preset ramps from
+            // the first sample, so with no sample it waits too.
             None => {
-                // your home controller logic
-                initialization(_time, robot, _sensors);
-
-                // Then stop gracefully, and leave this controller for this tick.
+                // Stop gracefully, and leave this controller for this tick.
                 kmr_api::shutdown!("no sample to control from");
                 return;
             }
@@ -268,9 +272,7 @@ fn main() -> color_eyre::Result<()> {
                     Err(_) => return,
                 },
                 // Nothing to control from this tick: skip it.
-                StateError::CriticalValueMissing | StateError::Undecided | StateError::NoSample => {
-                    return;
-                }
+                StateError::CriticalValueMissing | StateError::NoSample => return,
             },
         };
 

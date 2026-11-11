@@ -34,7 +34,8 @@ a runtime entity registry — keep the 1kHz hot path static.
     - done: per-slot faults, tick flags and per-actuator age in the History
       (core T036, T044, T045, T047); the limit and envelope stage and the
       hidden `Stages` hooks (core T049 to T051)
-    - the home state (`todo!()`, core T031)
+    - the home state: decided, a kmr_api preset (SRS FR-2.7, kmr_api T090 to T092
+      and T094, kmr_core T093)
     - `controllers/src/main.rs` still runs until Ctrl-C; the swing reference
       (controllers T006-T011) ends itself with `shutdown!` after 12 s of
       `elapsed()`. Walkthrough in `controllers/README.md`

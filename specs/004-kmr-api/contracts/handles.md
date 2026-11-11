@@ -17,7 +17,7 @@ kmr_api adds names, not logic. Everything here runs in the tick: no heap, no loc
 | `age_at(i)`, `sample_age()`, `stale_at(i)` | `Result<Option<u32>, StateError>` ticks, `Option<u32>` ticks (oldest actuator), `bool`; `None` = never read (no-hardware run, or before the first read) | C | FR-031 (SRS FR-2.1, FR-2.6) |
 | `faults()`, `prev_faults(depth)` | `&Faults` view | C | FR-039 (SRS FR-13.4) |
 | `read_every(i)` | `NonZeroU32` ticks, read-only | C | FR-042 (SRS FR-5.3) |
-| `initial_state()`, `go_home(ramp)` | compile error "kmr: SRS FR-2.7: home state is open" (D5 A, research R10) | B | FR-036 (SRS FR-2.7) |
+| `initial_state()`, `go_home(ramp)` | compile error "kmr: SRS FR-2.7: home state is open" (D5 A, research R10) (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.) | B | FR-036 (SRS FR-2.7) |
 
 No raw field, no way to reach the inner core handle, no user field type (SC-008).
 

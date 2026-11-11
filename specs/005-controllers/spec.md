@@ -38,7 +38,7 @@ motor moving, and the proof that a user crate needs `kmr_api` alone.
 - `kmr_api/examples/complete_api_example.rs`. It lives under `kmr_api/**`, so it is `kmr_api`'s.
   The SRS FR-8.4 fix it needs goes to that module.
 - Threaded controllers (SRS FR-1.2, TBD as a whole).
-- Home state, `initial_state()` and `go_home()` (SRS FR-2.7, open).
+- Home state, `initial_state()` and `go_home()` (SRS FR-2.7, open). (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 - Payload registration (SRS FR-8.4, `register_payload` not built).
 - Joint-limit policy (SRS FR-4.5, default undecided).
 - The Sensors surface (SRS FR-5.7, WIP), fault flags and fallbacks (SRS FR-13.4, FR-13.5;
@@ -216,7 +216,7 @@ plugin, once with a plugin and no robot.
   or unchecked indexing. Every `Option` and `Result` from the State handle is handled.
 - **FR-012 (SRS FR-1.2, FR-2.7, FR-8.4)**: The example MUST NOT call an API path that is
   `todo!()` or `unimplemented!`: threaded registration, `initial_state`, `go_home`,
-  `register_payload`.
+  `register_payload`. (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 
 **Controllers**
 
@@ -394,7 +394,7 @@ spec requires.
 | FR-2.2 typed values, units, `From` degrees | FR-017 | Prismatic in mm: edge case |
 | FR-2.4, FR-6.2 groups as slices | FR-020 | |
 | FR-2.5, FR-3.4, FR-5.2 shoot-and-forget | FR-018 | |
-| FR-2.7 home state | FR-012 | Open: out of scope |
+| FR-2.7 home state | FR-012 | Open: out of scope (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.) |
 | FR-3.1 dt | FR-021 | |
 | FR-3.2 absolute deadlines | FR-022 | Edge case: overrun |
 | FR-3.3 Time surface | FR-016 | Needs `kmr_api` getters |

@@ -28,10 +28,6 @@ pub enum StateError {
     #[error("value requested is unavailable")]
     CriticalValueMissing,
 
-    /// The behaviour is not decided yet; the text names the open SRS item.
-    #[error("not decided yet: {0}")]
-    Undecided(&'static str),
-
     /// The actuator had not been read yet `depth` ticks back, or never was (a run without
     /// hardware): there is no value to give, not even a zero.
     #[error("no sample {depth} ticks back: the actuator had not been read yet")]
@@ -52,8 +48,6 @@ pub enum StateErrorKind {
     HistoryValueOutOfRange,
     /// The requested value has not been recorded yet.
     CriticalValueMissing,
-    /// The behaviour is not decided yet.
-    Undecided,
     /// The actuator had not been read yet at that depth.
     NoSample,
 }
@@ -66,7 +60,6 @@ impl StateError {
             Self::OutOfRange { .. } => StateErrorKind::OutOfRange,
             Self::HistoryValueOutOfRange { .. } => StateErrorKind::HistoryValueOutOfRange,
             Self::CriticalValueMissing => StateErrorKind::CriticalValueMissing,
-            Self::Undecided(_) => StateErrorKind::Undecided,
             Self::NoSample { .. } => StateErrorKind::NoSample,
         }
     }
@@ -84,7 +77,6 @@ impl From<CoreStateError> for StateError {
                 max_depth,
             },
             CoreStateError::CriticalValueMissing => Self::CriticalValueMissing,
-            CoreStateError::Undecided(item) => Self::Undecided(item),
             CoreStateError::NoSample { depth } => Self::NoSample { depth },
         }
     }
@@ -359,13 +351,6 @@ mod tests {
             UserError::PresetHardware { preset: "XmBench" },
             UserError::BusWithoutBaud { port: "AL02L1KL" },
         ]
-    }
-
-    #[test]
-    fn an_undecided_core_error_keeps_the_srs_item() {
-        let e = StateError::from(CoreStateError::Undecided("SRS FR-2.7: home state source"));
-        assert_eq!(e.kind(), StateErrorKind::Undecided);
-        assert!(e.to_string().contains("SRS FR-2.7"));
     }
 
     #[cfg(not(debug_assertions))]

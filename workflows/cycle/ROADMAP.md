@@ -46,7 +46,7 @@ merged into `dev` on 2026-11-04 (f838fcd). Cut module branches from `dev`.
 | kmr_core | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | kmr_adapters | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | kmr_model | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
-| kmr_api | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| kmr_api | delegated | loop | 6 | feature/kmr-api-home | `2026-11-11 green`: workspace tests (868 passed), clippy `-D warnings` except controllers (unused import already on dev), kmr_api clippy with `dynamixel,cubemars` |
 | controllers | mine | pair | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | kmr_ffi | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | bench | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |

@@ -1,5 +1,9 @@
 # 0005 — kmr_api: the robot as a type parameter, its hardware argument, the home marker, the Zenoh slot
 
+**Superseded 2026-11-11, point 5 only.** SRS FR-2.7 closed home as a kmr_api
+controller preset, `kmr_api::presets::home::Home<N>`; `initial_state()`,
+`go_home()` and `HomeDecided` are gone. The rest of this record stands.
+
 Status: **proposed**, drafted by an agent, waiting for the maintainer's
 decision. Two points rest on pending decisions (D5, D7) and one on an
 unwritten human task (T029), see [Pending](#pending).
@@ -29,7 +33,7 @@ The research behind each point is in
 | `robot!(Preset, hardware = \|hw\| ..)`, `robot!(model = .., hardware = TABLE)` | written (T023, T024) |
 | `robot!(model = .., hardware = { brand: part })`, several brands | written (T069); syntax pending human |
 | `bind()` and `Bound`: the drivers before and after the run | written (T039) |
-| `initial_state()`, `go_home()` as compile errors naming SRS FR-2.7 | written (T020) |
+| `initial_state()`, `go_home()` as compile errors naming SRS FR-2.7 | written (T020); removed 2026-11-11, see the note above |
 | `Latest<T>`, the two Zenoh slots | not written: HUMAN (T029, `unsafe` if no crate fits) |
 | `Robot<N, H, C>` with a const-generic N | not written: waits on core K2.1 to K2.7 (T032) |
 
