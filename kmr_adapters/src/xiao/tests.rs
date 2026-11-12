@@ -1,12 +1,16 @@
 //! The XIAO adapter on `xiao-api`'s fake link: the test plays the board.
 
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::Instant;
 
+use tracing_subscriber::layer::SubscriberExt;
 use xiao_api::BytesPerSec;
 use xiao_api::link::{Board, Fake};
 use xiao_api::proto::message::{
-    AUDIO_BLOCK_SAMPLES, AccelConfig, BLE_NAME as PROTO_BLE_NAME, Command, GyroConfig, ImuConfig,
-    MIC_SAMPLE_RATE_HZ, Refusal, UART_DEFAULT_BAUD,
+    AUDIO_BLOCK_SAMPLES, AccelConfig, AudioBlock, BLE_NAME as PROTO_BLE_NAME, Command, GyroConfig,
+    ImuConfig, ImuReading, MIC_SAMPLE_RATE_HZ, Message, Refusal, UART_DEFAULT_BAUD,
 };
 
 use super::*;
@@ -403,38 +407,307 @@ fn every_error_message_names_its_cause() {
 
 // ── X06: the per-tick read and the exit ────────────────────────────────────
 
-#[test]
-#[ignore = "X06"]
-fn one_g_reads_9_80665() {}
+/// What the adapter fed, as the engine's `Feed` takes it.
+struct Recorded {
+    /// The newest IMU reading.
+    motion: Option<(Option<Accel>, Option<Gyro>)>,
+    /// IMU readings fed.
+    motions: usize,
+    /// Every sample fed, oldest first: `len` of them.
+    samples: [i16; 2048],
+    len: usize,
+    motion_lost: Option<u64>,
+    samples_lost: Option<u64>,
+    /// `link_lost` calls.
+    link_lost: usize,
+}
+
+impl Recorded {
+    /// Nothing fed yet.
+    fn new() -> Self {
+        Self {
+            motion: None,
+            motions: 0,
+            samples: [0; 2048],
+            len: 0,
+            motion_lost: None,
+            samples_lost: None,
+            link_lost: 0,
+        }
+    }
+
+    /// The samples fed so far.
+    fn audio(&self) -> &[i16] {
+        &self.samples[..self.len]
+    }
+
+    /// The acceleration of the newest reading.
+    fn accel(&self) -> Option<Accel> {
+        self.motion.and_then(|(accel, _)| accel)
+    }
+
+    /// The angular rate of the newest reading.
+    fn gyro(&self) -> Option<Gyro> {
+        self.motion.and_then(|(_, gyro)| gyro)
+    }
+}
+
+impl Sink for Recorded {
+    fn motion(&mut self, accel: Option<Accel>, gyro: Option<Gyro>) {
+        self.motion = Some((accel, gyro));
+        self.motions += 1;
+    }
+
+    fn samples(&mut self, samples: &[i16]) {
+        let end = self.len + samples.len();
+        self.samples[self.len..end].copy_from_slice(samples);
+        self.len = end;
+    }
+
+    fn motion_lost(&mut self, total: u64) {
+        self.motion_lost = Some(total);
+    }
+
+    fn samples_lost(&mut self, total: u64) {
+        self.samples_lost = Some(total);
+    }
+
+    fn link_lost(&mut self) {
+        self.link_lost += 1;
+    }
+}
+
+/// Reads `xiao` into `seen` until `done` holds, for up to a second: the
+/// fake board's messages reach the streams on `xiao-api`'s reader thread.
+fn read_until(xiao: &mut Xiao, seen: &mut Recorded, done: impl Fn(&Recorded) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !done(seen) {
+        assert!(Instant::now() < deadline, "not fed within 1 s");
+        xiao.drain(seen);
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// An IMU reading of raw counts.
+fn imu(counter: u32, accel: Option<[i16; 3]>, gyro: Option<[i16; 3]>) -> Message {
+    Message::Imu(ImuReading {
+        counter,
+        accel,
+        gyro,
+    })
+}
+
+/// An audio block of 96 samples counting up from `first`.
+fn block(counter: u32, first: i16) -> Message {
+    let pcm = (0..96_i16)
+        .flat_map(|i| (first + i).to_le_bytes())
+        .collect();
+    Message::Audio(AudioBlock { counter, pcm })
+}
+
+/// Whether `value` is within `tolerance` of `expected`.
+fn near(value: f32, expected: f32, tolerance: f32) -> bool {
+    (value - expected).abs() < tolerance
+}
+
+/// Counts the events the XIAO adapter logs.
+struct Count(&'static AtomicUsize);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().target().starts_with("kmr_adapters::xiao") {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
 
 #[test]
-#[ignore = "X06"]
-fn one_hundred_dps_reads_1_745_rad_s() {}
+fn one_g_reads_9_80665() {
+    let (mut xiao, board) = on_usb(Xiao::usb().imu());
+    xiao.open().unwrap();
+    // The count of 1 g at ±4 g, from the protocol's own scale factor.
+    let one_g = (1.0 / AccelRange::G4.g_per_count()).round() as i16;
+    board.send(imu(0, Some([0, 0, one_g]), Some([0, 0, 0])));
+
+    let mut seen = Recorded::new();
+    read_until(&mut xiao, &mut seen, |seen| seen.motion.is_some());
+    let accel = seen.accel().unwrap();
+    assert!(near(accel.z(), 9.806_65, 1e-3), "{accel:?}");
+    assert!(near(accel.x(), 0.0, 1e-6) && near(accel.y(), 0.0, 1e-6));
+    assert_eq!(seen.gyro(), Some(Gyro([0.0; 3])));
+}
 
 #[test]
-#[ignore = "X06"]
-fn the_off_half_reads_none() {}
+fn one_hundred_dps_reads_1_745_rad_s() {
+    let (mut xiao, board) = on_usb(Xiao::usb().gyro());
+    xiao.open().unwrap();
+    let hundred = (100.0 / GyroRange::Dps500.dps_per_count()).round() as i16;
+    board.send(imu(0, None, Some([hundred, 0, -hundred])));
+
+    let mut seen = Recorded::new();
+    read_until(&mut xiao, &mut seen, |seen| seen.motion.is_some());
+    let gyro = seen.gyro().unwrap();
+    assert!(near(gyro.x(), 1.745, 1e-3), "{gyro:?}");
+    assert!(near(gyro.z(), -1.745, 1e-3), "{gyro:?}");
+}
 
 #[test]
-#[ignore = "X06"]
-fn no_new_reading_feeds_nothing_and_returns_at_once() {}
+fn the_off_half_reads_none() {
+    let (mut xiao, board) = on_usb(Xiao::usb().gyro());
+    xiao.open().unwrap();
+    board.send(imu(0, None, Some([1000, 0, 0])));
+
+    let mut seen = Recorded::new();
+    read_until(&mut xiao, &mut seen, |seen| seen.motion.is_some());
+    assert_eq!(seen.accel(), None);
+    assert!(seen.gyro().is_some());
+    assert_eq!(
+        board.commands(),
+        [GYRO_ON],
+        "the accelerometer stays off (FW-6)"
+    );
+}
 
 #[test]
-#[ignore = "X06"]
-fn queued_audio_blocks_land_in_one_window_in_order() {}
+fn at_two_rates_each_half_keeps_its_last_reading() {
+    let spec = ImuSpec {
+        accel: Some((Rate::Hz52, AccelRange::G2)),
+        gyro: Some((Rate::Hz416, GyroRange::Dps250)),
+    };
+    let (mut xiao, board) = on_usb(Xiao::usb().imu_with(spec));
+    xiao.open().unwrap();
+    board.send(imu(0, Some([0, 0, 16_384]), Some([0, 0, 0])));
+    let mut seen = Recorded::new();
+    read_until(&mut xiao, &mut seen, |seen| seen.accel().is_some());
+
+    // The gyroscope alone this time: the accelerometer reads its last value.
+    board.send(imu(1, None, Some([1000, 0, 0])));
+    read_until(&mut xiao, &mut seen, |seen| {
+        seen.gyro().is_some_and(|gyro| gyro.x() > 0.0)
+    });
+    assert!(near(seen.accel().unwrap().z(), 9.8, 0.01));
+}
 
 #[test]
-#[ignore = "X06"]
-fn the_boards_drop_count_reaches_the_feed() {}
+fn no_new_reading_feeds_nothing_and_returns_at_once() {
+    let (mut xiao, _board) = on_usb(Xiao::usb().imu().mic());
+    xiao.open().unwrap();
+
+    let mut seen = Recorded::new();
+    let start = Instant::now();
+    for _ in 0..100 {
+        xiao.drain(&mut seen);
+    }
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(10), "100 reads took {took:?}");
+    assert_eq!((seen.motions, seen.len, seen.link_lost), (0, 0, 0));
+}
 
 #[test]
-#[ignore = "X06"]
-fn an_unplugged_board_reports_link_down_every_tick_and_logs_once() {}
+fn queued_audio_blocks_land_in_one_window_in_order() {
+    let (usb, board) = Fake::usb();
+    board.auto_answer();
+    // A gyroscope of the test's own on the link: once its reading is in,
+    // every block the board sent before it is queued too.
+    let probe = xiao_api::Gyro::on(&usb).unwrap();
+    let mut xiao = Xiao::usb().mic().on_link(Opened::Usb(usb));
+    xiao.open().unwrap();
+
+    // A 20 ms hiccup: four blocks wait for the next tick.
+    for counter in 0..4 {
+        board.send(block(counter, (counter * 96) as i16));
+    }
+    board.send(imu(0, None, Some([0, 0, 0])));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while probe.try_latest().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the probe's reading never came");
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let mut seen = Recorded::new();
+    xiao.drain(&mut seen);
+    let in_order: [i16; 384] = core::array::from_fn(|i| i as i16);
+    assert_eq!(
+        seen.audio(),
+        in_order,
+        "all four, in one read, oldest first"
+    );
+    assert_eq!(seen.samples_lost, Some(0));
+}
 
 #[test]
-#[ignore = "X06"]
-fn close_turns_the_sensors_off() {}
+fn the_boards_drop_count_reaches_the_feed() {
+    let (mut xiao, board) = on_usb(Xiao::usb().gyro().mic());
+    xiao.open().unwrap();
+    board.send(imu(0, None, Some([0, 0, 0])));
+    board.send(imu(2, None, Some([0, 0, 0])));
+    for counter in [0, 1, 3] {
+        board.send(block(counter, 0));
+    }
+
+    let mut seen = Recorded::new();
+    read_until(&mut xiao, &mut seen, |seen| {
+        seen.len == 3 * 96 && seen.motion_lost == Some(1)
+    });
+    assert_eq!(seen.samples_lost, Some(96), "block 2: 96 samples");
+}
 
 #[test]
-#[ignore = "X06"]
-fn close_after_unplug_returns() {}
+fn an_unplugged_board_reports_link_down_every_tick_and_logs_once() {
+    static LOGGED: AtomicUsize = AtomicUsize::new(0);
+    let (mut xiao, board) = on_usb(Xiao::usb().imu().mic());
+    xiao.open().unwrap();
+    let before = board.commands();
+    board.unplug();
+
+    let mut seen = Recorded::new();
+    let logger = tracing_subscriber::registry().with(Count(&LOGGED));
+    let start = Instant::now();
+    tracing::subscriber::with_default(logger, || {
+        for _ in 0..5 {
+            xiao.drain(&mut seen);
+        }
+    });
+    let took = start.elapsed();
+
+    assert!(took < Duration::from_millis(10), "5 reads took {took:?}");
+    assert_eq!(seen.link_lost, 5, "every read from the loss on");
+    assert_eq!(LOGGED.load(Ordering::Relaxed), 1, "logged once");
+    assert_eq!(board.commands(), before, "nothing sent: no reconnect");
+}
+
+#[test]
+fn close_turns_the_sensors_off() {
+    let (mut xiao, board) = on_usb(Xiao::usb().imu().mic());
+    xiao.open().unwrap();
+    xiao.close();
+
+    let both = Command::ImuOn(ImuConfig {
+        accel: Some(AccelConfig {
+            rate: Rate::Hz104,
+            range: AccelRange::G4,
+        }),
+        gyro: Some(GyroConfig {
+            rate: Rate::Hz104,
+            range: GyroRange::Dps500,
+        }),
+    });
+    assert_eq!(
+        board.commands(),
+        [both, Command::MicOn, Command::MicOff, Command::ImuOff]
+    );
+    assert!(xiao.opened.is_none() && xiao.halves.is_none() && xiao.microphone.is_none());
+}
+
+#[test]
+fn close_after_unplug_returns() {
+    let (mut xiao, board) = on_usb(Xiao::usb().imu().mic());
+    xiao.open().unwrap();
+    board.unplug();
+    xiao.drain(&mut Recorded::new());
+
+    let start = Instant::now();
+    xiao.close();
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(100), "close took {took:?}");
+}

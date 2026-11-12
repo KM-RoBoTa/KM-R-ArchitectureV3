@@ -12,16 +12,23 @@ mod tests;
 use core::time::Duration;
 
 use kmr_core::hal::{Needs, SensorHal, seal};
-use kmr_core::sensors::Feed;
+use kmr_core::sensors::{Accel, Feed, Gyro};
+use tracing::warn;
 use xiao_api::link::AsLink;
-use xiao_api::{Baud, Ble, Uart, Usb};
+use xiao_api::{Acceleration, Baud, Ble, Rotation, Uart, Usb};
 
 pub use xiao_api::{AccelRange, GyroRange, Link, Rate};
 
+/// Standard gravity, m/s² per g.
+const STANDARD_GRAVITY: f32 = 9.806_65;
 /// Microphone sample rate, Hz (FW-5).
 const MIC_RATE_HZ: u32 = 16_000;
 /// Samples in one audio block (FW-5).
 const BLOCK_SAMPLES: u64 = 96;
+// DECISION: every queued block is fed each read, in order; the bound only ends the loop, at the
+// 4096 readings `xiao-api` queues per sensor (24 s of audio).
+/// Audio blocks one read takes at most.
+const MAX_BLOCKS: usize = 4096;
 /// Periods of its slowest stream a board may stay silent before the tick
 /// raises `sensor missing`.
 const SILENT_PERIODS: u64 = 10;
@@ -196,8 +203,6 @@ impl core::fmt::Display for Named<'_> {
 /// asked of it, `Xiao::usb().imu().mic()`. One IMU slot and one microphone
 /// slot at most.
 #[derive(Debug)]
-// `halves` and `microphone` are read from X06 on.
-#[allow(dead_code)]
 pub struct Xiao {
     link: LinkSpec,
     imu: ImuSpec,
@@ -208,6 +213,8 @@ pub struct Xiao {
     halves: Option<Halves>,
     /// The microphone, on from `open` to `close`.
     microphone: Option<xiao_api::Mic>,
+    /// A stream ended: the board is lost until the next `open`.
+    lost: bool,
 }
 
 impl Xiao {
@@ -321,7 +328,57 @@ impl Xiao {
             opened: None,
             halves: None,
             microphone: None,
+            lost: false,
         }
+    }
+
+    /// What arrived since the last call, into `sink`, never waiting. Once a
+    /// stream has ended, only `link_lost`, every call.
+    fn drain(&mut self, sink: &mut impl Sink) {
+        if self.lost {
+            sink.link_lost();
+            return;
+        }
+        let mut ended = None;
+        if let Some(halves) = &mut self.halves {
+            match halves.latest() {
+                Ok(Some((accel, gyro))) => sink.motion(accel, gyro),
+                Ok(None) => {}
+                Err(error) => ended = Some((Sensor::Imu, error)),
+            }
+            sink.motion_lost(halves.dropped());
+        }
+        if let Some(microphone) = &self.microphone {
+            for _ in 0..MAX_BLOCKS {
+                match microphone.try_next() {
+                    Ok(Some(block)) => sink.samples(block.samples()),
+                    Ok(None) => break,
+                    Err(error) => {
+                        ended.get_or_insert((Sensor::Mic, error));
+                        break;
+                    }
+                }
+            }
+            // DECISION: `xiao-api` counts lost blocks and the feed takes samples, so a block
+            // counts 96.
+            sink.samples_lost(microphone.dropped().0.saturating_mul(BLOCK_SAMPLES));
+        }
+        if let Some((sensor, error)) = ended {
+            self.lose(sensor, error);
+            sink.link_lost();
+        }
+    }
+
+    // DECISION: the end of any one stream loses the whole board, the IMU and the microphone:
+    // one link, one member; nothing reconnects it, as the link died or BLE ran out of attempts.
+    /// The board is lost: logged once, here; the sensors stay held until `close`.
+    fn lose(&mut self, sensor: Sensor, error: xiao_api::Error) {
+        self.lost = true;
+        let cause = fault(self.link, sensor, error);
+        warn!(
+            %cause,
+            "XIAO lost: its sensors stop updating and `sensor missing` is raised every tick; kmr does not reconnect it"
+        );
     }
 
     /// The first sensor asked, IMU before microphone; `None` when nothing is.
@@ -414,8 +471,6 @@ fn turn_on(
 
 /// The IMU, on.
 #[derive(Debug)]
-// Read from X06 on.
-#[allow(dead_code)]
 enum Halves {
     /// Both halves at one rate: one stream, each reading carries both.
     Both(xiao_api::Imu),
@@ -423,8 +478,13 @@ enum Halves {
     Apart {
         accel: Option<xiao_api::Accel>,
         gyro: Option<xiao_api::Gyro>,
+        /// The newest reading of each half so far.
+        last: Reading,
     },
 }
+
+/// One IMU reading in SI units: each half, `None` when it is off.
+type Reading = (Option<Accel>, Option<Gyro>);
 
 impl Halves {
     /// Turns on over `link` the halves `spec` names; `None` when it names
@@ -448,10 +508,110 @@ impl Halves {
                 let gyro = gyro
                     .map(|(rate, range)| xiao_api::Gyro::rate(rate).range(range).on(link))
                     .transpose()?;
-                Self::Apart { accel, gyro }
+                Self::Apart {
+                    accel,
+                    gyro,
+                    last: (None, None),
+                }
             }
         };
         Ok(Some(halves))
+    }
+
+    /// The newest reading since the last call, in SI units; `None` when none
+    /// came. Never waits.
+    // DECISION: at two rates a reading carries the half that came and the other half's last
+    // value, so neither reads `None` between its own readings; `age` is then the newer half's.
+    fn latest(&mut self) -> Result<Option<Reading>, xiao_api::Error> {
+        match self {
+            Self::Both(imu) => Ok(imu
+                .try_latest()?
+                .map(|motion| (Some(si_accel(motion.accel)), Some(si_gyro(motion.gyro))))),
+            Self::Apart { accel, gyro, last } => {
+                let accel = accel
+                    .as_ref()
+                    .map(xiao_api::Accel::try_latest)
+                    .transpose()?
+                    .flatten();
+                let gyro = gyro
+                    .as_ref()
+                    .map(xiao_api::Gyro::try_latest)
+                    .transpose()?
+                    .flatten();
+                if accel.is_none() && gyro.is_none() {
+                    return Ok(None);
+                }
+                if let Some(accel) = accel {
+                    last.0 = Some(si_accel(accel));
+                }
+                if let Some(gyro) = gyro {
+                    last.1 = Some(si_gyro(gyro));
+                }
+                Ok(Some(*last))
+            }
+        }
+    }
+
+    /// Readings lost since the IMU went on. Apart, both streams see every IMU
+    /// message, so their counts agree; the larger is taken.
+    fn dropped(&self) -> u64 {
+        match self {
+            Self::Both(imu) => imu.dropped().0,
+            Self::Apart { accel, gyro, .. } => {
+                let accel = accel.as_ref().map_or(0, |accel| accel.dropped().0);
+                let gyro = gyro.as_ref().map_or(0, |gyro| gyro.dropped().0);
+                accel.max(gyro)
+            }
+        }
+    }
+}
+
+/// An acceleration in g, in m/s².
+fn si_accel(reading: Acceleration) -> Accel {
+    Accel([reading.x.0, reading.y.0, reading.z.0].map(|g| g * STANDARD_GRAVITY))
+}
+
+/// An angular rate in °/s, in rad/s.
+fn si_gyro(reading: Rotation) -> Gyro {
+    Gyro([reading.x.0, reading.y.0, reading.z.0].map(f32::to_radians))
+}
+
+/// Where one read goes: the engine's [`Feed`], or a test's recorder.
+// DECISION: a private seam over `Feed`, which only the engine can build, so the per-tick read
+// is tested on the fake board without running the engine and its process-wide signal bus.
+trait Sink {
+    /// One IMU reading, both halves as they are.
+    fn motion(&mut self, accel: Option<Accel>, gyro: Option<Gyro>);
+    /// PCM samples, oldest first.
+    fn samples(&mut self, samples: &[i16]);
+    /// The running total of IMU readings lost.
+    fn motion_lost(&mut self, total: u64);
+    /// The running total of samples lost.
+    fn samples_lost(&mut self, total: u64);
+    /// The board is lost.
+    fn link_lost(&mut self);
+}
+
+/// The board's IMU and microphone are its member's first slot of each kind.
+impl Sink for Feed<'_> {
+    fn motion(&mut self, accel: Option<Accel>, gyro: Option<Gyro>) {
+        self.imu(0, accel, gyro);
+    }
+
+    fn samples(&mut self, samples: &[i16]) {
+        self.audio(0, samples);
+    }
+
+    fn motion_lost(&mut self, total: u64) {
+        self.imu_dropped(0, total);
+    }
+
+    fn samples_lost(&mut self, total: u64) {
+        self.audio_dropped(0, total);
+    }
+
+    fn link_lost(&mut self) {
+        self.link_down();
     }
 }
 
@@ -507,14 +667,18 @@ impl SensorHal for Xiao {
         self.halves = halves;
         self.microphone = microphone;
         self.opened = Some(link);
+        self.lost = false;
         Ok(())
     }
 
-    fn read(&mut self, _feed: Feed<'_>) {
-        unimplemented!("X06: per-tick read")
+    fn read(&mut self, mut feed: Feed<'_>) {
+        self.drain(&mut feed);
     }
 
     fn close(&mut self) {
-        unimplemented!("X06: exit")
+        // Dropping a sensor turns it off on the board; the link closes last.
+        self.microphone = None;
+        self.halves = None;
+        self.opened = None;
     }
 }

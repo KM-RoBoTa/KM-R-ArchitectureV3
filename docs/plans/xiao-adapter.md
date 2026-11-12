@@ -107,11 +107,11 @@ Written 2026-11-12. Nothing is built yet.
 
 **Interfaces:** Consumes `Feed` (S03), `try_latest`, `try_next` (X01). Produces `read()` and `close()`.
 
-- [ ] **Step 1: Write the tests** `one_g_reads_9_80665` (`Message::Imu` with the raw count of 1 g at 4 g range → `accel().z()` within 1e-3), `one_hundred_dps_reads_1_745_rad_s`, `the_off_half_reads_none`, `no_new_reading_feeds_nothing_and_returns_at_once` (100 idle `read` calls under 10 ms in total), `queued_audio_blocks_land_in_one_window_in_order` (4 blocks of 96 → 384 samples), `the_boards_drop_count_reaches_the_feed`, `an_unplugged_board_reports_link_down_every_tick_and_logs_once`, `close_turns_the_sensors_off` (the board saw `ImuOff`, `MicOff`), `close_after_unplug_returns`.
-- [ ] **Step 2: Run** `cargo test -p kmr_adapters --features xiao xiao`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Audio bytes are little-endian `i16`; copy through a stack buffer of one block, no allocation.
-- [ ] **Step 4: Run** `cargo test --workspace --no-fail-fast` and `cargo clippy --workspace --all-targets --features kmr_api/xiao -- -D warnings`. Expected: PASS, zero warnings.
-- [ ] **Step 5: Commit** `feat(adapters): X06 xiao per-tick read, units and exit`.
+- [x] **Step 1: Write the tests** `one_g_reads_9_80665` (`Message::Imu` with the raw count of 1 g at 4 g range → `accel().z()` within 1e-3), `one_hundred_dps_reads_1_745_rad_s`, `the_off_half_reads_none`, `no_new_reading_feeds_nothing_and_returns_at_once` (100 idle `read` calls under 10 ms in total), `queued_audio_blocks_land_in_one_window_in_order` (4 blocks of 96 → 384 samples), `the_boards_drop_count_reaches_the_feed`, `an_unplugged_board_reports_link_down_every_tick_and_logs_once`, `close_turns_the_sensors_off` (the board saw `ImuOff`, `MicOff`), `close_after_unplug_returns`.
+- [x] **Step 2: Run** `cargo test -p kmr_adapters --features xiao xiao`. Expected: FAIL.
+- [x] **Step 3: Implement.** Audio bytes are little-endian `i16`; copy through a stack buffer of one block, no allocation.
+- [x] **Step 4: Run** `cargo test --workspace --no-fail-fast` and `cargo clippy --workspace --all-targets --features kmr_api/xiao -- -D warnings`. Expected: PASS, zero warnings.
+- [x] **Step 5: Commit** `feat(adapters): X06 xiao per-tick read, units and exit`.
 
 ## Phase C: the user's side
 

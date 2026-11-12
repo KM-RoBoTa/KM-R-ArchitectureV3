@@ -51,7 +51,7 @@ merged into `dev` on 2026-11-04 (f838fcd). Cut module branches from `dev`.
 | kmr_ffi | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | bench | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | sensors (kmr_core, kmr_api) | delegated | loop | 5 | `feature/sensors` | — |
-| xiao-adapter (kmr_adapters, kmr_api; after sensors) | delegated | loop | 4 | — | — |
+| xiao-adapter (kmr_adapters, kmr_api; after sensors) | delegated | loop | 5 | `feature/xiao-adapter` | `2026-11-12 green` except `cargo fmt --all --check` (unformatted xiao-api path dependency, docs/deferred.md): X04–X06, kmr_adapters tests with `xiao` (24 xiao), workspace tests (986 passed, 11 ignored), clippy `-D warnings` on the workspace and on kmr_adapters with `xiao,dynamixel,cubemars` |
 
 - **owner** `mine`: I write it. Agents do not touch its files without
   listing them first. `delegated`: an agent writes it under the step-4
