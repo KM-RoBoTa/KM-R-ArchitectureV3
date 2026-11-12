@@ -6,6 +6,11 @@ project left spec-kit. Ids are the spec-kit ones, so the cross-references
 Context for each task (HUMAN, Hand-off, assumed decisions, research) stays
 in [`specs/001-kmr-adapters/`](../../specs/001-kmr-adapters/).
 
+## Next (triaged 2026-11-12, from `docs/deferred.md`)
+
+- [ ] D-21 critical: torque off never reaches an actuator whose own Setup fails (another model answering at its id): `force_torque_off` re-declares the id with the declared model. Safety behaviour of the exit: the maintainer decides the fix. Full entry in `docs/deferred.md`
+- [ ] D-22 high: after one fault-flagged reply, every later goal to that actuator is dropped with no fault bit (dxl_rs_v2 holds it `Faulted`, `clear_fault` runs only at bring-up). Full entry in `docs/deferred.md`
+
 ## Phase 1: Setup
 
 - [x] T002 HUMAN (dxl_rs, critical path step 1): add `force_torque_off` on the `TorqueOff` type-state, or a free function by port, id and protocol, in ../dxl_rs/build/actuator_codegen.rs; it writes `Torque_Enable` = 0 with `write1ByteTxRx1` / `write1ByteTxRx2` at the model's address (24 on AX, 64 on X), whatever the torque state (research R1, contracts/backend.md). Unblocks T017 Closed 2026-11-05 by deletion: dxl_rs is gone; `DxlRsV2::force_torque_off` writes Torque Enable = 0 in every state, an actuator whose setup failed declared alone first

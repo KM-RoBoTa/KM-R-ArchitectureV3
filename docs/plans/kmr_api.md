@@ -6,6 +6,10 @@ project left spec-kit. Ids are the spec-kit ones, so the cross-references
 Context for each task (HUMAN, Hand-off, assumed decisions, research) stays
 in [`specs/004-kmr-api/`](../../specs/004-kmr-api/).
 
+## Next (triaged 2026-11-12, from `docs/deferred.md`)
+
+- [ ] D-18 high, security: a gateway on `Identity::Loopback` takes unauthenticated Desired from peers on endpoints it refuses, because Zenoh's gossip scouting stays on (`kmr_api/src/zenoh.rs` `session_config`). Full entry in `docs/deferred.md`
+
 ## Phase 3: First motor wiring (Priority: P1), plan phase A, critical path step 9 (MVP)
 
 - [x] T014 [US1] Blocked on T011. In kmr_api/examples/complete_api_example.rs put `.add_plugins(Bus::by_id("FT8ISZ6H"))` under `if cfg!(feature = "dynamixel")` (`add_plugins` returns `Self`, both branches have one type; research R6); its comment says that without the line `run()` simulates with the core's one warning. `cargo run -p kmr_api --example complete_api_example` simulates and exits `Ok` (SC-001 (SRS FR-8.4)). FR-069 (SRS FR-8.4); plan A8 Partly done 2026-11-02: the bus line is under `if cfg!(feature = "dynamixel")`, both branches one type; the example builds with and without the feature. Open: it simulates with the core's one warning, then panics in its own `use_time` controller (`todo!()`, line 34), and after that `robot.group(..)` is `todo!("Fix the invariance issue")` (kmr_api/src/group.rs) with `R_ARM = [3, 4, 5]` past N = 4: not `Ok`. Those are the maintainer's example and group design, not edited here.

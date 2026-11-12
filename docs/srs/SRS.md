@@ -153,7 +153,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 - FR-5.4 A bus is an electrical concept, declared per actuator, not tied to groups.
 - FR-5.5 Presence is checked at bring-up, not at compile time or run() finalization; a binary cross-compiles without the robot plugged in.
 - FR-5.6 Shutdown: torque off, flush, close; best effort, no retry.
-- FR-5.7 Sensors are read into a `Sensors` handle each tick (surface still WIP).
+- FR-5.7 Sensors are read into a `Sensors` handle each tick. The set of sensor kinds is closed and typed (IMU: acceleration in m/s², angular rate in rad/s; microphone: PCM samples), with a fixed number of slots per kind (defaults: 4 IMUs, 1 microphone, a 1024-sample window; settable) and no heap. Each sensor adapter implements a sealed sensor contract separate from the actuator HAL, opens in Init, is read once in PostInit and once per tick before `First`, never blocks the tick, and is closed at every exit after the actuators. Controllers read each value and its age in ticks. A sensor that fails at bring-up fails `run()` with the adapter's own typed error; no sensor error is ambiguous: it says why and what causes it. A sensor lost at run time raises `sensor missing` (FR-13.4), and a user-set policy decides the rest: flag only (default), warn, or emergency stop. Decided 2026-11-12.
 
 * FR-5.8 Torque enable is per actuator and chosen by the user at bring-up (default on). Read-only actuators (torque off, state still read, as in a leader arm for tele-op) are a first-class case, not a patch.
 * FR-5.9 The user may reach the HAL directly from user code when the API is not enough; nothing is obfuscated.
@@ -295,7 +295,7 @@ Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are n
 - [ ] Threaded controllers as a whole (FR-1.2): what the phase label means, spawn point, result hand-off (channel, double buffer, atomic slot?), the &Time data race with the loop's begin\_tick/end\_tick, and the missing F: Send + 'static bound
 - [ ] Return value of `run()` after an emergency stop
 - [ ] `State<N>` (one sample) rename to Sample, now that State is the handle name
-- [ ] Sensors handle surface (FR-5.7)
+- [x] Sensors handle surface (FR-5.7) (2026-11-12)
 - [ ] Final license
 - [ ] Final name of the product
 

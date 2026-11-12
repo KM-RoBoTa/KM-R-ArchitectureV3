@@ -50,6 +50,8 @@ merged into `dev` on 2026-11-04 (f838fcd). Cut module branches from `dev`.
 | controllers | mine | pair | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | kmr_ffi | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
 | bench | delegated | loop | 5 | — | `2026-11-03 green`: workspace build, tests, clippy `-D warnings`, also with `kmr_api/dynamixel,kmr_api/cubemars` |
+| sensors (kmr_core, kmr_api) | delegated | loop | 4 | — | — |
+| xiao-adapter (kmr_adapters, kmr_api; after sensors) | delegated | loop | 4 | — | — |
 
 - **owner** `mine`: I write it. Agents do not touch its files without
   listing them first. `delegated`: an agent writes it under the step-4

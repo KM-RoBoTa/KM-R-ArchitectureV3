@@ -6,6 +6,10 @@ project left spec-kit. Ids are the spec-kit ones, so the cross-references
 Context for each task (HUMAN, Hand-off, assumed decisions, research) stays
 in [`specs/002-kmr-core/`](../../specs/002-kmr-core/).
 
+## Next (triaged 2026-11-12, from `docs/deferred.md`)
+
+- [ ] D-16 high: a NaN or inf write on a field with an envelope skips the joint limit, so `Policy::Abort` never raises the emergency stop (`kmr_core/src/limits.rs` `enforce_field`). Touches the loop's estop behaviour: the maintainer decides the fix, the agent writes the failing test first. SRS FR-4.5, FR-13.4
+
 ## Phase 3: M1 First motor (US5, US2, US1, US3), CP 3 to 11, SRS delivery step 1 🎯 MVP
 
 ### Outside the core (hand-offs, CP 9 to 11)
