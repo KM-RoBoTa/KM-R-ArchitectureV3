@@ -56,5 +56,10 @@ name = "complete_api_example"
 name = "zenoh"
 required-features = ["zenoh", "test-util"]
 
+# Sensors on the core's scripted host and fake sensor.
+[[test]]
+name = "sensors"
+required-features = ["test-util"]
+
 [lints]
 workspace = true

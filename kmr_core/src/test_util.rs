@@ -12,7 +12,7 @@ pub use crate::clock::Instant;
 use crate::error::RunError;
 use crate::hal::{
     Batch, Claim, Command, Drivers, ExternalFlags, Faults, Group, Hal, HardwareError, Mask, Needs,
-    Overrides, Sample, SensorHal, TickFlags, Written, seal,
+    Overrides, Sample, Sensing, SensorHal, TickFlags, Written, seal,
 };
 use crate::schedule::Drive;
 use crate::sensors::{Accel, Feed, Gyro};
@@ -64,6 +64,27 @@ pub fn run_scripted_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>,
     stages: &mut S,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     crate::runtime::run_staged(robot, host, drivers, stages)
+}
+
+/// [`run_scripted_staged`], with `sensing`, the sensor members, opened,
+/// read each tick and closed like the real runtime does.
+// DECISION: the core half of kmr_api's scripted run with sensors (authorised
+// for S06): `run_all` is crate-private, so kmr_api reaches it only here.
+pub fn run_scripted_all<
+    const N: usize,
+    CS: Drive<N>,
+    H: Host,
+    D: Drivers<N>,
+    SN: Sensing,
+    S: Stages<N>,
+>(
+    robot: &mut Robot<N, CS, crate::Filled>,
+    host: &mut H,
+    drivers: &mut D,
+    sensing: &mut SN,
+    stages: &mut S,
+) -> Result<Signal, RunError<HardwareError<D::Error>, SN::Error>> {
+    crate::runtime::run_all(robot, host, drivers, sensing, stages)
 }
 
 /// Whether `signal` is an emergency stop rather than a shutdown.

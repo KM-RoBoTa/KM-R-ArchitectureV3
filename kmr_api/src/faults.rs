@@ -64,7 +64,10 @@ impl<const N: usize> Faults<N> {
         self.tick.contains(TickFlags::OVERRUN)
     }
 
-    /// A sensor gave no reading this tick.
+    /// A sensor is missing this tick: its adapter reports its link down, or one of its slots
+    /// has been silent past the `max_silence` its adapter declared (SRS FR-13.4). A sensor
+    /// slower than the tick is not missing; what else a loss does is the robot's
+    /// [`SensorPolicy`](crate::SensorPolicy).
     pub fn sensor_missing(&self) -> bool {
         self.tick.contains(TickFlags::SENSOR_MISSING)
     }

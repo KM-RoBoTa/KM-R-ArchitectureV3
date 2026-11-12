@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::error::Error;
 use std::time::Duration;
 
@@ -84,13 +85,19 @@ impl From<CoreStateError> for StateError {
 
 /// Error returned by [`Robot::run`](crate::Robot::run): what went wrong and how to fix it.
 ///
+/// `S` is the error of the robot's sensors, kept typed in [`UserError::Sensor`]; a robot
+/// without a sensor has none, so its error is plain `UserError`.
+///
 /// `Debug` is derived in debug builds, so `{e:?}` shows the variant and its fields, the
 /// adapter's typed error included; release builds print the `Display` text instead, so
 /// `fn main() -> Result<(), UserError>` shows one readable line and no internal cause
 /// (SRS NFR-2).
+// DECISION: a defaulted generic carries the sensors' error typed (authorised for S06): code
+// naming `UserError` keeps meaning a run without sensors. Bounded on the type, so the message
+// can shorten the member's name as `BringUp`'s does: thiserror infers no bound for it.
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[derive(thiserror::Error)]
-pub enum UserError {
+pub enum UserError<S: Error + 'static = Infallible> {
     /// Two bus plugins, or two different bus handles, name the same port (SRS FR-6.4: a
     /// registration error).
     #[error(
@@ -203,10 +210,36 @@ pub enum UserError {
         #[source]
         source: crate::zenoh::GatewayError,
     },
+
+    /// The sensors given to `add_sensor` need more slots of one kind than kmr has; nothing
+    /// was opened (SRS FR-5.7).
+    // DECISION: its own variant (authorised for S06), in place of S05's interim `BringUp`.
+    #[error(
+        "the sensors given to `.add_sensor(..)` need {asked} {kind} slots and kmr has {slots}; add fewer sensors, or ask fewer {kind} slots of them"
+    )]
+    TooManySensors {
+        /// The kind of slot: `"IMU"`, `"microphone"` or `"sensor adapter"`.
+        kind: &'static str,
+        /// Slots the sensors need, counted up to the one that overflows.
+        asked: usize,
+        /// Slots kmr has of that kind.
+        slots: usize,
+    },
+
+    /// A sensor failed its bring-up, after the actuators' (SRS FR-5.7). `source` is the
+    /// failed member, by its position in `add_sensor` order and its type, with its adapter's
+    /// own error, typed: match it, or reach it as the next [`Error::source`]. The message
+    /// names the member by its type's last path segment, `member 0 (Xiao)`.
+    #[error("sensor bring-up failed: {}", bring_up_message(.source))]
+    Sensor {
+        /// The failed member and its adapter's error.
+        #[source]
+        source: S,
+    },
 }
 
 #[cfg(feature = "zenoh")]
-impl From<crate::zenoh::GatewayError> for UserError {
+impl<S: Error + 'static> From<crate::zenoh::GatewayError> for UserError<S> {
     fn from(source: crate::zenoh::GatewayError) -> Self {
         Self::Gateway { source }
     }
@@ -215,7 +248,7 @@ impl From<crate::zenoh::GatewayError> for UserError {
 /// Prints the [`Display`](core::fmt::Display) text, so `fn main() -> Result<(), UserError>`
 /// shows a readable line.
 #[cfg(not(debug_assertions))]
-impl core::fmt::Debug for UserError {
+impl<S: Error + 'static> core::fmt::Debug for UserError<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::Display::fmt(self, f)
     }
@@ -226,6 +259,37 @@ impl UserError {
     pub(crate) fn bring_up(source: impl Error + Send + Sync + 'static) -> Self {
         Self::BringUp {
             source: Box::new(source),
+        }
+    }
+
+    /// This error, as the error of a run with sensors: a run without any has no sensor
+    /// error, so every variant carries over unchanged.
+    pub(crate) fn widen<S: Error + 'static>(self) -> UserError<S> {
+        match self {
+            Self::DuplicateBus { port } => UserError::DuplicateBus { port },
+            Self::UnknownBus { label, port } => UserError::UnknownBus { label, port },
+            Self::SharedBusLabel { label } => UserError::SharedBusLabel { label },
+            Self::LabelRequired { port } => UserError::LabelRequired { port },
+            Self::FeatureOff { feature } => UserError::FeatureOff { feature },
+            Self::NoHardwareDeclared => UserError::NoHardwareDeclared,
+            Self::ActuatorCount { declared, expected } => {
+                UserError::ActuatorCount { declared, expected }
+            }
+            Self::PresetHardware { preset } => UserError::PresetHardware { preset },
+            Self::BusWithoutBaud { port } => UserError::BusWithoutBaud { port },
+            Self::HardwareRejected { source } => UserError::HardwareRejected { source },
+            Self::BringUp { source } => UserError::BringUp { source },
+            Self::UnknownLink { link } => UserError::UnknownLink { link },
+            Self::DtOutOfRange { dt } => UserError::DtOutOfRange { dt },
+            Self::NoPolicy { actuator } => UserError::NoPolicy { actuator },
+            Self::NoActuator { index, n } => UserError::NoActuator { index, n },
+            Self::InvalidEnvelope { actuator } => UserError::InvalidEnvelope { actuator },
+            #[cfg(feature = "zenoh")]
+            Self::Gateway { source } => UserError::Gateway { source },
+            Self::TooManySensors { kind, asked, slots } => {
+                UserError::TooManySensors { kind, asked, slots }
+            }
+            Self::Sensor { source } => match source {},
         }
     }
 }
@@ -296,23 +360,25 @@ fn closing(text: &str) -> Option<usize> {
     None
 }
 
-impl From<ConfigError> for UserError {
+impl<S: Error + 'static> From<ConfigError> for UserError<S> {
     fn from(e: ConfigError) -> Self {
         match e {
             ConfigError::DtOutOfRange { dt } => Self::DtOutOfRange { dt },
             ConfigError::NoPolicy { actuator } => Self::NoPolicy { actuator },
-            // DECISION: no own variant before S06 hands kmr_api's sensors to the
-            // run (unreachable until then); the core's text is kept (docs/deferred.md).
-            sensors @ ConfigError::TooManySensors { .. } => Self::bring_up(sensors),
+            ConfigError::TooManySensors { kind, asked, slots } => {
+                Self::TooManySensors { kind, asked, slots }
+            }
         }
     }
 }
 
-impl<E: Error + Send + Sync + 'static> From<RunError<E>> for UserError {
-    fn from(e: RunError<E>) -> Self {
+/// The hardware's error boxed in [`UserError::BringUp`], the sensors' kept as they are.
+impl<E: Error + Send + Sync + 'static, S: Error + 'static> From<RunError<E, S>> for UserError<S> {
+    fn from(e: RunError<E, S>) -> Self {
         match e {
             RunError::Config(config) => config.into(),
-            RunError::Hal(hardware) => Self::bring_up(hardware),
+            RunError::Hal(hardware) => UserError::bring_up(hardware).widen(),
+            RunError::Sensor(source) => Self::Sensor { source },
         }
     }
 }
