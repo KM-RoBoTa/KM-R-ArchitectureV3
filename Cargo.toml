@@ -60,6 +60,8 @@ dxl_rs_v2 = { path = "../dxl_rs_v2-kmr", default-features = false }
 # DECISION: socketcan binds the CubeMars CAN_RAW sockets by interface name without our own
 # `unsafe` (maintainer-approved 2026-11-03). No default features: no netlink, no dump.
 socketcan = { version = "4.0.0", default-features = false }
+# Temporary path: becomes ../xiao-nrf52840-sensors/crates/api once that checkout has the real-time change.
+xiao-api = { path = "../xiao-nrf52840-sensors/.worktrees/api-realtime/crates/api" }
 
 # Stated, not left to the default: the engine's torque-off guard runs while a
 # controller panic unwinds; `abort` would leave the actuators powered (SRS NFR-2).

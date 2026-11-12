@@ -85,9 +85,9 @@ Written 2026-11-12. Nothing is built yet.
 `struct Xiao { .. }` with `Xiao::usb()`, `Xiao::uart(port: &'static str)`, `Xiao::ble()`, `.baud(u32)`, `.named(&'static str)`, `.attempts(u8)`, `.imu()` (both halves, 104 Hz, 4 g, 500 °/s), `.imu_with(ImuSpec)`, `.gyro()`, `.accel()`, `.mic()`;
 `impl seal::Adapter for Xiao {}`, `impl SensorHal for Xiao`. `Rate`, `AccelRange`, `GyroRange` are re-exported from `xiao-api`.
 
-- [ ] **Step 1: Run** `/contract xiao-adapter` to write the stubs and the test names of X05 and X06.
-- [ ] **Step 2: Run** `cargo build -p kmr_adapters`, then with `--features xiao`, and `cargo tree -p kmr_adapters | grep -c xiao` without the feature. Expected: both build; the count is 0.
-- [ ] **Step 3: Commit** `feat(adapters): X04 xiao adapter contract and feature`.
+- [x] **Step 1: Run** `/contract xiao-adapter` to write the stubs and the test names of X05 and X06.
+- [x] **Step 2: Run** `cargo build -p kmr_adapters`, then with `--features xiao`, and `cargo tree -p kmr_adapters | grep -c xiao` without the feature. Expected: both build; the count is 0.
+- [x] **Step 3: Commit** `feat(adapters): X04 xiao adapter contract and feature`.
 
 ### Task X05: needs and bring-up
 
