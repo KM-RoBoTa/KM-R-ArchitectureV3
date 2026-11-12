@@ -6,9 +6,10 @@ use crate::fallback::Guarded;
 use crate::plugin::{Plugin, Plugins};
 use crate::spec::Lend;
 use crate::{
-    Binding, Envelope, Limit, Payload, Policy, Schedule, Sensors, Spec, State, Time, UserError,
+    Binding, Envelope, Limit, MemberError, Payload, Policy, Schedule, SensorPolicy, Sensors, Spec,
+    State, Time, UserError,
 };
-use kmr_core::hal::{Drivers, NoHardware};
+use kmr_core::hal::{Drivers, NoHardware, Sensing, SensorHal};
 use kmr_core::{
     ControlFn, ControlFnWith, Empty, Filled, HCons, HNil, HasController, Inline, InlineWith,
     Insert, Scheduled, ThreadFn, Threaded,
@@ -119,8 +120,12 @@ where
 // `E` is the core's controller type-state, `Empty` until the first `add_controller*`, then
 // `Filled`: `run()` needs `Filled`, so a robot without a controller does not build, with the
 // core's "kmr: this robot has no controller" (SRS NFR-4).
-pub struct Robot<const N: usize, H, C = Scheduled, E = Empty> {
+//
+// `SN` is the list of sensors, one `HCons` node per `add_sensor`, `HNil` without any (SRS
+// FR-5.7): the run hands it to the core next to the drivers.
+pub struct Robot<const N: usize, H, C = Scheduled, E = Empty, SN = HNil> {
     inner: kmr_core::Robot<N, C, E>,
+    sensors: SN,
     plugins: Plugins,
     actuators: Vec<Actuators>,
     payloads: Vec<Payload>,
@@ -166,6 +171,7 @@ impl<const N: usize, H: Spec<N>> Robot<N, H> {
     pub fn new() -> Self {
         Self {
             inner: kmr_core::Robot::new(),
+            sensors: HNil,
             plugins: Plugins::default(),
             actuators: Vec::new(),
             payloads: Vec::new(),
@@ -185,7 +191,7 @@ impl<const N: usize, H: Spec<N>> Default for Robot<N, H> {
 
 // Settings. These keep the SAME type-state `C`: tuning the config never adds or
 // removes a controller, so `Self` is returned unchanged.
-impl<const N: usize, H, C, E> Robot<N, H, C, E> {
+impl<const N: usize, H, C, E, SN> Robot<N, H, C, E, SN> {
     /// Sets the tick period. Zero or outside [10 µs, 1 s], [`run`](Self::run) refuses it
     /// with [`UserError::DtOutOfRange`] before any I/O; never set, the run uses 1 ms with one
     /// warning (SRS FR-3.1).
@@ -202,6 +208,17 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     pub fn set_hold(self, duration: Duration) -> Self {
         Self {
             inner: self.inner.set_hold(duration),
+            ..self
+        }
+    }
+
+    /// What a sensor lost at run time does beyond raising
+    /// [`sensor_missing`](crate::Faults::sensor_missing), which it always does (SRS FR-5.7,
+    /// FR-13.4). Without it, [`SensorPolicy::Flag`]: the flag is the signal, the controllers
+    /// decide.
+    pub fn set_sensor_policy(self, policy: SensorPolicy) -> Self {
+        Self {
+            inner: self.inner.set_sensor_policy(policy),
             ..self
         }
     }
@@ -257,9 +274,10 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     fn grown<D>(
         self,
         grow: impl FnOnce(kmr_core::Robot<N, C, E>) -> kmr_core::Robot<N, D, Filled>,
-    ) -> Robot<N, H, D, Filled> {
+    ) -> Robot<N, H, D, Filled, SN> {
         Robot {
             inner: grow(self.inner),
+            sensors: self.sensors,
             plugins: self.plugins,
             actuators: self.actuators,
             payloads: self.payloads,
@@ -314,10 +332,42 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         self
     }
 
+    /// Adds a sensor: nothing opens before Init, after the actuators; it is read once in
+    /// PostInit, then each tick before `First`, and closed at every exit, after the actuators
+    /// (SRS FR-5.7). Controllers read it through [`Sensors`], its IMUs and microphones counted
+    /// in the order the sensors were added. Before or after the controllers, as you like.
+    ///
+    /// ```ignore
+    /// Robot::new().add_sensor(xiao::Xiao::usb().imu().mic())
+    /// ```
+    ///
+    /// Its bring-up error ends the run as [`UserError::Sensor`], typed; more slots of a kind
+    /// than kmr has is [`UserError::TooManySensors`], before any I/O.
+    pub fn add_sensor<S: SensorHal>(self, sensor: S) -> Robot<N, H, C, E, HCons<S, SN>> {
+        Robot {
+            inner: self.inner,
+            sensors: HCons {
+                head: sensor,
+                tail: self.sensors,
+            },
+            plugins: self.plugins,
+            actuators: self.actuators,
+            payloads: self.payloads,
+            guards: self.guards,
+            #[cfg(feature = "zenoh")]
+            remotes: self.remotes,
+            spec: PhantomData,
+        }
+    }
+
     // Controllers. Each of these GROWS the type-state: the returned `Robot`
     // carries `C::Output`, where the chosen schedule holds one more node, so
     // the builder must stay one chained expression. That is the price of the zero-cost, cap-free design.
-    pub fn add_controller<S: Schedule, F>(self, schedule: S, f: F) -> Robot<N, H, C::Output, Filled>
+    pub fn add_controller<S: Schedule, F>(
+        self,
+        schedule: S,
+        f: F,
+    ) -> Robot<N, H, C::Output, Filled, SN>
     where
         C: Insert<S, Inline<ApiInline<F>>>,
         F: Fn(&Time, &mut State<'_, N>, &Sensors),
@@ -339,7 +389,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         f: F,
         when: P,
         fallback: G,
-    ) -> Robot<N, H, C::Output, Filled>
+    ) -> Robot<N, H, C::Output, Filled, SN>
     where
         C: Insert<S, Inline<ApiInline<Guarded<F, G, P>>>>,
         F: Fn(&Time, &mut State<'_, N>, &Sensors),
@@ -365,7 +415,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         schedule: S,
         remote: crate::zenoh::Remote,
         fallback: G,
-    ) -> Robot<N, H, C::Output, Filled>
+    ) -> Robot<N, H, C::Output, Filled, SN>
     where
         C: Insert<S, Inline<ApiInline<Guarded<Idle<N>, G, Silent<N>>>>>,
         G: Fn(&Time, &mut State<'_, N>, &Sensors),
@@ -405,7 +455,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<N, H, C::Output, Filled>
+    ) -> Robot<N, H, C::Output, Filled, SN>
     where
         C: Insert<S, InlineWith<ApiInlineWith<F>, T>>,
         F: Fn(&mut T, &Time, &mut State<'_, N>, &Sensors),
@@ -432,7 +482,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         schedule: S,
         ctx: T,
         f: F,
-    ) -> Robot<N, H, C::Output, Filled>
+    ) -> Robot<N, H, C::Output, Filled, SN>
     where
         C: Insert<S, Threaded<ApiThreaded<F>, T>>,
         T: Sync + Send,
@@ -441,36 +491,30 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         self.grown(|inner| inner.add_control_fn_as_thread(schedule, ctx, ApiThreaded(f)))
     }
 
-    /// Finalizes the builder, binds the bus plugins or the declared actuators to the robot's
-    /// drivers, then runs on them; without either, simulates on no hardware.
-    ///
-    /// The [`Drive`](crate::Drive) bound is satisfied by every schedule the builder can
-    /// produce, so users never trip it.
-    ///
-    /// # Errors
-    ///
-    /// Those of [`bind`](Self::bind), then those of [`Bound::run`]. A shutdown and an emergency
-    /// stop both return `Ok(())`.
-    pub fn run(self) -> Result<(), UserError>
+    /// [`bind`](Self::bind), then runs on the drivers and the sensors; without drivers,
+    /// simulates on no hardware.
+    fn run_sensing(self) -> Result<(), UserError<SN::Error>>
     where
         H: Spec<N>,
         C: kmr_core::Drive<N>,
         E: HasController,
+        SN: Sensing,
     {
         let Bound {
             inner,
             drivers,
+            sensors,
             #[cfg(feature = "zenoh")]
             gateway,
-        } = self.bind()?;
+        } = self.bind().map_err(UserError::widen)?;
         let net = Net {
             #[cfg(feature = "zenoh")]
             gateway: gateway.as_ref(),
             _robot: PhantomData,
         };
         match drivers {
-            Some(drivers) => drive(inner, drivers, net),
-            None => drive(inner, simulated(), net),
+            Some(drivers) => drive(inner, drivers, sensors, net),
+            None => drive(inner, simulated(), sensors, net),
         }
     }
 
@@ -484,12 +528,13 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     /// ([`UserError::ActuatorCount`], [`UserError::BusWithoutBaud`],
     /// [`UserError::DuplicateBus`], [`UserError::HardwareRejected`], [`UserError::FeatureOff`]).
     /// The tick period is checked by the run.
-    pub fn bind(self) -> Result<Bound<N, H, C, E>, UserError>
+    pub fn bind(self) -> Result<Bound<N, H, C, E, SN>, UserError>
     where
         H: Spec<N>,
     {
         let Finalized {
             inner,
+            sensors,
             bindings,
             actuators,
             #[cfg(feature = "zenoh")]
@@ -508,6 +553,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
         Ok(Bound {
             inner,
             drivers,
+            sensors,
             #[cfg(feature = "zenoh")]
             gateway,
         })
@@ -520,7 +566,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     ///
     /// [`UserError::DuplicateBus`], [`UserError::UnknownLink`], [`UserError::NoActuator`],
     /// then [`UserError::InvalidEnvelope`].
-    fn finalize(self) -> Result<Finalized<N, C, E>, UserError>
+    fn finalize(self) -> Result<Finalized<N, C, E, SN>, UserError>
     where
         H: Spec<N>,
     {
@@ -558,6 +604,7 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
             .set_envelopes(self.guards.envelope);
         Ok(Finalized {
             inner,
+            sensors: self.sensors,
             bindings: buses.iter().map(|bus| bus.binding).collect(),
             actuators: self.actuators,
             #[cfg(feature = "zenoh")]
@@ -566,35 +613,93 @@ impl<const N: usize, H, C, E> Robot<N, H, C, E> {
     }
 }
 
+// DECISION: one `run` per shape of the sensor list, not one generic over it: without a
+// sensor, `run` keeps the signature and the error it always had, plain `UserError`.
+impl<const N: usize, H, C, E> Robot<N, H, C, E> {
+    /// Finalizes the builder, binds the bus plugins or the declared actuators to the robot's
+    /// drivers, then runs on them; without either, simulates on no hardware.
+    ///
+    /// The [`Drive`](crate::Drive) bound is satisfied by every schedule the builder can
+    /// produce, so users never trip it.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`bind`](Self::bind), then those of [`Bound::run`]. A shutdown and an emergency
+    /// stop both return `Ok(())`.
+    pub fn run(self) -> Result<(), UserError>
+    where
+        H: Spec<N>,
+        C: kmr_core::Drive<N>,
+        E: HasController,
+    {
+        self.run_sensing()
+    }
+}
+
+impl<const N: usize, H, C, E, S, T> Robot<N, H, C, E, HCons<S, T>> {
+    /// Finalizes the builder, binds the bus plugins or the declared actuators to the robot's
+    /// drivers, then runs on them and on the sensors given to
+    /// [`add_sensor`](Robot::add_sensor); without drivers, simulates on no hardware.
+    ///
+    /// # Errors
+    ///
+    /// Those of a robot without sensors, then, before any I/O,
+    /// [`UserError::TooManySensors`]; after the actuators' bring-up, a sensor's as
+    /// [`UserError::Sensor`], its adapter's own error typed. A shutdown and an emergency stop
+    /// both return `Ok(())`.
+    // DECISION: the error spelled out, not behind an alias: it is what a user matches on.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the sensors' error, as a user matches it"
+    )]
+    pub fn run(self) -> Result<(), UserError<MemberError<S::Error, T::Error>>>
+    where
+        H: Spec<N>,
+        C: kmr_core::Drive<N>,
+        E: HasController,
+        S: SensorHal,
+        T: Sensing,
+    {
+        self.run_sensing()
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
-impl<const N: usize, H: Spec<N>, C: kmr_core::Drive<N>> Robot<N, H, C, Filled> {
-    /// Finalizes the builder like [`run`](Self::run), then runs it on `drivers` with `host`
-    /// as its clock, sleep and bus: no real sleep, no global signal bus.
+impl<const N: usize, H: Spec<N>, C: kmr_core::Drive<N>, SN: Sensing> Robot<N, H, C, Filled, SN> {
+    /// Finalizes the builder like `run()`, then runs it on `drivers` and its sensors with
+    /// `host` as its clock, sleep and bus: no real sleep, no global signal bus.
     pub(crate) fn run_scripted<P, D>(
         self,
         host: &mut P,
         drivers: &mut D,
-    ) -> Result<kmr_core::Signal, UserError>
+    ) -> Result<kmr_core::Signal, UserError<SN::Error>>
     where
         P: kmr_core::test_util::Host,
         D: Drivers<N, Error: Send + Sync>,
     {
-        let finalized = self.finalize()?;
+        let finalized = self.finalize().map_err(UserError::widen)?;
         let mut inner = finalized.inner;
+        let mut sensors = finalized.sensors;
         #[cfg(feature = "zenoh")]
         if let Some(gateway) = &finalized.gateway {
             let (running, mut stages) = gateway.start::<N>()?;
-            let signal =
-                kmr_core::test_util::run_scripted_staged(&mut inner, host, drivers, &mut stages);
+            let signal = kmr_core::test_util::run_scripted_all(
+                &mut inner,
+                host,
+                drivers,
+                &mut sensors,
+                &mut stages,
+            );
             drop(running);
             return signal.map_err(UserError::from);
         }
-        kmr_core::test_util::run_scripted(&mut inner, host, drivers).map_err(UserError::from)
+        kmr_core::test_util::run_scripted_all(&mut inner, host, drivers, &mut sensors, &mut ())
+            .map_err(UserError::from)
     }
 }
 
 #[cfg(test)]
-impl<const N: usize, H: Spec<N>, C, E> Robot<N, H, C, E> {
+impl<const N: usize, H: Spec<N>, C, E, SN> Robot<N, H, C, E, SN> {
     /// The core robot `run()` would hand to the loop.
     pub(crate) fn finalized(self) -> kmr_core::Robot<N, C, E> {
         self.finalize().expect("a valid builder").inner
@@ -623,10 +728,12 @@ fn silent<const N: usize>(faults: &crate::Faults<N>) -> bool {
 }
 
 /// A finalized robot, its bus plugins bound to its drivers: the drivers are reachable here,
-/// before the run and after it, never inside a tick (SRS FR-5.9).
-pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
+/// before the run and after it, never inside a tick (SRS FR-5.9). `SN` is its sensor list, as
+/// on [`Robot`].
+pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled, SN = HNil> {
     inner: kmr_core::Robot<N, C, E>,
     drivers: Option<H::Drivers>,
+    sensors: SN,
     /// The gateway plugged in, started by the run.
     #[cfg(feature = "zenoh")]
     gateway: Option<crate::zenoh::Plugged>,
@@ -634,8 +741,9 @@ pub struct Bound<const N: usize, H: Spec<N>, C, E = Filled> {
 
 /// The builder's data checked and handed over: the core robot, the bus bindings and the
 /// declared actuators.
-struct Finalized<const N: usize, C, E> {
+struct Finalized<const N: usize, C, E, SN> {
     inner: kmr_core::Robot<N, C, E>,
+    sensors: SN,
     bindings: Vec<Binding>,
     actuators: Vec<Actuators>,
     /// The one gateway plugged in, if any.
@@ -650,13 +758,42 @@ struct Net<'a, const N: usize> {
     _robot: PhantomData<&'a [(); N]>,
 }
 
-impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
+impl<const N: usize, H: Spec<N>, C, E, SN> Bound<N, H, C, E, SN> {
     /// The robot's drivers, `HCons<A, HCons<B, HNil>>`; `None` without a bus plugin or an
     /// actuator, where the run simulates.
     pub fn drivers(&mut self) -> Option<&mut H::Drivers> {
         self.drivers.as_mut()
     }
 
+    /// Runs on the drivers, lent, and on the sensors, then hands the drivers back.
+    fn run_sensing(self) -> Result<Option<H::Drivers>, UserError<SN::Error>>
+    where
+        C: kmr_core::Drive<N>,
+        E: HasController,
+        SN: Sensing,
+    {
+        let Self {
+            inner,
+            mut drivers,
+            sensors,
+            #[cfg(feature = "zenoh")]
+            gateway,
+        } = self;
+        let net = Net {
+            #[cfg(feature = "zenoh")]
+            gateway: gateway.as_ref(),
+            _robot: PhantomData,
+        };
+        match &mut drivers {
+            Some(drivers) => drive(inner, drivers.lend(), sensors, net)?,
+            None => drive(inner, simulated(), sensors, net)?,
+        }
+        Ok(drivers)
+    }
+}
+
+// DECISION: split by the sensor list's shape, like `Robot::run`.
+impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
     /// Runs the robot on its drivers, lent to the run, then hands them back, closed; `None`
     /// when it simulated. A member's error names it by its type, short in the message; its
     /// source names the full `&mut <type>`, the member the run saw.
@@ -672,22 +809,32 @@ impl<const N: usize, H: Spec<N>, C, E> Bound<N, H, C, E> {
         C: kmr_core::Drive<N>,
         E: HasController,
     {
-        let Self {
-            inner,
-            mut drivers,
-            #[cfg(feature = "zenoh")]
-            gateway,
-        } = self;
-        let net = Net {
-            #[cfg(feature = "zenoh")]
-            gateway: gateway.as_ref(),
-            _robot: PhantomData,
-        };
-        match &mut drivers {
-            Some(drivers) => drive(inner, drivers.lend(), net)?,
-            None => drive(inner, simulated(), net)?,
-        }
-        Ok(drivers)
+        self.run_sensing()
+    }
+}
+
+impl<const N: usize, H: Spec<N>, C, E, S, T> Bound<N, H, C, E, HCons<S, T>> {
+    /// Runs the robot on its drivers, lent to the run, and on its sensors, then hands the
+    /// drivers back, closed; `None` when it simulated.
+    ///
+    /// # Errors
+    ///
+    /// Those of a robot without sensors, then, before any I/O,
+    /// [`UserError::TooManySensors`]; after the actuators' bring-up, a sensor's as
+    /// [`UserError::Sensor`], its adapter's own error typed. A shutdown and an emergency stop
+    /// both return `Ok`.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the sensors' error, as a user matches it"
+    )]
+    pub fn run(self) -> Result<Option<H::Drivers>, UserError<MemberError<S::Error, T::Error>>>
+    where
+        C: kmr_core::Drive<N>,
+        E: HasController,
+        S: SensorHal,
+        T: Sensing,
+    {
+        self.run_sensing()
     }
 }
 
@@ -707,30 +854,33 @@ fn simulated() -> HCons<NoHardware, HNil> {
     }
 }
 
-/// Runs `inner` on `drivers`, the gateway of `net` around each tick when there is one: a
-/// refused configuration as its [`UserError`], a hardware error kept typed inside
-/// [`UserError::BringUp`]. The gateway stops when the run ends.
-fn drive<const N: usize, C, E, D>(
+/// Runs `inner` on `drivers` and `sensors`, the gateway of `net` around each tick when there
+/// is one: a refused configuration as its [`UserError`], a hardware error kept typed inside
+/// [`UserError::BringUp`], a sensor's as it is in [`UserError::Sensor`]. The gateway stops
+/// when the run ends.
+fn drive<const N: usize, C, E, D, SN>(
     inner: kmr_core::Robot<N, C, E>,
     drivers: D,
+    sensors: SN,
     net: Net<'_, N>,
-) -> Result<(), UserError>
+) -> Result<(), UserError<SN::Error>>
 where
     C: kmr_core::Drive<N>,
     E: HasController,
     D: Drivers<N, Error: Send + Sync>,
+    SN: Sensing,
 {
     #[cfg(feature = "zenoh")]
     if let Some(gateway) = net.gateway {
         let (running, stages) = gateway.start::<N>()?;
         let result = inner
-            .run_on_staged(drivers, stages)
+            .run_all(drivers, sensors, stages)
             .map_err(UserError::from);
         drop(running);
         return result;
     }
     let _ = net;
-    inner.run_on(drivers).map_err(UserError::from)
+    inner.run_all(drivers, sensors, ()).map_err(UserError::from)
 }
 
 #[cfg(test)]

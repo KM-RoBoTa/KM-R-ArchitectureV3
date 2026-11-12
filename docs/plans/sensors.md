@@ -114,16 +114,16 @@ No ambiguous error: an adapter's `Error` says why and what causes it; the core a
 
 **Interfaces:** Consumes S05. Produces `kmr_api::Sensors::{imu(&self, index) -> Option<Imu<'_>>, mic(&self, index) -> Option<Mic<'_>>}` with the wrappers forwarding the S02 getters; `pub use kmr_core::sensors::{Accel, Gyro}`; `Robot<N, H, C, E, SN = HNil>` and `pub fn add_sensor<S: SensorHal>(self, sensor: S) -> Robot<N, H, C, E, HCons<S, SN>>`; `run()` hands the list to `run_all`; `pub fn set_sensor_policy(self, policy: SensorPolicy) -> Self`, `SensorPolicy` re-exported; the API's run error carries the sensors' typed error unflattened.
 
-- [ ] **Step 1: Write the tests** in `kmr_api/tests/sensors.rs` with `FakeSensor` (`test-util` feature): `a_controller_reads_the_imu_through_the_api`, `a_controller_reads_audio_through_the_api`, `faults_report_sensor_missing_when_the_sensor_goes_silent`, `two_sensors_are_indexed_in_add_order`, `a_sensor_error_reaches_the_user_typed` (match on the fake's own error variant), `a_robot_without_sensors_still_builds_with_its_old_type` (`let _: Robot<4, Spec> = ..` compiles).
-- [ ] **Step 2: Run** `cargo test -p kmr_api --features test-util sensors`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `add_sensor` may be called before or after `add_controller`; the zenoh and `Bound::run` paths carry the list too.
-- [ ] **Step 4: Run** `cargo test --workspace --no-fail-fast` and `cargo run -p kmr_api --example complete_api_example`. Expected: PASS, example unchanged.
-- [ ] **Step 5: Commit** `feat(api): S06 sensors getters and add_sensor`.
+- [x] **Step 1: Write the tests** in `kmr_api/tests/sensors.rs` with `FakeSensor` (`test-util` feature): `a_controller_reads_the_imu_through_the_api`, `a_controller_reads_audio_through_the_api`, `faults_report_sensor_missing_when_the_sensor_goes_silent`, `two_sensors_are_indexed_in_add_order`, `a_sensor_error_reaches_the_user_typed` (match on the fake's own error variant), `a_robot_without_sensors_still_builds_with_its_old_type` (`let _: Robot<4, Spec> = ..` compiles).
+- [x] **Step 2: Run** `cargo test -p kmr_api --features test-util sensors`. Expected: FAIL.
+- [x] **Step 3: Implement.** `add_sensor` may be called before or after `add_controller`; the zenoh and `Bound::run` paths carry the list too.
+- [x] **Step 4: Run** `cargo test --workspace --no-fail-fast` and `cargo run -p kmr_api --example complete_api_example`. Expected: PASS, example unchanged.
+- [x] **Step 5: Commit** `feat(api): S06 sensors getters and add_sensor`.
 
 ### Task S07: docs and cost
 
 **Files:** Modify: `docs/ARCHITECTURE.md` (a "Sensors" section), `AGENTS.md` (project context: Sensors paragraph, heap-free note), `bench/` only if a probe already walks the phases.
 
-- [ ] **Step 1: Write** the two doc sections from the HLD; drop "WIP" from `kmr_core/src/sensors.rs`.
+- [x] **Step 1: Write** the two doc sections from the HLD; drop "WIP" from `kmr_core/src/sensors.rs`.
 - [ ] **Step 2: Run** the NFR-1 tick bench with no sensor before and after the branch; note both medians in the PR. A regression above the bench's noise is a bug in S05.
-- [ ] **Step 3: Commit** `docs: S07 sensors in the architecture notes`.
+- [x] **Step 3: Commit** `docs: S07 sensors in the architecture notes`.

@@ -5,9 +5,6 @@
 //! of slots per kind, no heap. Slots are handed out at run() finalization, in
 //! declaration order per kind; an adapter writes its own slots only, through
 //! a [`Feed`].
-//!
-//! WIP: the API side and the docs come with S06 and S07
-//! (docs/plans/sensors.md).
 
 mod feed;
 
