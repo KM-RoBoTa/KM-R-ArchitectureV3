@@ -68,6 +68,11 @@ pub enum LinkSpec {
 
 /// Which IMU halves a [`Xiao`] turns on, each at its rate and range. A
 /// half left `None` stays off on the board (FW-6) and reads `None`.
+///
+/// At two different rates, each reading of the faster half comes with the
+/// slower half's last value fed again, so neither half reads `None` between
+/// its own readings. The reading's `age()` is then the age of the newest
+/// half: the slower half's value can be older than it says.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImuSpec {
     /// The accelerometer.

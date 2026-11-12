@@ -37,17 +37,19 @@ Written 2026-11-12. Nothing is built yet.
 
 ## Phase A: `xiao-api` for a real-time caller (in `../xiao-nrf52840-sensors`)
 
+X01 to X03 landed in that repo as 5f8fe01, now on its `main`.
+
 ### Task X01: a read that never waits
 
 **Files:** Modify: `crates/api/src/stream.rs`, `crates/api/src/imu.rs`, `crates/api/src/mic.rs`.
 
 **Interfaces:** Produces `pub fn try_latest(&self) -> Result<Option<T>, Error>` on `Imu` (`Motion`), `Gyro` (`Rotation`), `Accel` (`Acceleration`): the newest queued reading, `Ok(None)` when none is queued, the stream's one `Err` when the link is gone. `pub fn try_next(&self) -> Result<Option<AudioBlock>, Error>` on `Mic`: the oldest queued block. Neither waits; `latest()` and the iterators are unchanged.
 
-- [ ] **Step 1: Write the tests** `try_latest_is_none_when_nothing_is_queued` (returns in under 10 ms on an idle link), `try_latest_returns_the_newest_and_counts_the_skipped_as_read_not_dropped`, `try_next_hands_blocks_out_in_order`, `try_latest_reports_a_dead_link_once_then_none`.
-- [ ] **Step 2: Run** `cargo test -p xiao-api try_`. Expected: FAIL.
-- [ ] **Step 3: Implement** on `Stream::take(.., false)`, which already exists.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `api: non-blocking try_latest and try_next (API-3)`.
+- [x] **Step 1: Write the tests** `try_latest_is_none_when_nothing_is_queued` (returns in under 10 ms on an idle link), `try_latest_returns_the_newest_and_counts_the_skipped_as_read_not_dropped`, `try_next_hands_blocks_out_in_order`, `try_latest_reports_a_dead_link_once_then_none`.
+- [x] **Step 2: Run** `cargo test -p xiao-api try_`. Expected: FAIL.
+- [x] **Step 3: Implement** on `Stream::take(.., false)`, which already exists.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `api: non-blocking try_latest and try_next (API-3)`.
 
 ### Task X02: sensors own their link
 
@@ -55,11 +57,11 @@ Written 2026-11-12. Nothing is built yet.
 
 **Interfaces:** Produces `Imu`, `Gyro`, `Accel`, `Mic` without the `'l` lifetime; `on(link: &impl AsLink)` keeps its signature and clones a shared handle to the connection. The link closes when the link value and every sensor on it are dropped. Closes the first `[question]` in that repo's `docs/deferred.md`.
 
-- [ ] **Step 1: Write the tests** `a_sensor_outlives_its_link_value` (drop the `Usb`, the `Gyro` still reads), `a_sensor_and_its_link_fit_in_one_struct` (compiles), `the_link_closes_when_the_last_holder_drops`.
-- [ ] **Step 2: Run** `cargo test -p xiao-api`. Expected: the new tests FAIL.
-- [ ] **Step 3: Implement.** The busy rule (FW-1) and the shared IMU halves (FW-2) keep their existing tests green, unedited.
-- [ ] **Step 4: Run** `cargo test -p xiao-api` and `cargo build -p xiao-api --examples`. Expected: PASS.
-- [ ] **Step 5: Commit** `api: sensors hold a shared link handle, no lifetime`.
+- [x] **Step 1: Write the tests** `a_sensor_outlives_its_link_value` (drop the `Usb`, the `Gyro` still reads), `a_sensor_and_its_link_fit_in_one_struct` (compiles), `the_link_closes_when_the_last_holder_drops`.
+- [x] **Step 2: Run** `cargo test -p xiao-api`. Expected: the new tests FAIL.
+- [x] **Step 3: Implement.** The busy rule (FW-1) and the shared IMU halves (FW-2) keep their existing tests green, unedited.
+- [x] **Step 4: Run** `cargo test -p xiao-api` and `cargo build -p xiao-api --examples`. Expected: PASS.
+- [x] **Step 5: Commit** `api: sensors hold a shared link handle, no lifetime`.
 
 ### Task X03: a public test link
 
@@ -67,11 +69,11 @@ Written 2026-11-12. Nothing is built yet.
 
 **Interfaces:** Produces, behind `#[cfg(feature = "fake")]`: `pub struct Fake;` with `Fake::usb() -> (Usb, Board)`, `Fake::uart(baud: Baud) -> (Uart, Board)`; `pub struct Board` with `auto_answer(&self)` (replies `On`/`Off` to every command), `refuse_next(&self, refusal: Refusal)`, `send(&self, message: Message)`, `commands(&self) -> Vec<Command>`, `unplug(&self)`. It wraps the existing `Memory` transport; the crate's own tests move onto it.
 
-- [ ] **Step 1: Write the tests** `a_fake_board_answers_on` (`Gyro::on(&usb)` succeeds with `auto_answer`), `a_fake_board_can_refuse_busy`, `an_unplugged_board_ends_the_stream`.
-- [ ] **Step 2: Run** `cargo test -p xiao-api --features fake fake`. Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `cargo test -p xiao-api --features fake`. Expected: PASS.
-- [ ] **Step 5: Commit** `api: public Fake link for downstream tests`. Step end in that repo: `api` row, plan ticks, `docs/deferred.md` question set `done`.
+- [x] **Step 1: Write the tests** `a_fake_board_answers_on` (`Gyro::on(&usb)` succeeds with `auto_answer`), `a_fake_board_can_refuse_busy`, `an_unplugged_board_ends_the_stream`.
+- [x] **Step 2: Run** `cargo test -p xiao-api --features fake fake`. Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `cargo test -p xiao-api --features fake`. Expected: PASS.
+- [x] **Step 5: Commit** `api: public Fake link for downstream tests`. Step end in that repo: `api` row, plan ticks, `docs/deferred.md` question set `done`.
 
 ## Phase B: the adapter (in `kmr_v3`)
 
@@ -86,7 +88,7 @@ Written 2026-11-12. Nothing is built yet.
 `impl seal::Adapter for Xiao {}`, `impl SensorHal for Xiao`. `Rate`, `AccelRange`, `GyroRange` are re-exported from `xiao-api`.
 
 - [x] **Step 1: Run** `/contract xiao-adapter` to write the stubs and the test names of X05 and X06.
-- [x] **Step 2: Run** `cargo build -p kmr_adapters`, then with `--features xiao`, and `cargo tree -p kmr_adapters | grep -c xiao` without the feature. Expected: both build; the count is 0.
+- [x] **Step 2: Run** `cargo build -p kmr_adapters`, then with `--features xiao`, and `cargo tree -p kmr_adapters -e normal | grep -cE 'xiao-(api|proto)'` without the feature. Expected: both build; the count is 0.
 - [x] **Step 3: Commit** `feat(adapters): X04 xiao adapter contract and feature`.
 
 ### Task X05: needs and bring-up
