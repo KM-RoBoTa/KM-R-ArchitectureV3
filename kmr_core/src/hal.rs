@@ -564,7 +564,9 @@ impl TickFlags {
     pub const NONE: Self = Self(0);
     /// The tick finished after its deadline (SRS FR-3.3).
     pub const OVERRUN: Self = Self(1);
-    /// A sensor gave no reading this tick.
+    /// A sensor is missing: its adapter reports its link down, or one of its
+    /// slots is silent past its `max_silence` (SRS FR-5.7, FR-13.4). A
+    /// sensor slower than the tick is not missing.
     pub const SENSOR_MISSING: Self = Self(1 << 1);
     /// A remote source fell silent past its timeout (SRS FR-13.3).
     pub const REMOTE_TIMEOUT: Self = Self(1 << 2);

@@ -124,6 +124,6 @@ No ambiguous error: an adapter's `Error` says why and what causes it; the core a
 
 **Files:** Modify: `docs/ARCHITECTURE.md` (a "Sensors" section), `AGENTS.md` (project context: Sensors paragraph, heap-free note), `bench/` only if a probe already walks the phases.
 
-- [ ] **Step 1: Write** the two doc sections from the HLD; drop "WIP" from `kmr_core/src/sensors.rs`.
+- [x] **Step 1: Write** the two doc sections from the HLD; drop "WIP" from `kmr_core/src/sensors.rs`.
 - [ ] **Step 2: Run** the NFR-1 tick bench with no sensor before and after the branch; note both medians in the PR. A regression above the bench's noise is a bug in S05.
-- [ ] **Step 3: Commit** `docs: S07 sensors in the architecture notes`.
+- [x] **Step 3: Commit** `docs: S07 sensors in the architecture notes`.

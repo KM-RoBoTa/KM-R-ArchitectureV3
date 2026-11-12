@@ -243,8 +243,9 @@ returns `Ok(())` for a shutdown and for an emergency stop alike.
 
 The hardware contract is `hal.rs`: `run_on` takes a list of drivers
 (`hal/set.rs`), and the `Powered` guard ends every exit, unwind included,
-with `torque_off` then `close` on every member. `Threaded` controllers are
-stored but never spawned (hand-off open in the ROADMAP).
+with `torque_off` then `close` on every member, then `close` on every sensor
+once their `open` was called. `Threaded` controllers are stored but never
+spawned (hand-off open in the ROADMAP).
 
 ### Signal bus (`signal.rs`) — the only channel from controllers back to the loop
 
@@ -281,6 +282,33 @@ sealed::Slot` can be named as a bound by `kmr_api` but no downstream crate can
 implement it, so the writable field set (`Q`, `Qd`, `Tau`) is fixed. `kmr_api`
 re-exports it under the name `Field`. Adding a
 field type means adding both a `Slot` impl and a `StateField` impl there.
+
+### Sensors (`sensors.rs`, `hal/sensor.rs`, `hal/sensing.rs`)
+
+`Sensors` is the controllers' third argument: a closed, typed set of slots,
+like State (SRS FR-5.7). Two kinds: the IMU (`Accel` m/s², `Gyro` rad/s,
+`imu(i)`) and the microphone (`i16` PCM, `mic(i)`), each reading with its age
+in ticks, `None` until a declared sensor fills that index. Fixed arrays, no
+heap: the slot counts are the defaults `MAX_IMUS = 4`, `MAX_MICS = 1`,
+`MIC_WINDOW = 1024`, named once in `sensors.rs` and written nowhere else (how
+a user sets them is parked in `docs/deferred.md`). A sensor is not a `Hal<N>`
+member, it owns no actuator and has no torque to cut: adapters implement the
+sealed `SensorHal` (`type Error`, `needs`, `open`, `read(Feed)`, `close`) and
+sit in their own HList, `Sensing`, next to the drivers. `run_all(hal,
+sensors, stages)` takes both; `run_on` and `run_on_staged` pass `HNil`.
+Slots are handed out at finalization in list order (too many is
+`ConfigError::TooManySensors`); `open` runs in Init after the actuators'
+`open` and `zero`, one `read` in PostInit after `read_all`, then a `read`
+each tick right after `hal.read`, before `First`, which never waits;
+`Powered` closes them last. A sensor's `open` error is `RunError::Sensor`,
+the adapter's own typed error nested in `MemberError`, never flattened.
+`TickFlags::SENSOR_MISSING` is raised when a member reports its link down or
+a slot is silent past the `max_silence` it declared; a sensor slower than the
+tick is not missing. `SensorPolicy` (`set_sensor_policy`) decides the rest:
+`Flag` (default, nothing more), `Warn` (logged once per member), `Abort`
+(emergency stop that tick). In `kmr_api`, `add_sensor` grows the `SN = HNil`
+generic of `Robot` and `Bound`, and `UserError<S = Infallible>` carries the
+sensors' error in `Sensor { source }`.
 
 ### Time (`clock.rs`)
 
