@@ -97,6 +97,48 @@ where
     }
 }
 
+/// A sensor list with `S` added at its end, `HCons<A, HCons<S, HNil>>` after `A`: what
+/// [`Robot::add_sensor`] grows. Implemented on `HNil` and `HCons` only.
+#[doc(hidden)]
+pub trait AddSensor<S>: seal::AddSensor {
+    /// The list, `S` last.
+    type Output;
+
+    /// Moves `sensor` to the end of the list.
+    fn add(self, sensor: S) -> Self::Output;
+}
+
+mod seal {
+    /// Implemented for `HNil` and `HCons` only.
+    pub trait AddSensor {}
+}
+
+impl seal::AddSensor for HNil {}
+
+impl<S> AddSensor<S> for HNil {
+    type Output = HCons<S, HNil>;
+
+    fn add(self, sensor: S) -> Self::Output {
+        HCons {
+            head: sensor,
+            tail: HNil,
+        }
+    }
+}
+
+impl<H, T> seal::AddSensor for HCons<H, T> {}
+
+impl<S, H, T: AddSensor<S>> AddSensor<S> for HCons<H, T> {
+    type Output = HCons<H, T::Output>;
+
+    fn add(self, sensor: S) -> Self::Output {
+        HCons {
+            head: self.head,
+            tail: self.tail.add(sensor),
+        }
+    }
+}
+
 // The "App" struct. The main user interface, and the whole public re-exposure
 // of the `kmr_core` engine.
 //
@@ -121,8 +163,8 @@ where
 // `Filled`: `run()` needs `Filled`, so a robot without a controller does not build, with the
 // core's "kmr: this robot has no controller" (SRS NFR-4).
 //
-// `SN` is the list of sensors, one `HCons` node per `add_sensor`, `HNil` without any (SRS
-// FR-5.7): the run hands it to the core next to the drivers.
+// `SN` is the list of sensors, one `HCons` node per `add_sensor` in add order, `HNil` without
+// any (SRS FR-5.7): the run hands it to the core next to the drivers.
 pub struct Robot<const N: usize, H, C = Scheduled, E = Empty, SN = HNil> {
     inner: kmr_core::Robot<N, C, E>,
     sensors: SN,
@@ -343,13 +385,15 @@ impl<const N: usize, H, C, E, SN> Robot<N, H, C, E, SN> {
     ///
     /// Its bring-up error ends the run as [`UserError::Sensor`], typed; more slots of a kind
     /// than kmr has is [`UserError::TooManySensors`], before any I/O.
-    pub fn add_sensor<S: SensorHal>(self, sensor: S) -> Robot<N, H, C, E, HCons<S, SN>> {
+    // DECISION: the sensor goes at the list's end, as the core grows a schedule bucket: the core
+    // hands slots out head first, so indices and the run's error nest in add order.
+    pub fn add_sensor<S: SensorHal>(self, sensor: S) -> Robot<N, H, C, E, SN::Output>
+    where
+        SN: AddSensor<S>,
+    {
         Robot {
             inner: self.inner,
-            sensors: HCons {
-                head: sensor,
-                tail: self.sensors,
-            },
+            sensors: self.sensors.add(sensor),
             plugins: self.plugins,
             actuators: self.actuators,
             payloads: self.payloads,

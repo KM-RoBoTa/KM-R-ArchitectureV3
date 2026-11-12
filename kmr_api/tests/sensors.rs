@@ -155,7 +155,6 @@ fn faults_report_sensor_missing_when_the_sensor_goes_silent() {
 }
 
 #[test]
-#[ignore = "deferred"]
 fn two_sensors_are_indexed_in_add_order() {
     let log = Log::new();
     let first = [along_x(1.0)];

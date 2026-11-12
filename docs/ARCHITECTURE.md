@@ -514,10 +514,10 @@ Robot::new()
 
 `imu(i)` and `mic(i)` are `None` when no sensor declared that index or none
 has reported yet. Indices count per kind, over the sensors in the order they
-were added (with two sensors or more, this order is an open deferral in
-`docs/deferred.md`). A microphone's window holds what arrived since the last
-tick; a burst past `MIC_WINDOW` keeps the first samples and counts the rest
-in `dropped()`.
+were added: `add_sensor` puts each at the end of the list, which the core
+hands slots out from head first. A microphone's window holds what arrived
+since the last tick; a burst past `MIC_WINDOW` keeps the first samples and
+counts the rest in `dropped()`.
 
 **The contract.** A sensor is not a `Hal<N>` member: a member that owns no
 actuator is refused (`Coverage::Idle`), and a sensor has no torque to cut.

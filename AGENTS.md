@@ -306,9 +306,9 @@ the adapter's own typed error nested in `MemberError`, never flattened.
 a slot is silent past the `max_silence` it declared; a sensor slower than the
 tick is not missing. `SensorPolicy` (`set_sensor_policy`) decides the rest:
 `Flag` (default, nothing more), `Warn` (logged once per member), `Abort`
-(emergency stop that tick). In `kmr_api`, `add_sensor` grows the `SN = HNil`
-generic of `Robot` and `Bound`, and `UserError<S = Infallible>` carries the
-sensors' error in `Sensor { source }`.
+(emergency stop that tick). In `kmr_api`, `add_sensor` appends to the
+`SN = HNil` list of `Robot` and `Bound`, so indices follow add order, and
+`UserError<S = Infallible>` carries the sensors' error in `Sensor { source }`.
 
 ### Time (`clock.rs`)
 
