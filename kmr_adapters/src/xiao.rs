@@ -87,7 +87,7 @@ pub enum Sensor {
 
 /// Why a XIAO did not come up. Each names the sensor or the link, says why
 /// and what to check.
-#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum XiaoError {
     /// Another link holds the sensor (FW-1).
     #[error(
@@ -146,16 +146,15 @@ pub enum XiaoError {
         /// The link lost.
         link: LinkSpec,
     },
-    /// The operating system refused the link.
-    #[error(
-        "the operating system refused the XIAO's {} link ({kind}): check that the port exists, that you may open it and that no other program holds it",
-        Named(.link)
-    )]
+    /// The operating system or the Bluetooth stack refused the link.
+    #[error("the link to the XIAO on {} failed: {source}; {}", Named(.link), io_hint(.link))]
     Io {
         /// The link refused.
         link: LinkSpec,
-        /// What the operating system said.
-        kind: std::io::ErrorKind,
+        /// `xiao-api`'s own error, in the operating system's or the
+        /// Bluetooth stack's words, the port path included.
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -183,6 +182,21 @@ fn ble_note(link: &LinkSpec) -> &'static str {
             "; on BLE it may also never have been found in the scan, or the link was lost and every reconnect failed"
         }
         LinkSpec::Usb | LinkSpec::Uart { .. } => "",
+    }
+}
+
+/// What to check when a link of this kind is refused.
+fn io_hint(link: &LinkSpec) -> &'static str {
+    match link {
+        LinkSpec::Usb => {
+            "check that the board's port exists, that you may open it (on Linux, the `dialout` or `uucp` group) and that no other program holds it"
+        }
+        LinkSpec::Uart { .. } => {
+            "check the port path, that you may open it and that no other program holds it, and that the baud matches the firmware's"
+        }
+        LinkSpec::Ble { .. } => {
+            "check that the Bluetooth adapter is present and powered on, and that the board is powered, in range and advertising that name"
+        }
     }
 }
 
@@ -616,7 +630,7 @@ impl Sink for Feed<'_> {
 }
 
 /// `error`, met turning `sensor` on over `link`, in the adapter's words: the
-/// sensor and the link it knows added.
+/// sensor and the link it knows added, nothing of `error` dropped.
 fn fault(link: LinkSpec, sensor: Sensor, error: xiao_api::Error) -> XiaoError {
     match error {
         xiao_api::Error::Busy { held_by } => XiaoError::Busy { sensor, held_by },
@@ -628,10 +642,7 @@ fn fault(link: LinkSpec, sensor: Sensor, error: xiao_api::Error) -> XiaoError {
         xiao_api::Error::Timeout { attempts } => XiaoError::Timeout { link, attempts },
         xiao_api::Error::NotFound => XiaoError::NotFound { link },
         xiao_api::Error::Disconnected => XiaoError::Disconnected { link },
-        xiao_api::Error::Io(error) => XiaoError::Io {
-            link,
-            kind: error.kind(),
-        },
+        xiao_api::Error::Io(source) => XiaoError::Io { link, source },
     }
 }
 

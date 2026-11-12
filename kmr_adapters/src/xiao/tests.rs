@@ -171,7 +171,7 @@ fn two_rates_turn_the_halves_on_one_after_the_other() {
 #[test]
 fn nothing_asked_opens_no_link() {
     let mut xiao = Xiao::uart("/nonexistent/xiao-port");
-    assert_eq!(xiao.open(), Ok(()));
+    xiao.open().unwrap();
     assert!(xiao.opened.is_none());
 }
 
@@ -179,12 +179,16 @@ fn nothing_asked_opens_no_link() {
 fn a_busy_sensor_names_the_sensor_and_the_holding_link() {
     let (mut xiao, board) = on_usb(Xiao::usb().mic());
     board.refuse_next(Refusal::Busy { held_by: Link::Ble });
-    assert_eq!(
-        xiao.open(),
-        Err(XiaoError::Busy {
-            sensor: Sensor::Mic,
-            held_by: Link::Ble
-        })
+    let busy = xiao.open();
+    assert!(
+        matches!(
+            busy,
+            Err(XiaoError::Busy {
+                sensor: Sensor::Mic,
+                held_by: Link::Ble
+            })
+        ),
+        "{busy:?}"
     );
 
     let (uart, board) = Fake::uart(Baud(921_600));
@@ -192,12 +196,15 @@ fn a_busy_sensor_names_the_sensor_and_the_holding_link() {
     board.refuse_next(Refusal::Busy { held_by: Link::Usb });
     let mut xiao = Xiao::uart("/dev/ttyAMA0").imu().on_link(Opened::Uart(uart));
     let busy = xiao.open().unwrap_err();
-    assert_eq!(
-        busy,
-        XiaoError::Busy {
-            sensor: Sensor::Imu,
-            held_by: Link::Usb
-        }
+    assert!(
+        matches!(
+            busy,
+            XiaoError::Busy {
+                sensor: Sensor::Imu,
+                held_by: Link::Usb
+            }
+        ),
+        "{busy:?}"
     );
     let text = busy.to_string();
     assert!(text.contains("IMU") && text.contains("USB"), "{text}");
@@ -212,12 +219,16 @@ fn a_refused_mic_turns_the_imu_back_off() {
     let held = xiao_api::Mic::on(&usb).unwrap();
     let mut xiao = Xiao::usb().gyro().mic().on_link(Opened::Usb(usb));
 
-    assert_eq!(
-        xiao.open(),
-        Err(XiaoError::Busy {
-            sensor: Sensor::Mic,
-            held_by: Link::Usb
-        })
+    let busy = xiao.open();
+    assert!(
+        matches!(
+            busy,
+            Err(XiaoError::Busy {
+                sensor: Sensor::Mic,
+                held_by: Link::Usb
+            })
+        ),
+        "{busy:?}"
     );
     assert_eq!(
         board.commands(),
@@ -242,13 +253,16 @@ fn a_slow_link_gives_both_speeds() {
         .on_link(Opened::Uart(uart));
 
     let slow = xiao.open().unwrap_err();
-    assert_eq!(
-        slow,
-        XiaoError::TooSlow {
-            sensor: Sensor::Mic,
-            needs_bytes_per_s: 34_000,
-            link_has_bytes_per_s: 11_520
-        }
+    assert!(
+        matches!(
+            slow,
+            XiaoError::TooSlow {
+                sensor: Sensor::Mic,
+                needs_bytes_per_s: 34_000,
+                link_has_bytes_per_s: 11_520
+            }
+        ),
+        "{slow:?}"
     );
     let text = slow.to_string();
     assert!(text.contains("34000") && text.contains("11520"), "{text}");
@@ -265,20 +279,28 @@ fn no_board_names_the_link() {
         baud: 921_600,
     };
     assert!(
-        matches!(refused, XiaoError::Io { link: named, .. } if named == link),
-        "{refused:?}"
+        matches!(
+            &refused,
+            XiaoError::Io { link: named, source }
+                if *named == link && source.to_string().contains(port)
+        ),
+        "the SDK's own error, port included: {refused:?}"
     );
     assert!(refused.to_string().contains(port), "{refused}");
 
     // A link with a silent board behind it: no answer within 2 s.
     let (usb, _board) = Fake::usb();
     let mut xiao = Xiao::usb().mic().on_link(Opened::Usb(usb));
-    assert_eq!(
-        xiao.open(),
-        Err(XiaoError::Timeout {
-            link: LinkSpec::Usb,
-            attempts: 1
-        })
+    let silent = xiao.open();
+    assert!(
+        matches!(
+            silent,
+            Err(XiaoError::Timeout {
+                link: LinkSpec::Usb,
+                attempts: 1
+            })
+        ),
+        "{silent:?}"
     );
 }
 
@@ -288,54 +310,85 @@ fn every_xiao_api_error_gets_its_sensor_and_link() {
         port: "/dev/ttyAMA0",
         baud: 115_200,
     };
-    let held = xiao_api::Error::Busy { held_by: Link::Ble };
-    let slow = xiao_api::Error::TooSlow {
-        needs: BytesPerSec(34_000),
-        link_has: BytesPerSec(11_520),
-    };
-    let denied = io::Error::from(io::ErrorKind::PermissionDenied);
-    let cases = [
-        (
+    let fault = |error| fault(uart, Sensor::Imu, error);
+
+    let held = fault(xiao_api::Error::Busy { held_by: Link::Ble });
+    assert!(
+        matches!(
             held,
             XiaoError::Busy {
                 sensor: Sensor::Imu,
-                held_by: Link::Ble,
-            },
+                held_by: Link::Ble
+            }
         ),
-        (
+        "{held:?}"
+    );
+    let slow = fault(xiao_api::Error::TooSlow {
+        needs: BytesPerSec(34_000),
+        link_has: BytesPerSec(11_520),
+    });
+    assert!(
+        matches!(
             slow,
             XiaoError::TooSlow {
                 sensor: Sensor::Imu,
                 needs_bytes_per_s: 34_000,
-                link_has_bytes_per_s: 11_520,
-            },
+                link_has_bytes_per_s: 11_520
+            }
         ),
-        (
-            xiao_api::Error::Timeout { attempts: 3 },
-            XiaoError::Timeout {
-                link: uart,
-                attempts: 3,
-            },
+        "{slow:?}"
+    );
+    let silent = fault(xiao_api::Error::Timeout { attempts: 3 });
+    assert!(
+        matches!(silent, XiaoError::Timeout { link, attempts: 3 } if link == uart),
+        "{silent:?}"
+    );
+    let absent = fault(xiao_api::Error::NotFound);
+    assert!(
+        matches!(absent, XiaoError::NotFound { link } if link == uart),
+        "{absent:?}"
+    );
+    let gone = fault(xiao_api::Error::Disconnected);
+    assert!(
+        matches!(gone, XiaoError::Disconnected { link } if link == uart),
+        "{gone:?}"
+    );
+    let text = "/dev/ttyAMA0: Permission denied (os error 13)";
+    let denied = fault(xiao_api::Error::Io(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        text,
+    )));
+    assert!(
+        matches!(
+            &denied,
+            XiaoError::Io { link, source }
+                if *link == uart
+                    && source.kind() == io::ErrorKind::PermissionDenied
+                    && source.to_string() == text
         ),
-        (
-            xiao_api::Error::NotFound,
-            XiaoError::NotFound { link: uart },
-        ),
-        (
-            xiao_api::Error::Disconnected,
-            XiaoError::Disconnected { link: uart },
-        ),
-        (
-            xiao_api::Error::Io(denied),
-            XiaoError::Io {
-                link: uart,
-                kind: io::ErrorKind::PermissionDenied,
-            },
-        ),
-    ];
-    for (error, expected) in cases {
-        assert_eq!(fault(uart, Sensor::Imu, error), expected);
-    }
+        "{denied:?}"
+    );
+}
+
+#[test]
+fn an_io_error_keeps_the_sdks_own_text() {
+    let ble = LinkSpec::Ble {
+        name: None,
+        attempts: 3,
+    };
+    let off = xiao_api::Error::Io(io::Error::other("Bluetooth is powered off"));
+
+    let error = fault(ble, Sensor::Imu, off);
+
+    let text = error.to_string();
+    assert!(text.contains("Bluetooth is powered off"), "{text}");
+    assert!(text.contains("BLE \"XIAO-Sense\""), "{text}");
+    assert!(
+        text.contains("powered on") && text.contains("in range"),
+        "{text}"
+    );
+    let source = core::error::Error::source(&error).map(ToString::to_string);
+    assert_eq!(source.as_deref(), Some("Bluetooth is powered off"));
 }
 
 #[test]
@@ -348,7 +401,7 @@ fn every_error_message_names_its_cause() {
         port: "/dev/ttyAMA0",
         baud: 921_600,
     };
-    let cases: [(XiaoError, &[&str]); 7] = [
+    let cases: [(XiaoError, &[&str]); 9] = [
         (
             XiaoError::Busy {
                 sensor: Sensor::Mic,
@@ -391,9 +444,34 @@ fn every_error_message_names_its_cause() {
         (
             XiaoError::Io {
                 link: uart,
-                kind: io::ErrorKind::PermissionDenied,
+                source: io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "/dev/ttyAMA0: Permission denied (os error 13)",
+                ),
             },
-            &["/dev/ttyAMA0", "permission denied"],
+            &[
+                "UART /dev/ttyAMA0 at 921600 baud",
+                "Permission denied (os error 13)",
+                "port path",
+                "baud matches",
+            ],
+        ),
+        (
+            XiaoError::Io {
+                link: LinkSpec::Usb,
+                source: io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "/dev/ttyACM0: Permission denied (os error 13)",
+                ),
+            },
+            &["USB", "/dev/ttyACM0: Permission denied", "`dialout`"],
+        ),
+        (
+            XiaoError::Io {
+                link: ble,
+                source: io::Error::other("no Bluetooth adapter"),
+            },
+            &["BLE \"arm-imu\"", "no Bluetooth adapter", "powered on"],
         ),
     ];
     for (error, words) in cases {

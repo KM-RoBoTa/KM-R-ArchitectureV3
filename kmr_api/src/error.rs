@@ -509,6 +509,36 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "xiao")]
+    #[test]
+    fn a_xiao_io_error_reaches_the_user_with_the_sdks_own_text() {
+        use crate::xiao::{LinkSpec, XiaoError};
+
+        let denied = "/dev/ttyACM0: Permission denied (os error 13)";
+        let error = XiaoError::Io {
+            link: LinkSpec::Usb,
+            source: std::io::Error::other(denied),
+        };
+        let e: UserError<MemberError<XiaoError, Infallible>> = UserError::Sensor {
+            source: MemberError::Head {
+                name: "kmr_adapters::xiao::Xiao",
+                error,
+            },
+        };
+
+        let text = e.to_string();
+        assert!(
+            text.starts_with(
+                "sensor bring-up failed: member 0 (Xiao): the link to the XIAO on USB failed: "
+            ) && text.contains(denied),
+            "{text}"
+        );
+        let own = e.source().and_then(Error::source);
+        assert!(own.and_then(|s| s.downcast_ref::<XiaoError>()).is_some());
+        let sdk = own.and_then(Error::source).map(ToString::to_string);
+        assert_eq!(sdk.as_deref(), Some(denied));
+    }
+
     #[test]
     fn a_coverage_error_names_both_members_short() {
         let overlap = Coverage::Overlap {
