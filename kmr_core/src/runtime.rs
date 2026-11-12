@@ -17,7 +17,8 @@
 //! included, stops it before `torque_on`.
 //!
 //! From `open` on, the [`Powered`] guard ends every exit, unwind included,
-//! with `torque_off` then `close`.
+//! with `torque_off` then `close`, then the sensors' `close` once they were
+//! opened.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
@@ -28,13 +29,13 @@ use crate::clock::Instant;
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
 use crate::hal::{
-    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, Layout, Overrides, Plan, Step,
-    TickFlags,
+    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, Layout, Overrides, Plan, Sensing,
+    SensorPlan, SensorPolicy, Step, TickFlags,
 };
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
 use crate::state::RobotState;
-use crate::{Robot, Sensors, Signal, SignalKind, Stages, shutdown};
+use crate::{HNil, Robot, Sensors, Signal, SignalKind, Stages, shutdown};
 
 /// Tick duration used when `Robot::set_dt` was never called.
 const FALLBACK_DT: Duration = Duration::from_millis(1);
@@ -243,15 +244,60 @@ fn estop(signal: Option<Signal>) -> Option<Signal> {
     signal.filter(|s| s.kind() == SignalKind::EmergencyStop)
 }
 
-/// Owns the hardware from `open` on: every exit, unwind included, ends with
-/// `torque_off` on every member, then `close` on every member (SRS FR-5.6,
-/// NFR-2).
-struct Powered<'a, const N: usize, D: Drivers<N>>(&'a mut D);
+/// A driver's error, as the run's.
+fn member<E, S>(error: E) -> RunError<HardwareError<E>, S> {
+    RunError::Hal(HardwareError::Member(error))
+}
 
-impl<const N: usize, D: Drivers<N>> Drop for Powered<'_, N, D> {
+/// The robot's hardware for one run: the drivers and their layout, the
+/// sensor members and their plan.
+struct Rig<'a, const N: usize, D, SN> {
+    drivers: &'a mut D,
+    layout: &'a Layout<N>,
+    sensing: &'a mut SN,
+    plan: SensorPlan,
+}
+
+impl<const N: usize, D: Drivers<N>, SN: Sensing> Rig<'_, N, D, SN> {
+    /// One read of every sensor member at `tick`; `sensor missing` raised in
+    /// the newest slot when one is missing (SRS FR-5.7, FR-13.4). Returns the
+    /// emergency stop `policy` asks for then.
+    fn read_sensors(
+        &mut self,
+        sensors: &mut Sensors,
+        state: &mut RobotState<N>,
+        tick: u64,
+        policy: &SensorPolicy,
+    ) -> Option<Signal> {
+        sensors.begin_tick(tick);
+        self.sensing.read(sensors, &mut self.plan, 0);
+        let (missing, stop) = self.plan.judge(sensors, policy);
+        if missing {
+            state.raise(TickFlags::SENSOR_MISSING);
+        }
+        stop
+    }
+}
+
+/// Owns the rig from `open` on: every exit, unwind included, ends with
+/// `torque_off` on every driver, then `close` on every driver, then `close`
+/// on every sensor member once their `open` was called (SRS FR-5.6, FR-5.7,
+/// NFR-2).
+struct Powered<'a, const N: usize, D: Drivers<N>, SN: Sensing> {
+    rig: Rig<'a, N, D, SN>,
+    /// The sensors' `open` was called: they are closed too.
+    sensing_open: bool,
+}
+
+impl<const N: usize, D: Drivers<N>, SN: Sensing> Drop for Powered<'_, N, D, SN> {
     fn drop(&mut self) {
-        self.0.torque_off();
-        self.0.close();
+        self.rig.drivers.torque_off();
+        self.rig.drivers.close();
+        // DECISION: sensors are closed once their `open` was called, never on
+        // an exit before it: nothing of theirs is open then (SRS FR-5.5).
+        if self.sensing_open {
+            self.rig.sensing.close();
+        }
     }
 }
 
@@ -298,6 +344,7 @@ mod init_phase {
     use crate::logging::trace;
 
     use crate::controllers::Env;
+    use crate::hal::SensorPlan;
     use crate::schedule::Drive;
     use crate::{Robot, RobotState, Sensors};
 
@@ -330,13 +377,16 @@ mod init_phase {
     ///
     /// Used for the initialization of optional/mandatory systems.
     ///
-    /// Returns owned values for [`RobotState`] and [`Sensors`].
-    pub(super) fn pre_init<const N: usize>() -> (RobotState<N>, Sensors) {
+    /// Returns owned values for [`RobotState`] and [`Sensors`], the slots of
+    /// `plan` declared.
+    pub(super) fn pre_init<const N: usize>(plan: &SensorPlan) -> (RobotState<N>, Sensors) {
         trace!("Executing pre-init phase ...");
         // TODO: feature gated:
         // Color_eyre
 
-        (RobotState::default(), Sensors::new())
+        let mut sensors = Sensors::new();
+        plan.declare(&mut sensors);
+        (RobotState::default(), sensors)
     }
 
     /// Walks the user's `PreInit` controllers.
@@ -418,15 +468,14 @@ mod ctrl_phase {
     }
 }
 
-/// The tick loop: read, the three buckets, write, telemetry. Returns the
-/// signal that ended it.
-fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
+/// The tick loop: read, the sensors, the three buckets, write, telemetry.
+/// Returns the signal that ended it.
+fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensing, S: Stages<N>>(
     robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
-    sensors: &Sensors,
+    sensors: &mut Sensors,
     host: &mut H,
-    hal: &mut D,
-    layout: &Layout<N>,
+    rig: &mut Rig<'_, N, D, SN>,
     stages: &mut S,
 ) -> Signal {
     loop {
@@ -434,16 +483,25 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
             break signal;
         }
         robot.config.time.begin_tick(host.now());
-        state.set_tick(robot.config.time.tick());
+        let tick = robot.config.time.tick();
+        state.set_tick(tick);
 
         // The faults go to the new slot, where controllers read them (SRS FR-13.4).
         let mut audit = Audit::default();
         if let Some((sample, faults)) = state.push_tick() {
-            let read = hal.read(sample, faults, layout.slots(), &mut audit);
+            let read = rig
+                .drivers
+                .read(sample, faults, rig.layout.slots(), &mut audit);
             state.refreshed(read);
         }
+        let sensor_stop = rig.read_sensors(sensors, state, tick, &robot.config.sensor_policy);
         state.raise(host.take_flags());
         if let Some(signal) = stray_stop(&mut audit) {
+            break signal;
+        }
+        // DECISION: after the stray check: both stop the run, a stray names a
+        // bug of the engine's own.
+        if let Some(signal) = sensor_stop {
             break signal;
         }
         stages.inbound(state, &robot.config.time);
@@ -471,14 +529,14 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
             break signal;
         }
 
-        let mut batch = Batch::new(layout, state.written());
+        let mut batch = Batch::new(rig.layout, state.written());
         if !batch.is_empty() {
             let mut faults = state.faults_mut().map(|f| *f).unwrap_or_default();
-            hal.write(
+            rig.drivers.write(
                 state.command(),
                 &mut batch,
                 &mut faults,
-                layout.slots(),
+                rig.layout.slots(),
                 &mut audit,
             );
             if let Some(slot) = state.faults_mut() {
@@ -486,7 +544,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
             }
         }
         // Every tick, written or not: the adapter keeps its own cadence.
-        refresh_telemetry(hal, state, layout, &mut audit, robot.config.time.tick());
+        refresh_telemetry(rig.drivers, state, rig.layout, &mut audit, tick);
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
         }
@@ -512,15 +570,14 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<
 
 /// Startup phases with the bring-up calls, the tick loop, then the hold of a
 /// shutdown. Every exit after `open` leaves through [`Powered`].
-fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>>(
+fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensing, S: Stages<N>>(
     robot: &mut Robot<N, CS, crate::Filled>,
     state: &mut RobotState<N>,
-    sensors: &Sensors,
+    sensors: &mut Sensors,
     host: &mut H,
-    hal: &mut D,
-    layout: &Layout<N>,
+    rig: Rig<'_, N, D, SN>,
     stages: &mut S,
-) -> Result<Signal, D::Error> {
+) -> Result<Signal, RunError<HardwareError<D::Error>, SN::Error>> {
     let mut writes = StartupWrites::default();
 
     init_phase::pre_init_controllers(robot, state, sensors);
@@ -530,31 +587,43 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>
     }
 
     // Built before `open`, so a failed `open` is closed too.
-    let powered = Powered(hal);
-    powered.0.step(Step::Open)?;
-    powered.0.step(Step::Zero)?;
+    let mut powered = Powered {
+        rig,
+        sensing_open: false,
+    };
+    powered.rig.drivers.step(Step::Open).map_err(member)?;
+    powered.rig.drivers.step(Step::Zero).map_err(member)?;
+    // After the actuators' bring-up of Init, before its controllers (SRS FR-5.2).
+    powered.sensing_open = true;
+    powered.rig.sensing.open().map_err(RunError::Sensor)?;
     init_phase::init(robot, state, sensors);
     writes.discard(state, "Init");
     if let Some(signal) = estop(host.poll()) {
         return Ok(signal);
     }
 
-    powered.0.step(Step::Ping)?;
-    powered.0.step(Step::Health)?;
-    powered.0.step(Step::Configure)?;
+    let rig = &mut powered.rig;
+    rig.drivers.step(Step::Ping).map_err(member)?;
+    rig.drivers.step(Step::Health).map_err(member)?;
+    rig.drivers.step(Step::Configure).map_err(member)?;
     // The seed: `prev(1)` of tick 0.
     if let Some(sample) = state.push_slot() {
         let mut audit = Audit::default();
-        let read = powered.0.read_all(sample, layout.slots(), &mut audit)?;
+        let read = rig
+            .drivers
+            .read_all(sample, rig.layout.slots(), &mut audit)
+            .map_err(member)?;
         state.refreshed(read);
-        refresh_telemetry(
-            powered.0,
-            state,
-            layout,
-            &mut audit,
-            robot.config.time.tick(),
-        );
+        let tick = robot.config.time.tick();
+        refresh_telemetry(rig.drivers, state, rig.layout, &mut audit, tick);
+        // The first reading, for the PostInit controllers (SRS FR-5.7).
+        // DECISION: judged like a tick's read: a loss flags the seed slot and
+        // its policy applies, before torque on.
+        let sensor_stop = rig.read_sensors(sensors, state, tick, &robot.config.sensor_policy);
         if let Some(signal) = stray_stop(&mut audit) {
+            return Ok(signal);
+        }
+        if let Some(signal) = sensor_stop {
             return Ok(signal);
         }
     }
@@ -563,7 +632,7 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>
     if let Some(signal) = host.poll() {
         return Ok(signal);
     }
-    powered.0.step(Step::TorqueOn)?;
+    rig.drivers.step(Step::TorqueOn).map_err(member)?;
     init_phase::post_init(robot, state, sensors);
     writes.discard(state, "PostInit");
     writes.report();
@@ -573,14 +642,14 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S: Stages<N>
     // After the bring-up, so tick 0 is not charged with it (SRS FR-5.10).
     robot.config.time.arm(host.now());
 
-    let signal = control_loop(robot, state, sensors, host, powered.0, layout, stages);
+    let signal = control_loop(robot, state, sensors, host, rig, stages);
     // An emergency stop raised since the loop ended skips the hold.
     let mut signal = estop(host.poll()).unwrap_or(signal);
     if signal.kind() == SignalKind::Shutdown
         && let Some(duration) = robot.config.hold
         && let Some(target) = state.hold_target()
     {
-        powered.0.hold(target.command(), layout.slots());
+        rig.drivers.hold(target.command(), rig.layout.slots());
         let dt = *robot.config.time.delta();
         signal = hold_for(host, duration, dt).unwrap_or(signal);
     }
@@ -606,6 +675,27 @@ pub(crate) fn run_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S
     hal: &mut D,
     stages: &mut S,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
+    run_all(robot, host, hal, &mut HNil, stages)
+}
+
+/// Finalization, startup phases, then the tick loop, on the drivers `hal`
+/// and the sensor members `sensing`, with `stages` around the controllers of
+/// each tick. Returns the signal that ended the run, a configuration fault, a
+/// claim mismatch, or a member's error, a driver's or a sensor's.
+pub(crate) fn run_all<
+    const N: usize,
+    CS: Drive<N>,
+    H: Host,
+    D: Drivers<N>,
+    SN: Sensing,
+    S: Stages<N>,
+>(
+    robot: &mut Robot<N, CS, crate::Filled>,
+    host: &mut H,
+    hal: &mut D,
+    sensing: &mut SN,
+    stages: &mut S,
+) -> Result<Signal, RunError<HardwareError<D::Error>, SN::Error>> {
     // Flags raised before the run belong to no tick of it.
     let _ = host.take_flags();
     let dt = tick_period(robot.config.dt)?;
@@ -616,12 +706,21 @@ pub(crate) fn run_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S
     hal.claim(Overrides::default(), &mut plan)
         .map_err(RunError::Hal)?;
     let layout = plan.finish().map_err(|c| RunError::Hal(c.into()))?;
-    let (mut state, sensors) = init_phase::pre_init();
+    // DECISION: after the drivers' claim, so a run with both faults names the
+    // actuators' first, as it did before sensors existed.
+    let mut sensor_plan = SensorPlan::new(dt);
+    sensing.claim(&mut sensor_plan)?;
+    let (mut state, mut sensors) = init_phase::pre_init(&sensor_plan);
     state.set_cadence(layout.read_every);
 
+    let rig = Rig {
+        drivers: hal,
+        layout: &layout,
+        sensing,
+        plan: sensor_plan,
+    };
     // The guard has dropped by now: torque is off before the log lines.
-    let signal = run_phases(robot, &mut state, &sensors, host, hal, &layout, stages)
-        .map_err(|e| RunError::Hal(HardwareError::Member(e)))?;
+    let signal = run_phases(robot, &mut state, &mut sensors, host, rig, stages)?;
 
     match signal.kind() {
         SignalKind::Shutdown => info!("control loop stopped, {signal}"),
@@ -638,13 +737,14 @@ pub(crate) fn run_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, S
 /// The entry point of the runtime of the core.
 ///
 /// Returns the signal that ended the run, a claim mismatch, or a member's
-/// error.
+/// error, a driver's or a sensor's.
 #[cfg(feature = "std")]
-pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>, S: Stages<N>>(
+pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>, SN: Sensing, S: Stages<N>>(
     mut robot: Robot<N, CS, crate::Filled>,
     mut hal: D,
+    mut sensing: SN,
     mut stages: S,
-) -> Result<Signal, RunError<HardwareError<D::Error>>> {
+) -> Result<Signal, RunError<HardwareError<D::Error>, SN::Error>> {
     Signal::reset();
 
     // Before the Ctrl-C install, which may warn.
@@ -664,7 +764,13 @@ pub(crate) fn runtime<const N: usize, CS: Drive<N>, D: Drivers<N>, S: Stages<N>>
         );
     }
 
-    run_staged(&mut robot, &mut RealHost::new(), &mut hal, &mut stages)
+    run_all(
+        &mut robot,
+        &mut RealHost::new(),
+        &mut hal,
+        &mut sensing,
+        &mut stages,
+    )
 }
 
 #[cfg(test)]
@@ -1933,69 +2039,445 @@ mod tests {
             //! The sensor members of a run: open, read, missing, close (SRS
             //! FR-5.7, FR-13.4).
 
+            use core::any::type_name;
+            use core::convert::Infallible;
+
+            use super::*;
+            use crate::hal::{Sensing, SensorPolicy};
+            use crate::sensors::{Accel, Gyro};
+            use crate::test_util::{FakeSensor, FakeSensorError, Reading};
+
+            // Named, not a glob: they shadow the schedule labels of `super::*`.
+            use Call::{
+                Check, Close, Configure, EachTick, First, Health, Hold, Init, Last, Open, Ping,
+                PostInit, PreInit, Read, ReadAll, SensorClose, SensorOpen, SensorRead, TorqueOff,
+                TorqueOn, Zero,
+            };
+
+            /// Every bring-up call with one sensor of id 0, PostInit's walk
+            /// included.
+            const STARTUP: [Call; 13] = [
+                Check,
+                PreInit,
+                Open,
+                Zero,
+                SensorOpen(0),
+                Init,
+                Ping,
+                Health,
+                Configure,
+                ReadAll,
+                SensorRead(0),
+                TorqueOn,
+                PostInit,
+            ];
+
+            /// The run error of a recorder and the sensors `SN`.
+            type Failure<SN> =
+                RunError<HardwareError<MemberError<Failed, Infallible>>, <SN as Sensing>::Error>;
+
+            /// Runs `robot` on one recorder logging into `log`, and on
+            /// `sensing`.
+            fn run_sensed<CS: Drive<N>, SN: Sensing>(
+                robot: &mut Robot<N, CS, crate::Filled>,
+                host: &mut Scripted,
+                log: &Log<N>,
+                sensing: &mut SN,
+            ) -> Result<Signal, Failure<SN>> {
+                run_all(robot, host, &mut one(Recorder::new(log)), sensing, &mut ())
+            }
+
+            /// A reading of `x` along x, and nothing else.
+            fn along_x(x: f32) -> Reading<'static> {
+                Reading {
+                    accel: Some(Accel([x, 0.0, 0.0])),
+                    ..Reading::QUIET
+                }
+            }
+
+            /// Whether the tick's own slot raises `sensor missing`.
+            fn missing(state: &RobotState<N>) -> bool {
+                state
+                    .tick_flags(0)
+                    .is_ok_and(|flags| flags.contains(TickFlags::SENSOR_MISSING))
+            }
+
+            /// What `First` saw on each of `T` ticks: the age of IMU 0 and
+            /// the missing flag.
+            type Watched<const T: usize> = [(Option<u64>, bool); T];
+
+            /// Runs `T` ticks of a robot on `sensing` and `policy`.
+            fn watch<const T: usize, SN: Sensing>(
+                log: &Log<N>,
+                sensing: &mut SN,
+                policy: SensorPolicy,
+            ) -> (Result<SignalKind, Failure<SN>>, Watched<T>) {
+                let seen = RefCell::new([(None, false); T]);
+                let mut robot = Robot::new()
+                    .set_dt(DT)
+                    .set_sensor_policy(policy)
+                    .add_controller(
+                        crate::First,
+                        |time: &Time, state: &mut RobotState<N>, sensors: &Sensors| {
+                            let tick = usize::try_from(time.tick()).expect("small");
+                            if let Some(slot) = seen.borrow_mut().get_mut(tick) {
+                                *slot = (sensors.imu(0).map(|imu| imu.age()), missing(state));
+                            }
+                        },
+                    );
+                let mut host =
+                    Scripted::new(Instant::now()).shutdown_from(TICK_END + (T - 1) * PER_TICK);
+                let result = run_sensed(&mut robot, &mut host, log, sensing);
+                (result.map(|s| s.kind()), seen.into_inner())
+            }
+
             #[test]
             fn sensors_open_in_init_after_the_actuators() {
-                todo!()
+                let log = Log::new();
+                let mut robot = recording_robot!(log);
+                let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
+                let mut sensing = one(FakeSensor::new(&log, 0));
+
+                let result = run_sensed(&mut robot, &mut host, &log, &mut sensing);
+
+                assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+                assert_eq!(log.calls()[..13], STARTUP);
+                assert_eq!(log.calls()[2..6], [Open, Zero, SensorOpen(0), Init]);
             }
 
             #[test]
             fn a_sensor_error_at_open_ends_the_run_before_torque_on() {
-                todo!()
+                let log = Log::new();
+                let mut robot = recording_robot!(log);
+                let mut host = Scripted::new(Instant::now());
+                let mut sensing = one(FakeSensor {
+                    fail_open: true,
+                    ..FakeSensor::new(&log, 0)
+                });
+
+                let result = run_sensed(&mut robot, &mut host, &log, &mut sensing);
+
+                assert_eq!(
+                    result.err(),
+                    Some(RunError::Sensor(MemberError::Head {
+                        name: type_name::<FakeSensor<'static, N>>(),
+                        error: FakeSensorError::Open { id: 0 },
+                    }))
+                );
+                assert_eq!(
+                    *log.calls(),
+                    [
+                        Check,
+                        PreInit,
+                        Open,
+                        Zero,
+                        SensorOpen(0),
+                        TorqueOff,
+                        Close,
+                        SensorClose(0)
+                    ]
+                );
             }
 
             #[test]
             fn a_reading_is_visible_in_first_of_the_same_tick() {
-                todo!()
+                let log = Log::new();
+                // Read call k reads k along x: call 0 is PostInit's, call t + 1 tick t's.
+                let script: [Reading<'static>; 4] = core::array::from_fn(|k| along_x(k as f32));
+                let mut sensing = one(FakeSensor {
+                    script: &script,
+                    ..FakeSensor::new(&log, 0)
+                });
+                let seen = Cell::new([None; 3]);
+                let mut robot = Robot::new().set_dt(DT).add_controller(
+                    crate::First,
+                    |time: &Time, _: &mut RobotState<N>, sensors: &Sensors| {
+                        let mut all = seen.get();
+                        if let Some(slot) = all.get_mut(time.tick() as usize) {
+                            *slot = sensors
+                                .imu(0)
+                                .map(|imu| (imu.accel().map(Accel::x), imu.age()));
+                        }
+                        seen.set(all);
+                    },
+                );
+                let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 2 * PER_TICK);
+
+                let result = run_sensed(&mut robot, &mut host, &log, &mut sensing);
+
+                assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+                assert_eq!(
+                    seen.get(),
+                    [
+                        Some((Some(1.0), 0)),
+                        Some((Some(2.0), 0)),
+                        Some((Some(3.0), 0))
+                    ]
+                );
             }
 
             #[test]
             fn post_init_controllers_see_the_first_reading() {
-                todo!()
+                let log = Log::new();
+                let script = [Reading {
+                    accel: Some(Accel([1.0, 2.0, 3.0])),
+                    gyro: Some(Gyro([0.1, 0.0, 0.0])),
+                    ..Reading::QUIET
+                }];
+                let mut sensing = one(FakeSensor {
+                    script: &script,
+                    ..FakeSensor::new(&log, 0)
+                });
+                let seen = Cell::new(None);
+                let mut robot = Robot::new().set_dt(DT).add_controller(
+                    crate::PostInit,
+                    |_: &Time, _: &mut RobotState<N>, sensors: &Sensors| {
+                        seen.set(
+                            sensors
+                                .imu(0)
+                                .map(|imu| (imu.accel(), imu.gyro(), imu.age())),
+                        );
+                    },
+                );
+                let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_START);
+
+                let result = run_sensed(&mut robot, &mut host, &log, &mut sensing);
+
+                assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+                assert_eq!(
+                    seen.get(),
+                    Some((Some(Accel([1.0, 2.0, 3.0])), Some(Gyro([0.1, 0.0, 0.0])), 0))
+                );
             }
 
             #[test]
             fn a_slow_sensor_is_not_missing() {
-                todo!()
+                let log = Log::new();
+                // A reading in ticks 0, 10, 20; PostInit's read gets none.
+                let script: [Reading<'static>; 31] = core::array::from_fn(|k| {
+                    if k % 10 == 1 {
+                        along_x(1.0)
+                    } else {
+                        Reading::QUIET
+                    }
+                });
+                let mut sensing = one(FakeSensor {
+                    max_silence: DT * 20,
+                    script: &script,
+                    ..FakeSensor::new(&log, 0)
+                });
+
+                let (result, seen) = watch::<30, _>(&log, &mut sensing, SensorPolicy::Flag);
+
+                assert_eq!(result, Ok(SignalKind::Shutdown));
+                for (tick, (age, missing)) in seen.into_iter().enumerate() {
+                    assert_eq!(age, Some(tick as u64 % 10), "tick {tick}");
+                    assert!(!missing, "tick {tick}");
+                }
             }
 
             #[test]
             fn silence_past_max_silence_raises_sensor_missing() {
-                todo!()
+                let log = Log::new();
+                // Readings up to tick 2, then silence; the limit is 3 ticks.
+                let script = [along_x(1.0); 4];
+                let mut sensing = one(FakeSensor {
+                    max_silence: DT * 3,
+                    script: &script,
+                    ..FakeSensor::new(&log, 0)
+                });
+
+                let (result, seen) = watch::<9, _>(&log, &mut sensing, SensorPolicy::Flag);
+
+                assert_eq!(result, Ok(SignalKind::Shutdown));
+                assert_eq!(
+                    seen.map(|(_, missing)| missing),
+                    [false, false, false, false, false, false, true, true, true]
+                );
+                assert_eq!(seen[8].0, Some(6));
             }
 
             #[test]
             fn link_down_raises_sensor_missing_that_tick() {
-                todo!()
+                let log = Log::new();
+                let mut script = [along_x(1.0); 6];
+                // Read call 4: tick 3.
+                script[4].link_down = true;
+                let mut sensing = one(FakeSensor {
+                    script: &script,
+                    ..FakeSensor::new(&log, 0)
+                });
+
+                let (result, seen) = watch::<5, _>(&log, &mut sensing, SensorPolicy::Flag);
+
+                assert_eq!(result, Ok(SignalKind::Shutdown));
+                assert_eq!(
+                    seen.map(|(_, missing)| missing),
+                    [false, false, false, true, false]
+                );
             }
 
             #[test]
             fn sensors_close_after_the_drivers_on_shutdown() {
-                todo!()
+                let log = Log::new();
+                let mut robot = recording_robot!(log).set_hold(Duration::ZERO);
+                let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST);
+                let mut sensing = one(FakeSensor::new(&log, 0));
+
+                let result = run_sensed(&mut robot, &mut host, &log, &mut sensing);
+
+                assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+                assert_eq!(log.calls()[..13], STARTUP);
+                assert_eq!(
+                    log.calls()[13..],
+                    [
+                        Read,
+                        SensorRead(0),
+                        First,
+                        EachTick,
+                        Last,
+                        Hold,
+                        TorqueOff,
+                        Close,
+                        SensorClose(0)
+                    ]
+                );
             }
 
             #[test]
             fn sensors_close_when_a_controller_panics() {
-                todo!()
+                let log = Log::new();
+                let mut robot =
+                    recording_robot!(log).add_controller(crate::EachTick, |_t, _s, _se| {
+                        panic!("a controller bug");
+                    });
+                let mut host = Scripted::new(Instant::now());
+                let mut sensing = one(FakeSensor::new(&log, 0));
+
+                let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_sensed(&mut robot, &mut host, &log, &mut sensing)
+                }));
+
+                assert!(unwound.is_err());
+                assert_eq!(log.calls()[..13], STARTUP);
+                assert_eq!(
+                    log.calls()[13..],
+                    [
+                        Read,
+                        SensorRead(0),
+                        First,
+                        EachTick,
+                        TorqueOff,
+                        Close,
+                        SensorClose(0)
+                    ]
+                );
             }
 
             #[test]
             fn a_run_without_sensors_never_raises_sensor_missing() {
-                todo!()
+                let log = Log::new();
+                let flagged = Cell::new(false);
+                let seen_a_sensor = Cell::new(false);
+                let mut robot = recording_robot!(log).add_controller(
+                    crate::First,
+                    |_: &Time, state: &mut RobotState<N>, sensors: &Sensors| {
+                        flagged.set(flagged.get() || missing(state));
+                        let any = sensors.imu(0).is_some() || sensors.mic(0).is_some();
+                        seen_a_sensor.set(seen_a_sensor.get() || any);
+                    },
+                );
+                let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 4 * PER_TICK);
+
+                let result = run_with(&mut robot, &mut host, &mut one(Recorder::new(&log)));
+
+                assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+                assert!(!flagged.get());
+                assert!(!seen_a_sensor.get());
+                let sensor_call =
+                    |call: &Call| matches!(call, SensorOpen(_) | SensorRead(_) | SensorClose(_));
+                assert!(!log.calls().iter().any(sensor_call));
             }
 
             #[test]
             fn the_default_policy_only_flags() {
-                todo!()
+                static WARNINGS: AtomicU32 = AtomicU32::new(0);
+                let log = Log::new();
+                let mut sensing = one(FakeSensor {
+                    max_silence: DT,
+                    ..FakeSensor::new(&log, 0)
+                });
+                let counter = Counter::new("a sensor is missing", &WARNINGS);
+
+                let (result, seen) = tracing::subscriber::with_default(counter, || {
+                    watch::<5, _>(&log, &mut sensing, SensorPolicy::default())
+                });
+
+                assert_eq!(result, Ok(SignalKind::Shutdown));
+                assert_eq!(
+                    seen.map(|(_, missing)| missing),
+                    [false, false, true, true, true]
+                );
+                assert_eq!(WARNINGS.load(Ordering::Relaxed), 0);
             }
 
             #[test]
             fn policy_warn_logs_once_per_member() {
-                todo!()
+                static WARNINGS: AtomicU32 = AtomicU32::new(0);
+                let log = Log::new();
+                let mut sensing = HCons {
+                    head: FakeSensor {
+                        max_silence: DT,
+                        ..FakeSensor::new(&log, 0)
+                    },
+                    tail: one(FakeSensor {
+                        max_silence: DT,
+                        ..FakeSensor::new(&log, 1)
+                    }),
+                };
+                let counter = Counter::new("a sensor is missing", &WARNINGS);
+
+                let (result, seen) = tracing::subscriber::with_default(counter, || {
+                    watch::<6, _>(&log, &mut sensing, SensorPolicy::Warn)
+                });
+
+                assert_eq!(result, Ok(SignalKind::Shutdown));
+                assert!(seen[5].1);
+                assert_eq!(WARNINGS.load(Ordering::Relaxed), 2);
             }
 
             #[test]
             fn policy_abort_is_an_emergency_stop_that_tick() {
-                todo!()
+                let log = Log::new();
+                let mut script = [along_x(1.0); 3];
+                // Read call 2: tick 1.
+                script[2].link_down = true;
+                let mut sensing = one(FakeSensor {
+                    script: &script,
+                    ..FakeSensor::new(&log, 0)
+                });
+                let mut robot = recording_robot!(log).set_sensor_policy(SensorPolicy::Abort);
+                let mut host = Scripted::new(Instant::now());
+
+                let result = run_sensed(&mut robot, &mut host, &log, &mut sensing);
+
+                assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+                assert_eq!(log.calls()[..13], STARTUP);
+                assert_eq!(
+                    log.calls()[13..],
+                    [
+                        Read,
+                        SensorRead(0),
+                        First,
+                        EachTick,
+                        Last,
+                        Read,
+                        SensorRead(0),
+                        TorqueOff,
+                        Close,
+                        SensorClose(0)
+                    ]
+                );
             }
         }
     }

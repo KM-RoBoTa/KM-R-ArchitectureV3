@@ -1,5 +1,6 @@
 //! WIP
 
+use crate::hal::SensorPolicy;
 use crate::limits::Limits;
 
 /// Plain settings bag. Holds configuration only, never the controllers
@@ -15,6 +16,8 @@ pub(crate) struct RobotConfig<const N: usize> {
     pub(crate) hold: Option<core::time::Duration>,
     /// Limits, their policies and the envelopes (SRS FR-4.5, FR-13.5).
     pub(crate) limits: Limits<N>,
+    /// What a sensor lost at run time does beyond its flag (SRS FR-5.7).
+    pub(crate) sensor_policy: SensorPolicy,
 }
 
 impl<const N: usize> Default for RobotConfig<N> {
@@ -24,6 +27,7 @@ impl<const N: usize> Default for RobotConfig<N> {
             dt: None,
             hold: None,
             limits: Limits::default(),
+            sensor_policy: SensorPolicy::default(),
         }
     }
 }

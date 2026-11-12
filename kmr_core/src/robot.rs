@@ -189,9 +189,9 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
 
     /// What a sensor lost at run time does beyond raising `sensor missing`
     /// (SRS FR-5.7, FR-13.4). Without it, [`SensorPolicy::Flag`].
-    pub fn set_sensor_policy(self, policy: SensorPolicy) -> Self {
-        let _ = policy;
-        todo!()
+    pub fn set_sensor_policy(mut self, policy: SensorPolicy) -> Self {
+        self.config.sensor_policy = policy;
+        self
     }
 
     /// Private generic method to insert any state.
@@ -342,7 +342,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         CS: Drive<N>,
         E: HasController,
     {
-        self.run_on_staged(hal, ())
+        self.run_all(hal, HNil, ())
     }
 
     #[cfg(feature = "std")]
@@ -357,7 +357,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         CS: Drive<N>,
         E: HasController,
     {
-        runtime::runtime(self.filled(), hal, stages).map(|_signal| ())
+        self.run_all(hal, HNil, stages)
     }
 
     #[cfg(feature = "std")]
@@ -378,8 +378,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         CS: Drive<N>,
         E: HasController,
     {
-        let _ = (hal, sensors, stages);
-        todo!()
+        runtime::runtime(self.filled(), hal, sensors, stages).map(|_signal| ())
     }
 
     #[cfg(feature = "std")]

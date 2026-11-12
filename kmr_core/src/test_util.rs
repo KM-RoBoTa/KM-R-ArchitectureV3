@@ -611,6 +611,8 @@ pub enum FakeSensorError {
 
 /// A fake sensor member: logs its calls with its id, can fail its `open`;
 /// read call `k` feeds `script[k]`, nothing past the end.
+// DECISION: one scripted reading per read call, into the first slot of each
+// kind: what the plan's runtime tests need, no more.
 #[derive(Debug)]
 pub struct FakeSensor<'a, const N: usize> {
     /// Where the calls go, shared with the [`Recorder`].
