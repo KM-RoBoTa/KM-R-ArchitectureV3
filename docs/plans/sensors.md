@@ -71,11 +71,11 @@ Written 2026-11-12. Nothing is built yet.
 `pub fn link_down(&mut self)`.
 `local` counts within the member's own slots; past them the call is ignored (as `Telemetry`'s setters do). Engine side, `pub(crate)`: `Sensors::begin_tick(&mut self, tick: u64)` empties every mic window and sets `now`; `Sensors::feed(&mut self, range: Slots) -> Feed<'_>`; `Sensors::took_link_down(&mut self) -> bool`.
 
-- [ ] **Step 1: Write the tests** in `feed.rs`: `a_fed_imu_reads_back_with_age_zero`, `age_counts_ticks_since_the_reading` (feed at tick 5, `begin_tick(8)`, `age() == 3`), `a_half_fed_imu_keeps_the_other_half_none`, `audio_appends_within_a_tick` (two calls of 96 samples → `samples().len() == 192`, order kept), `audio_is_emptied_at_the_next_tick`, `audio_past_the_window_is_counted_dropped` (feed 1100 → len 1024, `dropped() == 76`), `a_local_index_past_the_member_is_ignored`, `a_feed_cannot_reach_another_members_slot`.
-- [ ] **Step 2: Run** `cargo test -p kmr_core feed`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `audio` overflow adds to `dropped`; `audio_dropped` and `imu_dropped` set the adapter's own running total, kept apart and summed in the getter.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(core): S03 sensor feed, stamping and the audio window`.
+- [x] **Step 1: Write the tests** in `feed.rs`: `a_fed_imu_reads_back_with_age_zero`, `age_counts_ticks_since_the_reading` (feed at tick 5, `begin_tick(8)`, `age() == 3`), `a_half_fed_imu_keeps_the_other_half_none`, `audio_appends_within_a_tick` (two calls of 96 samples → `samples().len() == 192`, order kept), `audio_is_emptied_at_the_next_tick`, `audio_past_the_window_is_counted_dropped` (feed 1100 → len 1024, `dropped() == 76`), `a_local_index_past_the_member_is_ignored`, `a_feed_cannot_reach_another_members_slot`.
+- [x] **Step 2: Run** `cargo test -p kmr_core feed`. Expected: FAIL.
+- [x] **Step 3: Implement.** `audio` overflow adds to `dropped`; `audio_dropped` and `imu_dropped` set the adapter's own running total, kept apart and summed in the getter.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(core): S03 sensor feed, stamping and the audio window`.
 
 ### Task S04: the sensor contract and its list
 

@@ -191,6 +191,28 @@ impl Sensors {
         }
     }
 
+    /// Starts tick `tick`: every microphone window empties, ages count from
+    /// it.
+    pub(crate) fn begin_tick(&mut self, tick: u64) {
+        self.now = tick;
+        for slot in &mut self.mics {
+            slot.len = 0;
+        }
+    }
+
+    /// The writer view of one member's `slots`, stamped with the tick in
+    /// progress.
+    pub(crate) fn feed(&mut self, slots: Slots) -> Feed<'_> {
+        let imus = self.imus.get_mut(slots.imus()).unwrap_or_default();
+        let mics = self.mics.get_mut(slots.mics()).unwrap_or_default();
+        Feed::new(imus, mics, self.now, &mut self.link_down)
+    }
+
+    /// Whether the member just read reported its link down; cleared.
+    pub(crate) fn took_link_down(&mut self) -> bool {
+        core::mem::take(&mut self.link_down)
+    }
+
     /// IMU `index`, in declaration order. `None` when no IMU was declared at
     /// that index or none has reported yet (SRS FR-5.7).
     pub fn imu(&self, index: usize) -> Option<Imu<'_>> {
