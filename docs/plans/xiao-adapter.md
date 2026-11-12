@@ -134,3 +134,14 @@ Blocked on the firmware (`../xiao-nrf52840-sensors/docs/plans/firmware.md` fw-03
 - [ ] Flash with `scripts/flash.sh`, run `cargo run -p kmr_api --example xiao_imu --features xiao` over USB, then over UART at 921600: the gyro follows the board, `sensor_missing` stays clear.
 - [ ] Unplug mid-run: the loop keeps its period, `sensor_missing` is raised, Ctrl-C still exits cleanly.
 - [ ] Run the NFR-1 tick bench with the IMU at 416 Hz and with the mic on; note the per-tick cost of `Xiao::read` in the PR. BLE in the loop is measured here, not promised before.
+
+### Task X09: the clap controller (maintainer's request, 2026-11-12)
+
+**Files:** Modify: `controllers/src/main.rs`, `controllers/Cargo.toml` (`hardware` also turns on `kmr_api/xiao`). `controllers` is owned `mine`: the maintainer asked for this edit; list both files first in the summary.
+
+**Behaviour:** the robot homes, then holds the centre. When the microphone's peak this tick (`mic.samples()`, largest `unsigned_abs()`) is above 1000, both snakes run their sines for 2 s, with the sine's time starting at the trigger, then hold the centre again. The run shuts down after 60 s whatever happened; errors still end it at once.
+
+- [ ] `.add_sensor(kmr_api::xiao::Xiao::usb().mic())`; `PEAK: u16 = 1000`, `MOVE_FOR = 2 s`, `TIME_LIMIT = 60 s`.
+- [ ] One controller with its own context (when the motion started), replacing `sine_ax` and `sine_rx`, behind `HOME.then` if `then` takes a context controller, else after an elapsed-time guard of `HOME_TIME`.
+- [ ] `// DECISION:` a peak heard while moving is ignored (the servos are loud), so one clap is one 2 s motion.
+- [ ] `cargo build -p controllers` and `cargo build -p controllers --features hardware` green; `cargo clippy -p controllers -- -D warnings`.
