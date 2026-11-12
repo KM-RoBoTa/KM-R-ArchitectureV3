@@ -89,11 +89,11 @@ Written 2026-11-12. Nothing is built yet.
 No ambiguous error: an adapter's `Error` says why and what causes it; the core adds the member index.
 `pub(crate) struct SensorPlan` holds each member's slot range and its `max_silence` in ticks. Test fake in `test_util.rs`: `FakeSensor` with a scripted list of readings and a call log.
 
-- [ ] **Step 1: Write the tests** in `sensing.rs`: `slots_follow_declaration_order` (two members of one IMU each → locals map to `imu(0)` and `imu(1)`), `too_many_imus_is_refused_before_any_open` (five → error, no `open` in the log), `two_mics_are_refused`, `open_stops_at_the_first_error_and_names_the_member` (the nested error is the fake's own typed error, position kept), `close_runs_on_every_member_tail_first`, `an_empty_list_claims_nothing`.
-- [ ] **Step 2: Run** `cargo test -p kmr_core sensing`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `max_silence` becomes ticks with `ceil(max_silence / dt)`, at least 1.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(core): S04 sealed sensor contract and its list`.
+- [x] **Step 1: Write the tests** in `sensing.rs`: `slots_follow_declaration_order` (two members of one IMU each → locals map to `imu(0)` and `imu(1)`), `too_many_imus_is_refused_before_any_open` (five → error, no `open` in the log), `two_mics_are_refused`, `open_stops_at_the_first_error_and_names_the_member` (the nested error is the fake's own typed error, position kept), `close_runs_on_every_member_tail_first`, `an_empty_list_claims_nothing`.
+- [x] **Step 2: Run** `cargo test -p kmr_core sensing`. Expected: FAIL.
+- [x] **Step 3: Implement.** `max_silence` becomes ticks with `ceil(max_silence / dt)`, at least 1.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(core): S04 sealed sensor contract and its list`.
 
 ### Task S05: the runtime reads sensors
 

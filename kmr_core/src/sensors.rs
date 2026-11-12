@@ -213,6 +213,21 @@ impl Sensors {
         core::mem::take(&mut self.link_down)
     }
 
+    /// Ticks since the stalest of `slots` last reported; a slot that never
+    /// did counts from tick 0, when the sensors open. 0 without a slot.
+    // DECISION: a sensor that never reports is missing once its limit has
+    // passed since the run's first tick, like one that stopped.
+    pub(crate) fn silence(&self, slots: Slots) -> u64 {
+        let imus = self.imus.get(slots.imus()).unwrap_or_default();
+        let mics = self.mics.get(slots.mics()).unwrap_or_default();
+        let stamps = imus.iter().map(|slot| slot.refreshed);
+        let stamps = stamps.chain(mics.iter().map(|slot| slot.refreshed));
+        stamps
+            .map(|refreshed| self.now.saturating_sub(refreshed.unwrap_or(0)))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// IMU `index`, in declaration order. `None` when no IMU was declared at
     /// that index or none has reported yet (SRS FR-5.7).
     pub fn imu(&self, index: usize) -> Option<Imu<'_>> {
