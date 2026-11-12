@@ -38,9 +38,9 @@ Written 2026-11-12. Nothing is built yet.
 **Files:** Modify: `docs/srs/SRS.md` (maintainer), `kmr_core/src/sensors.rs`, `kmr_core/src/hal.rs`, `kmr_core/src/lib.rs`, `kmr_api/src/sensors.rs`. Create: `kmr_core/src/sensors/feed.rs`, `kmr_core/src/hal/sensor.rs`, `kmr_core/src/hal/sensing.rs`.
 
 - [x] **Step 1:** the four points are settled (HLD, "Settled"); FR-5.7 is written in `docs/srs/SRS.md` and "Sensors handle surface" is ticked (2026-11-12).
-- [ ] **Step 2: Run** `/contract sensors`: every pub item of S02 to S06 as a stub with `todo!()`, every test below by name.
-- [ ] **Step 3: Run** `cargo build --workspace` and `cargo test --workspace --no-run`. Expected: both green.
-- [ ] **Step 4: Commit** `feat(core): S01 sensors contract stubs`.
+- [x] **Step 2: Run** `/contract sensors`: every pub item of S02 to S06 as a stub with `todo!()`, every test below by name.
+- [x] **Step 3: Run** `cargo build --workspace` and `cargo test --workspace --no-run`. Expected: both green.
+- [x] **Step 4: Commit** `feat(core): S01 sensors contract stubs`.
 
 ### Task S02: value types, slots, reader views
 

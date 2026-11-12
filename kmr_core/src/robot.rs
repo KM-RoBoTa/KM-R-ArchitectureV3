@@ -36,7 +36,7 @@ use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
 use crate::error::RunError;
-use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
+use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware, Sensing, SensorPolicy};
 use crate::limits::{Envelope, Limit, Policy};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
@@ -185,6 +185,13 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
     pub fn set_envelopes(mut self, envelopes: [Envelope; N]) -> Self {
         self.config.limits.set_envelopes(envelopes);
         self
+    }
+
+    /// What a sensor lost at run time does beyond raising `sensor missing`
+    /// (SRS FR-5.7, FR-13.4). Without it, [`SensorPolicy::Flag`].
+    pub fn set_sensor_policy(self, policy: SensorPolicy) -> Self {
+        let _ = policy;
+        todo!()
     }
 
     /// Private generic method to insert any state.
@@ -351,6 +358,28 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         E: HasController,
     {
         runtime::runtime(self.filled(), hal, stages).map(|_signal| ())
+    }
+
+    #[cfg(feature = "std")]
+    /// Runs the robot on `hal`, its drivers, and `sensors`, its sensor
+    /// members, both lists, with `stages` around the controllers of each
+    /// tick. See [`Robot::run_on`].
+    ///
+    /// After the actuators' errors: [`RunError::Config`] when the sensors
+    /// need more slots than the engine has, before any I/O;
+    /// [`RunError::Sensor`] for a sensor's error from `open` (SRS FR-5.7).
+    pub fn run_all<D: Drivers<N>, SN: Sensing, S: Stages<N>>(
+        self,
+        hal: D,
+        sensors: SN,
+        stages: S,
+    ) -> Result<(), RunError<HardwareError<D::Error>, SN::Error>>
+    where
+        CS: Drive<N>,
+        E: HasController,
+    {
+        let _ = (hal, sensors, stages);
+        todo!()
     }
 
     #[cfg(feature = "std")]

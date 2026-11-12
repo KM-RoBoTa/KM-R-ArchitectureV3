@@ -301,6 +301,9 @@ impl From<ConfigError> for UserError {
         match e {
             ConfigError::DtOutOfRange { dt } => Self::DtOutOfRange { dt },
             ConfigError::NoPolicy { actuator } => Self::NoPolicy { actuator },
+            // DECISION: no own variant before S06 hands kmr_api's sensors to the
+            // run (unreachable until then); the core's text is kept (docs/deferred.md).
+            sensors @ ConfigError::TooManySensors { .. } => Self::bring_up(sensors),
         }
     }
 }

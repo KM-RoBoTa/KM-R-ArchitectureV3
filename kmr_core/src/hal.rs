@@ -15,10 +15,16 @@ use crate::logging::warn;
 use crate::state::{Kd, Kp, Q, Qd, Tau};
 use crate::telemetry::Telemetry;
 
+mod sensing;
+mod sensor;
 mod set;
 
+pub use sensing::{Sensing, SensorPolicy};
+pub use sensor::{Needs, SensorHal};
 pub use set::{Claim, Coverage, Drivers, HardwareError, Member, MemberError};
-// Named only by the hidden methods of `Drivers`, which the engine alone calls.
+// Named only by the hidden methods of `Drivers` and `Sensing`, which the
+// engine alone calls.
+pub(crate) use sensing::SensorPlan;
 pub(crate) use set::{Audit, Plan, Step};
 
 /// Seal of [`Hal`]: open to adapter crates, closed to controllers, which

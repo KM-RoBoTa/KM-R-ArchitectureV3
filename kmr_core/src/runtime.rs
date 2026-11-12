@@ -1928,6 +1928,76 @@ mod tests {
             fn enter(&self, _span: &tracing::span::Id) {}
             fn exit(&self, _span: &tracing::span::Id) {}
         }
+
+        mod sensing {
+            //! The sensor members of a run: open, read, missing, close (SRS
+            //! FR-5.7, FR-13.4).
+
+            #[test]
+            fn sensors_open_in_init_after_the_actuators() {
+                todo!()
+            }
+
+            #[test]
+            fn a_sensor_error_at_open_ends_the_run_before_torque_on() {
+                todo!()
+            }
+
+            #[test]
+            fn a_reading_is_visible_in_first_of_the_same_tick() {
+                todo!()
+            }
+
+            #[test]
+            fn post_init_controllers_see_the_first_reading() {
+                todo!()
+            }
+
+            #[test]
+            fn a_slow_sensor_is_not_missing() {
+                todo!()
+            }
+
+            #[test]
+            fn silence_past_max_silence_raises_sensor_missing() {
+                todo!()
+            }
+
+            #[test]
+            fn link_down_raises_sensor_missing_that_tick() {
+                todo!()
+            }
+
+            #[test]
+            fn sensors_close_after_the_drivers_on_shutdown() {
+                todo!()
+            }
+
+            #[test]
+            fn sensors_close_when_a_controller_panics() {
+                todo!()
+            }
+
+            #[test]
+            fn a_run_without_sensors_never_raises_sensor_missing() {
+                todo!()
+            }
+
+            #[test]
+            fn the_default_policy_only_flags() {
+                todo!()
+            }
+
+            #[test]
+            fn policy_warn_logs_once_per_member() {
+                todo!()
+            }
+
+            #[test]
+            fn policy_abort_is_an_emergency_stop_that_tick() {
+                todo!()
+            }
+        }
     }
 
     mod long_runs {
