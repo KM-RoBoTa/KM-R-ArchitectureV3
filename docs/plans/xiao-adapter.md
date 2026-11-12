@@ -95,11 +95,11 @@ Written 2026-11-12. Nothing is built yet.
 
 **Interfaces:** Consumes `SensorHal`, `Needs` (sensors plan S04), `xiao_api::link::Fake`. Produces `needs()` and `open()`. A `pub(crate) fn Xiao::on_link(self, link: Opened) -> Self` lets tests hand in a `Fake` link instead of opening a real one. `type Error = XiaoError`, `pub`, no ambiguous variant: `Busy { sensor: Sensor, held_by: Link }`, `TooSlow { sensor: Sensor, needs_bytes_per_s: u32, link_has_bytes_per_s: u32 }`, `Timeout { link: LinkSpec, attempts: u8 }`, `NotFound { link: LinkSpec }`, `Disconnected { link: LinkSpec }`, `Io { link: LinkSpec, kind: std::io::ErrorKind }`. Each `Display` says why and what causes it. If `xiao_api::Error` lacks a detail a variant needs, that is one more Phase A change, not a vaguer variant.
 
-- [ ] **Step 1: Write the tests** `needs_count_what_was_asked` (`.imu().mic()` → `imus 1, mics 1, mic_rate_hz 16_000`; `.gyro()` → `imus 1, mics 0`), `max_silence_is_ten_periods_of_the_slowest_stream` (104 Hz → 97 ms, rounded up to the ms), `building_a_xiao_opens_nothing`, `open_turns_on_only_what_was_asked` (`.gyro()` → the board saw one `ImuOn` with `accel: None`), `a_busy_sensor_names_the_sensor_and_the_holding_link` (`Busy { sensor: Mic, held_by: Ble }`), `a_slow_link_gives_both_speeds` (`TooSlow { needs_bytes_per_s: 34_000, link_has_bytes_per_s: 11_520, .. }`), `no_board_names_the_link`, `every_error_message_names_its_cause` (each variant's `Display` contains the sensor or the link).
-- [ ] **Step 2: Run** `cargo test -p kmr_adapters --features xiao xiao`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The opened link and sensors sit in `Option` fields; a partial `open` (IMU on, mic refused) drops what it turned on before returning the error.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(adapters): X05 xiao bring-up and fault mapping`.
+- [x] **Step 1: Write the tests** `needs_count_what_was_asked` (`.imu().mic()` → `imus 1, mics 1, mic_rate_hz 16_000`; `.gyro()` → `imus 1, mics 0`), `max_silence_is_ten_periods_of_the_slowest_stream` (104 Hz → 97 ms, rounded up to the ms), `building_a_xiao_opens_nothing`, `open_turns_on_only_what_was_asked` (`.gyro()` → the board saw one `ImuOn` with `accel: None`), `a_busy_sensor_names_the_sensor_and_the_holding_link` (`Busy { sensor: Mic, held_by: Ble }`), `a_slow_link_gives_both_speeds` (`TooSlow { needs_bytes_per_s: 34_000, link_has_bytes_per_s: 11_520, .. }`), `no_board_names_the_link`, `every_error_message_names_its_cause` (each variant's `Display` contains the sensor or the link).
+- [x] **Step 2: Run** `cargo test -p kmr_adapters --features xiao xiao`. Expected: FAIL.
+- [x] **Step 3: Implement.** The opened link and sensors sit in `Option` fields; a partial `open` (IMU on, mic refused) drops what it turned on before returning the error.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(adapters): X05 xiao bring-up and fault mapping`.
 
 ### Task X06: the per-tick read and the exit
 

@@ -9,11 +9,22 @@
 #[cfg(test)]
 mod tests;
 
+use core::time::Duration;
+
 use kmr_core::hal::{Needs, SensorHal, seal};
 use kmr_core::sensors::Feed;
+use xiao_api::link::AsLink;
+use xiao_api::{Baud, Ble, Uart, Usb};
 
 pub use xiao_api::{AccelRange, GyroRange, Link, Rate};
 
+/// Microphone sample rate, Hz (FW-5).
+const MIC_RATE_HZ: u32 = 16_000;
+/// Samples in one audio block (FW-5).
+const BLOCK_SAMPLES: u64 = 96;
+/// Periods of its slowest stream a board may stay silent before the tick
+/// raises `sensor missing`.
+const SILENT_PERIODS: u64 = 10;
 /// UART speed when none is given, the firmware's (FW-3).
 const DEFAULT_BAUD: u32 = 921_600;
 /// BLE connection attempts when none are given, `xiao-api`'s (API-2).
@@ -185,12 +196,18 @@ impl core::fmt::Display for Named<'_> {
 /// asked of it, `Xiao::usb().imu().mic()`. One IMU slot and one microphone
 /// slot at most.
 #[derive(Debug)]
-// Read from X05 on.
+// `halves` and `microphone` are read from X06 on.
 #[allow(dead_code)]
 pub struct Xiao {
     link: LinkSpec,
     imu: ImuSpec,
     mic: bool,
+    /// The link, from `open` to `close`.
+    opened: Option<Opened>,
+    /// The IMU, on from `open` to `close`.
+    halves: Option<Halves>,
+    /// The microphone, on from `open` to `close`.
+    microphone: Option<xiao_api::Mic>,
 }
 
 impl Xiao {
@@ -284,6 +301,14 @@ impl Xiao {
         self
     }
 
+    /// The board on `link`, already open: `open` turns the sensors on over
+    /// it instead of opening one.
+    #[cfg(test)]
+    pub(crate) fn on_link(mut self, link: Opened) -> Self {
+        self.opened = Some(link);
+        self
+    }
+
     /// A board on `link`, nothing asked.
     fn on(link: LinkSpec) -> Self {
         Self {
@@ -293,7 +318,160 @@ impl Xiao {
                 gyro: None,
             },
             mic: false,
+            opened: None,
+            halves: None,
+            microphone: None,
         }
+    }
+
+    /// The first sensor asked, IMU before microphone; `None` when nothing is.
+    fn first_sensor(&self) -> Option<Sensor> {
+        if self.imu.accel.is_some() || self.imu.gyro.is_some() {
+            Some(Sensor::Imu)
+        } else if self.mic {
+            Some(Sensor::Mic)
+        } else {
+            None
+        }
+    }
+
+    /// Ten periods of the slowest stream asked, rounded up to the ms; zero
+    /// when nothing is asked.
+    fn max_silence(&self) -> Duration {
+        let rates = [
+            self.imu.accel.map(|(rate, _)| rate),
+            self.imu.gyro.map(|(rate, _)| rate),
+        ];
+        let imu = rates.into_iter().flatten().map(|rate| {
+            let millihertz = (rate.hertz() * 1000.0).round() as u64;
+            (SILENT_PERIODS * 1_000_000).div_ceil(millihertz)
+        });
+        let mic = self
+            .mic
+            .then(|| (SILENT_PERIODS * BLOCK_SAMPLES * 1000).div_ceil(u64::from(MIC_RATE_HZ)));
+        Duration::from_millis(imu.chain(mic).max().unwrap_or(0))
+    }
+}
+
+/// An open link, the one the sensors are turned on over.
+#[derive(Debug)]
+pub(crate) enum Opened {
+    /// The USB plug.
+    Usb(Usb),
+    /// The TX/RX pins.
+    Uart(Uart),
+    /// Bluetooth Low Energy.
+    Ble(Ble),
+}
+
+impl Opened {
+    /// Opens the link `spec` names.
+    fn open(spec: LinkSpec) -> Result<Self, xiao_api::Error> {
+        Ok(match spec {
+            LinkSpec::Usb => Self::Usb(Usb::open()?),
+            LinkSpec::Uart { port, baud } => Self::Uart(Uart::port(port).baud(Baud(baud)).open()?),
+            LinkSpec::Ble { name, attempts } => {
+                let ble = Ble::attempts(attempts);
+                let ble = match name {
+                    Some(name) => ble.named(name),
+                    None => ble,
+                };
+                Self::Ble(ble.open()?)
+            }
+        })
+    }
+
+    /// Turns on over this link the IMU halves `imu` names, then the
+    /// microphone when `mic`.
+    fn turn_on(&self, imu: ImuSpec, mic: bool) -> Result<Turned, (Sensor, xiao_api::Error)> {
+        match self {
+            Self::Usb(link) => turn_on(link, imu, mic),
+            Self::Uart(link) => turn_on(link, imu, mic),
+            Self::Ble(link) => turn_on(link, imu, mic),
+        }
+    }
+}
+
+/// The IMU and the microphone `open` turned on.
+type Turned = (Option<Halves>, Option<xiao_api::Mic>);
+
+/// Turns on over `link` the IMU halves `imu` names, then the microphone when
+/// `mic`. On a refusal, what it turned on is dropped, so off on the board
+/// again, and the refused sensor is named.
+fn turn_on(
+    link: &impl AsLink,
+    imu: ImuSpec,
+    mic: bool,
+) -> Result<Turned, (Sensor, xiao_api::Error)> {
+    let halves = Halves::on(link, imu).map_err(|error| (Sensor::Imu, error))?;
+    let microphone = if mic {
+        Some(xiao_api::Mic::on(link).map_err(|error| (Sensor::Mic, error))?)
+    } else {
+        None
+    };
+    Ok((halves, microphone))
+}
+
+/// The IMU, on.
+#[derive(Debug)]
+// Read from X06 on.
+#[allow(dead_code)]
+enum Halves {
+    /// Both halves at one rate: one stream, each reading carries both.
+    Both(xiao_api::Imu),
+    /// One half, or both at two rates: one stream per half.
+    Apart {
+        accel: Option<xiao_api::Accel>,
+        gyro: Option<xiao_api::Gyro>,
+    },
+}
+
+impl Halves {
+    /// Turns on over `link` the halves `spec` names; `None` when it names
+    /// none.
+    fn on(link: &impl AsLink, spec: ImuSpec) -> Result<Option<Self>, xiao_api::Error> {
+        let halves = match (spec.accel, spec.gyro) {
+            (None, None) => return Ok(None),
+            // DECISION: both halves at one rate go on as one `Imu`: one `ImuOn`, and each
+            // reading carries both halves of one instant. At two rates they go on apart, since
+            // `xiao-api`'s `Imu` sets one rate for both.
+            (Some((rate, accel)), Some((same, gyro))) if rate == same => Self::Both(
+                xiao_api::Imu::rate(rate)
+                    .accel_range(accel)
+                    .gyro_range(gyro)
+                    .on(link)?,
+            ),
+            (accel, gyro) => {
+                let accel = accel
+                    .map(|(rate, range)| xiao_api::Accel::rate(rate).range(range).on(link))
+                    .transpose()?;
+                let gyro = gyro
+                    .map(|(rate, range)| xiao_api::Gyro::rate(rate).range(range).on(link))
+                    .transpose()?;
+                Self::Apart { accel, gyro }
+            }
+        };
+        Ok(Some(halves))
+    }
+}
+
+/// `error`, met turning `sensor` on over `link`, in the adapter's words: the
+/// sensor and the link it knows added.
+fn fault(link: LinkSpec, sensor: Sensor, error: xiao_api::Error) -> XiaoError {
+    match error {
+        xiao_api::Error::Busy { held_by } => XiaoError::Busy { sensor, held_by },
+        xiao_api::Error::TooSlow { needs, link_has } => XiaoError::TooSlow {
+            sensor,
+            needs_bytes_per_s: needs.0,
+            link_has_bytes_per_s: link_has.0,
+        },
+        xiao_api::Error::Timeout { attempts } => XiaoError::Timeout { link, attempts },
+        xiao_api::Error::NotFound => XiaoError::NotFound { link },
+        xiao_api::Error::Disconnected => XiaoError::Disconnected { link },
+        xiao_api::Error::Io(error) => XiaoError::Io {
+            link,
+            kind: error.kind(),
+        },
     }
 }
 
@@ -303,11 +481,33 @@ impl SensorHal for Xiao {
     type Error = XiaoError;
 
     fn needs(&self) -> Needs {
-        unimplemented!("X05: needs")
+        Needs {
+            imus: u8::from(self.imu.accel.is_some() || self.imu.gyro.is_some()),
+            mics: u8::from(self.mic),
+            mic_rate_hz: if self.mic { MIC_RATE_HZ } else { 0 },
+            max_silence: self.max_silence(),
+        }
     }
 
     fn open(&mut self) -> Result<(), XiaoError> {
-        unimplemented!("X05: bring-up")
+        // DECISION: a board asked for nothing opens no link: it would have nothing to read.
+        let Some(first) = self.first_sensor() else {
+            return Ok(());
+        };
+        let link = match self.opened.take() {
+            Some(link) => link,
+            // DECISION: a link that does not open names the first sensor asked; `xiao-api`
+            // refuses a link with none of the sensor variants (busy, too slow) anyway.
+            None => Opened::open(self.link).map_err(|error| fault(self.link, first, error))?,
+        };
+        // On a refusal `link` drops here, closing it, with whatever was turned on.
+        let (halves, microphone) = link
+            .turn_on(self.imu, self.mic)
+            .map_err(|(sensor, error)| fault(self.link, sensor, error))?;
+        self.halves = halves;
+        self.microphone = microphone;
+        self.opened = Some(link);
+        Ok(())
     }
 
     fn read(&mut self, _feed: Feed<'_>) {
