@@ -54,11 +54,11 @@ Written 2026-11-12. Nothing is built yet.
 `Mic::{samples() -> &[i16], rate_hz() -> u32, dropped() -> u64}`.
 `Sensors` fields stay private; `pub(crate) fn Sensors::new() -> Self`.
 
-- [ ] **Step 1: Write the tests** in `sensors.rs`: `an_undeclared_slot_reads_none` (`Sensors::new().imu(0)` and `.mic(0)` are `None`), `an_index_past_the_slots_reads_none` (`imu(MAX_IMUS)`), `a_declared_slot_without_a_reading_reads_none`, `sensors_fit_in_three_kilobytes` (`size_of::<Sensors>() <= 3072`).
-- [ ] **Step 2: Run** `cargo test -p kmr_core sensors`. Expected: FAIL on `todo!()`.
-- [ ] **Step 3: Implement** the slots: an IMU slot holds `accel`, `gyro`, `refreshed: Option<u64>`, `dropped`; a mic slot holds the window, its length, `rate_hz`, `dropped`; `Sensors` also holds `now: u64` and how many slots of each kind are declared.
-- [ ] **Step 4: Run** the same command. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(core): S02 typed sensor slots and reader views`.
+- [x] **Step 1: Write the tests** in `sensors.rs`: `an_undeclared_slot_reads_none` (`Sensors::new().imu(0)` and `.mic(0)` are `None`), `an_index_past_the_slots_reads_none` (`imu(MAX_IMUS)`), `a_declared_slot_without_a_reading_reads_none`, `sensors_fit_in_three_kilobytes` (`size_of::<Sensors>() <= 3072`).
+- [x] **Step 2: Run** `cargo test -p kmr_core sensors`. Expected: FAIL on `todo!()`.
+- [x] **Step 3: Implement** the slots: an IMU slot holds `accel`, `gyro`, `refreshed: Option<u64>`, `dropped`; a mic slot holds the window, its length, `rate_hz`, `dropped`; `Sensors` also holds `now: u64` and how many slots of each kind are declared.
+- [x] **Step 4: Run** the same command. Expected: PASS.
+- [x] **Step 5: Commit** `feat(core): S02 typed sensor slots and reader views`.
 
 ### Task S03: the writer view
 

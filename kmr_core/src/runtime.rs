@@ -336,7 +336,7 @@ mod init_phase {
         // TODO: feature gated:
         // Color_eyre
 
-        (RobotState::default(), Sensors {})
+        (RobotState::default(), Sensors::new())
     }
 
     /// Walks the user's `PreInit` controllers.
