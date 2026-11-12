@@ -11,10 +11,11 @@ pub use crate::clock::Instant;
 
 use crate::error::RunError;
 use crate::hal::{
-    Batch, Claim, Command, Drivers, ExternalFlags, Faults, Group, Hal, HardwareError, Mask,
-    Overrides, Sample, TickFlags, Written, seal,
+    Batch, Claim, Command, Drivers, ExternalFlags, Faults, Group, Hal, HardwareError, Mask, Needs,
+    Overrides, Sample, Sensing, SensorHal, TickFlags, Written, seal,
 };
 use crate::schedule::Drive;
+use crate::sensors::{Accel, Feed, Gyro};
 use crate::signal::SignalMeta;
 use crate::state::Q;
 use crate::telemetry::Telemetry;
@@ -63,6 +64,27 @@ pub fn run_scripted_staged<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>,
     stages: &mut S,
 ) -> Result<Signal, RunError<HardwareError<D::Error>>> {
     crate::runtime::run_staged(robot, host, drivers, stages)
+}
+
+/// [`run_scripted_staged`], with `sensing`, the sensor members, opened,
+/// read each tick and closed like the real runtime does.
+// DECISION: the core half of kmr_api's scripted run with sensors (authorised
+// for S06): `run_all` is crate-private, so kmr_api reaches it only here.
+pub fn run_scripted_all<
+    const N: usize,
+    CS: Drive<N>,
+    H: Host,
+    D: Drivers<N>,
+    SN: Sensing,
+    S: Stages<N>,
+>(
+    robot: &mut Robot<N, CS, crate::Filled>,
+    host: &mut H,
+    drivers: &mut D,
+    sensing: &mut SN,
+    stages: &mut S,
+) -> Result<Signal, RunError<HardwareError<D::Error>, SN::Error>> {
+    crate::runtime::run_all(robot, host, drivers, sensing, stages)
 }
 
 /// Whether `signal` is an emergency stop rather than a shutdown.
@@ -288,7 +310,10 @@ impl Host for RealTime {
     }
 }
 
-/// An adapter call or a bucket walk.
+/// An adapter call or a bucket walk. A sensor call carries the
+/// [`FakeSensor`]'s id.
+// DECISION: the sensor calls join the same log as the actuators', so a test
+// pins their order against each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(missing_docs, reason = "one variant per call or walk of the same name")]
 pub enum Call {
@@ -314,6 +339,9 @@ pub enum Call {
     Last,
     Inbound,
     Outbound,
+    SensorOpen(u8),
+    SensorRead(u8),
+    SensorClose(u8),
 }
 
 /// What `write` or `hold` was handed: the positions, the masks and the
@@ -564,5 +592,125 @@ impl<const N: usize> Hal<N> for Recorder<'_, N> {
 
     fn close(&mut self) {
         self.log.push(Call::Close);
+    }
+}
+
+/// What one read of a [`FakeSensor`] feeds, into its first slot of each
+/// kind.
+#[derive(Clone, Copy, Debug)]
+pub struct Reading<'a> {
+    /// Acceleration; the IMU is fed when either half is `Some`.
+    pub accel: Option<Accel>,
+    /// Angular rate.
+    pub gyro: Option<Gyro>,
+    /// Audio, fed when not empty.
+    pub audio: &'a [i16],
+    /// Reports the link down.
+    pub link_down: bool,
+}
+
+impl Reading<'_> {
+    /// Nothing arrived.
+    pub const QUIET: Self = Self {
+        accel: None,
+        gyro: None,
+        audio: &[],
+        link_down: false,
+    };
+}
+
+/// The error of a [`FakeSensor`] told to fail.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum FakeSensorError {
+    /// `open` failed, as its script said.
+    #[error("fake sensor {id}: open refused by its script")]
+    Open {
+        /// The fake's id.
+        id: u8,
+    },
+}
+
+/// A fake sensor member: logs its calls with its id, can fail its `open`;
+/// read call `k` feeds `script[k]`, nothing past the end.
+// DECISION: one scripted reading per read call, into the first slot of each
+// kind: what the plan's runtime tests need, no more.
+#[derive(Debug)]
+pub struct FakeSensor<'a, const N: usize> {
+    /// Where the calls go, shared with the [`Recorder`].
+    pub log: &'a Log<N>,
+    /// Its id in the log.
+    pub id: u8,
+    /// IMU slots it asks for.
+    pub imus: u8,
+    /// Microphone slots it asks for.
+    pub mics: u8,
+    /// Rate of its microphones, Hz.
+    pub mic_rate_hz: u32,
+    /// Its longest silence before `sensor missing`.
+    pub max_silence: Duration,
+    /// Whether `open` fails.
+    pub fail_open: bool,
+    /// What each read feeds, in order.
+    pub script: &'a [Reading<'a>],
+    /// Calls to `read` so far.
+    pub reads: usize,
+}
+
+impl<'a, const N: usize> FakeSensor<'a, N> {
+    /// One IMU, no microphone, silent for up to a second, feeding nothing.
+    pub fn new(log: &'a Log<N>, id: u8) -> Self {
+        Self {
+            log,
+            id,
+            imus: 1,
+            mics: 0,
+            mic_rate_hz: 16_000,
+            max_silence: Duration::from_secs(1),
+            fail_open: false,
+            script: &[],
+            reads: 0,
+        }
+    }
+}
+
+impl<const N: usize> seal::Adapter for FakeSensor<'_, N> {}
+
+impl<const N: usize> SensorHal for FakeSensor<'_, N> {
+    type Error = FakeSensorError;
+
+    fn needs(&self) -> Needs {
+        Needs {
+            imus: self.imus,
+            mics: self.mics,
+            mic_rate_hz: self.mic_rate_hz,
+            max_silence: self.max_silence,
+        }
+    }
+
+    fn open(&mut self) -> Result<(), FakeSensorError> {
+        self.log.push(Call::SensorOpen(self.id));
+        if self.fail_open {
+            return Err(FakeSensorError::Open { id: self.id });
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, mut feed: Feed<'_>) {
+        self.log.push(Call::SensorRead(self.id));
+        let reading = self
+            .script
+            .get(self.reads)
+            .copied()
+            .unwrap_or(Reading::QUIET);
+        self.reads = self.reads.wrapping_add(1);
+        feed.imu(0, reading.accel, reading.gyro);
+        feed.audio(0, reading.audio);
+        if reading.link_down {
+            feed.link_down();
+        }
+    }
+
+    fn close(&mut self) {
+        self.log.push(Call::SensorClose(self.id));
     }
 }

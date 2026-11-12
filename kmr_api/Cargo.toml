@@ -34,6 +34,9 @@ ffi-lua = ["ffi", "kmr_ffi/lua"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
 cubemars = ["kmr_adapters/cubemars"]
+# The XIAO nRF52840 Sense's IMU and microphone as a sensor, `kmr_api::xiao` (SRS FR-5.7). Off by
+# default: without it nothing of xiao-api is compiled.
+xiao = ["kmr_adapters/xiao"]
 # The Zenoh gateway plugin, `kmr_api::Gateway` (SRS FR-7.1). Off by default: without it no
 # Zenoh crate is compiled (SC-004).
 zenoh = ["dep:zenoh", "dep:tracing"]
@@ -51,10 +54,20 @@ zenoh.workspace = true
 [[example]]
 name = "complete_api_example"
 
+# The XIAO's gyroscope over USB, logged by a controller.
+[[example]]
+name = "xiao_imu"
+required-features = ["xiao"]
+
 # The gateway against an in-process peer on loopback.
 [[test]]
 name = "zenoh"
 required-features = ["zenoh", "test-util"]
+
+# Sensors on the core's scripted host and fake sensor.
+[[test]]
+name = "sensors"
+required-features = ["test-util"]
 
 [lints]
 workspace = true

@@ -28,7 +28,7 @@ kmr_api::robot!(model = "models/ax_12_12act_an_rx28_10act.urdf");
 /// AX-12A and RX-28 middle: raw 512, which the adapter calls 0 rad.
 const CENTER: Q = Q(0.0);
 
-/// Time `HOME` takes to ramp to the centre; the sines start after it.
+/// Time `HOME` takes to ramp to the centre; claps are heard after it.
 const HOME_TIME: Duration = Duration::from_secs(3);
 
 /// Ramps every actuator from where it was at the first tick to the centre.
@@ -57,34 +57,72 @@ const fn from<const K: usize>(first: usize) -> [usize; K] {
     indices
 }
 
-/// A 0.5 Hz sine of `amplitude` around the centre. Behind `HOME.then`, its time starts at zero
-/// once home.
-fn sine(amplitude: f32, time: &Time) -> Q {
-    CENTER + Q(amplitude * (TAU * 0.5 * time.elapsed().as_secs_f32()).sin())
+/// A microphone sample louder than this is a clap.
+const PEAK: u16 = 1000;
+
+/// How long both snakes move after a clap: one period of the 0.5 Hz sine.
+const MOVE_FOR: Duration = Duration::from_secs(2);
+
+/// A 0.5 Hz sine of `amplitude` around the centre, `t` after it started.
+fn sine(amplitude: f32, t: Duration) -> Q {
+    CENTER + Q(amplitude * (TAU * 0.5 * t.as_secs_f32()).sin())
 }
 
-fn sine_ax(time: &Time, robot: &mut State, _sensors: &Sensors) {
-    if let Err(e) = robot
-        .group(AX)
-        .set_all_q([sine(2.0 * AMPLITUDE, time); AX.len()])
-    {
+/// The microphone's loudest sample this tick; `None` without a microphone or a sample.
+fn peak(sensors: &Sensors) -> Option<u16> {
+    sensors
+        .mic(0)?
+        .samples()
+        .iter()
+        .map(|s| s.unsigned_abs())
+        .max()
+}
+
+/// When the last clap's motion started; `None` before the first clap.
+#[derive(Default)]
+struct Clap {
+    since: Option<Duration>,
+}
+
+/// Once home, holds both snakes at the centre; a clap runs both sines for `MOVE_FOR`, their
+/// time starting at the clap.
+// DECISION: gated on `HOME_TIME`, not behind `HOME.then`, which takes no context controller.
+fn move_on_clap(clap: &mut Clap, time: &Time, robot: &mut State, sensors: &Sensors) {
+    let now = time.elapsed();
+    if now < HOME_TIME {
+        return;
+    }
+    // DECISION: a peak heard while moving is ignored (the servos are loud), so one clap is one
+    // 2 s motion.
+    let moving = clap
+        .since
+        .map(|start| now.saturating_sub(start))
+        .filter(|t| *t < MOVE_FOR);
+    let t = match (moving, peak(sensors)) {
+        (Some(t), _) => Some(t),
+        (None, Some(loudest)) if loudest > PEAK => {
+            println!("clap at {now:?}: peak {loudest} > {PEAK}, both snakes move for {MOVE_FOR:?}");
+            clap.since = Some(now);
+            Some(Duration::ZERO)
+        }
+        (None, _) => None,
+    };
+    let (ax, rx) = match t {
+        Some(t) => (sine(2.0 * AMPLITUDE, t), sine(1.0 * AMPLITUDE, t)),
+        None => (CENTER, CENTER),
+    };
+    if let Err(e) = robot.group(AX).set_all_q([ax; AX.len()]) {
         eprintln!("{e}");
         shutdown!("AX-12A group write failed");
     }
-}
-
-fn sine_rx(time: &Time, robot: &mut State, _sensors: &Sensors) {
-    if let Err(e) = robot
-        .group(RX)
-        .set_all_q([sine(1.0 * AMPLITUDE, time); RX.len()])
-    {
+    if let Err(e) = robot.group(RX).set_all_q([rx; RX.len()]) {
         eprintln!("{e}");
         shutdown!("RX-28 group write failed");
     }
 }
 
-// DECISION: 20 s, not 2: the run has to outlast HOME_TIME for the sine to start.
-const TIME_LIMIT: Duration = Duration::from_secs(20);
+/// The run shuts down after this, whatever happened.
+const TIME_LIMIT: Duration = Duration::from_secs(60);
 
 fn shutdown_after_some_time(time: &Time, _robot: &mut State, _sensors: &Sensors) {
     if time.elapsed() > TIME_LIMIT {
@@ -98,7 +136,7 @@ fn main() {
     let ax_snake = kmr_api::Bus::by_id("AL02L1KL").baud(1_000_000).build();
     let rx_snake = kmr_api::Bus::by_id("AL02L1EU").baud(1_000_000).build();
 
-    if let Err(e) = Robot::new()
+    let robot = Robot::new()
         .set_dt(Duration::from_millis(5))
         .set_hold(Duration::from_millis(50))
         .set_limit_policy_all(kmr_api::Policy::Clamp)
@@ -116,13 +154,16 @@ fn main() {
                 .on(rx_snake),
         )
         // .add_controller(EachTick, nudge_first_joint)
-        // DECISION: one HOME per snake controller; both ramps write the same line, so the
-        // duplicate write during the ramp changes nothing.
-        .add_controller(EachTick, HOME.then(sine_ax))
-        .add_controller(EachTick, HOME.then(sine_rx))
-        .add_controller(EachTick, shutdown_after_some_time)
-        .run()
-    {
+        // DECISION: HOME before `move_on_clap`: controllers run in the order added, so once home
+        // the actuators get what `move_on_clap` writes, not HOME's pose.
+        .add_controller(EachTick, HOME.controller())
+        .add_controller_with(EachTick, Clap::default(), move_on_clap)
+        .add_controller(EachTick, shutdown_after_some_time);
+    // The microphone, on the XIAO's USB plug; without `hardware` no clap is heard.
+    #[cfg(feature = "hardware")]
+    let robot = robot.add_sensor(kmr_api::xiao::Xiao::usb().mic());
+
+    if let Err(e) = robot.run() {
         println!("{}", e);
     }
 }

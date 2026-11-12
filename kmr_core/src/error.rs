@@ -58,15 +58,33 @@ pub enum ConfigError {
     /// FR-4.5).
     #[error("actuator {actuator} has a limit and no policy for its breach")]
     NoPolicy { actuator: usize },
+    /// The sensors need more slots of one kind than the engine has (SRS
+    /// FR-5.7).
+    #[error("the sensors need {asked} {kind} slots and the engine has {slots}")]
+    TooManySensors {
+        /// The kind of slot.
+        // DECISION: a `&'static str`, not a new pub enum: the contract names
+        // no kind type, and `ConfigError` stays `Copy`.
+        kind: &'static str,
+        /// Slots the sensors need, counted up to the member that overflows.
+        asked: usize,
+        /// Slots the engine has of that kind.
+        slots: usize,
+    },
 }
 
-/// Why a run failed: its configuration, found before any I/O, or its hardware (`E`).
+/// Why a run failed: its configuration, found before any I/O, its hardware
+/// (`E`), or its sensors (`S`).
 #[derive(Debug, PartialEq, thiserror::Error)]
-pub enum RunError<E> {
+pub enum RunError<E, S = core::convert::Infallible> {
     /// The builder's configuration is refused; nothing was opened.
     #[error(transparent)]
     Config(#[from] ConfigError),
     /// The hardware failed: a claim mismatch or a member's bring-up error.
     #[error(transparent)]
     Hal(E),
+    /// A sensor failed its bring-up, with its adapter's own error (SRS
+    /// FR-5.7).
+    #[error(transparent)]
+    Sensor(S),
 }

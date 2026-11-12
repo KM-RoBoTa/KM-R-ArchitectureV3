@@ -205,10 +205,10 @@ the internal type paths.
 ## Runtime loop
 
 ```
-finalization (claims, no I/O)
-pre_init → open, zero → init → ping, health, configure, read_all, telemetry → torque_on → post_init
-loop { read → inbound → first → each_tick → last → limits → write → telemetry → clock bookkeeping → outbound → clear desired → sleep }
-hold (shutdown with set_hold only) → torque_off → close
+finalization (claims, sensor slots, no I/O)
+pre_init → open, zero, sensors open → init → ping, health, configure, read_all, telemetry, sensors read → torque_on → post_init
+loop { read → sensors read → inbound → first → each_tick → last → limits → write → telemetry → clock bookkeeping → outbound → clear desired → sleep }
+hold (shutdown with set_hold only) → torque_off → close → sensors close
 ```
 
 **One clock.** `robot.config.time` is the only clock. The engine writes it
@@ -226,7 +226,8 @@ falls back to 1 ms with one warning.
 |---|---|---|
 | 1 | bus check, any signal | |
 | 2 | `begin_tick(now)` | |
-| 3 | push a History slot (a copy of the previous one, no fault set), `read` into it and its faults; fold in the tick flags raised from other threads (`ExternalFlags`) | the actuators due this tick |
+| 3 | push a History slot (a copy of the previous one, no fault set), `read` into it and its faults | the actuators due this tick |
+| 3a | `read` of every sensor member; `SENSOR_MISSING` when one is missing, then its `SensorPolicy`; fold in the tick flags raised from other threads (`ExternalFlags`) | the sensors, never waiting |
 | 3b | `Stages::inbound` (kmr_api's gateway; `()` on `run_on`) | |
 | 4 | `First`, then an emergency-stop check | |
 | 5 | `EachTick`, then an emergency-stop check | |
@@ -254,20 +255,23 @@ or `PostInit` are never sent: only ticks command the hardware. One warning
 names the phases that wrote.
 
 **Exits.** From `open` on, a guard (`Powered`) ends every exit, a controller
-panic included, with `torque_off` then `close` on every member.
+panic included, with `torque_off` then `close` on every member, then, once
+they were opened, `close` on every sensor.
 
 | Exit | Tick write | Hold | Torque off, close | `run_on` returns |
 |---|---|---|---|---|
-| `dt` out of range, a limit without a policy | no | no | no, nothing opened | `Err(Config)` |
+| `dt` out of range, a limit without a policy, more sensor slots than kmr has | no | no | no, nothing opened | `Err(Config)` |
 | claim mismatch or `check` error | no | no | no, nothing opened | `Err(Hal)` |
 | emergency stop in `PreInit` | no | no | no, nothing opened | `Ok` |
 | `open` .. `torque_on` error | no | no | yes, at once | `Err(Hal)` |
+| a sensor's `open` error | no | no | yes, at once, then the sensors close | `Err(Sensor)` |
 | any signal before `torque_on` | no | no | yes, torque never on | `Ok` |
 | shutdown in a tick | yes, the tick completes | with `set_hold` only | yes, after the hold | `Ok` |
 | emergency stop in a tick | no, if raised before the write | no | yes, at once | `Ok` |
 | emergency stop during the hold | | cut short | yes, at once | `Ok` |
 | a member touching an index it does not own (debug builds) | no | no | yes, as an emergency stop | `Ok` |
 | a limit breach under `Policy::Abort` | no | no | yes, as an emergency stop | `Ok` |
+| a sensor lost under `SensorPolicy::Abort` | no | no | yes, as an emergency stop | `Ok` |
 
 The sleep is an absolute `clock_nanosleep` on the monotonic clock (Linux,
 through `rustix`), with an optional spin tail before the deadline, off by
@@ -481,6 +485,81 @@ Operating Mode write yet, SRS section 8), one state read per group instead
 of three partial sync reads, `dxl_rs_v2` as a pinned git dependency once it
 is pushed, and N as a const generic of the core. The contract and its departures
 from the SRS are argued in [decision 0002](decisions/0002-hal-contract.md).
+
+## Sensors
+
+Controllers read sensors through `&Sensors`, the third argument they always
+had (SRS FR-5.7). Like State, it is a closed, typed set: two kinds, the IMU
+(`Accel` in m/s², `Gyro` in rad/s) and the microphone (PCM `i16`), a fixed
+number of slots per kind, no heap. The defaults are named once, in
+`kmr_core/src/sensors.rs`: `MAX_IMUS = 4`, `MAX_MICS = 1`, `MIC_WINDOW = 1024`
+samples (64 ms at 16 kHz). How a user changes them is a data layout choice,
+parked in `docs/deferred.md`.
+
+```rust
+fn balance(_time: &Time, state: &mut State, sensors: &Sensors) {
+    if let Some(imu) = sensors.imu(0) {
+        let w = imu.gyro();       // Option<Gyro>: None when that half is off
+        let age = imu.age();      // ticks since the reading arrived
+    }
+    if let Some(mic) = sensors.mic(0) {
+        let pcm: &[i16] = mic.samples(); // what arrived since the last tick
+    }
+}
+
+Robot::new()
+    .add_sensor(xiao::Xiao::usb().imu().mic())
+    .add_controller(EachTick, balance)
+```
+
+`imu(i)` and `mic(i)` are `None` when no sensor declared that index or none
+has reported yet. Indices count per kind, over the sensors in the order they
+were added: `add_sensor` puts each at the end of the list, which the core
+hands slots out from head first. A microphone's window holds what arrived
+since the last tick; a burst past `MIC_WINDOW` keeps the first samples and
+counts the rest in `dropped()`.
+
+**The contract.** A sensor is not a `Hal<N>` member: a member that owns no
+actuator is refused (`Coverage::Idle`), and a sensor has no torque to cut.
+Sensor adapters implement their own sealed trait, `SensorHal`
+(`kmr_core/src/hal/sensor.rs`): `type Error`, `needs`, `open`, `read(Feed)`,
+`close`. They form their own list, `Sensing` (`hal/sensing.rs`), an `HList`
+walked head first like `Drivers`: static dispatch, no `dyn`.
+`Robot::run_all(hal, sensors, stages)` takes both lists; `run_on` and
+`run_on_staged` pass `HNil`. A `Feed` is the writer view of one member's own
+slots, stamped with the tick in progress, like `Telemetry`'s.
+
+| Moment | Engine calls, on every sensor member |
+|---|---|
+| `run()` finalization, no I/O | `needs`: slots handed out in list order; more than a kind has is `ConfigError::TooManySensors` |
+| Init, after the actuators' `open` and `zero`, before its controllers | `open`; an error ends the run before torque on |
+| PostInit, after `read_all` and `telemetry` | one `read`, which the PostInit controllers see |
+| Each tick, after the actuators' `read`, before `First` | `read` |
+| Every exit after `open` | `close`, after the drivers' `torque_off` and `close` |
+
+`read` never waits: no allocation, lock, sleep or retry. Each adapter brings
+its own typed error, which says why and what causes it ("busy" names the
+sensor and the link that holds it); the list nests them in `MemberError`
+with the member's position, and `run_all` returns it as
+`RunError::Sensor(S)`, never flattened.
+
+**Missing.** `SENSOR_MISSING` is raised in the tick's slot when a member
+reports its link down (`Feed::link_down`), or when one of its slots has been
+silent longer than the `max_silence` it declared, counted in ticks (rounded
+up, at least one). A sensor slower than the tick is not missing: at 104 Hz on
+a 1 kHz loop, its reading is simply 0 to 9 ticks old. The flag is always
+raised; the rest is the user's `SensorPolicy`, set with `set_sensor_policy`:
+`Flag` (the default: nothing more, the controllers decide, SRS FR-13.4),
+`Warn` (logged once per member) or `Abort` (an emergency stop in that tick).
+
+**The API.** `kmr_api::Sensors` wraps the core's handle: `imu(i)` and `mic(i)`
+return the borrowed views `Imu` and `Mic`, and `Accel`, `Gyro`,
+`SensorPolicy` are the core's, re-exported. `add_sensor` grows a type-level
+list, one more generic on `Robot` and `Bound`, `SN = HNil` by default, so a
+robot without a sensor keeps its type and its `run()` its plain `UserError`.
+With sensors, `run()` returns `UserError<S>`: `Sensor { source }` keeps the
+adapter's error typed, `TooManySensors { kind, asked, slots }` comes before
+any I/O.
 
 ## Real-time constraints
 

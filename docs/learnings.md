@@ -12,3 +12,4 @@ next time, or "nothing new"._
 | 2026-11-03 | controllers | 5 | everything left waits on the maintainer's main.rs; one deferral row covers the chain |
 | 2026-11-03 | kmr_ffi | 5 | the example crates need a cross Python and arm gcc for cross builds; native gates only |
 | 2026-11-03 | bench | 5 | nothing new |
+| 2026-11-12 | sensors, xiao-adapter | 4-7 | read the SDK's blocking and allocation behaviour before step 4: `latest()` waiting 2 s and `try_next` allocating were both found late; and name the feature-gated test command in the oracle when a module adds one |

@@ -295,7 +295,7 @@ impl<E> HardwareError<E> {
     }
 }
 
-mod seal {
+pub(super) mod seal {
     use core::convert::Infallible;
     use core::fmt;
 

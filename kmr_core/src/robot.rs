@@ -36,7 +36,7 @@ use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
 use crate::error::RunError;
-use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware};
+use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware, Sensing, SensorPolicy};
 use crate::limits::{Envelope, Limit, Policy};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
@@ -184,6 +184,13 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
     /// and flagged (SRS FR-13.5).
     pub fn set_envelopes(mut self, envelopes: [Envelope; N]) -> Self {
         self.config.limits.set_envelopes(envelopes);
+        self
+    }
+
+    /// What a sensor lost at run time does beyond raising `sensor missing`
+    /// (SRS FR-5.7, FR-13.4). Without it, [`SensorPolicy::Flag`].
+    pub fn set_sensor_policy(mut self, policy: SensorPolicy) -> Self {
+        self.config.sensor_policy = policy;
         self
     }
 
@@ -335,7 +342,7 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         CS: Drive<N>,
         E: HasController,
     {
-        self.run_on_staged(hal, ())
+        self.run_all(hal, HNil, ())
     }
 
     #[cfg(feature = "std")]
@@ -350,7 +357,28 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
         CS: Drive<N>,
         E: HasController,
     {
-        runtime::runtime(self.filled(), hal, stages).map(|_signal| ())
+        self.run_all(hal, HNil, stages)
+    }
+
+    #[cfg(feature = "std")]
+    /// Runs the robot on `hal`, its drivers, and `sensors`, its sensor
+    /// members, both lists, with `stages` around the controllers of each
+    /// tick. See [`Robot::run_on`].
+    ///
+    /// After the actuators' errors: [`RunError::Config`] when the sensors
+    /// need more slots than the engine has, before any I/O;
+    /// [`RunError::Sensor`] for a sensor's error from `open` (SRS FR-5.7).
+    pub fn run_all<D: Drivers<N>, SN: Sensing, S: Stages<N>>(
+        self,
+        hal: D,
+        sensors: SN,
+        stages: S,
+    ) -> Result<(), RunError<HardwareError<D::Error>, SN::Error>>
+    where
+        CS: Drive<N>,
+        E: HasController,
+    {
+        runtime::runtime(self.filled(), hal, sensors, stages).map(|_signal| ())
     }
 
     #[cfg(feature = "std")]

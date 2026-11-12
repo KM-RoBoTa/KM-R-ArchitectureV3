@@ -1,5 +1,6 @@
 //! The adapter layer: one implementation of [`kmr_core::hal::Hal`] per
-//! vendor (SRS FR-5.1).
+//! vendor (SRS FR-5.1), and one of [`kmr_core::hal::SensorHal`] per sensor
+//! board (SRS FR-5.7).
 //!
 //! The engine only sees actuator indices, masks and opaque groups. Buses,
 //! protocols, models and raw units stay in here, and every value that crosses
@@ -14,3 +15,5 @@ pub mod binding;
 pub mod cubemars;
 pub mod dynamixel;
 pub mod presets;
+#[cfg(feature = "xiao")]
+pub mod xiao;

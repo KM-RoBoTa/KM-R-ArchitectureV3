@@ -10,8 +10,9 @@ publish = false
 kmr_api.workspace = true
 
 [features]
-# The Dynamixel SDK, for the bench. Off: the crate builds anywhere and simulates.
-hardware = ["kmr_api/dynamixel"]
+# The Dynamixel SDK and the XIAO's microphone, for the bench. Off: the crate builds anywhere and
+# simulates.
+hardware = ["kmr_api/dynamixel", "kmr_api/xiao"]
 # DECISION: kept as a no-op so the RX-28 command line in main.rs still works:
 # `robot!(Rx28Chain)` alone sets N = 10 now (core M2).
 rx28 = []
