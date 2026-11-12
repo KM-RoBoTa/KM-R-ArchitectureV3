@@ -123,6 +123,9 @@ pub use kmr_core::{emergency_stop, shutdown};
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
+#[cfg(feature = "xiao")]
+pub mod xiao;
+
 /// The Zenoh gateway (feature `zenoh`): keys, messages and counters; the plugin itself is
 /// re-exported at the root.
 #[cfg(feature = "zenoh")]

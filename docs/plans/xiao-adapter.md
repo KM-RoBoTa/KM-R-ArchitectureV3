@@ -121,11 +121,11 @@ Written 2026-11-12. Nothing is built yet.
 
 **Interfaces:** Consumes `Robot::add_sensor` (S06). Produces `pub mod xiao` re-exporting `Xiao`, `ImuSpec`, `Rate`, `AccelRange`, `GyroRange`.
 
-- [ ] **Step 1: Write the test** `a_controller_reads_a_fake_xiao_through_the_engine` in `kmr_api/tests/xiao.rs`: a robot on `NoHardware` with a fake board streaming 1 g on z; a controller stores `sensors.imu(0)` and raises `shutdown!` on tick 3; the stored `accel().z()` is 9.80665 within 1e-3 and the board ends with `ImuOff`.
-- [ ] **Step 2: Run** `cargo test -p kmr_api --features xiao,test-util xiao`. Expected: FAIL, then PASS after the re-exports. If `on_link` cannot be reached from `kmr_api`'s tests, that visibility is a deferral: keep this test in `kmr_adapters/src/xiao/tests.rs` on `kmr_core::Robot::run_all` instead.
-- [ ] **Step 3: Write the example**: `.add_sensor(xiao::Xiao::usb().imu())`, one controller that logs the gyro every 100 ticks.
-- [ ] **Step 4: Run** `cargo build -p kmr_api --example xiao_imu --features xiao`. Expected: green.
-- [ ] **Step 5: Commit** `feat(api): X07 kmr_api::xiao and its example`.
+- [x] **Step 1: Write the test** `a_controller_reads_a_fake_xiao_through_the_engine` in `kmr_api/tests/xiao.rs`: a robot on `NoHardware` with a fake board streaming 1 g on z; a controller stores `sensors.imu(0)` and raises `shutdown!` on tick 3; the stored `accel().z()` is 9.80665 within 1e-3 and the board ends with `ImuOff`.
+- [x] **Step 2: Run** `cargo test -p kmr_api --features xiao,test-util xiao`. Expected: FAIL, then PASS after the re-exports. If `on_link` cannot be reached from `kmr_api`'s tests, that visibility is a deferral: keep this test in `kmr_adapters/src/xiao/tests.rs` on `kmr_core::Robot::run_all` instead. Taken on 2026-11-12, on the core's `test_util::run_scripted_all`, with a microphone twin `a_controller_hears_a_clap_on_a_fake_xiao_through_the_engine`; the visibility is in `docs/deferred.md`.
+- [x] **Step 3: Write the example**: `.add_sensor(xiao::Xiao::usb().imu())`, one controller that logs the gyro every 100 ticks.
+- [x] **Step 4: Run** `cargo build -p kmr_api --example xiao_imu --features xiao`. Expected: green.
+- [x] **Step 5: Commit** `feat(api): X07 kmr_api::xiao and its example`.
 
 ### Task X08: on the board (HUMAN)
 

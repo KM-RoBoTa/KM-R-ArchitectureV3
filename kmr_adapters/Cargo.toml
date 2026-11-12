@@ -27,6 +27,8 @@ cubemars = ["dep:socketcan"]
 xiao = ["dep:xiao-api"]
 
 [dev-dependencies]
+# The XIAO adapter's engine tests: the core's scripted host, no real sleep, no global signal bus.
+kmr_core = { workspace = true, features = ["test-util"] }
 # The scripted serial line of the DxlRsV2 contract tests; no `std`, so a test build without
 # `dynamixel` pulls no serial port crate.
 dxl_rs_v2 = { workspace = true, features = ["mock"] }

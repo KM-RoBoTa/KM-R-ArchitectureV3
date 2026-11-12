@@ -1,10 +1,14 @@
 //! The XIAO adapter on `xiao-api`'s fake link: the test plays the board.
 
+use std::cell::RefCell;
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
 
+use kmr_core::hal::NoHardware;
+use kmr_core::test_util::{PER_TICK, Scripted, TICK_END, run_scripted_all};
+use kmr_core::{Drive, Filled, First, HCons, HNil, Init, PostInit, RobotState, Sensors, Time};
 use tracing_subscriber::layer::SubscriberExt;
 use xiao_api::BytesPerSec;
 use xiao_api::link::{Board, Fake};
@@ -710,4 +714,136 @@ fn close_after_unplug_returns() {
     xiao.close();
     let took = start.elapsed();
     assert!(took < Duration::from_millis(100), "close took {took:?}");
+}
+
+// ── X07: through the engine ────────────────────────────────────────────────
+
+// DECISION: here, not in kmr_api/tests/xiao.rs: `on_link` is `#[cfg(test)]` to this crate
+// (deferred). The core's scripted host runs the ticks, so no global signal bus is touched.
+
+/// Actuators of the engine tests' robot, simulated.
+const N: usize = 1;
+
+/// The drivers of a run without hardware.
+fn no_hardware() -> HCons<NoHardware, HNil> {
+    HCons {
+        head: NoHardware,
+        tail: HNil,
+    }
+}
+
+/// `xiao` as the robot's only sensor.
+fn alone(xiao: Xiao) -> HCons<Xiao, HNil> {
+    HCons {
+        head: xiao,
+        tail: HNil,
+    }
+}
+
+/// Runs `robot` on no hardware and `sensing` until the end of tick `last`, the scripted
+/// host's shutdown.
+fn run_until<CS: Drive<N>>(
+    mut robot: kmr_core::Robot<N, CS, Filled>,
+    sensing: &mut HCons<Xiao, HNil>,
+    last: usize,
+) {
+    let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + last * PER_TICK);
+    let ended = run_scripted_all(&mut robot, &mut host, &mut no_hardware(), sensing, &mut ());
+    assert!(ended.is_ok(), "{ended:?}");
+}
+
+/// Waits up to a second for `arrived`: the fake board's messages reach every stream in the
+/// order sent, so what was sent before the probe's message is queued once it is.
+fn settle(arrived: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !arrived() {
+        assert!(Instant::now() < deadline, "the probe's message never came");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// An audio block of 96 quiet samples and one at `-peak`, as a clap.
+fn clap(counter: u32, peak: i16) -> Message {
+    let pcm = (0..96_i16)
+        .map(|i| if i == 48 { -peak } else { i % 7 })
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    Message::Audio(AudioBlock { counter, pcm })
+}
+
+#[test]
+fn a_controller_reads_a_fake_xiao_through_the_engine() {
+    let (usb, board) = Fake::usb();
+    board.auto_answer();
+    let probe = xiao_api::Mic::on(&usb).unwrap();
+    let one_g = (1.0 / AccelRange::G4.g_per_count()).round() as i16;
+    let seen = RefCell::new([None; 4]);
+    let robot = kmr_core::Robot::new()
+        .set_dt(kmr_core::test_util::DT)
+        // Init runs after the sensors' `open`: the IMU is on.
+        .add_control_fn(Init, |_: &Time, _: &mut RobotState<N>, _: &Sensors| {
+            board.send(imu(0, Some([0, 0, one_g]), Some([0, 0, 0])));
+            board.send(block(0, 0));
+            settle(|| probe.try_next().unwrap().is_some());
+        })
+        .add_control_fn(
+            First,
+            |time: &Time, _: &mut RobotState<N>, sensors: &Sensors| {
+                let accel = sensors.imu(0).and_then(|imu| imu.accel());
+                if let Some(slot) = seen.borrow_mut().get_mut(time.tick() as usize) {
+                    *slot = Some(accel);
+                }
+            },
+        );
+    let mut sensing = alone(Xiao::usb().imu().on_link(Opened::Usb(usb)));
+
+    run_until(robot, &mut sensing, 3);
+
+    let seen = seen.into_inner();
+    assert!(
+        seen.iter().all(Option::is_some),
+        "one First per tick: {seen:?}"
+    );
+    let z = seen[3].flatten().map(Accel::z);
+    assert!(z.is_some_and(|z| near(z, 9.806_65, 1e-3)), "{z:?}");
+    assert_eq!(board.commands().last(), Some(&Command::ImuOff));
+}
+
+#[test]
+fn a_controller_hears_a_clap_on_a_fake_xiao_through_the_engine() {
+    let (usb, board) = Fake::usb();
+    board.auto_answer();
+    let probe = xiao_api::Gyro::on(&usb).unwrap();
+    let heard = RefCell::new([None; 2]);
+    let robot = kmr_core::Robot::new()
+        .set_dt(kmr_core::test_util::DT)
+        // After PostInit's read: tick 0's read takes the blocks.
+        .add_control_fn(PostInit, |_: &Time, _: &mut RobotState<N>, _: &Sensors| {
+            board.send(clap(0, 100));
+            board.send(clap(1, 1500));
+            board.send(imu(0, None, Some([0, 0, 0])));
+            settle(|| probe.try_latest().unwrap().is_some());
+        })
+        .add_control_fn(
+            First,
+            |time: &Time, _: &mut RobotState<N>, sensors: &Sensors| {
+                let samples = sensors.mic(0).map_or(&[][..], |mic| mic.samples());
+                let peak = samples.iter().map(|sample| sample.unsigned_abs()).max();
+                if let Some(slot) = heard.borrow_mut().get_mut(time.tick() as usize) {
+                    *slot = Some((samples.len(), peak));
+                }
+            },
+        );
+    let mut sensing = alone(Xiao::usb().mic().on_link(Opened::Usb(usb)));
+
+    run_until(robot, &mut sensing, 1);
+
+    let heard = heard.into_inner();
+    assert_eq!(heard, [Some((192, Some(1500))), Some((0, None))]);
+    assert!(
+        heard[0]
+            .and_then(|(_, peak)| peak)
+            .is_some_and(|peak| peak > 1000)
+    );
+    assert_eq!(board.commands().last(), Some(&Command::MicOff));
 }
