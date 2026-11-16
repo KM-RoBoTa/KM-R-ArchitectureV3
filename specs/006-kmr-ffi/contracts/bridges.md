@@ -10,9 +10,9 @@ The script side of FR-017 and FR-018 (SRS FR-10.1, FR-10.3). Not prototyped yet
 let py = kmr_api::ffi::python::Bridge::load("ctrl/swing.py", "step")?;   // Err(ForeignError::Load)
 let lua = kmr_api::ffi::lua::Bridge::load("ctrl/swing.lua", "step")?;
 
-robot.add_controller_with(EachTick, py, |py, t, s, _| {
+robot.add_controller(EachTick, with(py, |py, t, s, _| {
     if kmr_api::ffi::call(&mut *py, t, s, None::<&mut ()>).is_err() { kmr_api::emergency_stop!(); }
-});
+}));
 ```
 
 - `load` starts the interpreter, runs the file and looks up the function. Every failure is a

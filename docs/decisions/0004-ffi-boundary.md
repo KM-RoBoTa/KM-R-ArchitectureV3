@@ -51,7 +51,7 @@ Six choices shape the boundary:
    applies nothing.
 5. **The bridge is the controller's context** (SRS FR-1.1). `Bridge::load(..)`
    runs in `main.rs` and returns its error there, before `run()` (SRS FR-6.4);
-   the bridge then goes into `add_controller_with`.
+   the bridge then goes into `add_controller(.., with(..))`.
 6. **N ≤ 64** (D4 A). One `u64` per mask; `type Mask = u64` and its one const
    assert, run by the `Default` of `ReadView`, `Slot` and `WriteBuf`, are the
    one place. `Build::compile` refuses the same N at build-script run time. A

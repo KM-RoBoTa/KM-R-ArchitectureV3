@@ -137,13 +137,15 @@ definition to keep in sync.
 
 ### 4. Functions on schedules
 
-Controllers are plain functions. Three registration forms exist:
+Controllers are plain functions, registered with one method, `add_controller(S, x)`:
 
-| Method                                    | Controller signature                                  | Runs on      |
+| `x`                                       | Controller signature                                  | Runs on      |
 |-------------------------------------------|-------------------------------------------------------|--------------|
-| `add_controller(S, f)`                    | `fn(&Time, &mut State, &Sensors)`                     | main loop    |
-| `add_controller_with(S, ctx, f)`          | `fn(&mut T, &Time, &mut State, &Sensors)`             | main loop    |
-| `add_controller_as_thread(S, ctx, f)`     | `fn(&mut T, &Time)`                                   | own thread   |
+| `f`                                       | `fn(&Time, &mut State, &Sensors)`                     | main loop    |
+| `with(ctx, f)`                            | `fn(&mut T, &Time, &mut State, &Sensors)`             | main loop    |
+| `f.or_when(when, fallback)`               | `f` and `fallback` as plain controllers               | main loop    |
+| `threaded(ctx, f)`                        | `fn(&mut T, &Time)`                                   | own thread   |
+| `(a, b, ..)`, up to 8                     | each as above, added left to right                    | as above     |
 
 `ctx` is user data the engine owns and lends back each call. Threaded
 controllers never receive `State`: robot state stays single-writer on the main
@@ -155,8 +157,8 @@ const HOME: Home<N> = Home::new([Q(0.0); N], Duration::from_secs(3));
 Robot::new()
     .set_dt(Duration::from_millis(1))
     .add_controller(EachTick, HOME.then(track_reference))
-    .add_controller_with(EachTick, pad.clone(), use_gamepad)
-    .add_controller_as_thread(EachTick, pad, read_gamepad)
+    .add_controller(EachTick, with(pad.clone(), use_gamepad))
+    .add_controller(EachTick, threaded(pad, read_gamepad))
     .run()?;
 ```
 
@@ -395,7 +397,7 @@ and one check: N ≤ 64, under `cargo check` at the `robot!` line (the core's
 and has none is `UserError::NoPolicy`, before any I/O (D2 B, assumed). A
 placeholder model hands no limit until its real descriptor lands.
 
-**Fallbacks.** `add_controller_or(phase, f, when, fallback)` stores one node
+**Fallbacks.** `add_controller(phase, f.or_when(when, fallback))` stores one node
 that reads the tick's `Faults` and runs exactly one of `f` and `fallback`;
 `when` is any `Fn(&Faults<N>) -> bool`, built from `stale_in(&GROUP)`,
 `remote_timeout()` and `any_of`.

@@ -3,12 +3,12 @@
 
 use kmr_core::ControlFn;
 
-use crate::robot::ApiInline;
+use crate::controller::ApiInline;
 use crate::{Faults, Sensors, State, Time};
 
 /// A controller `F`, its fallback `G`, and the predicate `P` over this tick's [`Faults`] that
 /// picks the fallback. Each tick exactly one of the two runs. Built by
-/// [`Robot::add_controller_or`](crate::Robot::add_controller_or); a named type, so the builder
+/// [`or_when`](crate::OrWhen::or_when); a named type, so the builder
 /// stores it as any controller: no `dyn`, no heap.
 #[doc(hidden)]
 pub struct Guarded<F, G, P> {

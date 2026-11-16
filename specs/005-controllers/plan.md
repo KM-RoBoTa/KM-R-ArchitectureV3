@@ -135,7 +135,7 @@ C0 is unblocked and must land before kmr_api plan A4 (`Robot<H>`): once `H` is g
 | C6 | HUMAN | V5, V6: bench runs, History bounds, Ctrl-C, `Torque_Enable` = 0 | critical path steps 1 to 9 | SC-009, SC-010 (SRS FR-4.1, FR-4.3) |
 | C7 | HUMAN | V7: onboarding trial against the ROS2 baseline | C3, C6 | SC-001, SC-002 (SRS FR-10.4) |
 | C8 | HUMAN | CI smoke run of V2 (`.github/workflows/ci.yml` is outside this module) | C2 | SC-011 |
-| C9 | Agent | `main.rs`: one builder line, `.set_limit_policy_all(Policy::Clamp)`, before `.add_controller_with`. Assumed, pending human: D2 (option B). The swing never reaches a limit (R3); the line is there because `run()` requires it. Walkthrough lists it | kmr_api C4, core K5.3 | FR-022 (SRS FR-4.5 open, FR-6.4) |
+| C9 | Agent | `main.rs`: one builder line, `.set_limit_policy_all(Policy::Clamp)`, before `.add_controller(.., with(..))`. Assumed, pending human: D2 (option B). The swing never reaches a limit (R3); the line is there because `run()` requires it. Walkthrough lists it | kmr_api C4, core K5.3 | FR-022 (SRS FR-4.5 open, FR-6.4) |
 
 ## Complexity Tracking
 

@@ -65,7 +65,7 @@ pub mod build {
 /// A Python function as the foreign body (feature `ffi-python`): an embedded CPython, 0-based.
 ///
 /// `Bridge::load(path, function)` in `main`, before `run()`; the bridge is the context of an
-/// `add_controller_with` forwarder that passes `&mut bridge` to [`call`]. The GIL and the
+/// `with(bridge, forwarder)` controller that passes `&mut bridge` to [`call`]. The GIL and the
 /// interpreter's allocations are the user's cost (SRS FR-10.3).
 #[cfg(feature = "ffi-python")]
 pub mod python {

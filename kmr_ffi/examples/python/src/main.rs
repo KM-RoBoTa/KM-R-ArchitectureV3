@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use kmr_api::ffi::python::Bridge;
-use kmr_api::{EachTick, Sensors, Time};
+use kmr_api::{EachTick, Sensors, Time, with};
 
 kmr_api::robot!(XmBench);
 
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bridge = Bridge::load(concat!(env!("CARGO_MANIFEST_DIR"), "/swing.py"), "step")?;
     Robot::new()
         .set_dt(Duration::from_millis(1))
-        .add_controller_with(EachTick, bridge, forward)
+        .add_controller(EachTick, with(bridge, forward))
         .run()?;
     Ok(())
 }

@@ -6,7 +6,7 @@ pending human: Dn" marks a choice made with the recommended option of the coordi
 ## R1. Shipped bus line (spec Q1). Assumed, pending human: D15 A
 
 - **Decision**: the shipped `main.rs` binds no bus. It simulates anywhere, in CI included. The
-  walkthrough adds one line, `.add_plugins(Bus::by_id("<serial>"))`, before `.add_controller_with`.
+  walkthrough adds one line, `.add_plugins(Bus::by_id("<serial>"))`, before `.add_controller(.., with(..))`.
 - **Rationale**: the port is per machine (FR-006 (SRS FR-6.3)), so every user but one edits the
   line anyway. A shipped serial would make every other machine fail at bring-up.
 - **Alternatives**: B, the bench adapter's serial: moves the bench with no edit, fails

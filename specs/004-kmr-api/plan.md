@@ -157,7 +157,7 @@ descriptor errors and the trybuild suite. This plan owns only the rows below.
 
 | # | Who | Work | Blocked on | FR |
 | --- | --- | --- | --- | --- |
-| E1 | Agent | `fallback.rs`: `Guarded<F, G, P>`, `add_controller_or`, predicates | C2 | FR-049, FR-050 (SRS FR-13.5) |
+| E1 | Agent | `fallback.rs`: `Guarded<F, G, P>`, `or_when`, predicates | C2 | FR-049, FR-050 (SRS FR-13.5) |
 | E2 | Agent | `envelope.rs`: `set_envelope[_group]`, handed to the core's stage (D3 A) | core #20, envelope flag | FR-051, FR-052 (SRS FR-13.5) |
 
 ### F. Security (delivery step 7)

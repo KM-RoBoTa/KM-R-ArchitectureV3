@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use kmr_api::{Bus, EachTick, Payload, Sensors, Time, UserError};
+use kmr_api::{Bus, EachTick, Payload, Sensors, Time, UserError, with};
 
 kmr_api::robot!(XmBench);
 
@@ -42,7 +42,7 @@ fn without_a_plugin_it_simulates_until_the_shutdown() {
     let record = seen();
     let res = Robot::new()
         .set_dt(Duration::from_millis(1))
-        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<3>)
+        .add_controller(EachTick, with(Arc::clone(&record), stop_at::<3>))
         .run();
     assert!(res.is_ok(), "{res:?}");
     let ms = Duration::from_millis(1);
@@ -55,7 +55,7 @@ fn a_plugin_without_the_feature_is_refused_before_the_run() {
     let record = seen();
     let res = Robot::new()
         .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
-        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+        .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
         .run();
     assert!(
         matches!(
@@ -75,7 +75,7 @@ fn two_plugins_on_one_port_are_refused_before_the_run() {
     let res = Robot::new()
         .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
         .add_plugins(Bus::by_id("kmr-test-no-such-serial").bus("arm"))
-        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+        .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
         .run();
     assert!(
         matches!(
@@ -95,7 +95,7 @@ fn a_dt_out_of_range_is_refused_before_the_run() {
         let record = seen();
         let res = Robot::new()
             .set_dt(dt)
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         assert!(
             matches!(res, Err(UserError::DtOutOfRange { dt: refused }) if refused == dt),
@@ -112,7 +112,7 @@ fn a_dt_of_10_us_or_1_s_runs() {
         let record = seen();
         let res = Robot::new()
             .set_dt(dt)
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         assert!(res.is_ok(), "{res:?}");
         assert_eq!(ticks(&record), [(0, dt)]);
@@ -126,7 +126,7 @@ fn a_payload_on_an_unknown_link_is_refused_before_the_plugins() {
         .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
         .register_payload(Payload::medium(1.2, "link4"))
         .register_payload(Payload::medium(1.2, "nope"))
-        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+        .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
         .run();
     assert!(
         matches!(res, Err(UserError::UnknownLink { link: "nope" })),
@@ -143,7 +143,7 @@ fn a_payload_on_a_model_link_runs() {
         .set_dt(Duration::from_millis(1))
         .register_payload(Payload::medium(1.2, "link4"))
         .register_payload(Payload::heavy(3.0, "base"))
-        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<1>)
+        .add_controller(EachTick, with(Arc::clone(&record), stop_at::<1>))
         .run();
     assert!(res.is_ok(), "{res:?}");
     assert_eq!(ticks(&record).len(), 2);
@@ -163,7 +163,7 @@ fn actuators_on_a_preset_robot_are_refused_before_the_run() {
             robot
         };
         let res = robot
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         assert!(
             matches!(res, Err(UserError::PresetHardware { preset: "XmBench" })),
@@ -194,7 +194,7 @@ mod urdf {
         let res = Robot::new()
             .set_dt(Duration::from_millis(1))
             .set_limit_policy_all(Policy::Clamp)
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<1>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<1>))
             .run();
         assert!(res.is_ok(), "{res:?}");
         assert_eq!(ticks(&record).len(), 2);
@@ -207,7 +207,7 @@ mod urdf {
             .set_limit_policy_all(Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
             .add_actuator(Xm430W210::ids(1..=4).on(spine()))
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         assert!(matches!(res, Err(UserError::NoHardwareDeclared)), "{res:?}");
         assert!(ticks(&record).is_empty());
@@ -220,7 +220,7 @@ mod urdf {
             .set_limit_policy_all(Policy::Clamp)
             .add_actuator(Xm430W210::ids(1..=2).on(spine()))
             .add_actuator(Xm430W210::id(3).on(spine()))
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         let Err(e) = res else {
             panic!("three actuators of four ran: {res:?}");
@@ -374,7 +374,7 @@ fn a_missing_serial_is_a_bring_up_error_naming_it() {
     let record = seen();
     let res = Robot::new()
         .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
-        .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+        .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
         .run();
     assert!(
         matches!(&res, Err(UserError::BringUp { source }) if source.to_string().contains("kmr-test-no-such-serial")),
@@ -449,7 +449,7 @@ mod two_buses {
         let res = kmr_api::Robot::<N, TwoBuses>::new()
             .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial").bus("left"))
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         let Err(e) = res else {
             panic!("bound one bus of two: {res:?}");
@@ -845,7 +845,7 @@ mod no_table {
         let res = Robot::new()
             .set_limit_policy_all(kmr_api::Policy::Clamp)
             .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
-            .add_controller_with(EachTick, Arc::clone(&record), stop_at::<0>)
+            .add_controller(EachTick, with(Arc::clone(&record), stop_at::<0>))
             .run();
         assert!(matches!(res, Err(UserError::NoHardwareDeclared)), "{res:?}");
         assert!(ticks(&record).is_empty());

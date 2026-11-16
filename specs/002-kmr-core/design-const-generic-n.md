@@ -132,7 +132,7 @@ Compiled and passed (rustc 1.97.1):
 - `cargo build --workspace`, no warnings; `cargo test --workspace`: 8 tests.
 - One test binary with four robots, N = 3, 5, 10, 64, each from its own `robot!`.
 - Two state shapes in one core test (`RobotState<4>`, `RobotState<7, 2>`); bare depth defaults.
-- `fn(&Time, &mut State, &Sensors)`, closures, `add_controller_with`, threaded, groups.
+- `fn(&Time, &mut State, &Sensors)`, closures, `add_controller(.., with(..))`, threaded, groups.
 - `mcore` built for `thumbv7em-none-eabihf` with `#![no_std]`, no `alloc`.
 - Transition bridge: `RobotState<const N: usize = JOINTS>`, `Robot<const N = JOINTS, CS>`,
   `trait Hal<const N: usize = JOINTS>`: bare `RobotState`, bare `Hal` and `Mask` keep compiling.

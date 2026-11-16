@@ -96,7 +96,7 @@ History, write Desired, use groups and units, and raise signals. They import onl
 4. **Given** a function `fn(&Time, &mut State, &Sensors)`, **When** it is registered on
    `EachTick` and `run()` is called, **Then** it runs once per tick, in declaration order.
 5. **Given** a context value `T` and `fn(&mut T, &Time, &mut State, &Sensors)`, **When** it is
-   registered with `add_controller_with`, **Then** every call gets that same value, moved in at
+   registered with `add_controller(.., with(..))`, **Then** every call gets that same value, moved in at
    registration, as an exclusive `&mut T`.
 6. **Given** a group `[3, 4, 5]`, **When** a controller sets all `Q` of that group, **Then**
    only actuators 3, 4 and 5 receive a new command this tick.

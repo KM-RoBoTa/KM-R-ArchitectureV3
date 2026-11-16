@@ -351,7 +351,7 @@ plugin, once with a plugin and no robot.
 | From | What, concretely |
 |---|---|
 | `kmr_api` | `robot!(Preset)` emitting `N`, `State`, `Robot` (SRS FR-6.1) |
-| `kmr_api` | Builder: `new()`, `set_dt`, `add_controller`, `add_controller_with`, `add_plugins(Bus::by_id(..))`, `run()` returning a readable error (SRS section 7) |
+| `kmr_api` | Builder: `new()`, `set_dt`, `add_controller`, `add_controller(.., with(..))`, `add_plugins(Bus::by_id(..))`, `run()` returning a readable error (SRS section 7) |
 | `kmr_core` (through `kmr_api`) | The no-hardware adapter and its one "no bus plugin: simulating" warning when no bus plugin is bound (SRS FR-6.3, kmr_core FR-042) |
 | `kmr_api` | State handle: `q()`, `prev_q(0)`, `set_all_q()`, `set_q_at()`; `Q`, `Qd`, `Tau` |
 | `kmr_api` | Public `Time` getters `elapsed()`, `dt()`, `tick()` (SRS FR-3.3; none are public today) |

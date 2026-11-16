@@ -1,6 +1,6 @@
 //! Your controllers live here. This crate depends on `kmr_api` only.
 
-use kmr_api::{EachTick, Q, Sensors, Time, presets::home::Home, shutdown};
+use kmr_api::{EachTick, Q, Sensors, Time, presets::home::Home, shutdown, with};
 use std::{f32::consts::TAU, time::Duration};
 // Two snakes: twelve AX-12A, ids 1 to 12, on AL02L1KL, and ten RX-28, ids 1 to 10, on AL02L1EU,
 // both at 1 Mbit/s; `cargo run -p controllers --features hardware`. Protocol 1 reads one servo
@@ -172,7 +172,7 @@ fn main() {
         // DECISION: HOME before `move_on_clap`: controllers run in the order added, so once home
         // the actuators get what `move_on_clap` writes, not HOME's pose.
         .add_controller(EachTick, HOME.controller())
-        .add_controller_with(EachTick, Clap::default(), move_on_clap)
+        .add_controller(EachTick, with(Clap::default(), move_on_clap))
         .add_controller(EachTick, shutdown_after_some_time);
     // The microphone, on the XIAO's USB plug; without `hardware` no clap is heard.
     #[cfg(feature = "hardware")]

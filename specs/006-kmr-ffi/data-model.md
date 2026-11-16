@@ -116,7 +116,7 @@ with the bridge's call; their interpreter work is the user's cost (FR-005 (SRS F
 main.rs: Bridge::load(path, fn)  ──Err──▶ returned to main, before run()   (FR-020)
              │ Ok
              ▼
-add_controller_with(phase, bridge, forwarder)    (bridge is the context, SRS FR-1.1)
+add_controller(phase, with(bridge, forwarder))    (bridge is the context, SRS FR-1.1)
              │
              ▼  each call: refill sequences → call fn → read write object → apply
              │  script error → ForeignError, nothing applied
