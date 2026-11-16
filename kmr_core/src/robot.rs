@@ -275,29 +275,8 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
     }
 
     #[cfg(feature = "std")]
-    /// Adds a new plain user defined threaded controller with a persistant
-    /// context managed by the user.
-    ///
-    /// A threaded controller is not allowed to write the
-    /// [`crate::state::RobotState`] — it gets only its context `T` and the clock.
-    /// `pub(crate)`, see [`Robot::add_controller`].
-    pub(crate) fn add_controller_as_thread<S, T, F>(
-        self,
-        schedule: S,
-        ctx: T,
-        f: F,
-    ) -> Robot<N, CS::Output, Filled>
-    where
-        CS: Insert<S, Threaded<F, T>>,
-        T: Sync + Send,
-        F: Fn(&Time, &mut T),
-        S: Schedule,
-    {
-        self.insert_controller(schedule, Threaded(f, ctx))
-    }
-
-    #[cfg(feature = "std")]
-    /// Pre-wrapped `add_controller_as_thread` — the entry `kmr_api` uses.
+    /// Adds a pre-wrapped threaded controller with its context: the entry `kmr_api` uses.
+    /// It gets only its context `T` and the clock, never the state.
     pub fn add_control_fn_as_thread<S, T, C>(
         self,
         schedule: S,

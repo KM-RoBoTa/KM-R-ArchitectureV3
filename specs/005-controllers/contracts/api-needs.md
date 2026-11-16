@@ -7,7 +7,7 @@ and `main.rs` change together. Status is the repo on 2026-10-28.
 |---|---|---|---|
 | `kmr_api::robot!(XmBench)` emitting `N`, `State<'a>`, `Robot` | robot line | exists; `main.rs` adopts it in plan C0, before kmr_api A4 | kmr_api, SRS FR-6.1 |
 | `.set_limit_policy_all(Policy)`, `Policy::Clamp` | builder (plan C9) | **missing** | kmr_api C4 over core K5.2, K5.3 (HUMAN); assumed, pending human: D2 B (SRS FR-4.5) |
-| `Robot::new()`, `.set_dt(Duration)`, `.add_controller_with(S, T, F)`, `.run()` | builder | exists | kmr_api, SRS section 7 |
+| `Robot::new()`, `.set_dt(Duration)`, `.add_controller(S, with(T, F))`, `.run()` | builder | exists | kmr_api, SRS section 7 |
 | `.add_plugins(Bus::by_id(&'static str))` | walkthrough line | exists; drives nothing yet | kmr_api, critical path step 9 |
 | `EachTick`, `Sensors`, `Q`, `UserError` | imports | exist | kmr_api |
 | `shutdown!` | end of demo | exists (re-export) | kmr_core, kmr_api |
@@ -21,7 +21,7 @@ and `main.rs` change together. Status is the repo on 2026-10-28.
 | `UserError`'s `Debug` prints its `Display` message | readable error from `main` | **missing** | kmr_api FR-021 (SRS FR-6.4) |
 | Exactly one simulation warning, the core's | row 1 of run-behaviour | **two today** | kmr_core FR-042, kmr_api FR-026 (SRS FR-6.3) |
 
-Not called, on purpose (FR-012 (SRS FR-1.2, FR-2.7, FR-8.4)): `add_controller_as_thread`,
+Not called, on purpose (FR-012 (SRS FR-1.2, FR-2.7, FR-8.4)): `threaded`,
 `initial_state`, `go_home`, `register_payload`, groups, `Bus::by_dev`. (Superseded 2026-11-11: SRS FR-2.7 closed home as a kmr_api preset, `kmr_api::presets::home::Home`.)
 
 Under the const-generic N design, `State` becomes `kmr_api::State<'a, N>` behind the same

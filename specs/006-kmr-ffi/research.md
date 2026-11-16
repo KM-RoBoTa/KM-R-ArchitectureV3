@@ -174,7 +174,7 @@ count can be forgotten too.
 **Decision**: `kmr_ffi::python::Bridge` over `pyo3` (embedded CPython) and `kmr_ffi::lua::Bridge`
 over `mlua` (vendored Lua 5.4). Each is an opt-in feature. `Bridge::load(path, function)` runs in
 `main.rs` and returns its error there (FR-020 (SRS FR-6.4)). The bridge is the controller's
-context (`add_controller_with`).
+context (`add_controller(.., with(..))`).
 
 Per call, the bridge refills persistent sequences (`q`, `qd`, `tau` per depth, `age`, `stale`,
 `time`) and reads back a write object with `set_q(i, v)` etc. Python and Lua errors become

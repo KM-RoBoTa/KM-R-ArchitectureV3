@@ -46,7 +46,7 @@ Size is fixed at compile time, about 32 bytes for N = 4. No heap.
 ## Controller `swing` on `EachTick`
 
 `fn swing(ctx: &mut Swing, time: &Time, robot: &mut State, _: &Sensors)`, registered with
-`add_controller_with(EachTick, Swing::default(), swing)` (FR-013, FR-015 (SRS FR-1.1, FR-1.4)).
+`add_controller(EachTick, with(Swing::default(), swing))` (FR-013, FR-015 (SRS FR-1.1, FR-1.4)).
 
 Per tick, in this order:
 
@@ -79,7 +79,7 @@ Robot::new()
     .set_dt(1 ms)
     .set_limit_policy_all(Policy::Clamp)     // plan C9; assumed, pending human: D2 B
     [.add_plugins(Bus::by_id("<serial>"))   // added by the walkthrough only, D15 A]
-    .add_controller_with(EachTick, Swing::default(), swing)
+    .add_controller(EachTick, with(Swing::default(), swing))
     .run()                                   // main returns this Result
 ```
 

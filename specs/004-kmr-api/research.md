@@ -284,7 +284,7 @@ Prototypes live in the scratchpad, never in the repo:
 
 ## R17. Fallbacks and envelopes (FR-049 to FR-053 (SRS FR-13.5)). Assumed, pending human: D2, D3
 
-- **Fallback**: `add_controller_or(phase, controller, when, fallback)`. The node is
+- **Fallback**: `add_controller(phase, controller.or_when(when, fallback))`. The node is
   `Inline<ApiInline<Guarded<F, G, P>>>`: a named struct, so the builder's return type stays
   expressible. `Guarded::call` reads the tick's fault flags and calls `fallback` or `controller`.
   Predicates are plain `Fn(&Faults) -> bool` values; helpers `stale_in(&GROUP)`,
