@@ -1,6 +1,6 @@
 [package]
 name = "kmr_ffi"
-description = "Plain C types, headers and script bridges that let a kmr controller hand its math to C, C++, Python or Lua."
+description = "The C ABI, headers and build helper of kmr controllers written in C and C++, and the Lua bridge."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

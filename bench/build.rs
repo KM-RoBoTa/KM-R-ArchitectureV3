@@ -1,4 +1,4 @@
-//! Compiles the foreign body of `tick_ffi` (feature `ffi`) for the robot it names, and nothing
+//! Compiles the C controller of `tick_ffi` (feature `ffi`) for the robot it names, and nothing
 //! else (assumed, pending human: D12 A). Without the feature it does nothing.
 
 #[cfg(feature = "ffi")]

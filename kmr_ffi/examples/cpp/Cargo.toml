@@ -1,7 +1,7 @@
-# A controller whose math is C++: the four files a C++ user writes (kmr_ffi T019, SRS FR-10.4).
+# A controller written in C++: the four files a C++ user writes (kmr_ffi T019, SRS FR-10.4).
 [package]
 name = "kmr_ffi_example_cpp"
-description = "A kmr controller whose per-tick math is a C++ function."
+description = "A kmr controller written in C++."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

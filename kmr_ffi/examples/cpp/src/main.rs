@@ -1,24 +1,16 @@
-//! A controller whose math is C++: `swing` in src/swing.cpp moves actuators 0 and 2 by 0.1 rad
-//! a tick, through the typed accessors of `kmr_ffi.hpp`. Without a bus plugin it simulates;
-//! with no sample to start from, `swing` returns an error and the robot stops.
+//! A controller written in C++: `swing` in src/swing.cpp moves actuators 0 and 2 by 0.1 rad a
+//! tick, through the methods of `kmr.hpp`. Without a bus plugin it simulates; with no sample to
+//! start from, `swing` asks for an emergency stop and the robot stops.
 
 use std::time::Duration;
 
-use kmr_api::{EachTick, Sensors, Time, UserError};
+use kmr_api::{EachTick, UserError};
 
 kmr_api::robot!(XmBench);
-kmr_api::ffi::foreign! { fn swing; }
-
-/// Hands the tick to `swing`; an error stops the robot.
-fn forward(time: &Time, state: &mut State, _: &Sensors) {
-    if kmr_api::ffi::call(swing, time, state, None::<&mut ()>).is_err() {
-        kmr_api::emergency_stop!("swing failed");
-    }
-}
 
 fn main() -> Result<(), UserError> {
     Robot::new()
         .set_dt(Duration::from_millis(1))
-        .add_controller(EachTick, forward)
+        .add_controller(EachTick, kmr_api::c!(swing_cpp))
         .run()
 }

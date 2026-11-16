@@ -1,5 +1,5 @@
 //! The `tick_ffi` binary end to end (feature `ffi`): a complete run whose `EachTick` no-op is
-//! the empty C body, no allocation on the loop thread (kmr_ffi SC-003; FR-022 (SRS NFR-11)).
+//! the empty C controller, no allocation on the loop thread (kmr_ffi SC-003; FR-022 (SRS NFR-11)).
 
 use std::process::{Command, Stdio};
 

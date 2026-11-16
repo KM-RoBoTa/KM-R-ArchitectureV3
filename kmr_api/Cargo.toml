@@ -24,8 +24,8 @@ dynamixel = ["kmr_adapters/dynamixel"]
 # Batches keep declaration order: the bench's baseline for the presort (SRS
 # FR-5.3; assumed, pending human: D11 B). Off by default.
 presort-off = ["kmr_core/presort-off"]
-# Foreign-language controller math (kmr_ffi), all off by default: without them no FFI code is
-# compiled (FR-072 (SRS FR-10)).
+# C and C++ controllers, `kmr_api::c!` (kmr_ffi). The ffi features are all off by default: without
+# them no FFI code is compiled (FR-072 (SRS FR-10)).
 ffi = ["dep:kmr_ffi"]
 # For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
 ffi-build = ["ffi", "kmr_ffi/build"]

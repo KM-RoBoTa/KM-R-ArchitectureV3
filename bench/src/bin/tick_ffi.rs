@@ -1,37 +1,40 @@
-//! `tick_ffi`: `tick` with an empty C function, bench/ffi/empty.c, as its second `EachTick`
+//! `tick_ffi`: `tick` with an empty C controller, bench/ffi/empty.c, as its second `EachTick`
 //! controller in place of the Rust no-op, so `results compare` against `tick` gives the cost of
-//! one foreign call per tick (FR-022 (SRS NFR-11); kmr_ffi SC-003, its plan E3).
+//! one C controller per tick: the snapshot refilled, the call, the writes applied (FR-022 (SRS
+//! NFR-11); kmr_ffi SC-003, its plan E3).
 
 use std::process::ExitCode;
 
-use kmr_api::{Sensors, Time};
+use kmr_api::{EachTick, First, Last};
 use kmr_bench::alloc::Counting;
+use kmr_bench::probe;
 use kmr_bench::tick::{self, Bench};
 
 kmr_api::robot!(XmBench);
-kmr_api::ffi::foreign! { fn empty; }
 
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// Hands the tick to `empty`; a foreign error stops the robot.
-fn forward(time: &Time, state: &mut State, _: &Sensors) {
-    if kmr_api::ffi::call(empty, time, state, None::<&mut ()>).is_err() {
-        kmr_api::emergency_stop!("the empty C body failed");
-    }
-}
-
 fn main() -> ExitCode {
-    tick::main_with::<N, __Spec, _>(
-        &Bench {
-            binary: "tick_ffi",
-            robot: "XmBench",
-            robot_n: N,
-            plugins: &[],
-            buses: "none",
-            declared: None,
-        },
-        "probe+ffi_empty/each",
-        forward,
-    )
+    let bench = Bench {
+        binary: "tick_ffi",
+        robot: "XmBench",
+        robot_n: N,
+        plugins: &[],
+        buses: "none",
+        declared: None,
+    };
+    let (robot, run) = match tick::begin::<N, __Spec>(&bench) {
+        Ok(started) => started,
+        Err(code) => return code,
+    };
+    let result = robot
+        .add_controller(First, probe::start)
+        .add_controller(First, probe::noop)
+        .add_controller(EachTick, probe::work)
+        .add_controller(EachTick, kmr_api::c!(empty))
+        .add_controller(Last, probe::noop)
+        .add_controller(Last, probe::end)
+        .run();
+    run.finish(&bench, "probe+ffi_empty/each", result)
 }

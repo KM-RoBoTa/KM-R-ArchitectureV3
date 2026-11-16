@@ -1,17 +1,26 @@
-/* C body of tests/time.rs. */
-#include "kmr_ffi.h"
+/* Controller of tests/time.rs. */
+#include "kmr.h"
 
-/* Copies the clock into ctx, a kmr_time_view, field by field. */
-int32_t copy_time(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-                  void *ctx) {
-    (void)read;
-    (void)write;
-    kmr_time_view *out = ctx;
-    out->tick = time->tick;
-    out->dt_ns = time->dt_ns;
-    out->elapsed_ns = time->elapsed_ns;
-    out->overrun_count = time->overrun_count;
-    out->last_overrun_ns = time->last_overrun_ns;
-    out->accumulated_overrun_ns = time->accumulated_overrun_ns;
-    return KMR_CONTINUE;
+/* The clock as the kmr_* time functions give it; mirrored as `TimeOut` in tests/time.rs. */
+typedef struct {
+    uint64_t tick;
+    uint64_t overrun_count;
+    double elapsed;
+    double dt;
+    double last_overrun;
+    double accumulated_overrun;
+    uint32_t late;
+    uint32_t reserved;
+} time_out;
+
+/* Copies the clock through the API; ctx points at a reference to a time_out. */
+void copy_time(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    time_out *out = *(time_out **)ctx;
+    out->tick = kmr_tick(time);
+    out->overrun_count = kmr_overrun_count(time);
+    out->elapsed = kmr_elapsed(time);
+    out->dt = kmr_dt(time);
+    out->last_overrun = 0.0;
+    out->late = kmr_last_overrun(time, &out->last_overrun);
+    out->accumulated_overrun = kmr_accumulated_overrun(time);
 }
