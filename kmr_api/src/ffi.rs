@@ -1,4 +1,4 @@
-//! Controller math in C, C++, Python or Lua (feature `ffi`, SRS FR-10).
+//! Controller math in C, C++ or Lua (feature `ffi`, SRS FR-10).
 //!
 //! A Rust controller stays the one registered on a phase; it hands one tick's math to a
 //! foreign function with [`call`]: the state and the clock are copied into a [`ReadView`] and a
@@ -62,20 +62,11 @@ pub mod build {
     }
 }
 
-/// A Python function as the foreign body (feature `ffi-python`): an embedded CPython, 0-based.
-///
-/// `Bridge::load(path, function)` in `main`, before `run()`; the bridge is the context of an
-/// `with(bridge, forwarder)` controller that passes `&mut bridge` to [`call`]. The GIL and the
-/// interpreter's allocations are the user's cost (SRS FR-10.3).
-#[cfg(feature = "ffi-python")]
-pub mod python {
-    pub use kmr_ffi::python::Bridge;
-}
-
 /// A Lua function as the foreign body (feature `ffi-lua`): a vendored Lua 5.4, 1-based tables.
 ///
-/// Loaded and called as the Python bridge is; the bridge is `Send`, so it can be
-/// the context of a threaded controller too (SRS FR-1.2).
+/// `Bridge::load(path, function)` in `main`, before `run()`; the bridge is the context of a
+/// `with(bridge, forwarder)` controller that passes `&mut bridge` to [`call`]. It is `Send`, so
+/// it can be the context of a threaded controller too (SRS FR-1.2).
 #[cfg(feature = "ffi-lua")]
 pub mod lua {
     pub use kmr_ffi::lua::Bridge;

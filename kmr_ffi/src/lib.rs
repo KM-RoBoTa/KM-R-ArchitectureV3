@@ -1,4 +1,4 @@
-//! Foreign-language controller math for kmr: C, C++, Python and Lua.
+//! Foreign-language controller math for kmr: C, C++ and Lua.
 //!
 //! A Rust controller stays the one registered on a phase. It hands one tick's math to a
 //! foreign function: kmr_api's glue copies the state into a [`ReadView`] and the clock into a
@@ -15,7 +15,6 @@
 //!
 //! - `build`: the build-script helper that writes the C and C++ headers and compiles the user's
 //!   sources.
-//! - `python`: `python::Bridge`, an embedded CPython; needs the Python headers and library.
 //! - `lua`: `lua::Bridge`, a vendored Lua 5.4; needs only a C compiler. Tables are 1-based.
 //!
 //! # Safety of the foreign side
@@ -27,8 +26,8 @@
 //!   `HISTORY_DEPTH` slots long; `kmr_set_<field>` ignores an index past N, a raw array write
 //!   does not.
 //! - Slow, allocating or blocking foreign code is allowed: kmr counts the overruns and does not
-//!   enforce a language's cost (FR-005 (SRS FR-10.3)). The Python bridge takes the GIL and the
-//!   Lua bridge runs its VM, both allocating, on every call: that cost is the user's.
+//!   enforce a language's cost (FR-005 (SRS FR-10.3)). The Lua bridge runs its VM, which
+//!   allocates, on every call: that cost is the user's.
 
 #![forbid(clippy::unwrap_used)]
 #![deny(clippy::panic, clippy::indexing_slicing)]
@@ -36,14 +35,12 @@
 
 mod call;
 mod fields;
-#[cfg(any(feature = "python", feature = "lua", test))]
+#[cfg(any(feature = "lua", test))]
 mod script;
 mod view;
 
 #[cfg(feature = "lua")]
 pub mod lua;
-#[cfg(feature = "python")]
-pub mod python;
 
 // Also under test, so the default test run checks the headers.
 #[cfg(any(feature = "build", test))]

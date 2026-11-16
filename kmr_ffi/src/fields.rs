@@ -92,7 +92,7 @@ mod tests {
     }
 
     /// Writes `body` to a fresh script file and returns its path.
-    #[cfg(any(feature = "python", feature = "lua"))]
+    #[cfg(feature = "lua")]
     fn script(name: &str, body: &str) -> String {
         let path =
             std::env::temp_dir().join(format!("kmr_ffi_dummy_{}_{name}", std::process::id()));
@@ -101,7 +101,7 @@ mod tests {
     }
 
     /// Calls a bridge once at N = 4, D = 2.
-    #[cfg(any(feature = "python", feature = "lua"))]
+    #[cfg(feature = "lua")]
     fn once<F: crate::Foreign<4, 2>>(f: F) -> Result<crate::Status, crate::ForeignError> {
         crate::call(
             f,
@@ -110,22 +110,6 @@ mod tests {
             &crate::TimeView::default(),
             None::<&mut ()>,
         )
-    }
-
-    #[cfg(feature = "python")]
-    #[test]
-    fn one_line_adds_a_field_to_the_python_bridge() {
-        use crate::python::Bridge;
-        let path = script(
-            "step.py",
-            "def step(r, w, t):\n\
-             \x20   assert len(r.dummy) == 2 and len(r.dummy[0]) == 4\n\
-             \x20   w.set_dummy(3, 1.5)\n\
-             \x20   assert w.written_dummy == 0b1000 and w.dummy[3] == 1.5\n",
-        );
-        let mut b =
-            Bridge::load_with(&path, "step", WITH_DUMMY, crate::script::FLAGS).expect("loads");
-        assert_eq!(once(&mut b), Ok(crate::Status::Continue));
     }
 
     #[cfg(feature = "lua")]

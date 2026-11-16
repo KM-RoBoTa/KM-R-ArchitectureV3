@@ -246,7 +246,7 @@ fn drain<const N: usize>(t: &Tables, buf: &mut WriteBuf<N>) -> mlua::Result<()> 
 fn status(ret: &Value) -> Result<Status, ForeignError> {
     match ret {
         Value::Nil => Ok(Status::Continue),
-        // DECISION: integers only, so `return 2.0` is `Code(-1)`, as a wrong Python type is.
+        // DECISION: integers only, so `return 2.0` is `Code(-1)`.
         Value::Integer(rc) => i32::try_from(*rc)
             .ok()
             .and_then(Status::from_code)

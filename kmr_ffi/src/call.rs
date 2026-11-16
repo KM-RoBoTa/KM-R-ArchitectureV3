@@ -52,9 +52,6 @@ pub enum ForeignError {
     /// A C or C++ body returned a negative or unknown code; a bridge's wrong return is `-1`.
     #[error("foreign controller returned {0}")]
     Code(i32),
-    /// A Python exception, as text.
-    #[error("python: {0}")]
-    Python(String),
     /// A Lua error, as text.
     #[error("lua: {0}")]
     Lua(String),

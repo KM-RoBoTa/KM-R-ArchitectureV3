@@ -12,13 +12,11 @@ repository.workspace = true
 thiserror.workspace = true
 cc = { workspace = true, optional = true }
 kmr_model_core = { workspace = true, optional = true }
-pyo3 = { workspace = true, optional = true }
 mlua = { workspace = true, optional = true }
 
 # All off by default: a build without them compiles no foreign-language code.
 [features]
 build = ["dep:cc", "dep:kmr_model_core"]
-python = ["dep:pyo3"]
 lua = ["dep:mlua"]
 
 [lints]

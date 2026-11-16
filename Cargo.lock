@@ -1461,7 +1461,6 @@ dependencies = [
  "cc",
  "kmr_model_core",
  "mlua",
- "pyo3",
  "thiserror",
 ]
 
@@ -1481,13 +1480,6 @@ dependencies = [
 
 [[package]]
 name = "kmr_ffi_example_lua"
-version = "0.1.0"
-dependencies = [
- "kmr_api",
-]
-
-[[package]]
-name = "kmr_ffi_example_python"
 version = "0.1.0"
 dependencies = [
  "kmr_api",

@@ -1,4 +1,4 @@
-//! What the Python and Lua bridges share: the name lists the script objects are built from,
+//! What the Lua bridge uses: the name lists the script objects are built from,
 //! and per-field access to the views in list order.
 //!
 //! Both come from [`for_each_field!`](crate::for_each_field) and

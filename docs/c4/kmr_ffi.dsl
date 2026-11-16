@@ -7,7 +7,7 @@
 // kmr_api::ffi, the glue that fills the views from State and applies the
 // writes, is drawn in kmr_api.dsl.
 
-// The example crates kmr_ffi/examples/{c,cpp,python,lua} are user crates
+// The example crates kmr_ffi/examples/{c,cpp,lua} are user crates
 // (controllers like the controllers crate) and are not drawn.
 
 !element kmr.control {
@@ -16,15 +16,12 @@
     ffiBuild = component "kmr_ffi: build helper" "Feature build, run from the user's build.rs: writes kmr_ffi.h (C11), kmr_ffi.hpp (C++17) and the ABI file for one N and History depth into OUT_DIR, then compiles the user's sources with cc. The headers expose the crossing types and nothing of the engine (SRS FR-10.1)." "Rust, cc, build time"
 
     ffiCall = component "kmr_ffi: call" "Runs one foreign body over the views: clears the write buffer, calls, clears it again on an error so nothing applies. The C path is the crate's only unsafe block; no heap, no lock, no dyn (SRS FR-10.1, FR-2.5, NFR-1, NFR-2)." "Rust"
-    ffiScript = component "kmr_ffi: script lists" "The field, flag and clock names the bridges build their script objects from, and per-field walks over the views, both generated from the field list (SRS FR-10.2)." "Rust macro_rules"
-    ffiPython = component "kmr_ffi: Python bridge" "Feature python: an embedded CPython running the user's step(read, write, time). Persistent objects refilled per call, 0-based. Load errors are returned before run(); an exception applies nothing. GIL and allocation are the user's cost (SRS FR-10.1, FR-10.3, FR-6.4)." "Rust, pyo3"
+    ffiScript = component "kmr_ffi: script lists" "The field, flag and clock names the Lua bridge builds its tables from, and per-field walks over the views, both generated from the field list (SRS FR-10.2)." "Rust macro_rules"
     ffiLua = component "kmr_ffi: Lua bridge" "Feature lua: a vendored Lua 5.4 state running the user's step(read, write, time). 1-based tables, 0-based mask bits, age -1 for never read; Send. Load errors are returned before run(); a Lua error applies nothing (SRS FR-10.1, FR-10.3, FR-6.4)." "Rust, mlua"
 
     ffiView -> ffiFields "Generates its per-field types from"
     ffiCall -> ffiView "Runs a foreign body over"
     ffiScript -> ffiFields "Generates its names and walks from"
-    ffiPython -> ffiCall "Is a Foreign body for"
-    ffiPython -> ffiScript "Builds its objects from"
     ffiLua -> ffiCall "Is a Foreign body for"
     ffiLua -> ffiScript "Builds its tables from"
     ffiBuild -> ffiFields "Generates the header lines from"
@@ -82,7 +79,7 @@
         ffiCFn = component "call::CFn<N, D>" "unsafe extern C fn(*const ReadView, *mut WriteBuf, *const TimeView, *mut c_void) -> i32." "Rust type alias" {
             tags "Code"
         }
-        ffiForeign = component "call::Foreign<N, D>" "Something call runs once: invoke over the views and an optional context. Implemented for CFn, the two bridges and &mut of any." "Rust trait" {
+        ffiForeign = component "call::Foreign<N, D>" "Something call runs once: invoke over the views and an optional context. Implemented for CFn, the Lua bridge and &mut of any." "Rust trait" {
             tags "Code"
         }
         ffiCallFn = component "call::call" "Clear, invoke, clear on error." "Rust fn" {
@@ -91,13 +88,7 @@
         ffiStatus = component "call::Status" "Continue, Shutdown, EmergencyStop from the codes 0, 1, 2." "Rust enum" {
             tags "Code"
         }
-        ffiError = component "call::ForeignError" "Code(i32), Python(String), Lua(String), Load(String); one-line Display." "Rust enum, thiserror" {
-            tags "Code"
-        }
-    }
-
-    group "kmr_ffi: Python bridge" {
-        ffiPyBridge = component "python::Bridge" "The script's function, the prelude's object builder and the persistent read, write, time objects, built on the first call for N and D." "Rust struct" {
+        ffiError = component "call::ForeignError" "Code(i32), Lua(String), Load(String); one-line Display." "Rust enum, thiserror" {
             tags "Code"
         }
     }
@@ -112,7 +103,6 @@
     ffiCallFn -> ffiError "Returns"
     ffiCallFn -> ffiStatus "Returns"
     ffiCFn -> ffiForeign "Implements"
-    ffiPyBridge -> ffiForeign "Implements"
     ffiLuaBridge -> ffiForeign "Implements"
     ffiCallFn -> ffiWriteBuf "Clears"
     ffiReadView -> ffiSlot "Holds D of"
