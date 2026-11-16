@@ -2,8 +2,8 @@
 //! feature it does nothing.
 
 #[cfg(feature = "c")]
-fn main() -> Result<(), kmr_api::ffi::build::Error> {
-    kmr_api::ffi::build::model("models/ax_12_12act_an_rx28_10act.urdf")
+fn main() -> Result<(), kmr_api::ffi::c::build::Error> {
+    kmr_api::ffi::c::build::model("models/ax_12_12act_an_rx28_10act.urdf")
         .compile(&["c/clap.c", "cpp/clap.cpp"])
 }
 

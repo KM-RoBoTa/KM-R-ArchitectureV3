@@ -7,7 +7,7 @@ use core::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use kmr_api::ffi::{__Sensors, __State, __Time, CController};
+use kmr_api::ffi::c::{__Sensors, __State, __Time, CController};
 use kmr_api::{EachTick, Last, Sensors, Time, with};
 
 kmr_api::robot!(XmBench);

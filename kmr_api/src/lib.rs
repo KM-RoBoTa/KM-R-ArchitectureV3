@@ -125,17 +125,8 @@ pub use kmr_model::model as __model;
 
 pub use kmr_core::{emergency_stop, shutdown};
 
-#[cfg(feature = "ffi")]
+#[cfg(any(feature = "ffi", feature = "lua", feature = "python"))]
 pub mod ffi;
-
-#[cfg(feature = "python")]
-pub mod python;
-
-#[cfg(feature = "lua")]
-pub mod lua;
-
-#[cfg(any(feature = "python", feature = "lua"))]
-mod snapshot;
 
 #[cfg(feature = "xiao")]
 pub mod xiao;

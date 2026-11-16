@@ -18,7 +18,7 @@ user code:
 - **`kmr_ffi`** (`kmr_ffi/`) — the plain `#[repr(C)]` snapshot of C and C++
   controllers and the build helper that writes the generated `kmr.h` /
   `kmr.hpp` and compiles the user's sources. No engine dependency; users
-  reach it only through `kmr_api::c!` and `kmr_api::ffi::build` (features
+  reach it only through `kmr_api::c!` and `kmr_api::ffi::c::build` (features
   `ffi`, `ffi-build`): each tick the node refills the snapshot, calls the C
   function, and applies its staged writes through the `State` setters. Its
   example crates, `kmr_ffi/examples/{c,cpp}/`, are workspace members: a

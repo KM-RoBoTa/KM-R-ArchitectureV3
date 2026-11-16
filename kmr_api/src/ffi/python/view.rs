@@ -8,7 +8,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::snapshot::{
+use crate::ffi::snapshot::{
     F_KD, F_KP, F_Q, F_QD, F_TAU, FaultBits, ImuSnap, SensorsSnap, Snapshot, TimeSnap, indices,
 };
 use crate::{Sensors, State, StateError, Time};

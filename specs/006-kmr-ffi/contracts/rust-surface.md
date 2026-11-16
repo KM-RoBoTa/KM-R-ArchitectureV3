@@ -9,7 +9,7 @@ are the contract; bodies are the implementation's.
 | Crate | Feature | Brings |
 |---|---|---|
 | `kmr_api` | `ffi` | `kmr_api::ffi::{foreign, call, Status, ForeignError, ReadView, WriteBuf, TimeView}` |
-| `kmr_api` | `ffi-build` | `kmr_api::ffi::build` for `build.rs` |
+| `kmr_api` | `ffi-build` | `kmr_api::ffi::c::build` for `build.rs` |
 | `kmr_api` | `ffi-python` | `kmr_api::ffi::python::Bridge` |
 | `kmr_api` | `ffi-lua` | `kmr_api::ffi::lua::Bridge` |
 
@@ -19,8 +19,8 @@ All off by default. A build without them compiles no FFI code (kmr_api FR-072).
 
 ```rust
 // build.rs
-fn main() -> Result<(), kmr_api::ffi::build::Error> {
-    kmr_api::ffi::build::robot("XmBench")      // or .model("models/arm.urdf")
+fn main() -> Result<(), kmr_api::ffi::c::build::Error> {
+    kmr_api::ffi::c::build::robot("XmBench")      // or .model("models/arm.urdf")
         .compile(&["src/swing.c"])            // headers into OUT_DIR, cc, ABI file
 }
 ```

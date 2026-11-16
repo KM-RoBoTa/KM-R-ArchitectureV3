@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use kmr_api::python::Error;
+use kmr_api::ffi::python::Error;
 use kmr_api::test_util::{
     FakeSensor, Log, PER_TICK, Reading, Recorder, Scripted, TICK_END, run_scripted,
     run_scripted_all,

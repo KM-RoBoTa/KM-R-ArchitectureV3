@@ -63,7 +63,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::controller::{IntoController, seal::Sealed};
-use crate::snapshot::{Seen, phase_name};
+use crate::ffi::snapshot::{Seen, phase_name};
 use crate::{HISTORY_DEPTH, Schedule, Sensors, State, Time};
 use view::{PySensors, PyState, PyTime};
 
@@ -349,14 +349,14 @@ impl Script {
 /// after the phase, `python!("python/clap.py", move_on_clap)` calls `move_on_clap`.
 ///
 /// The path is relative to the calling crate's `Cargo.toml`; `N` from `robot!` must be in
-/// scope. Returns `Result<Script, python::Error>`. See [the module](crate::python).
+/// scope. Returns `Result<Script, python::Error>`. See [the module](crate::ffi::python).
 #[macro_export]
 macro_rules! python {
     ($path:literal $(,)?) => {
-        $crate::python::Script::__load(env!("CARGO_MANIFEST_DIR"), $path, None, N)
+        $crate::ffi::python::Script::__load(env!("CARGO_MANIFEST_DIR"), $path, None, N)
     };
     ($path:literal, $function:ident $(,)?) => {
-        $crate::python::Script::__load(
+        $crate::ffi::python::Script::__load(
             env!("CARGO_MANIFEST_DIR"),
             $path,
             Some(stringify!($function)),

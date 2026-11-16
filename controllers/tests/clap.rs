@@ -6,7 +6,7 @@ use core::cell::{Cell, RefCell};
 use std::f64::consts::TAU;
 use std::time::Instant;
 
-use kmr_api::ffi::CController;
+use kmr_api::ffi::c::CController;
 use kmr_api::test_util::{DT, FakeSensor, Log, Reading, Recorder, Sent, Ticking, run_scripted_all};
 use kmr_api::{EachTick, First, HCons, HNil, Sensors, Time};
 

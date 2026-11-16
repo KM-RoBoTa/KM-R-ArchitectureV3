@@ -74,7 +74,7 @@ use kmr_core::{ControlFnWith, Filled, InlineWith, Insert};
 use mlua::{AnyUserData, Function, Lua, MultiValue, Table, Value};
 
 use crate::controller::{IntoController, seal::Sealed};
-use crate::snapshot::{Seen, SensorsSnap, Snapshot, TimeSnap, phase_name};
+use crate::ffi::snapshot::{Seen, SensorsSnap, Snapshot, TimeSnap, phase_name};
 use crate::{HISTORY_DEPTH, Schedule, Sensors, State, Time};
 use view::{LSensors, LState, LTime};
 
@@ -436,14 +436,14 @@ impl Script {
 /// the phase, `lua!("lua/clap.lua", move_on_clap)` calls `move_on_clap`.
 ///
 /// The path is relative to the calling crate's `Cargo.toml`; `N` from `robot!` must be in
-/// scope. Returns `Result<Script, lua::Error>`. See [the module](crate::lua).
+/// scope. Returns `Result<Script, lua::Error>`. See [the module](crate::ffi::lua).
 #[macro_export]
 macro_rules! lua {
     ($path:literal $(,)?) => {
-        $crate::lua::Script::__load(env!("CARGO_MANIFEST_DIR"), $path, None, N)
+        $crate::ffi::lua::Script::__load(env!("CARGO_MANIFEST_DIR"), $path, None, N)
     };
     ($path:literal, $function:ident $(,)?) => {
-        $crate::lua::Script::__load(
+        $crate::ffi::lua::Script::__load(
             env!("CARGO_MANIFEST_DIR"),
             $path,
             Some(stringify!($function)),

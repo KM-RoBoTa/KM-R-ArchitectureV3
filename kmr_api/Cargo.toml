@@ -30,7 +30,7 @@ presort-off = ["kmr_core/presort-off"]
 # C and C++ controllers, `kmr_api::c!` (kmr_ffi). The ffi features are all off by default: without
 # them no FFI code is compiled (FR-072 (SRS FR-10)).
 ffi = ["dep:kmr_ffi"]
-# For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
+# For a build-dependency: `kmr_api::ffi::c::build`, the helper that compiles C and C++ sources.
 ffi-build = ["ffi", "kmr_ffi/build"]
 # A Python file as a controller: `kmr_api::python!` (needs the Python headers and library).
 python = ["dep:pyo3"]

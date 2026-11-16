@@ -1,5 +1,5 @@
 //! The Lua objects a script's function gets: `time`, `state`, `sensors`, over the shared
-//! [snapshot](crate::snapshot). One of each per controller, refilled in place every tick.
+//! [snapshot](crate::ffi::snapshot). One of each per controller, refilled in place every tick.
 
 use mlua::{
     AnyUserData, Error as LuaError, Lua, MetaMethod, Result as LuaResult, Table, UserData,
@@ -7,7 +7,7 @@ use mlua::{
 };
 
 use crate::StateError;
-use crate::snapshot::{
+use crate::ffi::snapshot::{
     F_KD, F_KP, F_Q, F_QD, F_TAU, FaultBits, ImuSnap, SensorsSnap, Snapshot, TimeSnap, indices,
 };
 

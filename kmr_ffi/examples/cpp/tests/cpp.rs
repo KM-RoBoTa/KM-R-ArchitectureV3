@@ -6,7 +6,7 @@ use core::cell::{Cell, RefCell};
 use core::num::NonZeroU32;
 use std::time::Instant;
 
-use kmr_api::ffi::CController;
+use kmr_api::ffi::c::CController;
 use kmr_api::test_util::{
     DT, Faults, Log, PER_TICK, Recorder, Scripted, Sent, TICK_END, run_scripted,
 };
