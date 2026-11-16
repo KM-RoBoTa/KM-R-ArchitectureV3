@@ -50,9 +50,43 @@ pub fn main_with<const N: usize, H: Spec<N>, F>(
 where
     F: Fn(&Time, &mut State<'_, N>, &Sensors),
 {
+    let (robot, run) = match begin::<N, H>(bench) {
+        Ok(started) => started,
+        Err(code) => return code,
+    };
+    let result = robot
+        .add_controller(First, probe::start)
+        .add_controller(First, probe::noop)
+        .add_controller(EachTick, probe::work)
+        .add_controller(EachTick, each)
+        .add_controller(Last, probe::noop)
+        .add_controller(Last, probe::end)
+        .run();
+    run.finish(bench, controllers, result)
+}
+
+/// A measured run between [`begin`] and [`Run::finish`]: the plan and the calibration before.
+pub struct Run {
+    /// The plan read from the environment.
+    plan: RunPlan,
+    /// Picoseconds per calibration loop before the run.
+    ps_before: u64,
+    /// The probe's own cost.
+    probe_cost_ns: u64,
+}
+
+/// Reads the plan, calibrates and returns the base robot of spec `H` with the bench's plugins,
+/// for a binary that adds its own controllers (`tick_ffi`); a failed plan is the exit code.
+///
+/// The binary adds the probes as [`main_with`] does, runs, then calls [`Run::finish`].
+// DECISION: split out of `main_with` so a controller that is not a Rust `Fn` (a C function
+// from `kmr_api::c!`) is added in the binary, where its type is known.
+pub fn begin<const N: usize, H: Spec<N>>(
+    bench: &Bench<'_>,
+) -> Result<(kmr_api::Robot<N, H>, Run), ExitCode> {
     let plan = match RunPlan::from_env() {
         Ok(plan) => plan,
-        Err(bad) => return failed_plan(bench.binary, bad),
+        Err(bad) => return Err(failed_plan(bench.binary, bad)),
     };
     let _ = probe::EPOCH.set(Instant::now());
     let ps_before = calib::calibrate();
@@ -65,15 +99,42 @@ where
     }
     #[cfg(feature = "zenoh")]
     let robot = robot.add_plugins(gateway());
-    let result = robot
-        .add_controller(First, probe::start)
-        .add_controller(First, probe::noop)
-        .add_controller(EachTick, probe::work)
-        .add_controller(EachTick, each)
-        .add_controller(Last, probe::noop)
-        .add_controller(Last, probe::end)
-        .run();
+    Ok((
+        robot,
+        Run {
+            plan,
+            ps_before,
+            probe_cost_ns,
+        },
+    ))
+}
 
+impl Run {
+    /// Writes the report of the run that ended with `result`; 0 unless it failed.
+    pub fn finish(
+        self,
+        bench: &Bench<'_>,
+        controllers: &str,
+        result: Result<(), kmr_api::UserError>,
+    ) -> ExitCode {
+        let Run {
+            plan,
+            ps_before,
+            probe_cost_ns,
+        } = self;
+        report_run(bench, controllers, result, &plan, ps_before, probe_cost_ns)
+    }
+}
+
+/// The report of a run: what [`Run::finish`] writes.
+fn report_run(
+    bench: &Bench<'_>,
+    controllers: &str,
+    result: Result<(), kmr_api::UserError>,
+    plan: &RunPlan,
+    ps_before: u64,
+    probe_cost_ns: u64,
+) -> ExitCode {
     let ps_after = calib::calibrate();
     let (vm_hwm_kb, stack_kb) = (procfs::vm_hwm_kb(), procfs::stack_kb());
     let timer_slack_ns = procfs::timer_slack_ns();

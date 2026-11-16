@@ -1,10 +1,9 @@
-#include "kmr_ffi.h"
+#include "kmr.h"
 
-int32_t body(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-             void *ctx) {
-    (void)read;
-    (void)write;
-    (void)time;
-    (void)ctx;
-    return 0;
+void body(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    float q;
+    if (kmr_q_at(state, 0, &q) == KMR_OK && kmr_elapsed(time) > 1.0 && kmr_mic(sensors, 0) != NULL &&
+        ctx != NULL) {
+        kmr_shutdown(state, "never");
+    }
 }

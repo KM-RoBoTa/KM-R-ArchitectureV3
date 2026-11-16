@@ -1,49 +1,64 @@
-// C++ bodies of tests/cpp.rs.
+// C++ controllers of tests/cpp.rs.
 #include <stdexcept>
 
-#include "kmr_ffi.hpp"
+#include "kmr.hpp"
 
 // Writes q[0], then throws.
-static std::int32_t throwing_body(kmr::In, kmr::Out out, const kmr_time_view &, void *) {
-    out.set(0, kmr::Q{0.5f});
+static void throwing(const kmr::Time &, kmr::State &state, const kmr::Sensors &) {
+    state.set_q_at(0.5f, 0);
     throw std::runtime_error("controller failed");
 }
-KMR_CPP_CONTROLLER(throwing, throwing_body)
+KMR_CONTROLLER(throwing_cpp, throwing)
 
-// Writes q[0], its non-throwing twin.
-static std::int32_t calm_body(kmr::In, kmr::Out out, const kmr_time_view &, void *) {
-    out.set(0, kmr::Q{0.5f});
-    return KMR_CONTINUE;
+// Counts its calls in its context and writes the count as q[0].
+static void counting(const kmr::Time &, kmr::State &state, const kmr::Sensors &,
+                     std::uint32_t &count) {
+    count += 1;
+    state.set_q_at(static_cast<float>(count), 0);
 }
-KMR_CPP_CONTROLLER(calm, calm_body)
+KMR_CONTROLLER(counting_cpp, counting)
 
-// Rebuilds the view into ctx, a kmr_read_view, through the typed accessors only; the tick
-// flags, which have no typed accessor, from raw().
-static std::int32_t typed_copy_body(kmr::In in, kmr::Out, const kmr_time_view &, void *ctx) {
-    kmr_read_view *copy = static_cast<kmr_read_view *>(ctx);
-    *copy = kmr_read_view{};
-    copy->samples = in.samples();
-    for (std::size_t i = 0; i < KMR_N; i++) {
-        copy->age[i] = in.age(i);
-    }
-    for (std::size_t k = 0; k < KMR_HISTORY_DEPTH; k++) {
-        kmr_slot &slot = copy->slot[k];
-        slot.tick_flags = in.raw().slot[k].tick_flags;
-        for (std::size_t i = 0; i < KMR_N; i++) {
-            slot.q[i] = in.q(k, i).v;
-            slot.qd[i] = in.qd(k, i).v;
-            slot.tau[i] = in.tau(k, i).v;
-            slot.kp[i] = in.kp(k, i).v;
-            slot.kd[i] = in.kd(k, i).v;
-            std::uint64_t bit = std::uint64_t{1} << i;
-            slot.flags.stale |= in.stale(k, i) ? bit : 0;
-            slot.flags.bus_error |= in.bus_error(k, i) ? bit : 0;
-            slot.flags.offline |= in.offline(k, i) ? bit : 0;
-            slot.flags.rejected |= in.rejected(k, i) ? bit : 0;
-            slot.flags.joint_limit |= in.joint_limit(k, i) ? bit : 0;
-            slot.flags.envelope |= in.envelope(k, i) ? bit : 0;
-        }
-    }
-    return KMR_CONTINUE;
+// What the methods answer; mirrored as `CppOut` in tests/cpp.rs.
+struct CppOut {
+    float q1;
+    float group_tau[2];
+    std::uint32_t age3;
+    std::int32_t q1_status;
+    std::int32_t past_n_status;
+    std::int32_t deep_status;
+    std::int32_t prev_qd_status;
+    std::int32_t has_q;
+    std::int32_t has_age3;
+    std::int32_t age_past_n_status;
+    std::int32_t has_faults;
+    std::int32_t offline3;
+    std::int32_t has_group_tau;
+    std::int32_t late;
+    std::int32_t has_mic;
+};
+
+// Reads through the methods into the CppOut its context points at.
+static void read_methods(const kmr::Time &time, kmr::State &state, const kmr::Sensors &sensors,
+                         CppOut *&out) {
+    auto q1 = state.q_at(1);
+    out->q1_status = q1.error();
+    out->q1 = q1.value_or(-1.0f);
+    out->past_n_status = state.q_at(KMR_N).error();
+    out->deep_status = state.prev_kp_at(0, KMR_HISTORY_DEPTH).error();
+    out->prev_qd_status = state.prev_qd(1).error();
+    out->has_q = state.q().has_value();
+    auto age = state.age_at(3);
+    out->has_age3 = age && age->has_value();
+    out->age3 = age && age->has_value() ? **age : 0;
+    out->age_past_n_status = state.age_at(KMR_N).error();
+    auto faults = state.faults();
+    out->has_faults = faults.has_value();
+    out->offline3 = faults && faults->offline().get(3);
+    auto tau = state.group({2, 0}).tau();
+    out->has_group_tau = tau.has_value();
+    out->group_tau[0] = tau ? (*tau)[0] : 0.0f;
+    out->group_tau[1] = tau ? (*tau)[1] : 0.0f;
+    out->late = time.last_overrun().has_value();
+    out->has_mic = sensors.mic(0).has_value();
 }
-KMR_CPP_CONTROLLER(typed_copy, typed_copy_body)
+KMR_CONTROLLER(read_methods_cpp, read_methods)

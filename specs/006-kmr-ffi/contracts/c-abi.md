@@ -1,6 +1,6 @@
 # Contract: C and C++ ABI
 
-What a C or C++ user compiles against. Generated per build by `kmr_api::ffi::build`
+What a C or C++ user compiles against. Generated per build by `kmr_api::ffi::c::build`
 ([rust-surface.md](rust-surface.md)); never hand-edited. Layout proved in
 [research.md](../research.md) R1. Types in [data-model.md](../data-model.md).
 

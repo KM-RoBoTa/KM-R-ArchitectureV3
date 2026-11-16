@@ -1,7 +1,8 @@
 //! The one declaration of what crosses: the state fields and the per-actuator flags.
 //!
 //! Every per-field and per-flag item is generated from these two lists: the Rust types, the
-//! C and C++ headers and the bridges (FR-014 (SRS FR-10.2)). A new field is one line here.
+//! C and C++ headers and kmr_api's fill and apply steps (FR-014 (SRS FR-10.2)). A new field is
+//! one line here.
 
 /// Calls `$cb!` with every field of the core's sealed set, as `name: Type` pairs.
 ///
@@ -47,16 +48,18 @@ mod tests {
 
     /// The types of [`crate::view`], generated from the list with `dummy`.
     mod with_dummy {
+        use crate::c::define_slot;
         use crate::view::define_field_types;
         crate::for_each_field!(plus_dummy, define_field_types);
+        crate::for_each_field!(plus_dummy, define_slot);
     }
 
     #[test]
     fn one_line_adds_a_field_to_the_types() {
-        let slot = with_dummy::Slot::<4>::default();
+        let c_slot = with_dummy::CSlot::<4>::default();
         let buf = with_dummy::WriteBuf::<4>::default();
         let written = with_dummy::Written::default();
-        assert_eq!(slot.dummy.len(), 4);
+        assert_eq!(c_slot.dummy.len(), 4);
         assert_eq!(buf.dummy.len(), 4);
         assert_eq!(written.dummy, 0);
         assert_eq!(
@@ -67,81 +70,23 @@ mod tests {
 
     #[test]
     fn one_line_adds_a_field_to_the_headers() {
-        use crate::build::{FLAGS, c_header_from, cpp_header_from, field_names};
+        use crate::build::{FLAGS, Sizes, c_header_from, cpp_header_from, field_names};
         let fields = crate::for_each_field!(plus_dummy, field_names);
-        let c = c_header_from(4, 4, fields, FLAGS);
+        let sizes = Sizes {
+            history_depth: 4,
+            max_imus: 4,
+            max_mics: 1,
+            mic_window: 16,
+        };
+        let c = c_header_from(4, sizes, fields, FLAGS);
         assert_eq!(c.matches("    float dummy[KMR_N];\n").count(), 2);
         assert!(c.contains("    uint64_t dummy;\n"));
-        assert!(c.contains("static inline void kmr_set_dummy(kmr_write_buf *w"));
+        assert!(c.contains("static inline kmr_status kmr_set_dummy_at(kmr_state *s"));
+        assert!(c.contains("static inline kmr_status kmr_group_set_all_dummy(kmr_state *s"));
+        assert!(c.contains("    s->write.written.dummy = 0;\n"));
         let cpp = cpp_header_from(fields, FLAGS);
-        assert!(cpp.contains("struct Dummy {"));
-        assert!(cpp.contains("Dummy dummy(std::size_t depth, std::size_t i) const noexcept"));
-        assert!(cpp.contains("void set(std::size_t i, Dummy v) noexcept"));
-    }
-
-    use crate::script::names;
-
-    /// The field names with `dummy`, as both bridges get them.
-    const WITH_DUMMY: &[&str] = crate::for_each_field!(plus_dummy, names);
-
-    #[test]
-    fn one_line_adds_a_field_to_the_bridge_lists() {
-        let (last, real) = WITH_DUMMY.split_last().expect("not empty");
-        assert_eq!(*last, "dummy");
-        assert_eq!(real, crate::script::FIELDS);
-    }
-
-    /// Writes `body` to a fresh script file and returns its path.
-    #[cfg(any(feature = "python", feature = "lua"))]
-    fn script(name: &str, body: &str) -> String {
-        let path =
-            std::env::temp_dir().join(format!("kmr_ffi_dummy_{}_{name}", std::process::id()));
-        std::fs::write(&path, body).expect("temp dir is writable");
-        path.to_string_lossy().into_owned()
-    }
-
-    /// Calls a bridge once at N = 4, D = 2.
-    #[cfg(any(feature = "python", feature = "lua"))]
-    fn once<F: crate::Foreign<4, 2>>(f: F) -> Result<crate::Status, crate::ForeignError> {
-        crate::call(
-            f,
-            &crate::ReadView::default(),
-            &mut crate::WriteBuf::default(),
-            &crate::TimeView::default(),
-            None::<&mut ()>,
-        )
-    }
-
-    #[cfg(feature = "python")]
-    #[test]
-    fn one_line_adds_a_field_to_the_python_bridge() {
-        use crate::python::Bridge;
-        let path = script(
-            "step.py",
-            "def step(r, w, t):\n\
-             \x20   assert len(r.dummy) == 2 and len(r.dummy[0]) == 4\n\
-             \x20   w.set_dummy(3, 1.5)\n\
-             \x20   assert w.written_dummy == 0b1000 and w.dummy[3] == 1.5\n",
-        );
-        let mut b =
-            Bridge::load_with(&path, "step", WITH_DUMMY, crate::script::FLAGS).expect("loads");
-        assert_eq!(once(&mut b), Ok(crate::Status::Continue));
-    }
-
-    #[cfg(feature = "lua")]
-    #[test]
-    fn one_line_adds_a_field_to_the_lua_bridge() {
-        use crate::lua::Bridge;
-        let path = script(
-            "step.lua",
-            "function step(r, w, t)\n\
-             \x20 assert(#r.dummy == 2 and #r.dummy[1] == 4)\n\
-             \x20 w.set_dummy(4, 1.5)\n\
-             \x20 assert(w.written_dummy == 8 and w.dummy[4] == 1.5)\n\
-             end\n",
-        );
-        let mut b =
-            Bridge::load_with(&path, "step", WITH_DUMMY, crate::script::FLAGS).expect("loads");
-        assert_eq!(once(&mut b), Ok(crate::Status::Continue));
+        assert!(cpp.contains("    std::optional<Values> dummy() const noexcept {"));
+        assert!(cpp.contains("    Status set_dummy_at(float value, std::size_t i) noexcept"));
+        assert!(cpp.contains("    Result<std::array<float, K>> prev_dummy(std::size_t depth)"));
     }
 }

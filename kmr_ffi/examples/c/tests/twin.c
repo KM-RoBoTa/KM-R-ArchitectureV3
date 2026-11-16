@@ -1,72 +1,63 @@
-/* C bodies of tests/twin.rs; `twin` has a Rust twin there, step for step. */
+/* Controllers of tests/twin.rs and tests/no_alloc.rs; `twin` has a Rust twin there, step for
+ * step. */
 #include <math.h>
-#include <stddef.h>
 
-#include "kmr_ffi.h"
+#include "kmr.h"
 
 /* The step added to q, by tick % 7. */
 static const float STEP[7] = {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f};
 
-/* Counts its calls in ctx when given; moves some actuators, leaves the others unwritten. */
-int32_t twin(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-             void *ctx) {
-    if (ctx != NULL) {
-        *(uint32_t *)ctx += 1;
+/* Actuators 0 and 2, the group of the gains. */
+static const size_t GAINS[2] = {0, 2};
+
+/* Moves some actuators from the newest sample, leaves the others unwritten. */
+void twin(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    float q[KMR_N], q1[KMR_N];
+    const float kd[2] = {1.0f, 2.0f};
+    uint64_t tick = kmr_tick(time);
+    size_t i;
+    if (kmr_prev_q(state, 0, q) != KMR_OK) {
+        return;
     }
-    if (read->samples == 0) {
-        return -1;
-    }
-    float step = STEP[time->tick % 7];
-    for (unsigned i = 0; i < KMR_N; i++) {
-        if ((time->tick + i) % 3 != 0) {
-            kmr_set_q(write, i, read->slot[0].q[i] + step);
+    for (i = 0; i < KMR_N; ++i) {
+        if ((tick + i) % 3 != 0) {
+            kmr_set_q_at(state, q[i] + STEP[tick % 7], i);
         }
     }
-    if (time->tick % 5 == 0) {
-        kmr_set_tau(write, 1, 0.25f);
+    if (tick % 5 == 0) {
+        kmr_set_tau_at(state, 0.25f, 1);
     }
-    if (read->samples > 1) {
-        kmr_set_qd(write, 3, read->slot[0].q[3] - read->slot[1].q[3]);
+    if (kmr_prev_q(state, 1, q1) == KMR_OK) {
+        kmr_set_qd_at(state, q[3] - q1[3], 3);
     }
-    return KMR_CONTINUE;
+    if (tick % 4 == 0) {
+        kmr_group_set_all_kd(state, GAINS, 2, kd);
+    }
 }
 
 /* Writes nothing. */
-int32_t silent(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-               void *ctx) {
-    (void)read;
-    (void)write;
-    (void)time;
-    (void)ctx;
-    return KMR_CONTINUE;
+void silent(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
 }
 
-/* Writes q[0] and q[2], leaves q[1] unwritten. */
-int32_t skip_one(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-                 void *ctx) {
-    (void)read;
-    (void)time;
-    (void)ctx;
-    kmr_set_q(write, 0, 0.5f);
-    kmr_set_q(write, 2, 0.5f);
-    return KMR_CONTINUE;
+/* Writes q[0] and q[2], leaves q[1] to whoever wrote it. */
+void skip_one(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    kmr_set_q_at(state, 0.5f, 0);
+    kmr_set_q_at(state, 0.5f, 2);
 }
 
-/* Writes q[0] = the uint32_t ctx points to. */
-int32_t ctx_value(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-                  void *ctx) {
-    (void)read;
-    (void)time;
-    kmr_set_q(write, 0, (float)*(const uint32_t *)ctx);
-    return KMR_CONTINUE;
+/* Writes its context, a uint32_t, as q[0]. */
+void ctx_value(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    kmr_set_q_at(state, (float)*(const uint32_t *)ctx, 0);
 }
 
-/* Writes a NaN to q[0]. */
-int32_t nan_q0(const kmr_read_view *read, kmr_write_buf *write, const kmr_time_view *time,
-               void *ctx) {
-    (void)read;
-    (void)time;
-    (void)ctx;
-    kmr_set_q(write, 0, NAN);
-    return KMR_CONTINUE;
+/* Counts its calls in its context, a uint32_t, and writes the count as q[0]. */
+void count_calls(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    uint32_t *n = ctx;
+    *n += 1;
+    kmr_set_q_at(state, (float)*n, 0);
+}
+
+/* Writes NaN as q[0]. */
+void nan_q0(const kmr_time *time, kmr_state *state, const kmr_sensors *sensors, void *ctx) {
+    kmr_set_q_at(state, NAN, 0);
 }

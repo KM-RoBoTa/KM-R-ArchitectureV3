@@ -52,19 +52,31 @@ impl<'a, const N: usize> State<'a, N> {
         State { inner }
     }
 
-    /// Every value of field `T`, `depth` steps back, for the FFI view.
-    #[cfg(feature = "ffi")]
-    pub(crate) fn prev_field<T: Field>(&self, depth: usize) -> Result<[T; N], StateError> {
-        self.inner
-            .prev::<T>(depth)
-            .copied()
-            .map_err(StateError::from)
-    }
-
     /// Stages one value the FFI apply step took from a `WriteBuf`; the index is below N.
     #[cfg(feature = "ffi")]
     #[doc(hidden)]
     pub fn __ffi_set<T: Field>(&mut self, value: T, i: usize) {
+        let _ = self.inner.set_at(value, i);
+    }
+
+    /// Field `T` at actuator `i`, `depth` steps back, for the script and C snapshots.
+    #[cfg(any(feature = "python", feature = "lua", feature = "ffi"))]
+    pub(crate) fn field_at<T: Field>(&self, i: usize, depth: usize) -> Result<T, StateError> {
+        self.inner
+            .prev_at::<T>(depth, i)
+            .copied()
+            .map_err(StateError::from)
+    }
+
+    /// Field `T` of every actuator, `depth` steps back, for a script snapshot.
+    #[cfg(any(feature = "python", feature = "lua"))]
+    pub(crate) fn field_row<T: Field>(&self, depth: usize) -> Result<&[T; N], StateError> {
+        self.inner.prev::<T>(depth).map_err(StateError::from)
+    }
+
+    /// Stages one value a script wrote; the index is below N.
+    #[cfg(any(feature = "python", feature = "lua"))]
+    pub(crate) fn stage<T: Field>(&mut self, value: T, i: usize) {
         let _ = self.inner.set_at(value, i);
     }
 

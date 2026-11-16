@@ -127,7 +127,7 @@ where
     }
 }
 
-mod seal {
+pub(crate) mod seal {
     /// Implemented for exactly the types that are controllers.
     pub trait Sealed<const N: usize> {}
 }

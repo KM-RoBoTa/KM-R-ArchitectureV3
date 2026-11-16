@@ -22,7 +22,7 @@ This SRS is the system-level specification. Module-level SRS files hang below it
 - Several wired robots as one `Robot`: N is the sum of their actuators, user group slices split them (FR-6.5)
 - Messaging over Zenoh at the API boundary: other kmr instances, ROS2 or any stack, external compute. Zenoh is always available but opt-in: a Cargo feature of `kmr_api`, so a build that does not use it does not compile it (FR-7.1)
 - Medium and heavy payloads (Boston Dynamics tiers, see Definitions): a medium payload brings its own hardware interface to the robot's ports; a heavy payload registers its own services into the robot system. Both are integrated by the user, not by kmr. Medium and heavy payloads give kmr their mass and mount point, because they shift the robot's center of mass and the model must recompute it reliably. Light payloads are not registered: their effect shows in the torque readings and is the control engineer's responsibility (decided 2026-10-27)
-- Controllers in Rust, with quality, DX-oriented FFI for Python, C/C++ and Lua (FR-10); FFI types are trivial to expose so the Rust side is never a chore, the Rust API stays simple enough not to overwhelm users, and the whole must be simpler to use and develop in than ROS2
+- Controllers in Rust, Python, Lua, C or C++, with the same API in each (FR-10); the Rust API stays simple enough not to overwhelm users, and the whole must be simpler to use and develop in than ROS2
 - A `no_std`, heapless core as an opt-in Cargo feature; the default build is std, targeted at Linux
 
 * Two scheduler modes behind one registration API: static (no heap, declaration order) is the default and the only mode in this version; a heap-gated dynamic mode with Bevy-style ordering is roadmap, and this version's API must leave that feature gate possible without breaking changes
@@ -80,7 +80,7 @@ Lifecycle moments and naming, used consistently from here on:
 
 ## 4. Overall description
 
-**Product perspective.** kmr sits between robot hardware and everything that speaks Zenoh (C4 context). Workspace crates, all at the root; the v2 km\_\* prefix is deprecated, and the modules of this SRS map one-to-one to them: kmr\_model (robot model), kmr\_adapters (one adapter per vendor inside; a robot drives a set of them, FR-5.1), kmr\_ffi (FR-10), bench/ (NFR-1, NFR-8); kmr\_vizualisation is roadmap. The three main ones: `kmr_core` (engine, control loop, scheduler, state; std by default, opt-in `no_std`), `kmr_api` (gateway: user-facing builder, the `robot!` macro, Zenoh behind a feature; `std`), and the user's controller crate (controllers/ in the workspace). kmr\_api re-exports the kmr\_core value types (`Q`, `Qd`, `Tau`) unchanged and wraps the handles thinly (Definitions, State); the v2 DTO layer is gone.
+**Product perspective.** kmr sits between robot hardware and everything that speaks Zenoh (C4 context). Workspace crates, all at the root; the v2 km\_\* prefix is deprecated, and the modules of this SRS map one-to-one to them: kmr\_model (robot model), kmr\_adapters (one adapter per vendor inside; a robot drives a set of them, FR-5.1), kmr\_ffi (C/C++ types and build helper, FR-10), bench/ (NFR-1, NFR-8); kmr\_vizualisation is roadmap. The three main ones: `kmr_core` (engine, control loop, scheduler, state; std by default, opt-in `no_std`), `kmr_api` (gateway: user-facing builder, the `robot!` macro, Zenoh behind a feature, Python and Lua controllers; `std`), and the user's controller crate (controllers/ in the workspace). kmr\_api re-exports the kmr\_core value types (`Q`, `Qd`, `Tau`) unchanged and wraps the handles thinly (Definitions, State); the v2 DTO layer is gone.
 
 **User classes.** Control and robotics engineers who know C/C++ or Python and are not software experts. Controller code must read as math on arrays. Engine contributors are Rust developers.
 
@@ -190,10 +190,13 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 
 **FR-10 Foreign languages**
 
-- FR-10.1 A C ABI exposes the state types to user code in Python or C/C++, lua, called from inside a Rust controller. The builder (Robot::new().add\_controller(), run()) is always written in Rust, is kept simple and headache-free, and is never exposed over FFI, for performance. Rust stays the primary language.
-- FR-10.2 Types crossing the FFI are plain `repr(C)` structs and fixed-size arrays of `f32` always, `f64` only with justification (FR-2.2), no lifetimes or generics, so exposing a new type is not a chore on the Rust side.
-- FR-10.3 A Rust controller may delegate its math to C/C++, Python or Lua through the FFI from any form, inline included; phase registration stays in Rust. The cost of a slow language on the control path (CPython GIL, Lua VM allocation) is the user's choice and responsibility: kmr does not enforce it, since Rust cannot stop user code from calling an interpreter. (Changed 2026-10-27: the threaded-only rule was unenforceable.) `kmr_ffi` may use the heap like `kmr_api`.
-- FR-10.4 Onboarding target: a first moving controller in less time and fewer files than the equivalent ROS2 node.
+- FR-10.1 A controller can be written in Python, Lua, C or C++. It is registered from Rust in one line (`python!`, `lua!`, `c!`) and runs as a controller of its own, on any phase. The builder (`Robot::new()`, `add_controller`, `run()`) and all hardware setup stay in Rust and are never exposed to other languages. Rust stays the primary language.
+- FR-10.2 The other languages get the Rust controller API and nothing more: Time, State (history, faults, telemetry, groups), Sensors, a context, and shutdown / emergency stop. Same method names and behaviour as Rust. A Rust error becomes the language's error (exception in Python and Lua, status code in C, `Result` in C++); a Rust "none" becomes the language's none. Values are plain floats in engine units (rad, rad/s, N·m); durations are seconds as `double`. Adding a state field stays one line on the Rust side.
+- FR-10.3 Each tick the controller reads a snapshot of the state taken before its call; its writes are applied after the call through the normal Rust setters. If the call fails, none of its writes are applied and the robot shuts down gracefully. The cost of a slow language (CPython's lock, interpreter allocations) is the user's choice: kmr counts overruns and does not enforce limits. Python and Lua live inside `kmr_api`; `kmr_ffi` holds only the C/C++ types and the build helper. Both may use the heap.
+- FR-10.4 Python and Lua scripts reload while the robot runs: an edit is swapped in between two ticks and the controller's context is kept; an edit that does not run is reported and the previous version keeps going. C and C++ are compiled in and do not reload.
+- FR-10.5 Onboarding target: a first moving controller in less time and fewer files than the equivalent ROS2 node.
+
+**Changed 2026-11-16: foreign functions are controllers of their own, mirroring the Rust API (was: math delegated through a C ABI).**
 
 **FR-11 Plugins (planned, not built in this version)**
 
@@ -224,7 +227,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 * NFR-1 **Real time.** No heap allocation, no `dyn`, no lock on the control path; static dispatch of controllers (default static scheduler; the roadmap heap-gated scheduler may use dynamic dispatch but never locks); one atomic load per signal check. Target jitter is hardware-dependent and is specified for a reproducible reference bench: Raspberry Pi 4, CPU rev 1.4 or 1.5, Arch Linux ARM, kernel 6.14.x or later in the 6.x line (not 7.x), measured on both a non-RT and a PREEMPT\_RT kernel, with the supply voltage and ambient temperature recorded alongside each run. Exact figures are deferred until measured on that bench; v2 reached 50 to 100 µs on non-RT Linux, but on a faster machine, so that number is not the target.
 * NFR-2 **Safety.** No `unwrap`, `panic` or unchecked indexing in the engine; errors are human-readable; release builds hide internal causes. One explicit exception: the unimplemented! and compile\_error! markers of section 5 are allowed, temporary and counted by CI; a marker left on the control path is a release blocker. Never panicking is also what keeps torque safe: every exit after bring-up ends with torque off, but an abort or a crash in foreign code (FR-10) leaves torque as it was, and no software guard can prevent that.
 * NFR-3 **Encapsulation.** `pub(crate)` by default; state fields sealed against user extension, extended by the engine (FR-2.2); raw handles never forwarded.
-* NFR-4 **Developer experience.** Controller code reads as math on arrays; compile errors may show internal type paths (frunk), nothing is obfuscated any more; ergonomics (aliases, wrapper methods, conveniences) live in kmr\_api, never in kmr\_core; the builder guides the user with type-state rather than runtime checks (the runtime LEN == 0 check in the code is a closed-source-era workaround, to be replaced by a trait bound); the public surface is small enough to learn in a day and is measured against ROS2 with the FR-10.4 metric (time and file count to a first moving controller).
+* NFR-4 **Developer experience.** Controller code reads as math on arrays; compile errors may show internal type paths (frunk), nothing is obfuscated any more; ergonomics (aliases, wrapper methods, conveniences) live in kmr\_api, never in kmr\_core; the builder guides the user with type-state rather than runtime checks (the runtime LEN == 0 check in the code is a closed-source-era workaround, to be replaced by a trait bound); the public surface is small enough to learn in a day and is measured against ROS2 with the FR-10.5 metric (time and file count to a first moving controller).
 * NFR-5 **Portability.** x86-64, aarch64, armv7 Linux; cross-build without hardware.
 * NFR-6 **Maintainability.** Every design decision defended in `docs/decisions/`; core is hand-engineered.
 * NFR-7 **`no_std`.** Opt-in via a Cargo feature on `kmr_core`; the default build is `std` and targets Linux. With the feature on, `kmr_core` compiles with `#![no_std]` and no `alloc`, and `std` is confined to `kmr_api`, through the Host seam (section 4, Constraints). CI builds the core with the feature for one bare-metal target on every change.
@@ -245,7 +248,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 | HAL | `kmr_core` | engine → adapter | Trait set (sealed per FR-5.1) for a set of adapters, fanned out per call: bus init, ping, health-check, mode config, read sample with declared cadence, bulked write from the write mask, telemetry at the adapter's cadence (FR-5.11), hold, torque on/off per actuator, close |
 | Zenoh | `kmr_api`, opt-in feature | both | `History` latest sample published per tick, full ring on request; `Desired` subscribed and applied on the tick it arrives, then dropped (no hold); key layout per instance and group |
 | Config | `kmr_api` (`robot!`), `kmr_model` | main.rs → compile time (descriptor, hardware) / bring-up (port) | Descriptor or preset named by `robot!` and validated at compile time; ports bound by builder plugins and resolved at bring-up; no config file |
-| FFI | `kmr_ffi` | controller → foreign code | C ABI for state types, called from inside Rust controllers; Python and C++ on top; the builder is never exposed |
+| Foreign controllers | `kmr_api` (Python, Lua), `kmr_ffi` (C, C++) | engine → foreign controller | `python!`, `lua!`, `c!` register a foreign function as a controller; it gets the Rust controller API (FR-10.2); the builder is never exposed |
 
 ## 8. Decisions pending and open questions
 
@@ -272,8 +275,9 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 - [x] Write pre-sorted by (bus, series) from the write mask for sync-write; CPU spent to buy I/O, measured (FR-5.3)
 - [x] Decision 0001 (HISTORY\_DEPTH as capacity const plus runtime check) is accepted by this SRS; mark the decision file accepted
 - [x] 2026-10-27: N from the descriptor through `kmr_api::robot!` type aliases, no config file (FR-6.1); ports through builder plugins, `by_id` preferred, `by_dev` allowed (FR-6.3); units rad / mm (FR-2.2); write mask per field; FR-4.4 compare-and-swap; Host public and sealed; Zenoh behind a feature with lock-free slots; light payloads not registered; FR-10.3 threaded-only rule dropped; FR-13.3 timestamp check and running-loop hold deferred
+- [x] 2026-11-16: foreign functions are controllers of their own (`python!`, `lua!`, `c!`) with the Rust controller API; snapshot in, writes applied after, a failed call shuts down; Python and Lua in kmr\_api, hot reload; kmr\_ffi keeps the C/C++ types and build helper (FR-10)
 
-* [x] Module list = crate list, paths at workspace root (2026-10-26): `kmr_core/**` (runtime, state, HAL contract; AGENTS.md no-go files inside), `kmr_api/**`, `kmr_model/**` (descriptor, FR-6, FR-8.3), `kmr_adapters/**` (FR-5.3, FR-5.10), `kmr_ffi/**` (FR-10), `controllers/**` (user crate, reference example), `bench/**` (NFR-1, NFR-8); `kmr_vizualisation/**` roadmap. The "surrounding modules" of NFR-10/11 are kmr\_model (a dependency of kmr\_core) and kmr\_adapters (depends on kmr\_core), case by case (NFR-10).
+* [x] Module list = crate list, paths at workspace root (2026-10-26): `kmr_core/**` (runtime, state, HAL contract; AGENTS.md no-go files inside), `kmr_api/**`, `kmr_model/**` (descriptor, FR-6, FR-8.3), `kmr_adapters/**` (FR-5.3, FR-5.10), `kmr_ffi/**` (C/C++ part of FR-10), `controllers/**` (user crate, reference example), `bench/**` (NFR-1, NFR-8); `kmr_vizualisation/**` roadmap. The "surrounding modules" of NFR-10/11 are kmr\_model (a dependency of kmr\_core) and kmr\_adapters (depends on kmr\_core), case by case (NFR-10).
 
 - [ ] FR-1.7 controller label: zero-sized marker type per registration, or a const id; and whether the static builder keeps the HList type-state from v3
 
@@ -286,7 +290,7 @@ Items marked **\[decision\]** are open. Rule for agents, valid anywhere in this 
 5. Zenoh translation (FR-7, Should)
 6. Fallback tooling and envelopes (FR-13.5, Should)
 7. Communication security (FR-13.2, FR-13.3, Could)
-8. FFI (FR-10, Could)
+8. Foreign-language controllers (FR-10, Could)
 
 Roadmap items (FR-9, FR-11, FR-12, dynamic scheduler, per-controller rate) are not started in this version.
 
@@ -350,19 +354,19 @@ Covers: FR-5.3 (cadence, bulked write), FR-5.10, the adapter side of FR-5.1, FR-
 
 Paths: `kmr_api/**`
 
-Covers: FR-2.7 home preset, FR-5.11 telemetry getters, FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7.
+Covers: FR-2.7 home preset, FR-5.11 telemetry getters, FR-6.1 `robot!` macro, FR-6.3 port binding (bus plugins), FR-7, FR-8.4, FR-10 (Python and Lua embedding, `python!`, `lua!`, `c!` registration), FR-13.2, FR-13.3, FR-13.5; NFR-4 ergonomics, NFR-12. Re-exports the kmr\_core value types unchanged, wraps the handles thinly. NFR-10 does not apply. Delivery steps 5, 6, 7, 8.
 
 ## Module: controllers
 
 Paths: `controllers/**`
 
-Covers: the reference example (FR-10.4 metric). Must compile clean against this SRS: no `todo!()`, no lock on the hot path, no stale comments.
+Covers: the reference example (FR-10.5 metric). Must compile clean against this SRS: no `todo!()`, no lock on the hot path, no stale comments.
 
 ## Module: kmr\_ffi
 
 Paths: `kmr_ffi/**`
 
-Covers: FR-10. Delivery step 8, Could.
+Covers: the C/C++ part of FR-10: C ABI types and the build helper. Delivery step 8, Could.
 
 ## Module: bench
 

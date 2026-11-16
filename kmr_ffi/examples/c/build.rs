@@ -1,13 +1,13 @@
-//! Compiles the C bodies for the robot `robot!` names in src/main.rs.
+//! Compiles the C controllers for the robot `robot!` names in src/main.rs.
 
-fn main() -> Result<(), kmr_api::ffi::build::Error> {
-    // tests/*.c are the C bodies of the tests; the binary links only `swing`.
-    kmr_api::ffi::build::robot("XmBench").compile(&[
+fn main() -> Result<(), kmr_api::ffi::c::build::Error> {
+    // tests/*.c are the controllers of the tests; the binary links only `swing`.
+    kmr_api::ffi::c::build::robot("XmBench").compile(&[
         "src/swing.c",
-        "tests/abi.c",
+        "tests/mirror.c",
         "tests/twin.c",
-        "tests/status.c",
-        "tests/history.c",
         "tests/time.c",
+        "tests/signal.c",
+        "tests/sensors.c",
     ])
 }

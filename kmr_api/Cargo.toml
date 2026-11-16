@@ -15,22 +15,27 @@ triple_buffer.workspace = true
 kmr_ffi = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+# DECISION (maintainer-asked 2026-11-16, experiment/ffi-bounderies): the embedded CPython of
+# `kmr_api::python`, feature `python`.
+pyo3 = { workspace = true, optional = true }
+# DECISION (maintainer-asked 2026-11-16, experiment/ffi-bounderies): the embedded Lua 5.4 of
+# `kmr_api::lua`, feature `lua`; the workspace's mlua, vendored.
+mlua = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
 # Batches keep declaration order: the bench's baseline for the presort (SRS
 # FR-5.3; assumed, pending human: D11 B). Off by default.
 presort-off = ["kmr_core/presort-off"]
-# Foreign-language controller math (kmr_ffi), all off by default: without them no FFI code is
-# compiled (FR-072 (SRS FR-10)).
+# C and C++ controllers, `kmr_api::c!` (kmr_ffi). The ffi features are all off by default: without
+# them no FFI code is compiled (FR-072 (SRS FR-10)).
 ffi = ["dep:kmr_ffi"]
-# For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
+# For a build-dependency: `kmr_api::ffi::c::build`, the helper that compiles C and C++ sources.
 ffi-build = ["ffi", "kmr_ffi/build"]
-# A Python function as the foreign body: `kmr_api::ffi::python::Bridge` (needs the Python
-# headers and library).
-ffi-python = ["ffi", "kmr_ffi/python"]
-# A Lua 5.4 function as the foreign body, Lua vendored: `kmr_api::ffi::lua::Bridge`.
-ffi-lua = ["ffi", "kmr_ffi/lua"]
+# A Python file as a controller: `kmr_api::python!` (needs the Python headers and library).
+python = ["dep:pyo3"]
+# A Lua file as a controller: `kmr_api::lua!` (Lua 5.4, vendored: no system library).
+lua = ["dep:mlua"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
 cubemars = ["kmr_adapters/cubemars"]
@@ -63,6 +68,16 @@ required-features = ["xiao"]
 [[test]]
 name = "zenoh"
 required-features = ["zenoh", "test-util"]
+
+# Python controllers on the core's scripted host.
+[[test]]
+name = "python"
+required-features = ["python", "test-util"]
+
+# Lua controllers on the core's scripted host.
+[[test]]
+name = "lua"
+required-features = ["lua", "test-util"]
 
 # Sensors on the core's scripted host and fake sensor.
 [[test]]
