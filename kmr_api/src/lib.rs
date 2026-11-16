@@ -128,6 +128,9 @@ pub use kmr_core::{emergency_stop, shutdown};
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 #[cfg(feature = "xiao")]
 pub mod xiao;
 

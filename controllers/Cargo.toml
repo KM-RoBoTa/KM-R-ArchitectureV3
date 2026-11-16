@@ -13,9 +13,16 @@ kmr_api.workspace = true
 # The Dynamixel SDK and the XIAO's microphone, for the bench. Off: the crate builds anywhere and
 # simulates.
 hardware = ["kmr_api/dynamixel", "kmr_api/xiao"]
+# Controllers written in Python: `kmr_api::python!` (needs the Python headers and library).
+python = ["kmr_api/python"]
 # DECISION: kept as a no-op so the RX-28 command line in main.rs still works:
 # `robot!(Rx28Chain)` alone sets N = 10 now (core M2).
 rx28 = []
+
+# The clap controller of src/main.rs with its logic in python/clap.py.
+[[example]]
+name = "clap_py"
+required-features = ["python"]
 
 [lints]
 workspace = true
