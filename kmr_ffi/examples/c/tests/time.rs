@@ -9,7 +9,7 @@ use kmr_api::ffi::{TimeView, call};
 use kmr_api::test_util::{
     DT, Host, Log, PER_TICK, Recorder, Scripted, TICK_END, Ticking, run_scripted,
 };
-use kmr_api::{EachTick, HCons, HNil, Sensors, Time};
+use kmr_api::{EachTick, HCons, HNil, Sensors, Time, with};
 
 kmr_api::robot!(XmBench);
 kmr_api::ffi::foreign! { fn copy_time; }
@@ -46,20 +46,22 @@ fn run<P: Host, D: kmr_api::test_util::Drivers<N, Error: Send + Sync>>(
     drivers: &mut D,
 ) -> Seen {
     let seen = Seen::default();
-    let robot = Robot::new().set_dt(DT).add_controller_with(
+    let robot = Robot::new().set_dt(DT).add_controller(
         EachTick,
-        TimeView::default(),
-        |out: &mut TimeView, time: &Time, state: &mut State, _: &Sensors| {
-            assert!(call(copy_time, time, state, Some(out)).is_ok());
-            seen.calls.set(seen.calls.get() + 1);
-            if *out != getters(time) {
-                seen.differ.set(seen.differ.get() + 1);
-            }
-            if out.overrun_count > 0 {
-                seen.overruns.set(seen.overruns.get() + 1);
-            }
-            seen.last.set(*out);
-        },
+        with(
+            TimeView::default(),
+            |out: &mut TimeView, time: &Time, state: &mut State, _: &Sensors| {
+                assert!(call(copy_time, time, state, Some(out)).is_ok());
+                seen.calls.set(seen.calls.get() + 1);
+                if *out != getters(time) {
+                    seen.differ.set(seen.differ.get() + 1);
+                }
+                if out.overrun_count > 0 {
+                    seen.overruns.set(seen.overruns.get() + 1);
+                }
+                seen.last.set(*out);
+            },
+        ),
     );
     run_scripted(robot, host, drivers).expect("runs");
     seen

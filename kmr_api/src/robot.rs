@@ -2,100 +2,21 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::actuator::{self, Actuators};
-use crate::fallback::Guarded;
+use crate::controller::IntoController;
 use crate::plugin::{Plugin, Plugins};
 use crate::spec::Lend;
 use crate::{
-    Binding, Envelope, Limit, MemberError, Payload, Policy, Schedule, SensorPolicy, Sensors, Spec,
-    State, Time, UserError,
+    Binding, Envelope, Limit, MemberError, Payload, Policy, Schedule, SensorPolicy, Spec, UserError,
 };
 use kmr_core::hal::{Drivers, NoHardware, Sensing, SensorHal};
-use kmr_core::{
-    ControlFn, ControlFnWith, Empty, Filled, HCons, HNil, HasController, Inline, InlineWith,
-    Insert, Scheduled, ThreadFn, Threaded,
+use kmr_core::{Empty, Filled, HCons, HNil, HasController, Scheduled};
+#[cfg(feature = "zenoh")]
+use {
+    crate::controller::ApiInline,
+    crate::fallback::Guarded,
+    crate::{Sensors, State, Time},
+    kmr_core::{Inline, Insert},
 };
-
-// The named api→core translation wrapper stored in place of the user's closure.
-//
-// Why a named struct and not just the closure: `add_controller` returns
-// `Robot<C::Output>`, and `C::Output` is computed from the node type inserted
-// (`Inline<..>`). A closure type is unnameable, so if we handed the core a
-// wrapping closure the return type would be inexpressible. `ApiInline<F>` is a
-// plain named type over the user's `F`, so the builder's type-state still
-// threads through.
-//
-// Why it exists at all: the core calls it with BORROWED core handles; here we
-// wrap each in the api newtype for the duration of the call and hand them to
-// the user's api-typed closure. That single borrow-wrap is the whole boundary —
-// no copy, and `kmr_core::{Time, RobotState, Sensors}` never appears in the
-// public `add_controller` signature.
-//
-// `pub` + `#[doc(hidden)]`: it appears in the builder's public type-state
-// (`Inline<ApiInline<F>>`), so it must be nameable at that visibility, but its
-// field is private — users can neither forge one nor read it. Same opaque
-// posture as `kmr_core::Inline`.
-#[doc(hidden)]
-pub struct ApiInline<F>(pub(crate) F);
-
-impl<const N: usize, F> ControlFn<N> for ApiInline<F>
-where
-    F: Fn(&Time, &mut State<'_, N>, &Sensors),
-{
-    fn call(
-        &self,
-        time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState<N>,
-        sensors: &kmr_core::Sensors,
-    ) {
-        (self.0)(
-            &Time::new(time),
-            &mut State::new(state),
-            &Sensors::new(sensors),
-        );
-    }
-}
-
-// Same wrapper as `ApiInline`, for `add_controller_with`: it also lends the
-// user their own `ctx: &mut T`. Note the api argument ORDER — `ctx` first — so
-// controllers read `fn(&mut T, &Time, &mut State, &Sensors)`. The core calls
-// with `ctx` last (its native order); we re-order here.
-#[doc(hidden)]
-pub struct ApiInlineWith<F>(F);
-
-impl<const N: usize, F, T> ControlFnWith<T, N> for ApiInlineWith<F>
-where
-    F: Fn(&mut T, &Time, &mut State<'_, N>, &Sensors),
-{
-    fn call(
-        &self,
-        time: &kmr_core::Time,
-        state: &mut kmr_core::RobotState<N>,
-        sensors: &kmr_core::Sensors,
-        ctx: &mut T,
-    ) {
-        (self.0)(
-            ctx,
-            &Time::new(time),
-            &mut State::new(state),
-            &Sensors::new(sensors),
-        );
-    }
-}
-
-// Wrapper for `add_controller_as_thread`: a threaded controller gets ONLY its
-// own `ctx: &mut T` and the clock — no robot state. Api order is `ctx` first:
-// `fn(&mut T, &Time)`.
-#[doc(hidden)]
-pub struct ApiThreaded<F>(F);
-
-impl<F, T> ThreadFn<T> for ApiThreaded<F>
-where
-    F: Fn(&mut T, &Time),
-{
-    fn call(&self, time: &kmr_core::Time, ctx: &mut T) {
-        (self.0)(ctx, &Time::new(time));
-    }
-}
 
 /// A sensor list with `S` added at its end, `HCons<A, HCons<S, HNil>>` after `A`: what
 /// [`Robot::add_sensor`] grows. Implemented on `HNil` and `HCons` only.
@@ -404,48 +325,25 @@ impl<const N: usize, H, C, E, SN> Robot<N, H, C, E, SN> {
         }
     }
 
-    // Controllers. Each of these GROWS the type-state: the returned `Robot`
-    // carries `C::Output`, where the chosen schedule holds one more node, so
-    // the builder must stay one chained expression. That is the price of the zero-cost, cap-free design.
-    pub fn add_controller<S: Schedule, F>(
+    /// Adds a controller to `schedule`; several in a tuple are added left to right, and each
+    /// runs in add order within its schedule.
+    ///
+    /// ```ignore
+    /// .add_controller(EachTick, f)                         // Fn(&Time, &mut State, &Sensors)
+    /// .add_controller(EachTick, with(ctx, f))              // Fn(&mut T, &Time, &mut State, &Sensors)
+    /// .add_controller(EachTick, f.or_when(when, fallback)) // fallback on this tick's faults
+    /// .add_controller(EachTick, threaded(ctx, f))          // Fn(&mut T, &Time), own thread
+    /// .add_controller(EachTick, (a, b, with(ctx, c)))
+    /// ```
+    ///
+    /// Each call grows the type-state, so the builder stays one chained expression. A closure
+    /// passed here needs its argument types written.
+    pub fn add_controller<S: Schedule, X: IntoController<N, S, C>>(
         self,
         schedule: S,
-        f: F,
-    ) -> Robot<N, H, C::Output, Filled, SN>
-    where
-        C: Insert<S, Inline<ApiInline<F>>>,
-        F: Fn(&Time, &mut State<'_, N>, &Sensors),
-    {
-        // Wrap the user's api-typed closure in `ApiInline`, then hand it to
-        // the core's `ControlFn` entry. The core stores `Inline<ApiInline<F>>`
-        // and calls back through `ControlFn::call` (above) each tick.
-        self.grown(|inner| inner.add_control_fn(schedule, ApiInline(f)))
-    }
-
-    /// Adds `f` with its `fallback`: each tick, `when` reads the tick's [`Faults`](crate::Faults)
-    /// and exactly one of the two runs, `fallback` when `when` is true (SRS FR-13.5). Build
-    /// `when` from [`stale_in`](crate::stale_in), [`remote_timeout`](crate::remote_timeout) and
-    /// [`any_of`](crate::any_of), or any `Fn(&Faults<N>) -> bool`. No hold policy: a fallback
-    /// that writes nothing sends nothing (FR-050).
-    pub fn add_controller_or<S: Schedule, F, P, G>(
-        self,
-        schedule: S,
-        f: F,
-        when: P,
-        fallback: G,
-    ) -> Robot<N, H, C::Output, Filled, SN>
-    where
-        C: Insert<S, Inline<ApiInline<Guarded<F, G, P>>>>,
-        F: Fn(&Time, &mut State<'_, N>, &Sensors),
-        G: Fn(&Time, &mut State<'_, N>, &Sensors),
-        P: Fn(&crate::Faults<N>) -> bool,
-    {
-        let guarded = Guarded {
-            controller: f,
-            fallback,
-            when,
-        };
-        self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
+        x: X,
+    ) -> Robot<N, H, X::Output, Filled, SN> {
+        self.grown(|inner| x.add_to(schedule, inner))
     }
 
     /// Lets `remote` publish Desired through the gateway, with its `fallback`: each tick a
@@ -471,68 +369,6 @@ impl<const N: usize, H, C, E, SN> Robot<N, H, C, E, SN> {
             when: silent::<N> as Silent<N>,
         };
         self.grown(|inner| inner.add_control_fn(schedule, ApiInline(guarded)))
-    }
-
-    // Same as [`add_controller`], but for controllers that need their OWN
-    // persistent data across ticks.
-    //
-    // You hand us the data `ctx` once. We own it, keep it alive for the whole
-    // run, and lend it back to you (`&mut T`) on every tick. Your controller
-    // becomes a plain `fn` — no `move`, no closure, no `Arc<Mutex<..>>`.
-    //
-    // ```
-    // struct Counter { ticks: u32 }
-    //
-    // fn count(c: &mut Counter, _t: &Time, _r: &mut State, _s: &Sensors) {
-    //     c.ticks += 1;
-    // }
-    //
-    // robot.add_controller_with(PerTick, Counter { ticks: 0 }, count);
-    // ```
-    //
-    // `T` is whatever you want: a struct, a number, a `Vec`... your data.
-    // Because we lend it as `&mut T`, access is exclusive and single-threaded,
-    // so you never need locks here.
-    //
-    pub fn add_controller_with<S: Schedule, T, F>(
-        self,
-        schedule: S,
-        ctx: T,
-        f: F,
-    ) -> Robot<N, H, C::Output, Filled, SN>
-    where
-        C: Insert<S, InlineWith<ApiInlineWith<F>, T>>,
-        F: Fn(&mut T, &Time, &mut State<'_, N>, &Sensors),
-    {
-        self.grown(|inner| inner.add_control_fn_with(schedule, ctx, ApiInlineWith(f)))
-    }
-
-    // Runs a controller on its OWN dedicated thread instead of inline in the
-    // main tick loop. For work that has its own rhythm or blocks — a gamepad
-    // reader, a network link, a slow planner. Most controllers do NOT need this.
-    //
-    // Deliberately, a threaded controller gets ONLY `&mut T` — your own data,
-    // whatever you need to track. It has NO access to robot `State`:
-    //
-    //   - Robot commands (`desired`) stay single-writer on the main loop, so
-    //     two controllers can never race to write the actuators.
-    //   - No shared `State` means no cross-thread borrow of the tick loop's data.
-    //
-    // To act on the robot, the thread writes what it learned into `T`; a
-    // main-loop controller reads `T` and turns it into commands. `ctx` and the
-    // function must be `Send + 'static` so they can move to the new thread.
-    pub fn add_controller_as_thread<S: Schedule, T, F>(
-        self,
-        schedule: S,
-        ctx: T,
-        f: F,
-    ) -> Robot<N, H, C::Output, Filled, SN>
-    where
-        C: Insert<S, Threaded<ApiThreaded<F>, T>>,
-        T: Sync + Send,
-        F: Fn(&mut T, &Time),
-    {
-        self.grown(|inner| inner.add_control_fn_as_thread(schedule, ctx, ApiThreaded(f)))
     }
 
     /// [`bind`](Self::bind), then runs on the drivers and the sensors; without drivers,
@@ -930,7 +766,7 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::{Bus, EachTick, Q};
+    use crate::{Bus, EachTick, Q, Sensors, State, Time, threaded, with};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
 
@@ -1066,19 +902,24 @@ pub(crate) mod tests {
             .set_dt(Duration::from_millis(1))
             .add_controller(EachTick, bump_q)
             // ctx FIRST — the api argument order.
-            .add_controller_with(
+            .add_controller(
                 EachTick,
-                ticks_ctx,
-                |c: &mut Arc<Mutex<u32>>, _t: &Time, _r: &mut State<'_, 4>, _s: &Sensors| {
-                    if let Ok(mut n) = c.lock() {
-                        *n += 1;
-                        assert!(*n < 500, "the loop ignored the shutdown");
-                    }
-                    crate::shutdown!("test: one tick is enough");
-                },
+                with(
+                    ticks_ctx,
+                    |c: &mut Arc<Mutex<u32>>, _t: &Time, _r: &mut State<'_, 4>, _s: &Sensors| {
+                        if let Ok(mut n) = c.lock() {
+                            *n += 1;
+                            assert!(*n < 500, "the loop ignored the shutdown");
+                        }
+                        crate::shutdown!("test: one tick is enough");
+                    },
+                ),
             )
             // threaded: only `&mut T` and the clock, no state.
-            .add_controller_as_thread(EachTick, pad, |_p: &mut Arc<Mutex<u32>>, _t: &Time| {})
+            .add_controller(
+                EachTick,
+                threaded(pad, |_p: &mut Arc<Mutex<u32>>, _t: &Time| {}),
+            )
             .run()
             .expect("run should drive the schedule and return Ok");
 
@@ -1099,7 +940,7 @@ mod scripted {
 
     use super::tests::TestSpec;
     use super::*;
-    use crate::{First, StateError};
+    use crate::{First, Sensors, State, StateError, Time};
 
     /// What a `First` controller saw on each of the first ticks.
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1321,7 +1162,10 @@ mod guards {
 
     use super::tests::TestSpec;
     use super::*;
-    use crate::{EachTick, Mask, Q, any_of, remote_timeout, stale_in};
+    use crate::{
+        EachTick, Faults, Mask, OrWhen, Q, Sensors, State, Time, any_of, remote_timeout, stale_in,
+        with,
+    };
 
     /// Runs the finalized `robot` on `recorder` for `ticks` ticks.
     fn run<C: kmr_core::Drive<4>>(
@@ -1359,16 +1203,84 @@ mod guards {
         let robot = Robot::<4, TestSpec>::new()
             .set_dt(DT)
             .set_limit_policy_all(Policy::Clamp)
-            .add_controller_or(
+            .add_controller(
                 EachTick,
-                mark("controller"),
-                any_of(stale_in(&A), remote_timeout()),
-                mark("fallback"),
+                mark("controller")
+                    .or_when(any_of(stale_in(&A), remote_timeout()), mark("fallback")),
             );
 
         run(robot, recorder, 3);
 
         assert_eq!(*ran.borrow(), ["controller", "fallback", "controller"]);
+    }
+
+    #[test]
+    fn a03_a_tuple_of_eight_adds_left_to_right_in_one_bucket() {
+        let ran = RefCell::new(Vec::new());
+        let mark = |name: &'static str| {
+            let ran = &ran;
+            move |_: &Time, _: &mut State<'_, 4>, _: &Sensors| ran.borrow_mut().push(name)
+        };
+        let robot = Robot::<4, TestSpec>::new()
+            .set_dt(DT)
+            .set_limit_policy_all(Policy::Clamp)
+            .add_controller(EachTick, mark("0"))
+            .add_controller(
+                EachTick,
+                (
+                    mark("1"),
+                    mark("2"),
+                    mark("3"),
+                    mark("4"),
+                    mark("5"),
+                    mark("6"),
+                    mark("7"),
+                    mark("8"),
+                ),
+            )
+            .add_controller(EachTick, (mark("9"),));
+
+        run(robot, Recorder::new(&Log::new()), 1);
+
+        assert_eq!(
+            *ran.borrow(),
+            ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+        );
+    }
+
+    #[test]
+    fn a03_a_mixed_tuple_adds_plain_with_and_or_when_left_to_right() {
+        let ran = RefCell::new(Vec::new());
+        let mark = |name: &'static str| {
+            let ran = &ran;
+            move |_: &Time, _: &mut State<'_, 4>, _: &Sensors| ran.borrow_mut().push(name)
+        };
+        let robot = Robot::<4, TestSpec>::new()
+            .set_dt(DT)
+            .set_limit_policy_all(Policy::Clamp)
+            .add_controller(
+                EachTick,
+                (
+                    mark("plain"),
+                    with(
+                        "with",
+                        |name: &mut &'static str, _: &Time, _: &mut State<'_, 4>, _: &Sensors| {
+                            ran.borrow_mut().push(*name);
+                        },
+                    ),
+                    mark("guarded").or_when(|_: &Faults<4>| false, mark("fallback")),
+                    mark("last"),
+                ),
+            );
+
+        run(robot, Recorder::new(&Log::new()), 2);
+
+        assert_eq!(
+            *ran.borrow(),
+            [
+                "plain", "with", "guarded", "last", "plain", "with", "guarded", "last"
+            ]
+        );
     }
 
     /// The position the adapter was sent for `value` written to `targets`, and the

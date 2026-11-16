@@ -9,7 +9,7 @@ use std::time::Instant;
 use kmr_api::ffi::{Status, call};
 use kmr_api::test_util::{DT, Log, Recorder, Sent, Ticking, run_scripted};
 use kmr_api::{
-    Drive, EachTick, Envelope, Faults, Filled, First, HCons, HNil, Q, Qd, Sensors, Tau, Time,
+    Drive, EachTick, Envelope, Faults, Filled, First, HCons, HNil, Q, Qd, Sensors, Tau, Time, with,
 };
 
 kmr_api::robot!(XmBench);
@@ -140,14 +140,16 @@ fn a_c_forwarder_with_a_context_counts_its_calls_and_sends_the_same() {
     let robot = Robot::new()
         .set_dt(DT)
         .add_controller(First, recording(&log, &ticks))
-        .add_controller_with(
+        .add_controller(
             EachTick,
-            0_u32,
-            |n: &mut u32, time: &Time, state: &mut State, _: &Sensors| {
-                assert_eq!(call(twin, time, state, Some(n)), Ok(Status::Continue));
-                calls.set(*n);
-                walks.set(walks.get() + 1);
-            },
+            with(
+                0_u32,
+                |n: &mut u32, time: &Time, state: &mut State, _: &Sensors| {
+                    assert_eq!(call(twin, time, state, Some(n)), Ok(Status::Continue));
+                    calls.set(*n);
+                    walks.set(walks.get() + 1);
+                },
+            ),
         );
     let c = run(robot, &log, &ticks, TICKS);
     assert!(walks.get() as u64 >= TICKS);
@@ -201,8 +203,8 @@ fn one_c_function_on_two_registrations_runs_in_declaration_order() {
     let robot = Robot::new()
         .set_dt(DT)
         .add_controller(First, recording(&log, &ticks))
-        .add_controller_with(EachTick, 1_u32, numbered)
-        .add_controller_with(EachTick, 2_u32, numbered);
+        .add_controller(EachTick, with(1_u32, numbered))
+        .add_controller(EachTick, with(2_u32, numbered));
     let c = run(robot, &log, &ticks, 3);
     let sent = c.last().and_then(|(sent, _)| *sent).expect("a write");
     assert_eq!(sent.q[0], Q(2.0), "the second registration wrote last");

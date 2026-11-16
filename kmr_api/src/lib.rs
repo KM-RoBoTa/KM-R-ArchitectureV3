@@ -42,6 +42,11 @@ pub use slot::{Latest, LatestReader, LatestWriter};
 // inventing a phase that would silently do nothing.
 pub use kmr_core::{EachTick, First, Init, Last, PostInit, PreInit, Schedule};
 
+mod controller;
+#[doc(hidden)]
+pub use controller::IntoController;
+pub use controller::{InThread, OrWhen, With, threaded, with};
+
 mod robot;
 /// What every built robot's schedule is: write `impl Drive` to return a robot
 /// from a helper function.

@@ -9,7 +9,7 @@ use kmr_core::test_util::{
 
 use super::*;
 use crate::robot::tests::TestSpec;
-use crate::{EachTick, Filled, Last, Policy, Robot, Sensors, State};
+use crate::{EachTick, Filled, Last, Policy, Robot, Sensors, State, with};
 
 /// What a test controller holds: the Desired writer and what it puts on which tick.
 struct Remote {
@@ -93,13 +93,15 @@ fn idle(_time: &Time, _state: &mut State<'_, 4>, _sensors: &Sensors) {}
 fn a_desired_taken_in_tick_k_is_applied_in_k_and_never_in_k_plus_1() {
     let (writer, mut stages, _history) = slots();
     let log = Log::new();
-    let robot = robot().add_controller_with(
+    let robot = robot().add_controller(
         Last,
-        Remote {
-            writer,
-            puts: &[(1, 0.5)],
-        },
-        put,
+        with(
+            Remote {
+                writer,
+                puts: &[(1, 0.5)],
+            },
+            put,
+        ),
     );
 
     run(robot, &mut stages, 4, &log);
@@ -124,13 +126,15 @@ fn no_desired_no_command() {
 fn two_desired_within_one_tick_the_latest_is_applied_and_one_is_superseded() {
     let (writer, mut stages, _history) = slots();
     let log = Log::new();
-    let robot = robot().add_controller_with(
+    let robot = robot().add_controller(
         Last,
-        Remote {
-            writer,
-            puts: &[(1, 0.25), (1, 0.75)],
-        },
-        put,
+        with(
+            Remote {
+                writer,
+                puts: &[(1, 0.25), (1, 0.75)],
+            },
+            put,
+        ),
     );
 
     run(robot, &mut stages, 3, &log);
@@ -151,13 +155,15 @@ fn local(_time: &Time, state: &mut State<'_, 4>, _sensors: &Sensors) {
 fn a_local_controller_writing_the_same_actuator_later_in_the_tick_wins() {
     let (writer, mut stages, _history) = slots();
     let log = Log::new();
-    let robot = robot().add_controller(EachTick, local).add_controller_with(
+    let robot = robot().add_controller(EachTick, local).add_controller(
         Last,
-        Remote {
-            writer,
-            puts: &[(1, 0.5)],
-        },
-        put,
+        with(
+            Remote {
+                writer,
+                puts: &[(1, 0.5)],
+            },
+            put,
+        ),
     );
 
     run(robot, &mut stages, 3, &log);
@@ -169,13 +175,15 @@ fn a_local_controller_writing_the_same_actuator_later_in_the_tick_wins() {
 fn a_non_finite_remote_value_is_not_written() {
     let (writer, mut stages, _history) = slots();
     let log = Log::new();
-    let robot = robot().add_controller_with(
+    let robot = robot().add_controller(
         Last,
-        Remote {
-            writer,
-            puts: &[(1, f32::NAN)],
-        },
-        put,
+        with(
+            Remote {
+                writer,
+                puts: &[(1, f32::NAN)],
+            },
+            put,
+        ),
     );
 
     run(robot, &mut stages, 3, &log);
@@ -321,7 +329,7 @@ mod sources {
         let robot = robot()
             .add_plugins(gateway)
             .add_remote_source(EachTick, CTL, fallback)
-            .add_controller_with(Last, speaker, speak);
+            .add_controller(Last, with(speaker, speak));
         let mut inner = robot.finalized();
         let log = Log::new();
         let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 7 * PER_TICK);

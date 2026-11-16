@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use kmr_api::ffi::{Foreign, ForeignError, ReadView, Status, TimeView, WriteBuf, call};
-use kmr_api::{EachTick, HISTORY_DEPTH, Last, Sensors, Time};
+use kmr_api::{EachTick, HISTORY_DEPTH, Last, Sensors, Time, with};
 
 kmr_api::robot!(XmBench);
 
@@ -52,9 +52,9 @@ fn lasts(first: Status, second: Status) -> u32 {
     let _bus = bus();
     let n = Arc::new(AtomicU32::new(0));
     Robot::new()
-        .add_controller_with(EachTick, first, forward)
-        .add_controller_with(EachTick, second, forward)
-        .add_controller_with(Last, Arc::clone(&n), count)
+        .add_controller(EachTick, with(first, forward))
+        .add_controller(EachTick, with(second, forward))
+        .add_controller(Last, with(Arc::clone(&n), count))
         .run()
         .expect("runs without hardware");
     n.load(Ordering::SeqCst)

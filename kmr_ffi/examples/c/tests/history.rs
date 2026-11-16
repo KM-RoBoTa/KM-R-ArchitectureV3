@@ -11,7 +11,7 @@ use kmr_api::ffi::{AGE_NONE, ReadView, Slot, call};
 use kmr_api::test_util::{
     DT, Drivers, Faults, Log, PER_TICK, Recorder, Scripted, TICK_END, run_scripted,
 };
-use kmr_api::{EachTick, HCons, HISTORY_DEPTH, HNil, Mask, Sensors, Tau, Time};
+use kmr_api::{EachTick, HCons, HISTORY_DEPTH, HNil, Mask, Sensors, Tau, Time, with};
 
 kmr_api::robot!(XmBench);
 kmr_api::ffi::foreign! { fn copy_history; }
@@ -90,7 +90,7 @@ where
     let seen = RefCell::new(Vec::new());
     let robot = Robot::new()
         .set_dt(DT)
-        .add_controller_with(EachTick, Out::default(), check(&seen));
+        .add_controller(EachTick, with(Out::default(), check(&seen)));
     let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + (ticks - 1) * PER_TICK);
     run_scripted(robot, &mut host, drivers).expect("runs");
     seen.into_inner()

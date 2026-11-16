@@ -2,7 +2,7 @@
 #![allow(unused_variables)]
 use kmr_api::{
     Bus, Celsius, EachTick, Init, Latest, LatestReader, LatestWriter, Payload, Q, Sensors,
-    StateErrorKind as StateError, Time,
+    StateErrorKind as StateError, Time, threaded, with,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -294,11 +294,8 @@ fn main() -> color_eyre::Result<()> {
     }
 
     // If your wish to track your own data, flags or else, you would use
-    // `add_controller_with`. The difference with `add_controller` is the
-    // ability to receive T (which is whatever you want).
-    //
-    // This is more explicit with the signature.
-    // `pub fn add_controller_with<S, T, F>(self, schedule: S, ctx: T, f: F) -> Self`
+    // `with(ctx, f)`: `add_controller(EachTick, with(ctx, f))` hands `f` the
+    // `ctx: &mut T` (which is whatever you want) each tick.
     fn context_controller(
         tracker: &mut UserDefinedDataTracker,
         _time: &Time,
@@ -385,11 +382,11 @@ fn main() -> color_eyre::Result<()> {
     // integration layer is yours (unless you want us to do it for you). Below,
     // a pseudo-implementation of a 3 DOF arm with a camera, brought up by an
     // `Init` controller. Controllers run inline in the loop; only
-    // `add_controller_as_thread` gives one its own thread.
+    // `threaded(ctx, f)` gives one its own thread.
     //
     // A plain `fn` now — no closure, no returned `impl FnMut`, no `move`. The
     // shared tracker arrives as `&mut T` because we register it through
-    // `add_controller_with`, which OWNS the `Arc<Mutex<..>>` for us and lends it
+    // `with(ctx, f)`: the robot OWNS the `Arc<Mutex<..>>` for us and lends it
     // back each tick. (This kills the old `use_payload(Arc::clone(..))` pattern
     // the todo asked to remove.)
     fn use_payload(
@@ -598,20 +595,20 @@ fn main() -> color_eyre::Result<()> {
         .add_controller(EachTick, previous_state)
         .add_controller(EachTick, previous_state_at)
         .add_controller(EachTick, error_handling)
-        .add_controller_with(EachTick, own_tracker, context_controller)
+        .add_controller(EachTick, with(own_tracker, context_controller))
         // `Arc::clone` makes another handle to the SAME tracker (cheap — just
-        // bumps a counter). `add_controller_with` owns this handle and lends it
+        // bumps a counter). `with` hands this handle to the robot, which lends it
         // to `use_payload` as `&mut` — no closure needed anymore.
-        .add_controller_with(Init, Arc::clone(&tracker), use_payload)
+        .add_controller(Init, with(Arc::clone(&tracker), use_payload))
         // .add_controller(OnCollision, (previous_state_at))
         // .add_controller(OnCollision, (pause, previous_state, stop))
         // Own-data controller: no closure, no Arc/Mutex. We move the already
         // initialized `own_tracker` in — the API keeps it alive across ticks.
         // Gamepad WRITER on its own thread. No robot state → can't race commands.
-        .add_controller_as_thread(EachTick, pad_writer, gamepad_controller)
+        .add_controller(EachTick, threaded(pad_writer, gamepad_controller))
         // Gamepad READER on the main loop: needs State, so not threaded. The
         // other half of the same slot: the bridge from thread back to the robot.
-        .add_controller_with(EachTick, pad, use_gamepad)
+        .add_controller(EachTick, with(pad, use_gamepad))
         .add_controller(EachTick, use_sensors)
         .add_controller(EachTick, use_telemetry)
         .add_controller(EachTick, estop)

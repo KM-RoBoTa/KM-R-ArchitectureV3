@@ -8,7 +8,7 @@ use std::time::Instant;
 use kmr_api::ffi::lua::Bridge;
 use kmr_api::ffi::{ForeignError, call};
 use kmr_api::test_util::{DT, Log, Recorder, Sent, Ticking, run_scripted};
-use kmr_api::{Drive, EachTick, Filled, First, HCons, HNil, Q, Sensors, Time};
+use kmr_api::{Drive, EachTick, Filled, First, HCons, HNil, Q, Sensors, Time, with};
 
 kmr_api::robot!(XmBench);
 
@@ -83,12 +83,14 @@ fn swing_sends_what_its_rust_twin_sends_over_1000_ticks() {
     let robot = Robot::new()
         .set_dt(DT)
         .add_controller(First, recording(&log, &sends))
-        .add_controller_with(
+        .add_controller(
             EachTick,
-            Bridge::load(SWING, "step").expect("loads"),
-            |bridge: &mut Bridge, time: &Time, state: &mut State, _: &Sensors| {
-                assert!(call(bridge, time, state, None::<&mut ()>).is_ok());
-            },
+            with(
+                Bridge::load(SWING, "step").expect("loads"),
+                |bridge: &mut Bridge, time: &Time, state: &mut State, _: &Sensors| {
+                    assert!(call(bridge, time, state, None::<&mut ()>).is_ok());
+                },
+            ),
         );
     let script = run(robot, &log, &sends, 1000);
 
@@ -133,14 +135,16 @@ fn one_tick(
     let bridge = Bridge::load(&script(name, body), "step").expect("loads");
     let log = Log::new();
     let got = core::cell::Cell::new(None);
-    let robot = Robot::new().set_dt(DT).add_controller_with(
+    let robot = Robot::new().set_dt(DT).add_controller(
         EachTick,
-        bridge,
-        |bridge: &mut Bridge, time: &Time, state: &mut State, _: &Sensors| {
-            if time.tick() == 0 {
-                got.set(Some(call(bridge, time, state, None::<&mut ()>)));
-            }
-        },
+        with(
+            bridge,
+            |bridge: &mut Bridge, time: &Time, state: &mut State, _: &Sensors| {
+                if time.tick() == 0 {
+                    got.set(Some(call(bridge, time, state, None::<&mut ()>)));
+                }
+            },
+        ),
     );
     let mut drivers = HCons {
         head: Recorder::new(&log),
