@@ -52,9 +52,10 @@ lowered into the adapter's `Declared` at `run()`.
 | Call | Controller | Spec ids |
 | --- | --- | --- |
 | `.add_controller(phase, f)` | `Fn(&Time, &mut State, &Sensors)` | FR-010 (SRS FR-1.2) |
-| `.add_controller_with(phase, ctx, f)` | `Fn(&mut T, &Time, &mut State, &Sensors)` | FR-010, FR-011 |
-| `.add_controller_as_thread(phase, ctx, f)` | `Fn(&mut T, &Time)`; stored, not spawned (SRS FR-1.2 open) | FR-010 |
-| `.add_controller_or(phase, f, when, fallback)` | `f` and `fallback` inline; `when: Fn(&Faults) -> bool` | FR-049 (SRS FR-13.5) |
+| `.add_controller(phase, with(ctx, f))` | `Fn(&mut T, &Time, &mut State, &Sensors)` | FR-010, FR-011 |
+| `.add_controller(phase, threaded(ctx, f))` | `Fn(&mut T, &Time)`; stored, not spawned (SRS FR-1.2 open) | FR-010 |
+| `.add_controller(phase, f.or_when(when, fallback))` | `f` and `fallback` inline; `when: Fn(&Faults) -> bool` | FR-049 (SRS FR-13.5) |
+| `.add_controller(phase, (a, b, ..))` | up to 8 of the above, added left to right | FR-010 |
 | `.add_remote_source(phase, Remote::allow(id).timeout(d), fallback)` | `fallback` inline, runs while the source is timed out | FR-058, FR-059 (SRS FR-13.3) |
 
 Phases: `PreInit`, `Init`, `PostInit`, `First`, `EachTick`, `Last`, re-exported, no other

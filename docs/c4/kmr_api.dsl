@@ -59,7 +59,7 @@
     }
 
     group "kmr_api: builder" {
-        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins(impl Plugin), register_payload, add_controller, add_controller_or, add_controller_with, add_controller_as_thread, add_remote_source (zenoh), run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
+        apiRobot = component "kmr_api::Robot" "new, set_dt, set_hold, set_limit_policy(_group, _all), set_envelope(_group), add_plugins(impl Plugin), register_payload, add_controller(S, impl IntoController: f, with, or_when, threaded, tuples), add_remote_source (zenoh), run, bind. Finalization hands the model's limits (none for a placeholder model), the policies and the envelopes to the core." "Rust struct" {
             tags "Code"
         }
         apiBound = component "kmr_api::Bound" "A finalized robot with its drivers: drivers() before the run, run() hands them back after it." "Rust struct" {
@@ -104,7 +104,7 @@
         apiState = component "kmr_api::State, N" "Whole-robot and per-index getters, prev_* history reads and setters for Q, Qd, Tau, Kp, Kd; age_at, sample_age, read_every, stale_at, faults and prev_faults." "Rust struct, const" {
             tags "Code"
         }
-        apiFallback = component "kmr_api::Guarded, stale_in, remote_timeout, any_of" "add_controller_or's node: each tick a predicate over the tick's Faults runs the controller or its fallback, exactly one. Named type, no dyn, no heap (SRS FR-13.5)." "Rust struct, fns" {
+        apiFallback = component "kmr_api::Guarded, stale_in, remote_timeout, any_of" "or_when's node: each tick a predicate over the tick's Faults runs the controller or its fallback, exactly one. Named type, no dyn, no heap (SRS FR-13.5)." "Rust struct, fns" {
             tags "Code"
         }
         apiFaults = component "kmr_api::Faults, Mask" "Read-only copy of one tick's fault masks (stale, bus_error, offline, rejected, joint_limit, envelope) and flags (overrun, sensor_missing, remote_timeout, unauthorized). No setter (SRS FR-13.4)." "Rust struct" {

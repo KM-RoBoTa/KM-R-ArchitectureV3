@@ -40,7 +40,7 @@ says so once: `no bus plugin: simulating`.
 ## Drive the bench
 
 Files written: none for XmBench. Lines edited: one. In `src/main.rs`, add the
-bus line before `.add_controller_with(..)`:
+bus line before `.add_controller(..)`:
 
 ```rust
 .add_plugins(Bus::by_id("<U2D2 serial>"))
