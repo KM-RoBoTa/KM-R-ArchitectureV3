@@ -4,20 +4,16 @@
 use std::time::Instant;
 
 use kmr_api::test_util::{DT, Log, PER_TICK, Recorder, Scripted, TICK_END, run_scripted};
-use kmr_api::{EachTick, HCons, HNil, Q, Sensors, Time};
+use kmr_api::{EachTick, HCons, HNil, Q};
 
 kmr_api::robot!(XmBench);
-kmr_api::ffi::foreign! { fn swing; }
 
 #[test]
 fn swing_moves_actuators_0_and_2_from_the_newest_sample() {
     let log = Log::new();
-    let robot = Robot::new().set_dt(DT).add_controller(
-        EachTick,
-        |time: &Time, state: &mut State, _: &Sensors| {
-            assert!(kmr_api::ffi::call(swing, time, state, None::<&mut ()>).is_ok());
-        },
-    );
+    let robot = Robot::new()
+        .set_dt(DT)
+        .add_controller(EachTick, kmr_api::c!(swing));
     let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 2 * PER_TICK);
     let mut drivers = HCons {
         head: Recorder::new(&log),

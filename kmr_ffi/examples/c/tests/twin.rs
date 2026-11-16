@@ -1,19 +1,17 @@
-//! A C forwarder against its Rust twin over scripted ticks (kmr_ffi T016, SC-001): the same
-//! commands bit for bit, from an inline controller and from one with a context; nothing
-//! written sends nothing; a Rust write C leaves alone is kept; two registrations of one C
-//! function run in declaration order; a NaN from C ends as a NaN from Rust.
+//! A C controller against its Rust twin over scripted ticks (kmr_ffi T016, SC-001): the same
+//! commands bit for bit; nothing written sends nothing; a Rust write C leaves alone is kept; two
+//! registrations of one C function run in declaration order, each with its own context; a NaN
+//! from C ends as a NaN from Rust.
 
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 use std::time::Instant;
 
-use kmr_api::ffi::{Status, call};
 use kmr_api::test_util::{DT, Log, Recorder, Sent, Ticking, run_scripted};
 use kmr_api::{
-    Drive, EachTick, Envelope, Faults, Filled, First, HCons, HNil, Q, Qd, Sensors, Tau, Time, with,
+    Drive, EachTick, Envelope, Faults, Filled, First, HCons, HNil, Kd, Q, Qd, Sensors, Tau, Time,
 };
 
 kmr_api::robot!(XmBench);
-kmr_api::ffi::foreign! { fn twin; fn silent; fn skip_one; fn ctx_value; fn nan_q0; }
 
 /// Ticks of the long runs.
 const TICKS: u64 = 1000;
@@ -25,7 +23,7 @@ type Tick = (Option<Sent<N>>, Option<Faults<N>>);
 const STEP: [f32; 7] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
 
 /// The Rust twin of `twin` in tests/twin.c.
-fn rust_twin(time: &Time, state: &mut State) {
+fn rust_twin(time: &Time, state: &mut State, _: &Sensors) {
     let Ok(q) = state.prev_q(0) else {
         return;
     };
@@ -40,6 +38,9 @@ fn rust_twin(time: &Time, state: &mut State) {
     }
     if let Ok(q1) = state.prev_q(1) {
         let _ = state.set_qd_at(Qd(q[3].0 - q1[3].0), 3);
+    }
+    if time.tick().is_multiple_of(4) {
+        let _ = state.group([0, 2]).set_all_kd([Kd(1.0), Kd(2.0)]);
     }
 }
 
@@ -75,19 +76,6 @@ fn run<C: Drive<N>>(
     ticks
 }
 
-/// What the Rust twin sends over `TICKS` ticks.
-fn rust_sends() -> Vec<Tick> {
-    let log = Log::new();
-    let ticks = RefCell::new(Vec::new());
-    let robot = Robot::new()
-        .set_dt(DT)
-        .add_controller(First, recording(&log, &ticks))
-        .add_controller(EachTick, |time: &Time, state: &mut State, _: &Sensors| {
-            rust_twin(time, state);
-        });
-    run(robot, &log, &ticks, TICKS)
-}
-
 /// A tick with each sent position as its bits.
 type Bits = (Option<([u32; N], Sent<N>)>, Option<Faults<N>>);
 
@@ -112,49 +100,26 @@ fn bits(ticks: &[Tick]) -> Vec<Bits> {
 }
 
 #[test]
-fn an_inline_c_forwarder_sends_what_its_rust_twin_sends() {
+fn a_c_controller_sends_what_its_rust_twin_sends() {
     let log = Log::new();
     let ticks = RefCell::new(Vec::new());
     let robot = Robot::new()
         .set_dt(DT)
         .add_controller(First, recording(&log, &ticks))
-        .add_controller(EachTick, |time: &Time, state: &mut State, _: &Sensors| {
-            assert_eq!(
-                call(twin, time, state, None::<&mut ()>),
-                Ok(Status::Continue)
-            );
-        });
+        .add_controller(EachTick, kmr_api::c!(twin));
     let c = run(robot, &log, &ticks, TICKS);
-    let rust = rust_sends();
+
+    let log = Log::new();
+    let ticks = RefCell::new(Vec::new());
+    let robot = Robot::new()
+        .set_dt(DT)
+        .add_controller(First, recording(&log, &ticks))
+        .add_controller(EachTick, rust_twin);
+    let rust = run(robot, &log, &ticks, TICKS);
+
     assert!(c.len() as u64 >= TICKS, "{} ticks", c.len());
     assert!(c.iter().filter(|(sent, _)| sent.is_some()).count() as u64 >= TICKS);
     assert_eq!(bits(&c), bits(&rust));
-}
-
-#[test]
-fn a_c_forwarder_with_a_context_counts_its_calls_and_sends_the_same() {
-    let log = Log::new();
-    let ticks = RefCell::new(Vec::new());
-    let calls = Cell::new(0);
-    let walks = Cell::new(0);
-    let robot = Robot::new()
-        .set_dt(DT)
-        .add_controller(First, recording(&log, &ticks))
-        .add_controller(
-            EachTick,
-            with(
-                0_u32,
-                |n: &mut u32, time: &Time, state: &mut State, _: &Sensors| {
-                    assert_eq!(call(twin, time, state, Some(n)), Ok(Status::Continue));
-                    calls.set(*n);
-                    walks.set(walks.get() + 1);
-                },
-            ),
-        );
-    let c = run(robot, &log, &ticks, TICKS);
-    assert!(walks.get() as u64 >= TICKS);
-    assert_eq!(calls.get(), walks.get());
-    assert_eq!(bits(&c), bits(&rust_sends()));
 }
 
 #[test]
@@ -164,9 +129,7 @@ fn c_that_writes_nothing_sends_no_command() {
     let robot = Robot::new()
         .set_dt(DT)
         .add_controller(First, recording(&log, &ticks))
-        .add_controller(EachTick, |time: &Time, state: &mut State, _: &Sensors| {
-            let _ = call(silent, time, state, None::<&mut ()>);
-        });
+        .add_controller(EachTick, kmr_api::c!(silent));
     let c = run(robot, &log, &ticks, 50);
     assert!(c.len() >= 50);
     assert!(c.iter().all(|(sent, _)| sent.is_none()));
@@ -182,18 +145,11 @@ fn a_rust_write_c_leaves_unwritten_is_kept() {
         .add_controller(EachTick, |_: &Time, state: &mut State, _: &Sensors| {
             let _ = state.set_q_at(Q(0.25), 1);
         })
-        .add_controller(EachTick, |time: &Time, state: &mut State, _: &Sensors| {
-            let _ = call(skip_one, time, state, None::<&mut ()>);
-        });
+        .add_controller(EachTick, kmr_api::c!(skip_one));
     let c = run(robot, &log, &ticks, 3);
     let sent = c.last().and_then(|(sent, _)| *sent).expect("a write");
     assert_eq!(sent.q[..3], [Q(0.5), Q(0.25), Q(0.5)]);
     assert_eq!(sent.written.q.iter().collect::<Vec<_>>(), [0, 1, 2]);
-}
-
-/// Forwards to `ctx_value` with this registration's number.
-fn numbered(n: &mut u32, time: &Time, state: &mut State, _: &Sensors) {
-    let _ = call(ctx_value, time, state, Some(n));
 }
 
 #[test]
@@ -203,11 +159,24 @@ fn one_c_function_on_two_registrations_runs_in_declaration_order() {
     let robot = Robot::new()
         .set_dt(DT)
         .add_controller(First, recording(&log, &ticks))
-        .add_controller(EachTick, with(1_u32, numbered))
-        .add_controller(EachTick, with(2_u32, numbered));
+        .add_controller(EachTick, kmr_api::c!(ctx_value, with = 1_u32))
+        .add_controller(EachTick, kmr_api::c!(ctx_value, with = 2_u32));
     let c = run(robot, &log, &ticks, 3);
     let sent = c.last().and_then(|(sent, _)| *sent).expect("a write");
     assert_eq!(sent.q[0], Q(2.0), "the second registration wrote last");
+}
+
+#[test]
+fn the_context_is_the_robots_for_the_whole_run() {
+    let log = Log::new();
+    let ticks = RefCell::new(Vec::new());
+    let robot = Robot::new()
+        .set_dt(DT)
+        .add_controller(First, recording(&log, &ticks))
+        .add_controller(EachTick, kmr_api::c!(count_calls, with = 0_u32));
+    let c = run(robot, &log, &ticks, TICKS);
+    let sent = c.last().and_then(|(sent, _)| *sent).expect("a write");
+    assert_eq!(sent.q[0], Q(TICKS as f32));
 }
 
 /// What a NaN on q[0] from C (`from_c`) or from Rust sends and faults, with or without an
@@ -225,19 +194,20 @@ fn nan_run(from_c: bool, envelope: bool) -> Vec<Tick> {
             },
         );
     }
-    let robot = robot
-        .add_controller(First, recording(&log, &ticks))
-        .add_controller(
-            EachTick,
-            move |time: &Time, state: &mut State, _: &Sensors| {
-                if from_c {
-                    let _ = call(nan_q0, time, state, None::<&mut ()>);
-                } else {
-                    let _ = state.set_q_at(Q(f32::NAN), 0);
-                }
-            },
-        );
-    run(robot, &log, &ticks, 3)
+    let robot = robot.add_controller(First, recording(&log, &ticks));
+    if from_c {
+        run(
+            robot.add_controller(EachTick, kmr_api::c!(nan_q0)),
+            &log,
+            &ticks,
+            3,
+        )
+    } else {
+        let robot = robot.add_controller(EachTick, |_: &Time, state: &mut State, _: &Sensors| {
+            let _ = state.set_q_at(Q(f32::NAN), 0);
+        });
+        run(robot, &log, &ticks, 3)
+    }
 }
 
 #[test]

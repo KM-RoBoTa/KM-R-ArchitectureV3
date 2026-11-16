@@ -272,7 +272,7 @@ tick.
 
 ## FFI build
 
-`tick_ffi` is `tick` with an empty C function, `bench/ffi/empty.c`, as its second `EachTick`
+`tick_ffi` is `tick` with an empty C controller, `bench/ffi/empty.c`, as its second `EachTick`
 controller in place of the Rust no-op; `bench/build.rs` compiles that file and nothing else
 (assumed, pending human: D12 A). Needs a C compiler. Its own target dir:
 
@@ -281,8 +281,8 @@ cargo build -p kmr_bench --release --bin tick_ffi --features ffi --target-dir ta
 ```
 
 Run the cell with `bench_run` on `target/ffi/release/tick_ffi` and `BENCH_FEATURES=ffi`, then
-`results compare` against the same cell of `tick`: the difference is one foreign call per tick,
-the read view filled and the write buffer applied (kmr_ffi SC-003, FR-022 (SRS NFR-11)).
+`results compare` against the same cell of `tick`: the difference is one C controller per tick,
+the snapshot refilled and the staged writes applied (kmr_ffi SC-003, FR-022 (SRS NFR-11)).
 
 ## Footprint (e)
 

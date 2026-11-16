@@ -1,12 +1,14 @@
-//! `ffi::call` raises the signal of a foreign status on the real bus: its own process, a
-//! file-local lock (as kmr_core/tests/run_signals.rs). Rust doubles stand in for the foreign body.
+//! A C controller's request raises the signal on the real bus after its call: its own process,
+//! a file-local lock (as kmr_core/tests/run_signals.rs). Rust `extern "C"` functions stand in
+//! for C, writing the request as `kmr_shutdown` and `kmr_emergency_stop` do.
 #![cfg(feature = "ffi")]
 
+use core::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use kmr_api::ffi::{Foreign, ForeignError, ReadView, Status, TimeView, WriteBuf, call};
-use kmr_api::{EachTick, HISTORY_DEPTH, Last, Sensors, Time, with};
+use kmr_api::ffi::{__Sensors, __State, __Time, CController};
+use kmr_api::{EachTick, Last, Sensors, Time, with};
 
 kmr_api::robot!(XmBench);
 
@@ -17,28 +19,19 @@ fn bus() -> MutexGuard<'static, ()> {
     BUS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A foreign body that returns `status` at tick 3 and continues before.
-struct At3(Status);
-
-impl Foreign<N, HISTORY_DEPTH> for At3 {
-    fn invoke<C>(
-        &mut self,
-        _read: &ReadView<N, HISTORY_DEPTH>,
-        _buf: &mut WriteBuf<N>,
-        time: &TimeView,
-        _ctx: Option<&mut C>,
-    ) -> Result<Status, ForeignError> {
-        Ok(if time.tick == 3 {
-            self.0
-        } else {
-            Status::Continue
-        })
+/// Asks for the request in `ctx` (a `u32`: 1 shutdown, 2 emergency stop) at tick 3.
+unsafe extern "C" fn at_tick_3(
+    time: *const __Time,
+    state: *mut __State<N>,
+    _: *const __Sensors,
+    ctx: *mut c_void,
+) {
+    // SAFETY: `invoke` passes live handles; these tests give a `u32` context.
+    let (time, state, level) = unsafe { (&*time, &mut *state, *ctx.cast::<u32>()) };
+    if time.tick == 3 && level > state.signal {
+        state.signal = level;
+        state.reason[..4].copy_from_slice(b"test");
     }
-}
-
-/// Forwards the tick to `At3(status)`.
-fn forward(status: &mut Status, time: &Time, state: &mut State, _: &Sensors) {
-    let _ = call(At3(*status), time, state, None::<&mut ()>);
 }
 
 /// Counts the `Last` walks.
@@ -46,14 +39,20 @@ fn count(n: &mut Arc<AtomicU32>, _: &Time, _: &mut State, _: &Sensors) {
     n.fetch_add(1, Ordering::SeqCst);
 }
 
-/// The `Last` walks of a run whose `EachTick` forwarders return `first`, then `second`, at
-/// tick 3.
-fn lasts(first: Status, second: Status) -> u32 {
+/// The `Last` walks of a run whose two `EachTick` C controllers ask for `first`, then
+/// `second`, at tick 3 (0 asks nothing).
+fn lasts(first: u32, second: u32) -> u32 {
     let _bus = bus();
     let n = Arc::new(AtomicU32::new(0));
     Robot::new()
-        .add_controller(EachTick, with(first, forward))
-        .add_controller(EachTick, with(second, forward))
+        .add_controller(
+            EachTick,
+            CController::__new("first", at_tick_3, Some(first)),
+        )
+        .add_controller(
+            EachTick,
+            CController::__new("second", at_tick_3, Some(second)),
+        )
         .add_controller(Last, with(Arc::clone(&n), count))
         .run()
         .expect("runs without hardware");
@@ -62,15 +61,15 @@ fn lasts(first: Status, second: Status) -> u32 {
 
 #[test]
 fn an_emergency_stop_is_immediate() {
-    assert_eq!(lasts(Status::EmergencyStop, Status::Continue), 3);
+    assert_eq!(lasts(2, 0), 3);
 }
 
 #[test]
 fn a_shutdown_completes_the_tick() {
-    assert_eq!(lasts(Status::Shutdown, Status::Continue), 4);
+    assert_eq!(lasts(1, 0), 4);
 }
 
 #[test]
 fn a_later_shutdown_does_not_replace_the_emergency_stop() {
-    assert_eq!(lasts(Status::EmergencyStop, Status::Shutdown), 3);
+    assert_eq!(lasts(2, 1), 3);
 }

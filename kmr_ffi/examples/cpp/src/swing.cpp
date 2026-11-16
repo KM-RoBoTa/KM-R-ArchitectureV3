@@ -1,13 +1,15 @@
 // Moves actuators 0 and 2 by 0.1 rad a tick, from the newest sample.
-#include "kmr_ffi.hpp"
+#include "kmr.hpp"
 
-static std::int32_t swing_body(kmr::In in, kmr::Out out, const kmr_time_view &, void *) {
-    if (in.samples() == 0) {
-        return -1;
+static void swing(const kmr::Time &, kmr::State &state, const kmr::Sensors &) {
+    auto q0 = state.q_at(0);
+    auto q2 = state.q_at(2);
+    if (!q0 || !q2) {
+        state.emergency_stop("no sample to swing from");
+        return;
     }
-    out.set(0, kmr::Q{in.q(0, 0).v + 0.1f});
-    out.set(2, kmr::Q{in.q(0, 2).v + 0.1f});
-    return KMR_CONTINUE;
+    state.set_q_at(*q0 + 0.1f, 0);
+    state.set_q_at(*q2 + 0.1f, 2);
 }
 
-KMR_CPP_CONTROLLER(swing, swing_body)
+KMR_CONTROLLER(swing_cpp, swing)

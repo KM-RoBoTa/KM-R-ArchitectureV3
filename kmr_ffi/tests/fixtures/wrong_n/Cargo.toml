@@ -9,9 +9,7 @@ publish = false
 [workspace]
 
 [dependencies]
-kmr_api = { path = "../../../../kmr_api" }
-kmr_ffi = { path = "../../.." }
+kmr_api = { path = "../../../../kmr_api", features = ["ffi"] }
 
 [build-dependencies]
-kmr_api = { path = "../../../../kmr_api" }
-kmr_ffi = { path = "../../..", features = ["build"] }
+kmr_api = { path = "../../../../kmr_api", features = ["ffi-build"] }

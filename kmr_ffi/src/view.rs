@@ -1,7 +1,9 @@
-//! The types that cross to foreign code: `#[repr(C)]`, `Copy`, no pointers, no lifetimes.
+//! The write buffer every foreign controller stages into, and the Lua bridge's read view:
+//! `#[repr(C)]`, `Copy`, no pointers, no lifetimes.
 //!
-//! Generic over N (actuators) and D (History depth) on the Rust side; the C side gets the same
-//! layout from a header generated for one N and D (research R1). Values are in engine units.
+//! Generic over N (actuators) and D (History depth). [`WriteBuf`] is also the staging area of
+//! the C snapshot, [`CState`](crate::CState); [`ReadView`], [`Slot`], [`TimeView`] and
+//! [`ActuatorFlags`] are the Lua bridge's only. Values are in engine units.
 
 /// One bit per actuator, bit i = actuator i. Its width caps N (assumed, pending human: D4 A).
 ///

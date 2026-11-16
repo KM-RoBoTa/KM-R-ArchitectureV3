@@ -68,8 +68,8 @@ impl<'a, const N: usize> State<'a, N> {
         let _ = self.inner.set_at(value, i);
     }
 
-    /// Field `T` at actuator `i`, `depth` steps back, for a script snapshot.
-    #[cfg(any(feature = "python", feature = "lua"))]
+    /// Field `T` at actuator `i`, `depth` steps back, for the script and C snapshots.
+    #[cfg(any(feature = "python", feature = "lua", feature = "ffi"))]
     pub(crate) fn field_at<T: Field>(&self, i: usize, depth: usize) -> Result<T, StateError> {
         self.inner
             .prev_at::<T>(depth, i)

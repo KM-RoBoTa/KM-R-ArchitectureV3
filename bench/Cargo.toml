@@ -20,7 +20,7 @@ presort-off = ["kmr_api/presort-off"]
 # kmr_api's Zenoh gateway plugged into `tick`: default deny, no peer, no endpoint (constitution
 # VI); the cost of the gateway's stages on the tick (kmr_api SC-003). Off by default.
 zenoh = ["kmr_api/zenoh"]
-# `tick_ffi`: an empty C function as an `EachTick` controller (kmr_ffi SC-003). Off by default.
+# `tick_ffi`: an empty C controller on `EachTick` (kmr_ffi SC-003). Off by default.
 ffi = ["kmr_api/ffi", "dep:kmr_api"]
 
 [build-dependencies]

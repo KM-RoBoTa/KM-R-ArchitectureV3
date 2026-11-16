@@ -1,11 +1,14 @@
-//! The C call path allocates nothing and takes no lock (SC-003 kmr side, SC-007 C part (SRS
-//! NFR-1, NFR-2)).
+//! The C call allocates nothing and takes no lock (SC-003 kmr side, SC-007 C part (SRS NFR-1,
+//! NFR-2)). kmr_api's fill and apply around it are measured in kmr_ffi/examples/c.
 
 use core::cell::Cell;
 use core::ffi::c_void;
 use std::alloc::{GlobalAlloc, Layout, System};
 
-use kmr_ffi::{CFn, ReadView, Status, TimeView, WriteBuf, call};
+use kmr_ffi::{CFn, CSensors, CState, CTime, invoke};
+
+/// The C signature at N = 64 and the core's sizes today.
+type Swing = CFn<64, 4, 4, 1, 1024>;
 
 /// [`System`], counting the allocations of the current thread.
 struct Counting;
@@ -51,34 +54,33 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// A C body that writes every actuator's `q` and counts its calls in a `u64` context.
+/// A controller that stages every actuator's `q` from the newest slot and counts its calls in
+/// a `u64` context.
 unsafe extern "C" fn swing(
-    r: *const ReadView<64, 4>,
-    w: *mut WriteBuf<64>,
-    _: *const TimeView,
+    _: *const CTime,
+    state: *mut CState<64, 4>,
+    _: *const CSensors<4, 1, 1024>,
     ctx: *mut c_void,
-) -> i32 {
-    // SAFETY: `call` passes live references and the test an exclusive `u64` context.
-    let (r, w, n) = unsafe { (&*r, &mut *w, &mut *ctx.cast::<u64>()) };
-    for (q, prev) in w.q.iter_mut().zip(r.slot[0].q) {
+) {
+    // SAFETY: `invoke` passes a live exclusive state and the test an exclusive `u64` context.
+    let (s, n) = unsafe { (&mut *state, &mut *ctx.cast::<u64>()) };
+    for (q, prev) in s.write.q.iter_mut().zip(s.slot[0].q) {
         *q = prev + 0.1;
     }
-    w.written.q = u64::MAX;
+    s.write.written.q = u64::MAX;
     *n += 1;
-    0
 }
 
 #[test]
 fn ten_thousand_calls_at_n_64_allocate_nothing() {
-    let read = ReadView::<64, 4>::default();
-    let time = TimeView::default();
-    let mut buf = WriteBuf::<64>::default();
+    let time = CTime::default();
+    let sensors = CSensors::default();
+    let mut state = CState::<64, 4>::default();
     let mut n = 0u64;
-    let f = swing as CFn<64, 4>;
+    let f: Swing = swing;
     let before = ALLOCS.with(Cell::get);
     for _ in 0..10_000 {
-        let out = call(f, &read, &mut buf, &time, Some(&mut n));
-        assert!(out == Ok(Status::Continue));
+        invoke(f, &time, &mut state, &sensors, Some(&mut n));
     }
     let after = ALLOCS.with(Cell::get);
     assert_eq!(n, 10_000);
@@ -87,10 +89,7 @@ fn ten_thousand_calls_at_n_64_allocate_nothing() {
 
 #[test]
 fn the_call_path_names_no_lock() {
-    for src in [
-        include_str!("../src/call.rs"),
-        include_str!("../src/view.rs"),
-    ] {
+    for src in [include_str!("../src/c.rs"), include_str!("../src/view.rs")] {
         assert!(!src.contains(concat!("std", "::sync")));
         assert!(!src.contains("Mutex"));
     }
