@@ -32,8 +32,6 @@ presort-off = ["kmr_core/presort-off"]
 ffi = ["dep:kmr_ffi"]
 # For a build-dependency: `kmr_api::ffi::build`, the helper that compiles C and C++ sources.
 ffi-build = ["ffi", "kmr_ffi/build"]
-# A Lua 5.4 function as the foreign body, Lua vendored: `kmr_api::ffi::lua::Bridge`.
-ffi-lua = ["ffi", "kmr_ffi/lua"]
 # A Python file as a controller: `kmr_api::python!` (needs the Python headers and library).
 python = ["dep:pyo3"]
 # A Lua file as a controller: `kmr_api::lua!` (Lua 5.4, vendored: no system library).

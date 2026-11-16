@@ -21,9 +21,8 @@ impl<const N: usize> Faults<N> {
         Self { actuators, tick }
     }
 
-    /// The whole-tick flags as bits, the core's `TickFlags` layout (the FFI view's
-    /// `tick_flags`).
-    #[cfg_attr(not(any(feature = "ffi", feature = "zenoh")), allow(dead_code))]
+    /// The whole-tick flags as bits, the core's `TickFlags` layout (the gateway's telemetry).
+    #[cfg_attr(not(feature = "zenoh"), allow(dead_code))]
     pub(crate) fn tick_bits(&self) -> u32 {
         self.tick.bits()
     }

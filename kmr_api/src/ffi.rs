@@ -67,18 +67,13 @@ use kmr_ffi::{CDuration, CImu, CSlot, CTickFaults, CTime, Request};
 use crate::controller::{IntoController, seal::Sealed};
 use crate::{HISTORY_DEPTH, Q, Schedule, Sensors, State, StateError, Time};
 
-mod script;
-
 #[doc(hidden)]
 pub use kmr_core::state::{FieldId as __FieldId, field_id as __field_id};
+/// The staging area the C snapshot's writes are applied from.
+#[doc(hidden)]
+pub use kmr_ffi::WriteBuf;
 #[doc(hidden)]
 pub use kmr_ffi::{for_each_field as __for_each_field, for_each_flag as __for_each_flag};
-// DECISION: the Lua bridge's surface stays reachable, hidden, until the bridge is removed.
-#[doc(hidden)]
-pub use script::{
-    AGE_NONE, ActuatorFlags, Foreign, ForeignError, ReadView, Slot, Status, TimeView, WriteBuf,
-    Written, call,
-};
 
 /// The build-script helper: writes `kmr.h`, `kmr.hpp` and the ABI file into `OUT_DIR` and
 /// compiles the C and C++ sources (feature `ffi-build`, in `[build-dependencies]`).
@@ -115,15 +110,6 @@ pub mod build {
     pub fn model(path: impl AsRef<Path>) -> Build {
         kmr_ffi::build::model(path, sizes())
     }
-}
-
-/// A Lua function as the foreign body (feature `ffi-lua`): a vendored Lua 5.4, 1-based tables.
-///
-/// `Bridge::load(path, function)` in `main`, before `run()`; the bridge is the context of a
-/// `with(bridge, forwarder)` controller that passes `&mut bridge` to `ffi::call`.
-#[cfg(feature = "ffi-lua")]
-pub mod lua {
-    pub use kmr_ffi::lua::Bridge;
 }
 
 /// The clock as C reads it.
