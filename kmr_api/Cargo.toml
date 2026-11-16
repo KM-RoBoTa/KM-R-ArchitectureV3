@@ -18,6 +18,9 @@ tracing = { workspace = true, optional = true }
 # DECISION (maintainer-asked 2026-11-16, experiment/ffi-bounderies): the embedded CPython of
 # `kmr_api::python`, feature `python`.
 pyo3 = { workspace = true, optional = true }
+# DECISION (maintainer-asked 2026-11-16, experiment/ffi-bounderies): the embedded Lua 5.4 of
+# `kmr_api::lua`, feature `lua`; the workspace's mlua, vendored.
+mlua = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["kmr_adapters/dynamixel"]
@@ -33,6 +36,8 @@ ffi-build = ["ffi", "kmr_ffi/build"]
 ffi-lua = ["ffi", "kmr_ffi/lua"]
 # A Python file as a controller: `kmr_api::python!` (needs the Python headers and library).
 python = ["dep:pyo3"]
+# A Lua file as a controller: `kmr_api::lua!` (Lua 5.4, vendored: no system library).
+lua = ["dep:mlua"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
 cubemars = ["kmr_adapters/cubemars"]
@@ -70,6 +75,11 @@ required-features = ["zenoh", "test-util"]
 [[test]]
 name = "python"
 required-features = ["python", "test-util"]
+
+# Lua controllers on the core's scripted host.
+[[test]]
+name = "lua"
+required-features = ["lua", "test-util"]
 
 # Sensors on the core's scripted host and fake sensor.
 [[test]]

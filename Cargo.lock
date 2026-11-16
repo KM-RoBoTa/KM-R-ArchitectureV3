@@ -1424,6 +1424,7 @@ dependencies = [
  "kmr_core",
  "kmr_ffi",
  "kmr_model",
+ "mlua",
  "pyo3",
  "thiserror",
  "tracing",

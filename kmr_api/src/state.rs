@@ -68,8 +68,8 @@ impl<'a, const N: usize> State<'a, N> {
         let _ = self.inner.set_at(value, i);
     }
 
-    /// Field `T` at actuator `i`, `depth` steps back, for the Python snapshot.
-    #[cfg(feature = "python")]
+    /// Field `T` at actuator `i`, `depth` steps back, for a script snapshot.
+    #[cfg(any(feature = "python", feature = "lua"))]
     pub(crate) fn field_at<T: Field>(&self, i: usize, depth: usize) -> Result<T, StateError> {
         self.inner
             .prev_at::<T>(depth, i)
@@ -77,8 +77,14 @@ impl<'a, const N: usize> State<'a, N> {
             .map_err(StateError::from)
     }
 
-    /// Stages one value a Python script wrote; the index is below N.
-    #[cfg(feature = "python")]
+    /// Field `T` of every actuator, `depth` steps back, for a script snapshot.
+    #[cfg(any(feature = "python", feature = "lua"))]
+    pub(crate) fn field_row<T: Field>(&self, depth: usize) -> Result<&[T; N], StateError> {
+        self.inner.prev::<T>(depth).map_err(StateError::from)
+    }
+
+    /// Stages one value a script wrote; the index is below N.
+    #[cfg(any(feature = "python", feature = "lua"))]
     pub(crate) fn stage<T: Field>(&mut self, value: T, i: usize) {
         let _ = self.inner.set_at(value, i);
     }

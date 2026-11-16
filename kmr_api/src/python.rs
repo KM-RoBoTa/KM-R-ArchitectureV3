@@ -56,13 +56,14 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use kmr_core::{ControlFnWith, Filled, InlineWith, Insert};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::controller::{IntoController, seal::Sealed};
+use crate::snapshot::{Seen, phase_name};
 use crate::{HISTORY_DEPTH, Schedule, Sensors, State, Time};
 use view::{PySensors, PyState, PyTime};
 
@@ -173,14 +174,6 @@ struct Shared {
     stop: AtomicBool,
 }
 
-/// What the watcher last saw of the file.
-struct Seen {
-    /// Its modification time.
-    modified: Option<SystemTime>,
-    /// Its text.
-    source: String,
-}
-
 impl Shared {
     /// Runs `source` as a fresh module with the script globals.
     fn compile<'py>(&self, py: Python<'py>, source: &str) -> PyResult<Bound<'py, PyModule>> {
@@ -202,20 +195,9 @@ impl Shared {
 
     /// Compiles the file if it changed since `seen`, and leaves the module for the loop.
     fn poll(&self, seen: &mut Seen) {
-        let Ok(modified) = std::fs::metadata(&self.path).and_then(|m| m.modified()) else {
-            return;
-        };
-        if seen.modified == Some(modified) {
+        if !seen.changed(&self.path) {
             return;
         }
-        seen.modified = Some(modified);
-        let Ok(source) = std::fs::read_to_string(&self.path) else {
-            return;
-        };
-        if source == seen.source {
-            return;
-        }
-        seen.source = source;
         let compiled = Python::attach(|py| match self.compile(py, &seen.source) {
             Ok(m) => Some(m.unbind()),
             Err(e) => {
@@ -523,24 +505,6 @@ impl<const N: usize> ControlFnWith<Runtime, N> for PyTick {
             &Sensors::new(sensors),
         );
     }
-}
-
-/// `EachTick` as `each_tick`: the last path segment of the label's type, in snake case.
-fn phase_name<S>() -> String {
-    let full = core::any::type_name::<S>();
-    let last = full.rsplit("::").next().unwrap_or(full);
-    let mut out = String::with_capacity(last.len() + 4);
-    for (k, c) in last.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if k > 0 {
-                out.push('_');
-            }
-            out.push(c.to_ascii_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 impl Script {

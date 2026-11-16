@@ -131,6 +131,12 @@ pub mod ffi;
 #[cfg(feature = "python")]
 pub mod python;
 
+#[cfg(feature = "lua")]
+pub mod lua;
+
+#[cfg(any(feature = "python", feature = "lua"))]
+mod snapshot;
+
 #[cfg(feature = "xiao")]
 pub mod xiao;
 

@@ -15,6 +15,8 @@ kmr_api.workspace = true
 hardware = ["kmr_api/dynamixel", "kmr_api/xiao"]
 # Controllers written in Python: `kmr_api::python!` (needs the Python headers and library).
 python = ["kmr_api/python"]
+# Controllers written in Lua: `kmr_api::lua!` (Lua 5.4, vendored).
+lua = ["kmr_api/lua"]
 # DECISION: kept as a no-op so the RX-28 command line in main.rs still works:
 # `robot!(Rx28Chain)` alone sets N = 10 now (core M2).
 rx28 = []
@@ -23,6 +25,11 @@ rx28 = []
 [[example]]
 name = "clap_py"
 required-features = ["python"]
+
+# The clap controller of src/main.rs with its logic in lua/clap.lua.
+[[example]]
+name = "clap_lua"
+required-features = ["lua"]
 
 [lints]
 workspace = true
