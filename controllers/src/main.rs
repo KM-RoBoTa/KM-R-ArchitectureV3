@@ -25,6 +25,9 @@ kmr_api::robot!(model = "models/ax_12_12act_an_rx28_10act.urdf");
 //     }
 // }
 
+/// The run shuts down after this, whatever happened.
+const TIME_LIMIT: Duration = Duration::from_secs(60);
+
 /// AX-12A and RX-28 middle: raw 512, which the adapter calls 0 rad.
 const CENTER: Q = Q(0.0);
 
@@ -64,18 +67,41 @@ const PEAK: u16 = 1000;
 const MOVE_FOR: Duration = Duration::from_secs(2);
 
 /// A 0.5 Hz sine of `amplitude` around the centre, `t` after it started.
+#[inline]
 fn sine(amplitude: f32, t: Duration) -> Q {
     CENTER + Q(amplitude * (TAU * 0.5 * t.as_secs_f32()).sin())
 }
 
-/// The microphone's loudest sample this tick; `None` without a microphone or a sample.
-fn peak(sensors: &Sensors) -> Option<u16> {
-    sensors
-        .mic(0)?
-        .samples()
+/// How long the last clap's motion has run; `None` before the first clap and once it is over.
+#[inline]
+fn moving_for(clap: &Clap, now: Duration) -> Option<Duration> {
+    let t = now - clap.since?;
+    (t < MOVE_FOR).then_some(t)
+}
+
+/// Where the AX-12A snake goes: its sine while moving, the centre otherwise.
+#[inline]
+fn ax_target(moving_for: Option<Duration>) -> Q {
+    moving_for.map_or(CENTER, |t| sine(2.0 * AMPLITUDE, t))
+}
+
+/// Where the RX-28 snake goes: its sine while moving, the centre otherwise.
+#[inline]
+fn rx_target(moving_for: Option<Duration>) -> Q {
+    moving_for.map_or(CENTER, |t| sine(AMPLITUDE, t))
+}
+
+/// The microphone's loudest sample this tick; 0 without a microphone or a sample.
+#[inline]
+fn peak(sensors: &Sensors) -> u16 {
+    let Some(mic) = sensors.mic(0) else {
+        return 0;
+    };
+    mic.samples()
         .iter()
         .map(|s| s.unsigned_abs())
         .max()
+        .unwrap_or(0)
 }
 
 /// When the last clap's motion started; `None` before the first clap.
@@ -94,23 +120,15 @@ fn move_on_clap(clap: &mut Clap, time: &Time, robot: &mut State, sensors: &Senso
     }
     // DECISION: a peak heard while moving is ignored (the servos are loud), so one clap is one
     // 2 s motion.
-    let moving = clap
-        .since
-        .map(|start| now.saturating_sub(start))
-        .filter(|t| *t < MOVE_FOR);
-    let t = match (moving, peak(sensors)) {
-        (Some(t), _) => Some(t),
-        (None, Some(loudest)) if loudest > PEAK => {
-            println!("clap at {now:?}: peak {loudest} > {PEAK}, both snakes move for {MOVE_FOR:?}");
-            clap.since = Some(now);
-            Some(Duration::ZERO)
-        }
-        (None, _) => None,
-    };
-    let (ax, rx) = match t {
-        Some(t) => (sine(2.0 * AMPLITUDE, t), sine(1.0 * AMPLITUDE, t)),
-        None => (CENTER, CENTER),
-    };
+    let loudest = peak(sensors);
+    if moving_for(clap, now).is_none() && loudest > PEAK {
+        println!("clap at {now:?}: peak {loudest} > {PEAK}, both snakes move for {MOVE_FOR:?}");
+        clap.since = Some(now);
+    }
+
+    let t = moving_for(clap, now);
+    let ax = ax_target(t);
+    let rx = rx_target(t);
     if let Err(e) = robot.group(AX).set_all_q([ax; AX.len()]) {
         eprintln!("{e}");
         shutdown!("AX-12A group write failed");
@@ -120,9 +138,6 @@ fn move_on_clap(clap: &mut Clap, time: &Time, robot: &mut State, sensors: &Senso
         shutdown!("RX-28 group write failed");
     }
 }
-
-/// The run shuts down after this, whatever happened.
-const TIME_LIMIT: Duration = Duration::from_secs(60);
 
 fn shutdown_after_some_time(time: &Time, _robot: &mut State, _sensors: &Sensors) {
     if time.elapsed() > TIME_LIMIT {
