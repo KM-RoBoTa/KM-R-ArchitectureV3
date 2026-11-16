@@ -8,7 +8,8 @@
 //! cross.
 //!
 //! This crate holds the plain `#[repr(C)]` types that cross, the one field list they are
-//! generated from, and the build helper that writes the headers. It has no kmr dependency; users reach it through `kmr_api`.
+//! generated from, and the build helper that writes the headers. It has no kmr dependency;
+//! users reach it through `kmr_api`.
 //!
 //! # Features
 //!
@@ -43,4 +44,4 @@ pub use c::{
     CAxes, CDuration, CFn, CImu, CMic, CSensors, CSlot, CState, CTickFaults, CTime, REASON_LEN,
     Request, TICK_OVERRUN, TICK_REMOTE_TIMEOUT, TICK_SENSOR_MISSING, TICK_UNAUTHORIZED, invoke,
 };
-pub use view::{AGE_NONE, ActuatorFlags, Mask, ReadView, Slot, TimeView, WriteBuf, Written};
+pub use view::{Mask, WriteBuf, Written};

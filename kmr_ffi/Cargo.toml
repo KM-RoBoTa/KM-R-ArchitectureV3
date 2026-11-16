@@ -1,6 +1,6 @@
 [package]
 name = "kmr_ffi"
-description = "The C ABI, headers and build helper of kmr controllers written in C and C++, and the Lua bridge."
+description = "The C ABI, headers and build helper of kmr controllers written in C and C++."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

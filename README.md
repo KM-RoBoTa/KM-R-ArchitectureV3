@@ -58,7 +58,7 @@ are in [`controllers/README.md`](controllers/README.md).
 | `kmr_adapters/`         | Hardware adapters, Dynamixel first.                            |
 | `kmr_model/`            | Robot model: the `robot!` proc macro over `kmr_model_core`.    |
 | `kmr_model_core/`       | Robot model library: reads and checks a descriptor at build time. |
-| `kmr_ffi/`              | The C ABI and headers of C and C++ controllers; the Lua bridge. |
+| `kmr_ffi/`              | The C ABI and headers of C and C++ controllers.                 |
 | `bench/`                | The reference benchmark of the engine.                         |
 | `controllers/`          | Write your controllers here. Depends on `kmr_api` only. See its README. |
 | `docs/`                 | Architecture, roadmap and product brief.                       |

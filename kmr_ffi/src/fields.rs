@@ -1,7 +1,8 @@
 //! The one declaration of what crosses: the state fields and the per-actuator flags.
 //!
 //! Every per-field and per-flag item is generated from these two lists: the Rust types, the
-//! C and C++ headers and the bridges (FR-014 (SRS FR-10.2)). A new field is one line here.
+//! C and C++ headers and kmr_api's fill and apply steps (FR-014 (SRS FR-10.2)). A new field is
+//! one line here.
 
 /// Calls `$cb!` with every field of the core's sealed set, as `name: Type` pairs.
 ///
@@ -55,11 +56,9 @@ mod tests {
 
     #[test]
     fn one_line_adds_a_field_to_the_types() {
-        let slot = with_dummy::Slot::<4>::default();
         let c_slot = with_dummy::CSlot::<4>::default();
         let buf = with_dummy::WriteBuf::<4>::default();
         let written = with_dummy::Written::default();
-        assert_eq!(slot.dummy.len(), 4);
         assert_eq!(c_slot.dummy.len(), 4);
         assert_eq!(buf.dummy.len(), 4);
         assert_eq!(written.dummy, 0);

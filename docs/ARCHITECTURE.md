@@ -15,14 +15,18 @@ user code:
   vendor, behind the core's contract. Dynamixel first.
 - **`kmr_api`** (`kmr_api/`) — the public user API. A thin, deliberate layer
   that re-exposes what users need and nothing else.
-- **`kmr_ffi`** (`kmr_ffi/`) — the plain C types, generated C/C++ headers and
-  Python/Lua bridges that let a Rust controller hand one tick's math to
-  foreign code. No engine dependency; users reach it only through
-  `kmr_api::ffi` (features `ffi`, `ffi-build`), whose `call` copies the
-  state into the view, calls, and applies the flagged writes through the
-  `State` setters. Its example crates, `kmr_ffi/examples/<language>/`, are
-  workspace members: a build of the workspace needs a C and C++ compiler and
-  the Python headers.
+- **`kmr_ffi`** (`kmr_ffi/`) — the plain `#[repr(C)]` snapshot of C and C++
+  controllers and the build helper that writes the generated `kmr.h` /
+  `kmr.hpp` and compiles the user's sources. No engine dependency; users
+  reach it only through `kmr_api::c!` and `kmr_api::ffi::build` (features
+  `ffi`, `ffi-build`): each tick the node refills the snapshot, calls the C
+  function, and applies its staged writes through the `State` setters. Its
+  example crates, `kmr_ffi/examples/{c,cpp}/`, are workspace members: a
+  build of the workspace needs a C and C++ compiler.
+  Python and Lua files are controllers of their own in `kmr_api`, not in
+  `kmr_ffi`: `kmr_api::python!` and `kmr_api::lua!` (features `python`,
+  `lua`) mirror the controller API over a History snapshot and reload a
+  changed file between two ticks.
 - **`controllers`** (`controllers/`) — where controllers are written. It
   depends on `kmr_api` only.
 

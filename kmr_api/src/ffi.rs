@@ -72,8 +72,6 @@ pub use kmr_core::state::{FieldId as __FieldId, field_id as __field_id};
 /// The staging area the C snapshot's writes are applied from.
 #[doc(hidden)]
 pub use kmr_ffi::WriteBuf;
-#[doc(hidden)]
-pub use kmr_ffi::{for_each_field as __for_each_field, for_each_flag as __for_each_flag};
 
 /// The build-script helper: writes `kmr.h`, `kmr.hpp` and the ABI file into `OUT_DIR` and
 /// compiles the C and C++ sources (feature `ffi-build`, in `[build-dependencies]`).
