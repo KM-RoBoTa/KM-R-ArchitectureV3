@@ -100,7 +100,7 @@ impl<const N: usize> RobotState<N> {
     /// Err if the requested depth isn't present in the buffer, or if an
     /// actuator had no sample yet at that depth ([`StateError::NoSample`]).
     /// With the `experimental` feature, an absent actuator is not counted:
-    /// its entry is stale or zero.
+    /// its entry is stale or zero; with none present, it is `NoSample`.
     pub fn prev<T>(&self, history_depth: usize) -> Result<&[T; N], StateError>
     where
         T: StateField,
@@ -108,13 +108,14 @@ impl<const N: usize> RobotState<N> {
         let slot = self.slot::<T>(history_depth)?;
         // DECISION: absent slots are skipped, so one unplugged actuator does
         // not blank the whole slot for the others.
-        let counted = self.counted();
+        let no_sample = || StateError::NoSample {
+            depth: history_depth,
+        };
+        let counted = self.counted().ok_or_else(no_sample)?;
         let unsampled = (self.sampled.iter().enumerate())
             .any(|(index, &held)| counted.get(index) && !holds(held, history_depth));
         if unsampled {
-            return Err(StateError::NoSample {
-                depth: history_depth,
-            });
+            return Err(no_sample());
         }
         Ok(slot)
     }
@@ -172,11 +173,11 @@ impl<const N: usize> RobotState<N> {
 
     /// Age of the oldest sample over all actuators; with the `experimental`
     /// feature, absent ones left out. `None` while one of them was never
-    /// read.
+    /// read, and while none is present.
     // DECISION: an actuator never read makes the whole sample age unknown,
     // not the maximum of the others. An absent one is not counted.
     pub fn sample_age(&self) -> Option<u32> {
-        let counted = self.counted();
+        let counted = self.counted()?;
         (self.age.iter().zip(&self.sampled).enumerate())
             .filter(|&(index, _)| counted.get(index))
             .try_fold(0, |oldest, (_, (&age, &held))| {
@@ -224,16 +225,18 @@ impl<const N: usize> RobotState<N> {
     }
 
     /// The actuators whose samples count in `prev` and `sample_age`: the
-    /// present ones.
+    /// present ones; `None` when none is, so an empty set never reads as
+    /// fresh.
     #[cfg(feature = "experimental")]
-    fn counted(&self) -> Mask<N> {
-        self.presence.now()
+    fn counted(&self) -> Option<Mask<N>> {
+        let present = self.presence.now();
+        (!present.is_empty()).then_some(present)
     }
 
     /// The actuators whose samples count in `prev` and `sample_age`: all.
     #[cfg(not(feature = "experimental"))]
-    fn counted(&self) -> Mask<N> {
-        Mask::ALL
+    fn counted(&self) -> Option<Mask<N>> {
+        Some(Mask::ALL)
     }
 }
 

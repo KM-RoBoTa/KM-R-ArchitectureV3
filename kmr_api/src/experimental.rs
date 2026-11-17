@@ -52,8 +52,9 @@ impl<const N: usize, H, C, E, SN> RobotExt for Robot<N, H, C, E, SN> {
 /// `qd` and `tau`) give [`StateError::NoSample`](crate::StateError::NoSample), and `age_at`
 /// gives `Ok(None)`, from the tick it left until its first read after it rejoins. The
 /// whole-array reads (`q()`, `prev_q(..)`) leave it out of their check: its entry holds its
-/// last sample, or zero if it was never read. A group read that includes it (`group(..).q()`)
-/// gives `None`.
+/// last sample, or zero if it was never read. With no actuator present at all, they give
+/// `None` or `NoSample`, and `sample_age()` gives `None`: nothing is fresh. A group read that
+/// includes it (`group(..).q()`) gives `None`.
 pub trait Presence<const N: usize>: seal::Sealed {
     /// The actuators present this tick: read and written.
     fn present(&self) -> Mask<N>;

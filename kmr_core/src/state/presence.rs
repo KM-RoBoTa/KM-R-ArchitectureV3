@@ -238,6 +238,18 @@ mod tests {
     }
 
     #[test]
+    fn with_no_actuator_present_nothing_is_fresh() {
+        let mut robot = RobotState::<N>::default();
+        let _ = robot.push_slot();
+        robot.refreshed(Mask::ALL);
+        robot.set_present(Mask::NONE);
+
+        assert_eq!(robot.sample_age(), None);
+        assert_eq!(robot.prev::<Q>(0), Err(StateError::NoSample { depth: 0 }));
+        assert!(robot.current::<Q>().is_none());
+    }
+
+    #[test]
     fn nothing_joined_or_left_before_the_first_report() {
         let robot = RobotState::<N>::default();
         assert!(robot.joined().is_empty());
