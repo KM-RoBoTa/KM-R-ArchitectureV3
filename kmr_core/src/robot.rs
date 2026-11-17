@@ -36,7 +36,10 @@ use crate::controllers::{
     ControlFn, ControlFnWith, Controller, Inline, InlineWith, ThreadFn, Threaded,
 };
 use crate::error::RunError;
-use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware, Sensing, SensorPolicy};
+use crate::hal::{
+    Drivers, HardwareError, JoinPolicy, Mask, MemberError, MissingPolicy, NoHardware, Sensing,
+    SensorPolicy,
+};
 use crate::limits::{Envelope, Limit, Policy};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
@@ -191,6 +194,21 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
     /// (SRS FR-5.7, FR-13.4). Without it, [`SensorPolicy::Flag`].
     pub fn set_sensor_policy(mut self, policy: SensorPolicy) -> Self {
         self.config.sensor_policy = policy;
+        self
+    }
+
+    /// What a declared actuator that does not answer, at open or at run
+    /// time, means. Without it, [`MissingPolicy::Fail`]: bring-up fails.
+    pub fn set_missing_policy(mut self, policy: MissingPolicy) -> Self {
+        self.config.missing_policy = policy;
+        self
+    }
+
+    /// Whether an absent declared actuator may join the run. Without it,
+    /// [`JoinPolicy::Never`]. It needs [`MissingPolicy::Tolerate`] to have
+    /// any effect.
+    pub fn set_join_policy(mut self, policy: JoinPolicy) -> Self {
+        self.config.join_policy = policy;
         self
     }
 
