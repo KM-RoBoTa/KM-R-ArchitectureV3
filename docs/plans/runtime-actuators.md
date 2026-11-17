@@ -636,3 +636,25 @@ Each tick, in this order, at most one of:
 | Feas 7: close restores live ∪ seed only | Accepted: restore every held slot. |
 | Feas 9: `Overrides` E0639 | Accepted. |
 | Feas 11: example does not compile | Accepted: `.build()` and imports. |
+
+## After the build: the `experimental` feature and the controller helpers
+
+Two maintainer decisions after T8, both built.
+
+### A. Everything behind `experimental`
+
+- **Feature.** `experimental`, off by default, in kmr_core, kmr_adapters (forwards to kmr_core's) and kmr_api (forwards to both); `controllers` has one that forwards to kmr_api's, and `runtime_actuators` needs `hardware` and `experimental`. No new dependency.
+- **Off = dev.** The pub surface and the behaviour equal dev's. What stays compiled without it, all behaviour-neutral:
+  - kmr_core: `RobotConfig.overrides: Overrides` (empty, the claim passes it as it is instead of `Overrides::default()`); `RobotState::counted()`, `Mask::ALL` without the feature, which `prev` and `sample_age` filter on; the three runtime calls `sync_presence`, `drop_absent` and `upkeep` go to an inline no-op twin.
+  - kmr_adapters: the bring-up refactor the hot-plug needed (`health_one`, `check_health`, `configure_one`, `each_live`, `declare_tries`, `restore_one`, the `only` mask of `read_table` and `write_start_goals`, the live filter of telemetry steps). Its presence is `presence_off.rs`, a zero-sized twin: every slot live, `tolerates()` false, nothing lost, seeded or cut. `Backend: HotPlug`, where `HotPlug` is empty and blanket-implemented without the feature. `DxlRsV2` opens two handles per port as on dev; the two side handles, `Side`, and the four hot-plug calls are in `dxl_rs_v2/side.rs`, gated.
+  - Gated whole: `kmr_core/src/hal/presence.rs`, `state/presence.rs`, `runtime/presence.rs`, `kmr_adapters/src/dynamixel/{presence,join}.rs`, `dxl_rs_v2/side.rs`, their tests, the scripted backend's `strict`/`plug` and hot-plug call kinds.
+  - Kept ungated as generally useful and dev-neutral: `Mask::difference` (already on dev).
+- **User API.** Only in `kmr_api::experimental`: `MissingPolicy`, `JoinPolicy`, `RobotExt` (`set_missing_policy`, `set_join_policy` on `Robot`), `Presence` (`present`, `present_at`, `joined`, `left` on `State`), `JoinRamp`. Both traits are sealed. Nothing at the crate root, no inherent method. In kmr_core the items stay in place, gated: the `Hal` and `Drivers` methods and the `Overrides` fields cannot move out of their types.
+- **Checks.** A trybuild case without the feature (`tests/ui/no_experimental/`) and one with it but without the import (`tests/ui/experimental/`). CI gets an `experimental` job, crate by crate, and the `no_std` build with the feature.
+
+### B. Controller helpers
+
+1. **`joined()` / `left()`.** The core's `Presence<N>` (state) keeps the previous report and diffs each one. The first report of a run, PostInit's full read, is the baseline: an actuator present from the start never joined. `RobotState` is built per run, so a run never sees the previous one.
+2. **`JoinRamp<N>`.** `const fn new(duration)`, `apply(&Time, &State, &mut [Q; N])` once per tick, `easing() -> Mask<N>`. It keeps per slot the start position and the join time; a joiner blends linearly from where it was at its join tick to the controller's target; a slot that leaves stops easing, one that rejoins starts over. A joiner without a sample is not eased. Fixed arrays, no heap.
+3. **Example.** `runtime_actuators.rs` is the clap controller's two sines on two groups, plus `ramp.apply(..)` and, during the Home ramp, a write of `ramp.easing()` only. The hand-written `Joins` struct is gone.
+4. **Absent-slot reads.** Unchanged, documented on `Presence` and pinned by `kmr_api/tests/presence.rs`: `q_at(i)` and the other one-actuator reads give `StateError::NoSample { depth }` and `age_at(i)` gives `Ok(None)` from the tick it left until its first read after a rejoin; whole-array reads leave it out of their check, its entry its last sample copied forward (zero if never read); a group read including it gives `None`.
