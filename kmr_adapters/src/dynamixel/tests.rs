@@ -43,7 +43,9 @@ use super::{
 use crate::binding::{Binding, Port};
 use crate::presets::{Rx28Chain, XmBench};
 
+#[cfg(feature = "experimental")]
 mod join;
+#[cfg(feature = "experimental")]
 mod presence;
 
 /// Actuators of the robot the scenarios drive: they name actuators 0 to 3.

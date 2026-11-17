@@ -9,6 +9,7 @@ use kmr_core::hal::MissingPolicy;
 use tracing::Level;
 
 use super::*;
+use crate::dynamixel::backend::HotPlug;
 use crate::dynamixel::backend::{Fault, Reply};
 use crate::dynamixel::presence::LOST_AFTER;
 

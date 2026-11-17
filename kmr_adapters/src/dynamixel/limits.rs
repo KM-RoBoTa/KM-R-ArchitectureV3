@@ -206,11 +206,7 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     // would fail unconfirmed.
     pub(super) fn restore_limits(&mut self) {
         for index in self.actuators.owned().iter() {
-            let held = self.actuators.get(index).is_some_and(|actuator| {
-                self.backend
-                    .holds(actuator.bus, actuator.model, actuator.id)
-            });
-            if !self.presence.tolerates() || held {
+            if !self.left_to_close(index) {
                 self.restore_one(index);
             }
         }

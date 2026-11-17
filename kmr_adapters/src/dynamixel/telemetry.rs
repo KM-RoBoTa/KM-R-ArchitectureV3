@@ -122,6 +122,7 @@ pub(super) fn refresh<B: Backend, const NB: usize, const N: usize>(
 }
 
 /// Whether this tick's telemetry call sent a transaction.
+#[cfg(feature = "experimental")]
 pub(super) fn sent<B, const NB: usize, const N: usize>(adapter: &Dynamixel<B, NB, N>) -> bool {
     adapter.rounds.since == 0
 }
@@ -152,7 +153,7 @@ pub(super) fn table_read_this_tick<B, const NB: usize, const N: usize>(
     let seeded = table
         .members()
         .iter()
-        .any(|&index| adapter.presence.seed_read.get(index));
+        .any(|&index| adapter.presence.seed_read().get(index));
     every > 1 && (due || seeded)
 }
 
@@ -193,7 +194,7 @@ fn picked<B, const NB: usize, const N: usize>(
     let ids = table.ids().get(range).unwrap_or_default();
     for (&index, &id) in members.iter().zip(ids) {
         if let (true, Some(member), Some(slot)) = (
-            adapter.presence.live.get(index),
+            adapter.presence.live().get(index),
             picked.members.get_mut(picked.len),
             picked.ids.get_mut(picked.len),
         ) {

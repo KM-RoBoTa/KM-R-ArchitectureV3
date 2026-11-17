@@ -477,8 +477,8 @@ pub trait Drivers<const N: usize>: seal::Drivers {
     #[doc(hidden)]
     fn step(&mut self, step: Step) -> Result<(), Self::Error>;
 
-    /// [`Hal::read_all`] on every member, into the same slot; the present
-    /// actuators of every member that does not only simulate.
+    /// [`Hal::read_all`] on every member, into the same slot; the actuators
+    /// of every member that does not only simulate.
     #[doc(hidden)]
     fn read_all(
         &mut self,
@@ -523,10 +523,12 @@ pub trait Drivers<const N: usize>: seal::Drivers {
 
     /// [`Hal::present`] of every member, each cut to its member's
     /// actuators, unioned.
+    #[cfg(feature = "experimental")]
     #[doc(hidden)]
     fn present(&self, slots: Slots<'_, N>) -> Mask<N>;
 
     /// [`Hal::upkeep`] on every member, head first.
+    #[cfg(feature = "experimental")]
     #[doc(hidden)]
     fn upkeep(&mut self);
 
@@ -599,10 +601,12 @@ impl<const N: usize> Drivers<N> for HNil {
         Mask::NONE
     }
 
+    #[cfg(feature = "experimental")]
     fn present(&self, _slots: Slots<'_, N>) -> Mask<N> {
         Mask::NONE
     }
 
+    #[cfg(feature = "experimental")]
     fn upkeep(&mut self) {}
 
     fn hold(&mut self, _target: Command<'_, N>, _slots: Slots<'_, N>) {}
@@ -661,8 +665,10 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
         let head = if self.head.simulates() {
             Mask::NONE
         } else {
-            owned.intersection(self.head.present())
+            owned
         };
+        #[cfg(feature = "experimental")]
+        let head = head.intersection(self.head.present());
         let tail = self
             .tail
             .read_all(sample, rest, audit)
@@ -738,12 +744,14 @@ impl<const N: usize, H: Hal<N>, T: Drivers<N>> Drivers<N> for HCons<H, T> {
         head.union(self.tail.telemetry(telemetry, faults, rest, audit))
     }
 
+    #[cfg(feature = "experimental")]
     fn present(&self, slots: Slots<'_, N>) -> Mask<N> {
         let (owned, _groups, rest) = slots.split();
         let head = self.head.present().intersection(owned);
         head.union(self.tail.present(rest))
     }
 
+    #[cfg(feature = "experimental")]
     fn upkeep(&mut self) {
         self.head.upkeep();
         self.tail.upkeep();

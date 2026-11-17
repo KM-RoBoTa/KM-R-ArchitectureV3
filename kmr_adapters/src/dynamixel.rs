@@ -9,9 +9,16 @@ mod config;
 #[cfg(feature = "dynamixel")]
 mod dxl_rs_v2;
 mod io;
+#[cfg(feature = "experimental")]
 mod join;
 mod limits;
 mod port;
+// DECISION: a no-op twin without the `experimental` feature, so the shared
+// bring-up and tick code calls one presence API either way.
+#[cfg(feature = "experimental")]
+mod presence;
+#[cfg(not(feature = "experimental"))]
+#[path = "dynamixel/presence_off.rs"]
 mod presence;
 mod status;
 mod telemetry;
@@ -25,11 +32,8 @@ mod tests;
 use core::fmt;
 use core::time::Duration;
 use std::path::Path;
-use std::time::Instant;
 
-use kmr_core::hal::{
-    Batch, Claim, Command, Faults, Hal, JoinPolicy, Mask, MissingPolicy, Overrides, Sample, seal,
-};
+use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
 use kmr_core::state::Q;
 use kmr_core::telemetry::Telemetry;
 use tracing::{debug, warn};
@@ -41,7 +45,7 @@ use backend::{
 };
 use io::{Goals, Groups, Outcome};
 use port::DevicePath;
-use presence::{Event, Presence};
+use presence::Presence;
 
 #[cfg(feature = "dynamixel")]
 pub use self::dxl_rs_v2::DxlRsV2;
@@ -1003,42 +1007,6 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             Some((index, Outcome::Invalid(raw))) => Err(self.position_range(index, raw)),
         }
     }
-
-    /// Takes actuator `index` out of the run: one `Lost` line.
-    fn lose(&mut self, index: usize) {
-        self.presence.drop_slot(index);
-        let (bus, id) = self.named(index);
-        presence::report(bus, &mut [id], Event::Lost);
-    }
-
-    /// One `event` line per bus and run of consecutive ids among `slots`.
-    fn report_slots(&self, slots: Mask<N>, event: Event) {
-        self.each_bus(slots, |bus, ids| presence::report(bus, ids, event));
-    }
-
-    /// `emit` once per bus with the firmware ids of `slots` on it, when it
-    /// has any.
-    fn each_bus(&self, slots: Mask<N>, mut emit: impl FnMut(&'static str, &mut [u8])) {
-        if slots.is_empty() {
-            return;
-        }
-        for bus in 0..NB {
-            let (mut ids, mut len) = ([0; N], 0);
-            for index in slots.iter() {
-                if let (Some(actuator), Some(slot)) = (self.actuators.get(index), ids.get_mut(len))
-                    && actuator.bus == bus
-                {
-                    *slot = actuator.id;
-                    len += 1;
-                }
-            }
-            if let Some(ids) = ids.get_mut(..len)
-                && !ids.is_empty()
-            {
-                emit(self.label(bus), ids);
-            }
-        }
-    }
 }
 
 #[expect(
@@ -1075,62 +1043,6 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             }
         }
         Ok(())
-    }
-
-    /// Under `Tolerate`: while the setup of bus `bus` stops at a silent
-    /// actuator, takes it out of the run and sets up the live rest again,
-    /// as many attempts per pass as the first setup, at most `passes`; no
-    /// actuator left, no setup, and the bus holds none. Any other failure
-    /// is returned. One `Start` line names the actuators taken out.
-    fn declare_present(
-        &mut self,
-        bus: usize,
-        passes: usize,
-        mut answer: Result<(), Undeclared>,
-    ) -> Result<(), Undeclared> {
-        let mut absent = Mask::NONE;
-        for _ in 0..passes {
-            let Err(Undeclared {
-                id: Some(id),
-                source: BackendError::Timeout,
-            }) = answer
-            else {
-                break;
-            };
-            let silent = self
-                .actuators
-                .iter()
-                .find(|(index, actuator)| {
-                    actuator.bus == bus && actuator.id == id && self.presence.live.get(*index)
-                })
-                .map(|(index, _)| index);
-            let Some(index) = silent else {
-                break;
-            };
-            self.presence.drop_slot(index);
-            absent.set(index);
-            let (mut rest, mut len) = ([(0, Model::Xm430W210); N], 0);
-            for (index, actuator) in self.actuators.iter() {
-                if let (true, Some(slot)) = (
-                    actuator.bus == bus && self.presence.live.get(index),
-                    rest.get_mut(len),
-                ) {
-                    *slot = (actuator.id, actuator.model);
-                    len += 1;
-                }
-            }
-            let rest = rest.get(..len).unwrap_or_default();
-            // DECISION: each pass retries as the first setup does, so one
-            // lost reply never leaves a present actuator out of the run;
-            // the plan's one attempt per pass would.
-            answer = if rest.is_empty() {
-                Ok(())
-            } else {
-                self.declare_tries(bus, rest)
-            };
-        }
-        self.report_slots(absent, Event::Start);
-        answer
     }
 
     /// Sets up bus `bus` with `list`, again while it stops at a silent
@@ -1365,68 +1277,22 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     ) -> Result<Mask<N>, DynamixelError> {
         let (mut done, mut lost) = (Mask::NONE, Mask::NONE);
         for index in self.actuators.owned().iter() {
-            if !self.presence.live.get(index) {
+            if !self.presence.live().get(index) {
                 continue;
             }
             match step(self, index) {
                 Ok(()) => done.set(index),
                 Err(DynamixelError::Missing { .. }) if self.presence.tolerates() => {
-                    self.presence.drop_slot(index);
                     lost.set(index);
                 }
                 Err(error) => {
-                    self.report_slots(lost, Event::Lost);
+                    self.lose_slots(lost);
                     return Err(error);
                 }
             }
         }
-        self.report_slots(lost, Event::Lost);
+        self.lose_slots(lost);
         Ok(done)
-    }
-
-    /// Under `Tolerate` at exit: one torque off for each actuator of
-    /// `unheld`, whose bus holds it no more; one `Unreached` line per bus
-    /// names those that did not answer. One that answered is held alone,
-    /// so its limits are put back then; those of one that did not are
-    /// forgotten with a warning.
-    // DECISION: an unheld actuator that still answers (refused, or lost then
-    // left out by a Hold) is restored after its own declare-alone torque
-    // off; held ones were all restored before, so no wipe precedes theirs.
-    fn cut_unheld(&mut self, unheld: Mask<N>) {
-        let mut unreached = Mask::NONE;
-        for index in unheld.iter() {
-            let Some(&actuator) = self.actuators.get(index) else {
-                continue;
-            };
-            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            if self.backend.force_torque_off(bus, model, id).is_ok() {
-                self.restore_one(index);
-                continue;
-            }
-            unreached.set(index);
-            let saved = self.saved.get_mut(index).map(core::mem::take);
-            if saved.is_some_and(|saved| !saved.is_empty()) {
-                warn!(
-                    bus = self.label(bus),
-                    "limits of actuator id {id} not restored: not reachable"
-                );
-            }
-        }
-        self.report_slots(unreached, Event::Unreached);
-    }
-
-    /// The owned actuators whose bus holds them no more.
-    fn unheld(&self) -> Mask<N> {
-        let mut unheld = Mask::NONE;
-        for (index, actuator) in self.actuators.iter() {
-            if !self
-                .backend
-                .holds(actuator.bus, actuator.model, actuator.id)
-            {
-                unheld.set(index);
-            }
-        }
-        unheld
     }
 }
 
@@ -1446,14 +1312,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// and every owned actuator is live until the missing policy of
     /// `overrides` takes one out.
     fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
-        self.presence = Presence::new();
-        self.presence.missing = overrides.missing;
-        self.presence.join = overrides.join;
-        // DECISION (plan, DECISION 10): a join policy without `Tolerate` is
-        // one warning, no error: nothing is ever absent to join.
-        if overrides.join == JoinPolicy::Declared && overrides.missing == MissingPolicy::Fail {
-            warn!("the join policy has no effect without MissingPolicy::Tolerate");
-        }
+        self.presence = Presence::run(overrides);
         if let Some((actuator, index)) = self.actuators.past() {
             return Err(DynamixelError::PastTheRobot {
                 actuator,
@@ -1508,7 +1367,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             );
         }
         let (read_cost, write_cost) = self.groups.costs(&self.buses, B::STATE_READS);
-        self.presence.live = self.actuators.owned();
+        self.presence.claim(self.actuators.owned());
         Ok(Claim {
             owned: self.actuators.owned(),
             group: self.groups.numbers(),
@@ -1608,7 +1467,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// One whose replies report only a hardware fault is held faulted, its
     /// torque refused, with one warning: `health` clears it or fails.
     ///
-    /// Under [`MissingPolicy::Tolerate`](kmr_core::hal::MissingPolicy), a
+    /// With the `experimental` feature and `MissingPolicy::Tolerate`, a
     /// bus whose setup still stops at a silent actuator after those
     /// attempts sets up the rest without it, and that actuator is absent
     /// for the run; one line per bus names the absent ones.
@@ -1626,15 +1485,12 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             if owned.is_empty() {
                 continue;
             }
-            let mut answer = self.declare_tries(bus, owned);
-            if self.presence.tolerates() {
-                answer = self.declare_present(bus, owned.len(), answer);
-            }
+            let answer = self.declare_tries(bus, owned);
+            let answer = self.declare_present(bus, owned.len(), answer);
             answer.map_err(|failure| self.undeclared(bus, failure))?;
-            let held = self
-                .actuators
-                .iter()
-                .filter(|(index, actuator)| actuator.bus == bus && self.presence.live.get(*index));
+            let held = self.actuators.iter().filter(|(index, actuator)| {
+                actuator.bus == bus && self.presence.live().get(*index)
+            });
             for (index, actuator) in held {
                 if self.backend.faulted(bus, actuator.model, actuator.id) {
                     warn!(
@@ -1701,7 +1557,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// Only live actuators are read; under `Tolerate` one that times out is
     /// taken out of the run, one line per bus naming those.
     fn read_all(&mut self, mut sample: Sample<'_, N>) -> Result<(), DynamixelError> {
-        let (tolerates, only) = (self.presence.tolerates(), self.presence.live);
+        let (tolerates, only) = (self.presence.tolerates(), self.presence.live());
         let (mut failed, mut lost) = (None, Mask::NONE);
         for table in self.groups.tables() {
             io::read_table(
@@ -1722,10 +1578,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 break;
             }
         }
-        for index in lost.iter() {
-            self.presence.drop_slot(index);
-        }
-        self.report_slots(lost, Event::Lost);
+        self.lose_slots(lost);
         self.read_failure(failed)
     }
 
@@ -1741,7 +1594,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// both policies, the first probe is one probe period after this call.
     fn torque_on(&mut self) -> Result<(), DynamixelError> {
         for number in 0..self.groups.tables().len() {
-            let live = self.presence.live;
+            let live = self.presence.live();
             io::write_start_goals(self, number, live)?;
         }
         let powered = self.each_live(|adapter, index| {
@@ -1755,18 +1608,13 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             }
             .map_err(|error| adapter.actuator_error(index, error))
         })?;
-        // DECISION: a slot counts as set up this run, the warm rejoin's
-        // condition, only once its whole bring-up passed, not once health
-        // did: one lost in configure has no settings, nor its goal range.
-        self.presence.configured = self.presence.configured.union(powered);
-        if self.presence.joins() {
-            self.presence.last_probe = Some(Instant::now());
-        }
+        self.presence.powered(powered);
         Ok(())
     }
 
     /// The live actuators: the owned ones until the missing policy takes
     /// one out.
+    #[cfg(feature = "experimental")]
     fn present(&self) -> Mask<N> {
         self.presence.live
     }
@@ -1783,6 +1631,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// stage of a join, the check of a slot that missed reads, or a quiet
     /// probe of an absent one. A join stage may stall the
     /// tick: a Hold re-declares a bus, a Health writes EEPROM limits.
+    #[cfg(feature = "experimental")]
     fn upkeep(&mut self) {
         join::upkeep(self);
     }
@@ -1808,7 +1657,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 let Some(actuator) = self.actuators.get(index) else {
                     continue;
                 };
-                if !self.presence.live.get(index) {
+                if !self.presence.live().get(index) {
                     continue;
                 }
                 let raw = last.q.get(index).and_then(|&q| self.goal(index, q));
@@ -1845,13 +1694,8 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         if !self.open {
             return;
         }
-        let tolerates = self.presence.tolerates();
         for (index, actuator) in self.actuators.iter() {
-            if tolerates
-                && !self
-                    .backend
-                    .holds(actuator.bus, actuator.model, actuator.id)
-            {
+            if self.left_to_close(index) {
                 continue;
             }
             let mut answer = Err(BackendError::Timeout);
@@ -1887,11 +1731,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// so gets a torque off at exit.
     fn close(&mut self) {
         if self.open {
-            let unheld = self.presence.tolerates().then(|| self.unheld());
+            let unheld = self.unheld();
             self.restore_limits();
-            if let Some(unheld) = unheld {
-                self.cut_unheld(unheld);
-            }
+            self.cut_unheld(unheld);
         }
         for (bus, device) in self.devices.iter().enumerate() {
             if let Some(device) = device

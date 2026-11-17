@@ -5,12 +5,10 @@
 //! `JoinPolicy::Declared`): an absent one is skipped, a joiner eases into the motion over 1 s.
 //! Stop with Ctrl-C.
 //!
-//! `cargo run -p controllers --example runtime_actuators --features hardware --release`
+//! `cargo run -p controllers --example runtime_actuators --features hardware,experimental --release`
 
-use kmr_api::{
-    Bus, EachTick, JoinPolicy, Mask, MissingPolicy, Policy, Q, Sensors, Time, presets::home::Home,
-    shutdown, with,
-};
+use kmr_api::experimental::{JoinPolicy, MissingPolicy, Presence, RobotExt};
+use kmr_api::{Bus, EachTick, Mask, Policy, Q, Sensors, Time, presets::home::Home, shutdown, with};
 use std::{f32::consts::TAU, time::Duration};
 
 kmr_api::robot!(model = "models/ax_12_12act_an_rx28_10act.urdf");

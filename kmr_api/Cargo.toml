@@ -36,6 +36,10 @@ ffi-build = ["ffi", "kmr_ffi/build"]
 python = ["dep:pyo3"]
 # A Lua file as a controller: `kmr_api::lua!` (Lua 5.4, vendored: no system library).
 lua = ["dep:mlua"]
+# Hot-plug of declared actuators, `kmr_api::experimental`: the missing and join policies,
+# presence in the state and the join ramp. Niche and off by default: without it none of it is
+# compiled, in kmr_core and kmr_adapters either.
+experimental = ["kmr_core/experimental", "kmr_adapters/experimental"]
 # Scripted runs for tests: `kmr_api::test_util`, the core's scripted host and recording adapter.
 test-util = ["kmr_core/test-util"]
 cubemars = ["kmr_adapters/cubemars"]
@@ -78,6 +82,11 @@ required-features = ["python", "test-util"]
 [[test]]
 name = "lua"
 required-features = ["lua", "test-util"]
+
+# Actuator presence on a fake adapter.
+[[test]]
+name = "presence"
+required-features = ["experimental", "test-util"]
 
 # Sensors on the core's scripted host and fake sensor.
 [[test]]

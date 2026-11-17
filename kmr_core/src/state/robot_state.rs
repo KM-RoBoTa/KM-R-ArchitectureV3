@@ -33,9 +33,9 @@ pub struct RobotState<const N: usize> {
     pub(in crate::state) sampled: [u32; N],
     /// The newest telemetry of each actuator: one block, not one per slot.
     pub(in crate::state) telemetry: Telemetry<N>,
-    /// Actuators present now, as their adapters report them after each
-    /// read: every actuator until told otherwise.
-    pub(in crate::state) present: Mask<N>,
+    /// Which actuators are present, and which joined or left this tick.
+    #[cfg(feature = "experimental")]
+    pub(in crate::state) presence: super::presence::Presence<N>,
 }
 
 impl<const N: usize> Default for RobotState<N> {
@@ -47,7 +47,8 @@ impl<const N: usize> Default for RobotState<N> {
             age: [0; N],
             sampled: [0; N],
             telemetry: Telemetry::default(),
-            present: Mask::ALL,
+            #[cfg(feature = "experimental")]
+            presence: super::presence::Presence::new(),
         }
     }
 }
@@ -96,9 +97,10 @@ impl<const N: usize> RobotState<N> {
     }
 
     /// Field slot for type `T` at `history_depth` steps back (0 = current).
-    /// Err if the requested depth isn't present in the buffer, or if a
-    /// present actuator had no sample yet at that depth
-    /// ([`StateError::NoSample`]). An absent actuator's entry is stale or zero.
+    /// Err if the requested depth isn't present in the buffer, or if an
+    /// actuator had no sample yet at that depth ([`StateError::NoSample`]).
+    /// With the `experimental` feature, an absent actuator is not counted:
+    /// its entry is stale or zero.
     pub fn prev<T>(&self, history_depth: usize) -> Result<&[T; N], StateError>
     where
         T: StateField,
@@ -106,9 +108,9 @@ impl<const N: usize> RobotState<N> {
         let slot = self.slot::<T>(history_depth)?;
         // DECISION: absent slots are skipped, so one unplugged actuator does
         // not blank the whole slot for the others.
-        let present = self.present;
+        let counted = self.counted();
         let unsampled = (self.sampled.iter().enumerate())
-            .any(|(index, &held)| present.get(index) && !holds(held, history_depth));
+            .any(|(index, &held)| counted.get(index) && !holds(held, history_depth));
         if unsampled {
             return Err(StateError::NoSample {
                 depth: history_depth,
@@ -168,14 +170,15 @@ impl<const N: usize> RobotState<N> {
         }
     }
 
-    /// Age of the oldest sample over the present actuators. `None` while one
-    /// of them was never read.
+    /// Age of the oldest sample over all actuators; with the `experimental`
+    /// feature, absent ones left out. `None` while one of them was never
+    /// read.
     // DECISION: an actuator never read makes the whole sample age unknown,
     // not the maximum of the others. An absent one is not counted.
     pub fn sample_age(&self) -> Option<u32> {
-        let present = self.present;
+        let counted = self.counted();
         (self.age.iter().zip(&self.sampled).enumerate())
-            .filter(|&(index, _)| present.get(index))
+            .filter(|&(index, _)| counted.get(index))
             .try_fold(0, |oldest, (_, (&age, &held))| {
                 (held > 0).then(|| oldest.max(age))
             })
@@ -220,10 +223,17 @@ impl<const N: usize> RobotState<N> {
         &self.telemetry
     }
 
-    /// The actuators present now: read and driven. An absent one keeps its
-    /// writes out of the command and has no sample.
-    pub fn present(&self) -> Mask<N> {
-        self.present
+    /// The actuators whose samples count in `prev` and `sample_age`: the
+    /// present ones.
+    #[cfg(feature = "experimental")]
+    fn counted(&self) -> Mask<N> {
+        self.presence.now()
+    }
+
+    /// The actuators whose samples count in `prev` and `sample_age`: all.
+    #[cfg(not(feature = "experimental"))]
+    fn counted(&self) -> Mask<N> {
+        Mask::ALL
     }
 }
 
@@ -337,30 +347,6 @@ impl<const N: usize> RobotState<N> {
                 *age = 0;
                 *held = (*held).max(1);
             }
-        }
-    }
-
-    /// Takes the adapters' presence after a read. An actuator that left
-    /// forgets its samples, so a rejoin is seeded by its first read.
-    pub(crate) fn set_present(&mut self, present: Mask<N>) {
-        for index in self.present.difference(present).iter() {
-            if let Some(held) = self.sampled.get_mut(index) {
-                *held = 0;
-            }
-            if let Some(age) = self.age.get_mut(index) {
-                *age = 0;
-            }
-        }
-        self.present = present;
-    }
-
-    /// Clears the written bits of absent actuators, before the limit stage
-    /// and the batch see them.
-    pub(crate) fn drop_absent(&mut self) {
-        // DECISION: nothing to cut while every actuator is present, so the
-        // path from `Last` to the end stamp stays as short as without presence.
-        if self.present != Mask::ALL {
-            self.desired.written = self.desired.written.within(self.present);
         }
     }
 

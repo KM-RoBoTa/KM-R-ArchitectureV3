@@ -20,7 +20,13 @@ impl<C, const RX: usize, const TX: usize, const CHUNKS: usize> Open<C>
     for MockTransport<'_, RX, TX, CHUNKS>
 {
     /// Never: a scripted line is attached, not opened.
-    fn open_lines(_path: &str, _baud: u32) -> Result<[(Self, C); 4], BackendError> {
+    fn open_pair(_path: &str, _baud: u32) -> Result<[(Self, C); 2], BackendError> {
+        Err(BackendError::PortOpen(ErrorKind::Unsupported))
+    }
+
+    /// Never, as `open_pair`.
+    #[cfg(feature = "experimental")]
+    fn open_side(_first: &mut Self) -> Result<[(Self, C); 2], BackendError> {
         Err(BackendError::PortOpen(ErrorKind::Unsupported))
     }
 }
@@ -1507,157 +1513,161 @@ fn an_x_series_limit_write_is_refused_without_a_unit() {
     }
 }
 
-// ── The presence seam: probe, rearm, one fault ask, held query ────────────
+/// The presence seam: probe, rearm, one fault ask, held query.
+#[cfg(feature = "experimental")]
+mod hot_plug {
+    use super::*;
+    use crate::dynamixel::backend::HotPlug;
 
-/// Times `needle` occurs in `haystack`.
-fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
-    haystack
-        .windows(needle.len())
-        .filter(|window| *window == needle)
-        .count()
-}
-
-/// The two side lines of port 0, taken back from `backend`.
-fn side_lines<T: Transport>(backend: &mut Ports<4, T, fn() -> u64>) -> (T, T) {
-    let Some(Some(side)) = backend
-        .ports
-        .get_mut(0)
-        .and_then(Option::as_mut)
-        .map(|port| port.side.take())
-    else {
-        panic!("port 0 has side lines");
-    };
-    (side.one.into_parts().0, side.two.into_parts().0)
-}
-
-#[test]
-fn rearm_sends_one_torque_enable_write() {
-    let time = MockTime::new();
-    let mut two = Line::with_capacity(&time);
-    xm_setup(&mut two, 1, 1);
-    two.reply_to(5, status2(1, 0, &[]).bytes());
-    let mut backend = backend(Line::with_capacity(&time), two);
-    backend.declare(0, &[(1, XM)]).unwrap();
-
-    assert_eq!(backend.rearm(0, XM, 1), Ok(()));
-    assert_eq!(
-        backend.rearm(0, XM, 2),
-        Err(BackendError::NotDeclared { id: 2 })
-    );
-    assert_eq!(backend.sync_write_goal(0, XM, &[(1, 2048)]), Ok(()));
-
-    let (one, two) = lines(&mut backend);
-    assert_eq!(occurrences(two.sent(), write2(1, 64, &[1]).bytes()), 1);
-    assert_eq!(
-        occurrences(two.sent(), write2(1, 116, &[0, 8, 0, 0]).bytes()),
-        0
-    );
-    assert!(one.sent().is_empty());
-    assert_eq!(two.unread(), 0);
-}
-
-#[test]
-fn clear_fault_once_asks_once() {
-    let time = MockTime::new();
-    let mut one = ax_at_10_1_v(&time);
-    // The ask, flagged inside the 9.0–13.0 V limits: `clear_fault` would
-    // ask again after a pause.
-    ax_low_voltage(&mut one, 5, 90);
-    let mut backend = backend(one, Line::with_capacity(&time));
-    backend.declare(0, &[(1, AX)]).unwrap();
-    assert!(backend.faulted(0, AX, 1));
-
-    let asked = std::time::Instant::now();
-    assert_eq!(
-        backend.clear_fault_once(0, AX, 1),
-        Err(BackendError::Fault(Fault::VoltageInside {
-            measured_dv: 101,
-            min_dv: 90,
-            max_dv: 130
-        }))
-    );
-
-    assert!(asked.elapsed() < VOLTAGE_FLAG_SETTLE.0);
-    assert!(backend.faulted(0, AX, 1));
-    let (one, _) = lines(&mut backend);
-    let ping = p1(1, &[0x01]);
-    assert_eq!(
-        occurrences(one.sent(), ping.bytes()),
-        2,
-        "Setup's and one ask"
-    );
-    assert_eq!(one.unread(), 0);
-}
-
-#[test]
-fn holds_follows_the_last_declare() {
-    let time = MockTime::new();
-    let mut two = Line::with_capacity(&time);
-    xm_setup(&mut two, 1, 1);
-    xm_setup(&mut two, 5, 2);
-    xm_setup(&mut two, 9, 2);
-    // Then 1 answers and 3 stays silent (packet 17).
-    xm_setup(&mut two, 13, 1);
-    let mut backend = backend(Line::with_capacity(&time), two);
-    assert!(!backend.holds(0, XM, 1));
-
-    backend.declare(0, &[(1, XM), (2, XM)]).unwrap();
-    assert!(backend.holds(0, XM, 1) && backend.holds(0, XM, 2));
-    assert!(!backend.holds(0, AX, 1), "the Protocol 1 bus holds nothing");
-
-    backend.declare(0, &[(2, XM)]).unwrap();
-    assert!(!backend.holds(0, XM, 1) && backend.holds(0, XM, 2));
-
-    assert!(backend.declare(0, &[(1, XM), (3, XM)]).is_err());
-    for id in 1..=3 {
-        assert!(
-            !backend.holds(0, XM, id),
-            "id {id}: a failed declare holds none"
-        );
+    /// Times `needle` occurs in `haystack`.
+    fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
     }
-    assert!(!backend.holds(1, XM, 1), "a port not open");
-    let (_, two) = lines(&mut backend);
-    assert_eq!(two.unread(), 0);
-}
 
-#[test]
-fn probe_without_side_lines_is_port_not_open() {
-    let time = MockTime::new();
-    let mut backend = backend(Line::with_capacity(&time), Line::with_capacity(&time));
+    /// The two side lines of port 0, taken back from `backend`.
+    fn side_lines<T: Transport>(backend: &mut Ports<4, T, fn() -> u64>) -> (T, T) {
+        let Some(Some(side)) = backend
+            .ports
+            .get_mut(0)
+            .and_then(Option::as_mut)
+            .map(|port| port.side.take())
+        else {
+            panic!("port 0 has side lines");
+        };
+        (side.one.into_parts().0, side.two.into_parts().0)
+    }
 
-    assert_eq!(
-        backend.probe(0, XM, 1),
-        Err(BackendError::PortNotOpen { port: 0 })
-    );
-    assert_eq!(
-        backend.probe(1, XM, 1),
-        Err(BackendError::PortNotOpen { port: 1 })
-    );
-    let (one, two) = lines(&mut backend);
-    assert!(one.sent().is_empty() && two.sent().is_empty());
-}
+    #[test]
+    fn rearm_sends_one_torque_enable_write() {
+        let time = MockTime::new();
+        let mut two = Line::with_capacity(&time);
+        xm_setup(&mut two, 1, 1);
+        two.reply_to(5, status2(1, 0, &[]).bytes());
+        let mut backend = backend(Line::with_capacity(&time), two);
+        backend.declare(0, &[(1, XM)]).unwrap();
 
-#[test]
-fn probe_sets_up_on_the_side_line_and_leaves_the_port_as_it_was() {
-    let time = MockTime::new();
-    let mut four = Line::with_capacity(&time);
-    xm_setup(&mut four, 1, 2);
-    let mut backend = backend(Line::with_capacity(&time), Line::with_capacity(&time));
-    let clock: fn() -> u64 = tick;
-    backend.attach_side(
-        0,
-        (Line::with_capacity(&time), clock),
-        (four, clock),
-        1_000_000,
-    );
+        assert_eq!(backend.rearm(0, XM, 1), Ok(()));
+        assert_eq!(
+            backend.rearm(0, XM, 2),
+            Err(BackendError::NotDeclared { id: 2 })
+        );
+        assert_eq!(backend.sync_write_goal(0, XM, &[(1, 2048)]), Ok(()));
 
-    assert_eq!(backend.probe(0, XM, 2), Ok(()));
-    assert_eq!(backend.probe(0, XM, 3), Err(BackendError::Timeout));
+        let (one, two) = lines(&mut backend);
+        assert_eq!(occurrences(two.sent(), write2(1, 64, &[1]).bytes()), 1);
+        assert_eq!(
+            occurrences(two.sent(), write2(1, 116, &[0, 8, 0, 0]).bytes()),
+            0
+        );
+        assert!(one.sent().is_empty());
+        assert_eq!(two.unread(), 0);
+    }
 
-    assert!(!backend.holds(0, XM, 2));
-    let (three, four) = side_lines(&mut backend);
-    assert!(three.sent().is_empty());
-    assert_eq!(four.unread(), 0);
-    let (one, two) = lines(&mut backend);
-    assert!(one.sent().is_empty() && two.sent().is_empty());
+    #[test]
+    fn clear_fault_once_asks_once() {
+        let time = MockTime::new();
+        let mut one = ax_at_10_1_v(&time);
+        // The ask, flagged inside the 9.0–13.0 V limits: `clear_fault` would
+        // ask again after a pause.
+        ax_low_voltage(&mut one, 5, 90);
+        let mut backend = backend(one, Line::with_capacity(&time));
+        backend.declare(0, &[(1, AX)]).unwrap();
+        assert!(backend.faulted(0, AX, 1));
+
+        let asked = std::time::Instant::now();
+        assert_eq!(
+            backend.clear_fault_once(0, AX, 1),
+            Err(BackendError::Fault(Fault::VoltageInside {
+                measured_dv: 101,
+                min_dv: 90,
+                max_dv: 130
+            }))
+        );
+
+        assert!(asked.elapsed() < VOLTAGE_FLAG_SETTLE.0);
+        assert!(backend.faulted(0, AX, 1));
+        let (one, _) = lines(&mut backend);
+        let ping = p1(1, &[0x01]);
+        assert_eq!(
+            occurrences(one.sent(), ping.bytes()),
+            2,
+            "Setup's and one ask"
+        );
+        assert_eq!(one.unread(), 0);
+    }
+
+    #[test]
+    fn holds_follows_the_last_declare() {
+        let time = MockTime::new();
+        let mut two = Line::with_capacity(&time);
+        xm_setup(&mut two, 1, 1);
+        xm_setup(&mut two, 5, 2);
+        xm_setup(&mut two, 9, 2);
+        // Then 1 answers and 3 stays silent (packet 17).
+        xm_setup(&mut two, 13, 1);
+        let mut backend = backend(Line::with_capacity(&time), two);
+        assert!(!backend.holds(0, XM, 1));
+
+        backend.declare(0, &[(1, XM), (2, XM)]).unwrap();
+        assert!(backend.holds(0, XM, 1) && backend.holds(0, XM, 2));
+        assert!(!backend.holds(0, AX, 1), "the Protocol 1 bus holds nothing");
+
+        backend.declare(0, &[(2, XM)]).unwrap();
+        assert!(!backend.holds(0, XM, 1) && backend.holds(0, XM, 2));
+
+        assert!(backend.declare(0, &[(1, XM), (3, XM)]).is_err());
+        for id in 1..=3 {
+            assert!(
+                !backend.holds(0, XM, id),
+                "id {id}: a failed declare holds none"
+            );
+        }
+        assert!(!backend.holds(1, XM, 1), "a port not open");
+        let (_, two) = lines(&mut backend);
+        assert_eq!(two.unread(), 0);
+    }
+
+    #[test]
+    fn probe_without_side_lines_is_port_not_open() {
+        let time = MockTime::new();
+        let mut backend = backend(Line::with_capacity(&time), Line::with_capacity(&time));
+
+        assert_eq!(
+            backend.probe(0, XM, 1),
+            Err(BackendError::PortNotOpen { port: 0 })
+        );
+        assert_eq!(
+            backend.probe(1, XM, 1),
+            Err(BackendError::PortNotOpen { port: 1 })
+        );
+        let (one, two) = lines(&mut backend);
+        assert!(one.sent().is_empty() && two.sent().is_empty());
+    }
+
+    #[test]
+    fn probe_sets_up_on_the_side_line_and_leaves_the_port_as_it_was() {
+        let time = MockTime::new();
+        let mut four = Line::with_capacity(&time);
+        xm_setup(&mut four, 1, 2);
+        let mut backend = backend(Line::with_capacity(&time), Line::with_capacity(&time));
+        let clock: fn() -> u64 = tick;
+        backend.attach_side(
+            0,
+            [(Line::with_capacity(&time), clock), (four, clock)],
+            1_000_000,
+        );
+
+        assert_eq!(backend.probe(0, XM, 2), Ok(()));
+        assert_eq!(backend.probe(0, XM, 3), Err(BackendError::Timeout));
+
+        assert!(!backend.holds(0, XM, 2));
+        let (three, four) = side_lines(&mut backend);
+        assert!(three.sent().is_empty());
+        assert_eq!(four.unread(), 0);
+        let (one, two) = lines(&mut backend);
+        assert!(one.sent().is_empty() && two.sent().is_empty());
+    }
 }

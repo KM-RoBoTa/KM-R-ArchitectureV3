@@ -12,7 +12,6 @@ use kmr_core::state::{Kd, Kp, Q, Qd, Tau};
 
 use super::backend::{Backend, BackendError, GoalRegister, RawState};
 use super::config::{self, Actuator, Bus, Mode, Model, Placed, Protocol, Series, Torque};
-use super::presence::Event;
 use super::units;
 use super::{Dynamixel, DynamixelError};
 
@@ -184,6 +183,7 @@ impl<const N: usize> Groups<N> {
     }
 
     /// Number of the table actuator `index` is in; `None` past the tables.
+    #[cfg(feature = "experimental")]
     pub(crate) fn table_of(&self, index: usize) -> Option<usize> {
         self.of
             .get(index)
@@ -521,14 +521,12 @@ pub(crate) fn unread_rates<const N: usize>(actuators: &Placed<N>) -> Mask<N> {
 /// members of the groups not due, so a joiner is read on the next tick
 /// whatever the cadence. Faults go to `faults` (FR-014, FR-015).
 ///
-/// Under `Tolerate`, a slot whose due reads time out [`LOST_AFTER`] times
+/// Under `Tolerate`, a slot whose due reads time out `LOST_AFTER` times
 /// in a row is taken out of the run, one line per bus naming those lost in
 /// this call. Only a timeout is a miss: an answer with error bits resets the
 /// count, and a bus error, a USB adapter pulled out included, leaves it as
 /// it is, the slots present and flagged `bus_error` as without the policy.
 /// A seeded slot that reads is live from this call on.
-///
-/// [`LOST_AFTER`]: super::presence::LOST_AFTER
 pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     mut sample: Sample<'_, N>,
@@ -536,8 +534,7 @@ pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
 ) -> Mask<N> {
     let call = adapter.reads;
     adapter.reads = adapter.reads.wrapping_add(1);
-    let (driven, seed) = (adapter.presence.driven(), adapter.presence.seed);
-    adapter.presence.seed_read = seed;
+    let (driven, seed) = adapter.presence.begin_read();
     let (mut refreshed, mut lost) = (Mask::NONE, Mask::NONE);
     let presence = &mut adapter.presence;
     for table in adapter.groups.tables() {
@@ -556,10 +553,7 @@ pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
                 match outcome {
                     Outcome::Read => {
                         refreshed.set(index);
-                        if presence.seed.get(index) {
-                            presence.seed.clear(index);
-                            presence.live.set(index);
-                        }
+                        presence.promote(index);
                     }
                     Outcome::Lost(_) => {
                         faults.stale.set(index);
@@ -585,10 +579,7 @@ pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
             },
         );
     }
-    for index in lost.iter() {
-        adapter.presence.drop_slot(index);
-    }
-    adapter.report_slots(lost, Event::Lost);
+    adapter.lose_slots(lost);
     refreshed
 }
 
@@ -619,7 +610,7 @@ pub(super) fn write_batch<B: Backend, const NB: usize, const N: usize>(
             };
             // DECISION: an absent slot is skipped without a fault: dxl_rs_v2
             // refuses a whole sync write naming one unpowered id.
-            if !has_goal(command.written, index) || !adapter.presence.live.get(index) {
+            if !has_goal(command.written, index) || !adapter.presence.live().get(index) {
                 continue;
             }
             if goals.is_some_and(|goals| goals.table != table) {
@@ -709,7 +700,7 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
     let (mut kp, mut kd) = ([Kp::default(); N], [Kd::default(); N]);
     let mut sample = Sample::new(present, &mut qd, &mut tau, &mut kp, &mut kd);
     let actuators = &adapter.actuators;
-    let (tolerates, live) = (adapter.presence.tolerates(), adapter.presence.live);
+    let (tolerates, live) = (adapter.presence.tolerates(), adapter.presence.live());
     let (mut failed, mut lost) = (None, Mask::NONE);
     read_table(
         &mut adapter.backend,
@@ -731,10 +722,7 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
             }
         },
     );
-    for index in lost.iter() {
-        adapter.presence.drop_slot(index);
-    }
-    adapter.report_slots(lost, Event::Lost);
+    adapter.lose_slots(lost);
     adapter.read_failure(failed).map(|()| lost)
 }
 

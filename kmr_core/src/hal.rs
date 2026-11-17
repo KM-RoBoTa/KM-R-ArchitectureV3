@@ -15,11 +15,13 @@ use crate::logging::warn;
 use crate::state::{Kd, Kp, Q, Qd, Tau};
 use crate::telemetry::Telemetry;
 
+#[cfg(feature = "experimental")]
 mod presence;
 mod sensing;
 mod sensor;
 mod set;
 
+#[cfg(feature = "experimental")]
 pub use presence::{JoinPolicy, MissingPolicy};
 pub use sensing::{Sensing, SensorPolicy};
 pub use sensor::{Needs, SensorHal};
@@ -262,14 +264,17 @@ impl<'a, const N: usize> Slots<'a, N> {
 
 /// Settings the control engineer may give through the API, forwarded untouched.
 ///
-/// The read cadence is the adapter's, read back through
-/// [`crate::RobotState::cadence`], with no builder knob (SRS FR-5.3).
+/// Empty without the `experimental` feature: the read cadence is the
+/// adapter's, read back through [`crate::RobotState::cadence`], with no
+/// builder knob (SRS FR-5.3).
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Overrides {
     /// What a declared actuator that does not answer means.
+    #[cfg(feature = "experimental")]
     pub missing: MissingPolicy,
     /// Whether an absent declared actuator may join the run.
+    #[cfg(feature = "experimental")]
     pub join: JoinPolicy,
 }
 
@@ -665,7 +670,7 @@ pub trait Hal<const N: usize>: seal::Adapter {
     /// Init: brand-specific zeroing, a no-op where the brand needs none.
     fn zero(&mut self) -> Result<(), Self::Error>;
 
-    /// PostInit: every present actuator answers.
+    /// PostInit: every actuator answers.
     fn ping(&mut self) -> Result<(), Self::Error>;
 
     /// PostInit: error status, voltage and temperature within limits.
@@ -674,8 +679,7 @@ pub trait Hal<const N: usize>: seal::Adapter {
     /// PostInit: operating modes from the adapter configuration.
     fn configure(&mut self) -> Result<(), Self::Error>;
 
-    /// PostInit: one full read of every present actuator, whatever the
-    /// cadence.
+    /// PostInit: one full read of every actuator, whatever the cadence.
     fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error>;
 
     /// Whether this member only simulates: its `read_all` senses nothing, so
@@ -687,8 +691,7 @@ pub trait Hal<const N: usize>: seal::Adapter {
         false
     }
 
-    /// PostInit: torque on for every present actuator where the adapter
-    /// configuration says so.
+    /// PostInit: torque on where the adapter configuration says so.
     fn torque_on(&mut self) -> Result<(), Self::Error>;
 
     /// Tick, once, before `First`: reads the actuators due this tick and
@@ -715,6 +718,7 @@ pub trait Hal<const N: usize>: seal::Adapter {
     /// The claimed actuators present now: read, written and telemetered. No
     /// I/O. The default is every actuator, which the engine cuts to the
     /// member's claim.
+    #[cfg(feature = "experimental")]
     fn present(&self) -> Mask<N> {
         Mask::ALL
     }
@@ -723,6 +727,7 @@ pub trait Hal<const N: usize>: seal::Adapter {
     /// [`JoinPolicy::Declared`]: bounded presence work, one join stage, one
     /// check or one probe. It may stall one tick, which then shows as an
     /// overrun. The default does nothing.
+    #[cfg(feature = "experimental")]
     fn upkeep(&mut self) {}
 
     /// Shutdown: holds each actuator per its mode. `written` marks values
@@ -793,10 +798,12 @@ impl<const N: usize, A: Hal<N>> Hal<N> for &mut A {
         (**self).telemetry(telemetry, faults)
     }
 
+    #[cfg(feature = "experimental")]
     fn present(&self) -> Mask<N> {
         (**self).present()
     }
 
+    #[cfg(feature = "experimental")]
     fn upkeep(&mut self) {
         (**self).upkeep();
     }
@@ -960,82 +967,6 @@ mod tests {
         assert_eq!(runs.next(), Some((Group(0), &[1][..])));
         assert_eq!(runs.next(), Some((Group(1), &[0, 2][..])));
         assert_eq!(runs.next(), None);
-    }
-
-    /// A member that reports actuator 0 present and counts its upkeeps.
-    #[derive(Default)]
-    struct Present {
-        upkeeps: u32,
-    }
-
-    impl seal::Adapter for Present {}
-
-    impl Hal<N> for Present {
-        type Error = Infallible;
-
-        fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, Infallible> {
-            NoHardware.check(overrides)
-        }
-
-        fn open(&mut self) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn zero(&mut self) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn ping(&mut self) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn health(&mut self) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn configure(&mut self) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn read_all(&mut self, _sample: Sample<'_, N>) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn torque_on(&mut self) -> Result<(), Infallible> {
-            Ok(())
-        }
-
-        fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
-            Mask::NONE
-        }
-
-        fn write(&mut self, _: Command<'_, N>, _: &Batch<'_, N>, _: &mut Faults<N>) {}
-
-        fn present(&self) -> Mask<N> {
-            let mut mask = Mask::NONE;
-            mask.set(0);
-            mask
-        }
-
-        fn upkeep(&mut self) {
-            self.upkeeps += 1;
-        }
-
-        fn hold(&mut self, _target: Command<'_, N>) {}
-
-        fn torque_off(&mut self) {}
-
-        fn close(&mut self) {}
-    }
-
-    #[test]
-    fn forwarded_hal_reports_present_and_upkeep() {
-        let mut member = Present::default();
-        let mut lent = &mut member;
-        assert!(Hal::<N>::present(&lent).iter().eq([0]));
-        Hal::<N>::upkeep(&mut lent);
-        assert_eq!(member.upkeeps, 1);
-        assert_eq!(Hal::<N>::present(&NoHardware), Mask::ALL);
     }
 
     #[test]

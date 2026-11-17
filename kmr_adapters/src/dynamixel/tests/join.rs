@@ -8,6 +8,7 @@ use tracing::Level;
 
 use super::presence::{logged, powered_with, reads, strict, strict_placed, tolerate};
 use super::*;
+use crate::dynamixel::backend::HotPlug;
 use crate::dynamixel::backend::{Fault, Reply};
 use crate::dynamixel::presence::{LOST_AFTER, MAX_REJOINS, Stage};
 

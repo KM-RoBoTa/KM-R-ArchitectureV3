@@ -32,6 +32,27 @@ jobs:
       - run: cargo clippy -p controllers --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
 
+  experimental:
+    name: experimental feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The hot-plug code, crate by crate: workspace feature unification would hide a missing
+      # gate. The default runs above check the crates without it.
+      - run: cargo clippy -p kmr_core --all-targets --features experimental -- -D warnings
+      - run: cargo test -p kmr_core --features experimental --no-fail-fast
+      - run: cargo clippy -p kmr_adapters --all-targets --features experimental -- -D warnings
+      - run: cargo test -p kmr_adapters --features experimental --no-fail-fast
+      - run: cargo clippy -p kmr_adapters --all-targets --features experimental,dynamixel -- -D warnings
+      - run: cargo test -p kmr_adapters --features experimental,dynamixel --no-fail-fast
+      - run: cargo clippy -p kmr_api --all-targets --features experimental,test-util -- -D warnings
+      - run: cargo test -p kmr_api --features experimental,test-util --no-fail-fast
+      - run: cargo clippy -p controllers --all-targets --features experimental -- -D warnings
+
   no-std:
     name: no_std core
     runs-on: ubuntu-latest
@@ -43,6 +64,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The engine without `std` and without `alloc` (core SC-007, SRS NFR-7).
       - run: cargo build -p kmr_core --no-default-features --target thumbv7em-none-eabihf
+      # The same with the hot-plug code of the `experimental` feature.
+      - run: cargo build -p kmr_core --no-default-features --features experimental --target thumbv7em-none-eabihf
 
   srs-markers:
     name: SRS markers

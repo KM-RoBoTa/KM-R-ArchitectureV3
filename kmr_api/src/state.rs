@@ -1,6 +1,6 @@
 use core::num::NonZeroU32;
 
-use crate::{Celsius, Faults, Mask, StateError, Volts};
+use crate::{Celsius, Faults, StateError, Volts};
 
 /// Ticks of history kept: every `prev_*` depth is below it.
 pub use kmr_core::state::HISTORY_DEPTH;
@@ -397,22 +397,10 @@ impl<'a, const N: usize> State<'a, N> {
         self.faults().is_some_and(|faults| faults.stale().get(i))
     }
 
-    // ---- Presence ----
-
-    /// The actuators present this tick: read and written. Every actuator unless
-    /// [`MissingPolicy::Tolerate`](crate::MissingPolicy::Tolerate) is set and one stopped
-    /// answering or never answered. A write to an absent actuator is skipped, not an error;
-    /// a group read that includes one (`group(..).q()`) gives `None`.
-    #[inline]
-    pub fn present(&self) -> Mask<N> {
-        self.inner.present()
-    }
-
-    /// Whether actuator `i` is present this tick (see [`present`](Self::present)). `false` for
-    /// an index past N.
-    #[inline]
-    pub fn present_at(&self, i: usize) -> bool {
-        self.inner.present().get(i)
+    /// The core state, read by the presence queries of [`crate::experimental`].
+    #[cfg(feature = "experimental")]
+    pub(crate) fn core(&self) -> &kmr_core::RobotState<N> {
+        self.inner
     }
 
     // ---- Sample age and read cadence ----

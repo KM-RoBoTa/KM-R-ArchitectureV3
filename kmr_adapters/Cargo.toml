@@ -21,6 +21,10 @@ xiao-api = { workspace = true, optional = true }
 
 [features]
 dynamixel = ["dep:dxl_rs_v2"]
+# Hot-plug of declared Dynamixel actuators: the missing and join policies, the
+# probe on side buses. Niche, off by default: without it the adapter has none
+# of it.
+experimental = ["kmr_core/experimental"]
 # The SocketCAN transport of the CubeMars adapter; the adapter itself always builds.
 cubemars = ["dep:socketcan"]
 # The XIAO sensor adapter; without it nothing of xiao-api is compiled in.

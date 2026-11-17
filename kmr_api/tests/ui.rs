@@ -28,4 +28,8 @@ fn ui() {
     t.compile_fail("tests/ui/ffi/*.rs");
     #[cfg(feature = "zenoh")]
     t.compile_fail("tests/ui/zenoh/*.rs");
+    #[cfg(not(feature = "experimental"))]
+    t.compile_fail("tests/ui/no_experimental/*.rs");
+    #[cfg(feature = "experimental")]
+    t.compile_fail("tests/ui/experimental/*.rs");
 }

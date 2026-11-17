@@ -29,8 +29,8 @@ use crate::clock::Instant;
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
 use crate::hal::{
-    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, JoinPolicy, Layout, Overrides,
-    Plan, Sensing, SensorPlan, SensorPolicy, Step, TickFlags,
+    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, Layout, Plan, Sensing,
+    SensorPlan, SensorPolicy, Step, TickFlags,
 };
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
@@ -247,6 +247,35 @@ fn estop(signal: Option<Signal>) -> Option<Signal> {
 /// A driver's error, as the run's.
 fn member<E, S>(error: E) -> RunError<HardwareError<E>, S> {
     RunError::Hal(HardwareError::Member(error))
+}
+
+#[cfg(feature = "experimental")]
+mod presence;
+
+/// Without the `experimental` feature, every actuator is present for the
+/// whole run: nothing to copy, cut or keep up.
+#[cfg(not(feature = "experimental"))]
+mod presence {
+    use crate::Signal;
+    use crate::hal::Overrides;
+    use crate::runtime::{Host, Rig};
+    use crate::state::RobotState;
+
+    impl<const N: usize, D, SN> Rig<'_, N, D, SN> {
+        /// Nothing to copy.
+        #[inline(always)]
+        pub(super) fn sync_presence(&self, _state: &mut RobotState<N>) {}
+
+        /// Nothing to cut.
+        #[inline(always)]
+        pub(super) fn drop_absent(&self, _state: &mut RobotState<N>) {}
+
+        /// No upkeep, no bus check.
+        #[inline(always)]
+        pub(super) fn upkeep<H: Host>(&mut self, _: Overrides, _host: &mut H) -> Option<Signal> {
+            None
+        }
+    }
 }
 
 /// The robot's hardware for one run: the drivers and their layout, the
@@ -494,7 +523,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensin
                 .read(sample, faults, rig.layout.slots(), &mut audit);
             state.refreshed(read);
         }
-        state.set_present(rig.drivers.present(rig.layout.slots()));
+        rig.sync_presence(state);
         let sensor_stop = rig.read_sensors(sensors, state, tick, &robot.config.sensor_policy);
         state.raise(host.take_flags());
         if let Some(signal) = stray_stop(&mut audit) {
@@ -522,8 +551,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensin
         if let Some(signal) = estop(host.poll()) {
             break signal;
         }
-        // Before the limit stage and the batch, and before the hold target.
-        state.drop_absent();
+        rig.drop_absent(state);
         // The limit stage, before the batch: an `Abort` breach skips the write.
         let (staged, faults) = state.guarded();
         let mut spare = Faults::default();
@@ -551,16 +579,8 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensin
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
         }
-        // Only under the join policy: an emergency stop never waits behind a
-        // join stage, a shutdown skips it and completes the tick.
-        if robot.config.join_policy == JoinPolicy::Declared {
-            let pending = host.poll();
-            if let Some(signal) = estop(pending) {
-                break signal;
-            }
-            if pending.is_none() {
-                rig.drivers.upkeep();
-            }
+        if let Some(signal) = rig.upkeep(robot.config.overrides, host) {
+            break signal;
         }
 
         // No log per tick (SRS NFR-1): the overrun total is logged at exit.
@@ -628,7 +648,7 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensing,
             .read_all(sample, rig.layout.slots(), &mut audit)
             .map_err(member)?;
         state.refreshed(read);
-        state.set_present(rig.drivers.present(rig.layout.slots()));
+        rig.sync_presence(state);
         let tick = robot.config.time.tick();
         refresh_telemetry(rig.drivers, state, rig.layout, &mut audit, tick);
         // The first reading, for the PostInit controllers (SRS FR-5.7).
@@ -650,7 +670,7 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensing,
     rig.drivers.step(Step::TorqueOn).map_err(member)?;
     // An actuator lost during torque on is absent for the PostInit
     // controllers.
-    state.set_present(rig.drivers.present(rig.layout.slots()));
+    rig.sync_presence(state);
     init_phase::post_init(robot, state, sensors);
     writes.discard(state, "PostInit");
     writes.report();
@@ -721,11 +741,8 @@ pub(crate) fn run_all<
     robot.config.time.set_delta(dt);
 
     let mut plan = Plan::new();
-    let overrides = Overrides {
-        missing: robot.config.missing_policy,
-        join: robot.config.join_policy,
-    };
-    hal.claim(overrides, &mut plan).map_err(RunError::Hal)?;
+    hal.claim(robot.config.overrides, &mut plan)
+        .map_err(RunError::Hal)?;
     let layout = plan.finish().map_err(|c| RunError::Hal(c.into()))?;
     // DECISION: after the drivers' claim, so a run with both faults names the
     // actuators' first, as it did before sensors existed.
@@ -804,7 +821,7 @@ mod tests {
     use crate::clock::Time;
     use crate::hal::{
         Batch, Claim, Command, Coverage, Faults, Group, Hal, Layout, Mask, MemberError, NoHardware,
-        Sample, Written, seal,
+        Overrides, Sample, Written, seal,
     };
     use crate::signal::SignalMeta;
     use crate::state::{N, Q, Qd};
@@ -3126,6 +3143,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "experimental")]
     mod presence {
         //! The adapters' presence through the loop, and the upkeep call of
         //! the join policy.

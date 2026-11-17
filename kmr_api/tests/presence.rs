@@ -6,9 +6,8 @@ use std::num::NonZeroU32;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use kmr_api::{
-    Bus, EachTick, JoinPolicy, Mask, MissingPolicy, Policy, Q, Sensors, Spec, Time, UserError,
-};
+use kmr_api::experimental::{JoinPolicy, MissingPolicy, Presence, RobotExt};
+use kmr_api::{Bus, EachTick, Mask, Policy, Q, Sensors, Spec, Time, UserError};
 use kmr_core::hal::{Batch, Claim, Command, Faults, Group, Hal, Overrides, Sample, seal};
 
 kmr_api::robot!(XmBench);

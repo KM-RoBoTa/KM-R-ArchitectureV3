@@ -6,8 +6,12 @@ use core::fmt;
 use core::time::Duration;
 use std::time::Instant;
 
-use kmr_core::hal::{JoinPolicy, Mask, MissingPolicy};
+use kmr_core::hal::{JoinPolicy, Mask, MissingPolicy, Overrides};
 use tracing::warn;
+
+use super::Dynamixel;
+use super::backend::{Backend, BackendError, Undeclared};
+use super::config::Model;
 
 /// Consecutive due reads that time out before a live slot is lost.
 // DECISION: 3 timed-out reads: one lost packet on a noisy line is no loss,
@@ -185,6 +189,64 @@ impl<const N: usize> Presence<N> {
     pub(crate) fn driven(&self) -> Mask<N> {
         self.live.union(self.seed)
     }
+
+    /// A fresh presence for a run under `overrides`. A join policy without
+    /// `Tolerate` is one warning.
+    // DECISION (plan, DECISION 10): a join policy without `Tolerate` is one
+    // warning, no error: nothing is ever absent to join.
+    pub(crate) fn run(overrides: Overrides) -> Self {
+        if overrides.join == JoinPolicy::Declared && overrides.missing == MissingPolicy::Fail {
+            warn!("the join policy has no effect without MissingPolicy::Tolerate");
+        }
+        Self {
+            missing: overrides.missing,
+            join: overrides.join,
+            ..Self::new()
+        }
+    }
+
+    /// Every actuator of `owned` live, at the end of the claim.
+    pub(crate) fn claim(&mut self, owned: Mask<N>) {
+        self.live = owned;
+    }
+
+    /// Read, written and telemetered: what `Hal::present` reports.
+    pub(crate) fn live(&self) -> Mask<N> {
+        self.live
+    }
+
+    /// At the start of a tick's read: the slots a due read reads and the
+    /// seeded ones, which every read reads; the seeded ones are noted as
+    /// this read's.
+    pub(crate) fn begin_read(&mut self) -> (Mask<N>, Mask<N>) {
+        self.seed_read = self.seed;
+        (self.driven(), self.seed)
+    }
+
+    /// Slot `index` read: a seeded one is live from now on.
+    pub(crate) fn promote(&mut self, index: usize) {
+        if self.seed.get(index) {
+            self.seed.clear(index);
+            self.live.set(index);
+        }
+    }
+
+    /// The seeded slots the last `read` read, cadence or not.
+    pub(crate) fn seed_read(&self) -> Mask<N> {
+        self.seed_read
+    }
+
+    /// The slots of `powered` passed their whole bring-up; under both
+    /// policies, the first probe is one probe period from now.
+    // DECISION: a slot counts as set up this run, the warm rejoin's
+    // condition, only once its whole bring-up passed, not once health did:
+    // one lost in configure has no settings, nor its goal range.
+    pub(crate) fn powered(&mut self, powered: Mask<N>) {
+        self.configured = self.configured.union(powered);
+        if self.joins() {
+            self.last_probe = Some(Instant::now());
+        }
+    }
 }
 
 /// What a presence log line reports.
@@ -264,6 +326,181 @@ fn each_run(ids: &mut [u8], event: Event, mut emit: impl FnMut(Line)) {
             last,
         });
         rest = rest.get(run + 1..).unwrap_or_default();
+    }
+}
+
+impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
+    /// Takes actuator `index` out of the run: one `Lost` line.
+    pub(super) fn lose(&mut self, index: usize) {
+        self.presence.drop_slot(index);
+        let (bus, id) = self.named(index);
+        report(bus, &mut [id], Event::Lost);
+    }
+
+    /// One `event` line per bus and run of consecutive ids among `slots`.
+    pub(super) fn report_slots(&self, slots: Mask<N>, event: Event) {
+        self.each_bus(slots, |bus, ids| report(bus, ids, event));
+    }
+
+    /// `emit` once per bus with the firmware ids of `slots` on it, when it
+    /// has any.
+    pub(super) fn each_bus(&self, slots: Mask<N>, mut emit: impl FnMut(&'static str, &mut [u8])) {
+        if slots.is_empty() {
+            return;
+        }
+        for bus in 0..NB {
+            let (mut ids, mut len) = ([0; N], 0);
+            for index in slots.iter() {
+                if let (Some(actuator), Some(slot)) = (self.actuators.get(index), ids.get_mut(len))
+                    && actuator.bus == bus
+                {
+                    *slot = actuator.id;
+                    len += 1;
+                }
+            }
+            if let Some(ids) = ids.get_mut(..len)
+                && !ids.is_empty()
+            {
+                emit(self.label(bus), ids);
+            }
+        }
+    }
+
+    /// Takes the actuators of `lost` out of the run: one `Lost` line per
+    /// bus.
+    pub(super) fn lose_slots(&mut self, lost: Mask<N>) {
+        for index in lost.iter() {
+            self.presence.drop_slot(index);
+        }
+        self.report_slots(lost, Event::Lost);
+    }
+}
+
+#[expect(
+    private_bounds,
+    reason = "the SDK seam stays private: these helpers serve the Hal impl only"
+)]
+impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
+    /// `answer`, the first setup of bus `bus`, as it is under `Fail`. Under
+    /// `Tolerate`: while the setup of bus `bus` stops at a silent
+    /// actuator, takes it out of the run and sets up the live rest again,
+    /// as many attempts per pass as the first setup, at most `passes`; no
+    /// actuator left, no setup, and the bus holds none. Any other failure
+    /// is returned. One `Start` line names the actuators taken out.
+    pub(super) fn declare_present(
+        &mut self,
+        bus: usize,
+        passes: usize,
+        mut answer: Result<(), Undeclared>,
+    ) -> Result<(), Undeclared> {
+        if !self.presence.tolerates() {
+            return answer;
+        }
+        let mut absent = Mask::NONE;
+        for _ in 0..passes {
+            let Err(Undeclared {
+                id: Some(id),
+                source: BackendError::Timeout,
+            }) = answer
+            else {
+                break;
+            };
+            let silent = self
+                .actuators
+                .iter()
+                .find(|(index, actuator)| {
+                    actuator.bus == bus && actuator.id == id && self.presence.live.get(*index)
+                })
+                .map(|(index, _)| index);
+            let Some(index) = silent else {
+                break;
+            };
+            self.presence.drop_slot(index);
+            absent.set(index);
+            let (mut rest, mut len) = ([(0, Model::Xm430W210); N], 0);
+            for (index, actuator) in self.actuators.iter() {
+                if let (true, Some(slot)) = (
+                    actuator.bus == bus && self.presence.live.get(index),
+                    rest.get_mut(len),
+                ) {
+                    *slot = (actuator.id, actuator.model);
+                    len += 1;
+                }
+            }
+            let rest = rest.get(..len).unwrap_or_default();
+            // DECISION: each pass retries as the first setup does, so one
+            // lost reply never leaves a present actuator out of the run;
+            // the plan's one attempt per pass would.
+            answer = if rest.is_empty() {
+                Ok(())
+            } else {
+                self.declare_tries(bus, rest)
+            };
+        }
+        self.report_slots(absent, Event::Start);
+        answer
+    }
+
+    /// Under `Tolerate` at exit: one torque off for each actuator of
+    /// `unheld`, whose bus holds it no more; one `Unreached` line per bus
+    /// names those that did not answer. One that answered is held alone,
+    /// so its limits are put back then; those of one that did not are
+    /// forgotten with a warning.
+    // DECISION: an unheld actuator that still answers (refused, or lost then
+    // left out by a Hold) is restored after its own declare-alone torque
+    // off; held ones were all restored before, so no wipe precedes theirs.
+    pub(super) fn cut_unheld(&mut self, unheld: Mask<N>) {
+        let mut unreached = Mask::NONE;
+        for index in unheld.iter() {
+            let Some(&actuator) = self.actuators.get(index) else {
+                continue;
+            };
+            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
+            if self.backend.force_torque_off(bus, model, id).is_ok() {
+                self.restore_one(index);
+                continue;
+            }
+            unreached.set(index);
+            let saved = self.saved.get_mut(index).map(core::mem::take);
+            if saved.is_some_and(|saved| !saved.is_empty()) {
+                warn!(
+                    bus = self.label(bus),
+                    "limits of actuator id {id} not restored: not reachable"
+                );
+            }
+        }
+        self.report_slots(unreached, Event::Unreached);
+    }
+
+    /// Under `Tolerate`, the owned actuators whose bus holds them no more;
+    /// none under `Fail`.
+    pub(super) fn unheld(&self) -> Mask<N> {
+        let mut unheld = Mask::NONE;
+        if !self.presence.tolerates() {
+            return unheld;
+        }
+        for (index, actuator) in self.actuators.iter() {
+            if !self
+                .backend
+                .holds(actuator.bus, actuator.model, actuator.id)
+            {
+                unheld.set(index);
+            }
+        }
+        unheld
+    }
+
+    /// Whether the exit path leaves actuator `index` to `cut_unheld`: under
+    /// `Tolerate`, one its bus holds no more. A torque off to it would set
+    /// it up alone and wipe what the bus holds before the limits are put
+    /// back.
+    pub(super) fn left_to_close(&self, index: usize) -> bool {
+        self.presence.tolerates()
+            && self.actuators.get(index).is_some_and(|actuator| {
+                !self
+                    .backend
+                    .holds(actuator.bus, actuator.model, actuator.id)
+            })
     }
 }
 
