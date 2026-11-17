@@ -325,7 +325,7 @@ fn rearm_held<B: Backend, const NB: usize, const N: usize>(
     lost
 }
 
-/// The Health stage: a warm joiner (limits written this run, RAM intact) is
+/// The Health stage: a warm joiner (set up this run, RAM intact) is
 /// rearmed and seeded; a cold one is switched off and its limits written.
 // DECISION: a read-only joiner configured this run and reading Torque
 // Enable 0 is warm too, seeded as it is; a configured one whose Torque

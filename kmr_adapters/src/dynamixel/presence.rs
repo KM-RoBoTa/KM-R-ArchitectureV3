@@ -41,7 +41,8 @@ pub(crate) struct Presence<const N: usize> {
     pub(crate) live: Mask<N>,
     /// Powered joiners whose first read is pending: read, not written.
     pub(crate) seed: Mask<N>,
-    /// Limits written this run, their originals saved once.
+    /// Set up whole this run, by bring-up or a join: a warm rejoin's
+    /// condition.
     pub(crate) configured: Mask<N>,
     /// Never probed again this run.
     pub(crate) refused: Mask<N>,

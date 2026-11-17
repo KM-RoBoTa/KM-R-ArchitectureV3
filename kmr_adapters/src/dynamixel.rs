@@ -1653,8 +1653,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// Only live actuators are visited; under `Tolerate` one found silent
     /// is taken out of the run and the next follows.
     fn health(&mut self) -> Result<(), DynamixelError> {
-        let ran = self.each_live(Self::health_one)?;
-        self.presence.configured = self.presence.configured.union(ran);
+        self.each_live(Self::health_one)?;
         Ok(())
     }
 
@@ -1730,7 +1729,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             let live = self.presence.live;
             io::write_start_goals(self, number, live)?;
         }
-        self.each_live(|adapter, index| {
+        let powered = self.each_live(|adapter, index| {
             let Some(&actuator) = adapter.actuators.get(index) else {
                 return Ok(());
             };
@@ -1741,6 +1740,10 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             }
             .map_err(|error| adapter.actuator_error(index, error))
         })?;
+        // DECISION: a slot counts as set up this run, the warm rejoin's
+        // condition, only once its whole bring-up passed, not once health
+        // did: one lost in configure has no settings, nor its goal range.
+        self.presence.configured = self.presence.configured.union(powered);
         if self.presence.joins() {
             self.presence.last_probe = Some(Instant::now());
         }

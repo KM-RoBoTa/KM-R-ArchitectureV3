@@ -855,3 +855,26 @@ fn an_unheld_slot_still_answering_gets_its_limits_back_at_close() -> Result<(), 
     );
     Ok(())
 }
+
+#[test]
+fn a_slot_lost_before_its_settings_rejoins_cold() -> Result<(), DynamixelError> {
+    let mut placement = AX_TABLE.in_order();
+    placement.settings[2].led = Some(true);
+    let mut adapter = strict_placed(placement);
+    adapter.backend.already_on(0, id(2)).fail_times(
+        Call::WriteRam,
+        0,
+        id(2),
+        BackendError::Timeout,
+        1,
+    );
+    let claim = joined_rig(&mut adapter)?;
+    assert!(!adapter.present().get(2));
+    assert!(adapter.backend.holds(0, Model::Ax12a, id(2)));
+
+    assert!(until_present(&mut adapter, &claim, 2, 10).is_some());
+
+    assert_eq!(adapter.backend.count(Call::Rearm), 0, "cold");
+    assert_eq!(adapter.backend.ram(0, id(2), RamSetting::Led), 1);
+    Ok(())
+}
