@@ -824,3 +824,34 @@ fn long_power_losses_count_as_rejoins_too() -> Result<(), DynamixelError> {
     assert!(!adapter.backend.torqued(0, id(2)));
     Ok(())
 }
+
+#[test]
+fn an_unheld_slot_still_answering_gets_its_limits_back_at_close() -> Result<(), DynamixelError> {
+    let mut adapter = strict_placed(voltage_limited(true));
+    adapter.backend.missing(0, id(3));
+    let claim = joined_rig(&mut adapter)?;
+    let originals = adapter.saved[2].voltage_dv;
+    adapter.backend.missing(0, id(2));
+    reads(&mut adapter, LOST_AFTER);
+    adapter.backend.plug(0, id(3), true);
+    assert!(until_present(&mut adapter, &claim, 3, 20).is_some());
+    assert!(!adapter.backend.holds(0, Model::Ax12a, id(2)));
+    adapter.backend.plug(0, id(2), false);
+    adapter.backend.clear_log();
+
+    let seen = warnings("not restored", || {
+        adapter.torque_off();
+        adapter.close();
+    });
+
+    assert_eq!(seen, 0);
+    assert!(calls_of(&adapter.backend, Call::WriteVoltageLimits).any(|named| named == id(2)));
+    assert_eq!(
+        adapter
+            .backend
+            .limits(0, id(2))
+            .map(|limits| (limits.min_voltage_dv, limits.max_voltage_dv)),
+        originals
+    );
+    Ok(())
+}

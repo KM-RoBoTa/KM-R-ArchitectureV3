@@ -197,27 +197,29 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
 
     /// Puts back every limit register `health` saved, Temperature Limit
     /// first: one attempt each, a warning for each that fails or that a
-    /// read back does not confirm, and the saved values forgotten.
+    /// read back does not confirm, and the saved values forgotten. Under
+    /// `Tolerate`, an actuator its bus no longer holds is left to
+    /// `cut_unheld`, which restores it once its torque off held it alone.
     // DECISION: Temperature Limit first: putting back the voltages is what
     // brings back the bench AX-12A's voltage fault, and that fault carries
     // the voltages their read back needs; a temperature read back beside it
     // would fail unconfirmed.
     pub(super) fn restore_limits(&mut self) {
         for index in self.actuators.owned().iter() {
-            let saved = self.saved.get_mut(index).map(core::mem::take);
-            let (Some(saved), Some(&actuator)) = (saved, self.actuators.get(index)) else {
-                continue;
-            };
-            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            if self.presence.tolerates() && !self.backend.holds(bus, model, id) {
-                if !saved.is_empty() {
-                    warn!(
-                        bus = self.label(bus),
-                        "limits of actuator id {id} not restored: not reachable"
-                    );
-                }
-                continue;
+            let held = self.actuators.get(index).is_some_and(|actuator| {
+                self.backend
+                    .holds(actuator.bus, actuator.model, actuator.id)
+            });
+            if !self.presence.tolerates() || held {
+                self.restore_one(index);
             }
+        }
+    }
+
+    /// The `restore_limits` of actuator `index` alone.
+    pub(super) fn restore_one(&mut self, index: usize) {
+        let saved = self.saved.get_mut(index).map(core::mem::take);
+        if let (Some(saved), Some(&actuator)) = (saved, self.actuators.get(index)) {
             if let Some(celsius) = saved.temperature_c {
                 self.restore(
                     index,

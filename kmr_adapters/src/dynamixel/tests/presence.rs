@@ -493,7 +493,7 @@ fn fr_5_6_torque_off_cuts_every_held_slot_then_close_cuts_the_rest() -> Result<(
 }
 
 #[test]
-fn close_restores_limits_of_held_slots_only() -> Result<(), DynamixelError> {
+fn close_skips_the_limits_of_an_unreachable_slot() -> Result<(), DynamixelError> {
     let mut adapter = strict_placed(restoring());
     powered_with(&mut adapter, tolerate())?;
     let rest = [
@@ -502,6 +502,7 @@ fn close_restores_limits_of_held_slots_only() -> Result<(), DynamixelError> {
         (id(3), Model::Ax12a),
     ];
     adapter.backend.declare(0, &rest).unwrap();
+    adapter.backend.missing(0, id(2));
     adapter.backend.clear_log();
 
     let line = (

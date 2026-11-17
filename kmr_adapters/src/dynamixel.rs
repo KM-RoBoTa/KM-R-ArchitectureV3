@@ -1358,7 +1358,12 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
 
     /// Under `Tolerate` at exit: one torque off for each actuator of
     /// `unheld`, whose bus holds it no more; one `Unreached` line per bus
-    /// names those that did not answer.
+    /// names those that did not answer. One that answered is held alone,
+    /// so its limits are put back then; those of one that did not are
+    /// forgotten with a warning.
+    // DECISION: an unheld actuator that still answers (refused, or lost then
+    // left out by a Hold) is restored after its own declare-alone torque
+    // off; held ones were all restored before, so no wipe precedes theirs.
     fn cut_unheld(&mut self, unheld: Mask<N>) {
         let mut unreached = Mask::NONE;
         for index in unheld.iter() {
@@ -1366,8 +1371,17 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
                 continue;
             };
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            if self.backend.force_torque_off(bus, model, id).is_err() {
-                unreached.set(index);
+            if self.backend.force_torque_off(bus, model, id).is_ok() {
+                self.restore_one(index);
+                continue;
+            }
+            unreached.set(index);
+            let saved = self.saved.get_mut(index).map(core::mem::take);
+            if saved.is_some_and(|saved| !saved.is_empty()) {
+                warn!(
+                    bus = self.label(bus),
+                    "limits of actuator id {id} not restored: not reachable"
+                );
             }
         }
         self.report_slots(unreached, Event::Unreached);
