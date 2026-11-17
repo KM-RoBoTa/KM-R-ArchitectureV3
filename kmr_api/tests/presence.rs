@@ -358,6 +358,9 @@ struct Seen {
 
 static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
+/// The ticks the recording controller skips `apply` on.
+static SKIP: Mutex<fn(u64) -> bool> = Mutex::new(|_| false);
+
 /// The join ramp the scripted runs take: four ticks.
 const RAMP: Duration = Duration::from_millis(4);
 
@@ -370,7 +373,10 @@ fn ramp(
     _: &Sensors,
 ) {
     let mut target = [Q(0.0); N];
-    ramp.apply(time, robot, &mut target);
+    let skip = *SKIP.lock().unwrap_or_else(PoisonError::into_inner);
+    if !skip(time.tick()) {
+        ramp.apply(time, robot, &mut target);
+    }
     SEEN.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(Seen {
@@ -390,8 +396,14 @@ fn ramp(
 
 /// `ticks` ticks of a scripted run where slot `GONE` is absent at the ticks `away` names.
 fn scripted(away: fn(i64) -> bool, ticks: u64) -> Vec<Seen> {
+    scripted_skipping(away, |_| false, ticks)
+}
+
+/// [`scripted`], the controller skipping `apply` on the ticks `skip` names.
+fn scripted_skipping(away: fn(i64) -> bool, skip: fn(u64) -> bool, ticks: u64) -> Vec<Seen> {
     let _bus = bus();
     SEEN.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    *SKIP.lock().unwrap_or_else(PoisonError::into_inner) = skip;
     let robot = kmr_api::Robot::<N, Fades>::new()
         .set_dt(kmr_api::test_util::DT)
         .set_limit_policy_all(Policy::Clamp)
@@ -504,4 +516,37 @@ fn reads_of_an_absent_slot_are_no_sample_one_by_one_and_stale_in_the_array() {
         assert_eq!(all[GONE], last_read, "its last sample, copied forward");
         assert!(all[0] != last_read, "the others are read on");
     }
+}
+
+#[test]
+fn a_joiner_missed_on_its_join_tick_still_eases_from_where_it_is_then() {
+    // Joins at 2; the controller skips `apply` at 2.
+    let seen = scripted_skipping(|tick| tick < 2, |tick| tick == 2, 7);
+
+    assert!(seen[2].easing.is_empty());
+    let late = &seen[3];
+    assert!(late.easing == gone(), "{late:?}");
+    assert_eq!(late.target[GONE], late.gone.expect("sampled"));
+}
+
+#[test]
+fn a_slot_that_left_and_rejoined_between_two_calls_starts_over() {
+    // Present but at 3 and 4; the controller skips `apply` from 3 to 5.
+    let seen = scripted_skipping(
+        |tick| tick == 3 || tick == 4,
+        |tick| (3..=5).contains(&tick),
+        9,
+    );
+
+    assert!(seen[..=2].iter().all(|s| s.easing.is_empty()));
+    let back = &seen[6];
+    assert!(back.easing == gone(), "{back:?}");
+    assert_eq!(back.target[GONE], back.gone.expect("sampled"));
+}
+
+#[test]
+fn skipped_calls_never_ease_a_slot_that_stayed() {
+    let seen = scripted_skipping(|_| false, |tick| (1..=5).contains(&tick), 9);
+
+    assert!(seen.iter().all(|s| s.easing.is_empty()), "{seen:?}");
 }

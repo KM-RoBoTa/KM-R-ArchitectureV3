@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use crate::{Mask, Q, Robot, State, Time};
+use crate::{HISTORY_DEPTH, Mask, Q, Robot, State, StateError, Time};
 
 /// What a declared actuator that does not answer means, and whether an absent one may join
 /// the run: set them with [`RobotExt`].
@@ -119,6 +119,10 @@ pub struct JoinRamp<const N: usize> {
     since: [Duration; N],
     /// The actuators still easing.
     easing: Mask<N>,
+    /// The actuators present at the last call.
+    seen: Mask<N>,
+    /// The tick of the last call this run; `None` before the first.
+    last: Option<u64>,
 }
 
 impl<const N: usize> JoinRamp<N> {
@@ -129,18 +133,36 @@ impl<const N: usize> JoinRamp<N> {
             from: [Q(0.0); N],
             since: [Duration::ZERO; N],
             easing: Mask::NONE,
+            seen: Mask::NONE,
+            last: None,
         }
     }
 
-    /// Once per tick, before the writes: notes the actuators that joined at this tick and
-    /// where they are, then blends the target of each easing one from there towards
+    /// Once per tick, before the writes: takes the actuators that joined since the last call
+    /// and where they are now, then blends the target of each easing one from there towards
     /// `target`, in place. An actuator that leaves stops easing; one that joins again starts
     /// over from where it is then. The others' targets are untouched.
-    // DECISION: a joiner without a sample at its join tick is not eased: there is no start to
-    // blend from, so it takes the controller's target as it would without the ramp.
+    ///
+    /// A call may be skipped: a joiner is still taken at the next call, from where it is then.
+    /// The first call of a run is the baseline, as for [`Presence::joined`]: the actuators
+    /// present then never joined. A clock that goes back, a new run or a `Home::then` hand-over,
+    /// starts a new baseline.
+    // DECISION: a joiner without a sample at the call that takes it is not eased: there is no
+    // start to blend from, so it takes the controller's target as it would without the ramp.
     pub fn apply(&mut self, time: &Time, robot: &State<'_, N>, target: &mut [Q; N]) {
-        let now = time.elapsed();
-        for i in robot.joined().iter() {
+        let (now, tick) = (time.elapsed(), time.tick());
+        let present = robot.present();
+        let mut joining = robot.joined();
+        match self.last {
+            Some(last) if tick >= last => {
+                joining = joining
+                    .union(present.difference(self.seen))
+                    .union(self.rejoined(robot, tick - last));
+            }
+            _ => self.easing = Mask::NONE,
+        }
+        (self.seen, self.last) = (present, Some(tick));
+        for i in joining.intersection(present).iter() {
             let (Ok(at), Some(from), Some(since)) =
                 (robot.q_at(i), self.from.get_mut(i), self.since.get_mut(i))
             else {
@@ -158,7 +180,7 @@ impl<const N: usize> JoinRamp<N> {
                 continue;
             };
             let age = now.saturating_sub(since);
-            if !robot.present_at(i) || age >= self.duration {
+            if !present.get(i) || age >= self.duration {
                 self.easing.clear(i);
                 continue;
             }
@@ -167,6 +189,26 @@ impl<const N: usize> JoinRamp<N> {
         }
     }
 
+    /// The actuators present at the last call and now that left and came back in the `gap`
+    /// ticks between: their samples start after the last call.
+    // DECISION: told by the history, not by the presence masks, which show the same slot
+    // present at both calls: a rejoin clears a slot's samples, so one that stayed holds one
+    // `gap` ticks back and a rejoined one does not. A rejoin older than the history is missed;
+    // it was driven at the controller's target since, as without the ramp.
+    fn rejoined(&self, robot: &State<'_, N>, gap: u64) -> Mask<N> {
+        let mut rejoined = Mask::NONE;
+        if gap == 0 {
+            return rejoined;
+        }
+        let depth =
+            usize::try_from(gap).map_or(HISTORY_DEPTH - 1, |gap| gap.min(HISTORY_DEPTH - 1));
+        for i in robot.present().intersection(self.seen).iter() {
+            if matches!(robot.prev_q_at(i, depth), Err(StateError::NoSample { .. })) {
+                rejoined.set(i);
+            }
+        }
+        rejoined
+    }
     /// The actuators still easing: their target is not the controller's yet.
     pub fn easing(&self) -> Mask<N> {
         self.easing
