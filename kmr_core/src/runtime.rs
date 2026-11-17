@@ -29,8 +29,8 @@ use crate::clock::Instant;
 use crate::controllers::Env;
 use crate::error::{ConfigError, RunError};
 use crate::hal::{
-    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, Layout, Overrides, Plan, Sensing,
-    SensorPlan, SensorPolicy, Step, TickFlags,
+    Audit, Batch, Drivers, EXTERNAL_FLAGS, Faults, HardwareError, JoinPolicy, Layout, Overrides,
+    Plan, Sensing, SensorPlan, SensorPolicy, Step, TickFlags,
 };
 use crate::schedule::Drive;
 use crate::signal::SignalMeta;
@@ -494,6 +494,7 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensin
                 .read(sample, faults, rig.layout.slots(), &mut audit);
             state.refreshed(read);
         }
+        state.set_present(rig.drivers.present(rig.layout.slots()));
         let sensor_stop = rig.read_sensors(sensors, state, tick, &robot.config.sensor_policy);
         state.raise(host.take_flags());
         if let Some(signal) = stray_stop(&mut audit) {
@@ -521,6 +522,8 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensin
         if let Some(signal) = estop(host.poll()) {
             break signal;
         }
+        // Before the limit stage and the batch, and before the hold target.
+        state.drop_absent();
         // The limit stage, before the batch: an `Abort` breach skips the write.
         let (staged, faults) = state.guarded();
         let mut spare = Faults::default();
@@ -547,6 +550,17 @@ fn control_loop<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensin
         refresh_telemetry(rig.drivers, state, rig.layout, &mut audit, tick);
         if let Some(signal) = stray_stop(&mut audit) {
             break signal;
+        }
+        // Only under the join policy: an emergency stop never waits behind a
+        // join stage, a shutdown skips it and completes the tick.
+        if robot.config.join_policy == JoinPolicy::Declared {
+            let pending = host.poll();
+            if let Some(signal) = estop(pending) {
+                break signal;
+            }
+            if pending.is_none() {
+                rig.drivers.upkeep();
+            }
         }
 
         // No log per tick (SRS NFR-1): the overrun total is logged at exit.
@@ -614,6 +628,7 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensing,
             .read_all(sample, rig.layout.slots(), &mut audit)
             .map_err(member)?;
         state.refreshed(read);
+        state.set_present(rig.drivers.present(rig.layout.slots()));
         let tick = robot.config.time.tick();
         refresh_telemetry(rig.drivers, state, rig.layout, &mut audit, tick);
         // The first reading, for the PostInit controllers (SRS FR-5.7).
@@ -633,6 +648,9 @@ fn run_phases<const N: usize, CS: Drive<N>, H: Host, D: Drivers<N>, SN: Sensing,
         return Ok(signal);
     }
     rig.drivers.step(Step::TorqueOn).map_err(member)?;
+    // An actuator lost during torque on is absent for the PostInit
+    // controllers.
+    state.set_present(rig.drivers.present(rig.layout.slots()));
     init_phase::post_init(robot, state, sensors);
     writes.discard(state, "PostInit");
     writes.report();
@@ -703,8 +721,11 @@ pub(crate) fn run_all<
     robot.config.time.set_delta(dt);
 
     let mut plan = Plan::new();
-    hal.claim(Overrides::default(), &mut plan)
-        .map_err(RunError::Hal)?;
+    let overrides = Overrides {
+        missing: robot.config.missing_policy,
+        join: robot.config.join_policy,
+    };
+    hal.claim(overrides, &mut plan).map_err(RunError::Hal)?;
     let layout = plan.finish().map_err(|c| RunError::Hal(c.into()))?;
     // DECISION: after the drivers' claim, so a run with both faults names the
     // actuators' first, as it did before sensors existed.
@@ -3102,6 +3123,422 @@ mod tests {
             let state = RobotState::<N>::default();
             assert!(state.faults(0).is_err());
             assert!(state.tick_flags(crate::HISTORY_DEPTH).is_err());
+        }
+    }
+
+    mod presence {
+        //! The adapters' presence through the loop, and the upkeep call of
+        //! the join policy.
+
+        use super::*;
+        use crate::hal::{JoinPolicy, MissingPolicy, Overrides};
+        use crate::telemetry::Telemetry;
+
+        /// An adapter call, a host call or a walk, in the order they came.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Ev {
+            Read,
+            Write,
+            Telemetry,
+            Upkeep,
+            Now,
+            Poll,
+            Last,
+        }
+
+        /// Events a run holds; past them, dropped.
+        const EVENTS: usize = 128;
+
+        /// The events of a run, shared by the fake, the host and the walks.
+        struct Events(RefCell<([Ev; EVENTS], usize)>);
+
+        impl Events {
+            fn new() -> Self {
+                Self(RefCell::new(([Ev::Poll; EVENTS], 0)))
+            }
+
+            fn push(&self, event: Ev) {
+                let (seen, len) = &mut *self.0.borrow_mut();
+                if let Some(slot) = seen.get_mut(*len) {
+                    *slot = event;
+                    *len += 1;
+                }
+            }
+
+            fn seen(&self) -> Ref<'_, [Ev]> {
+                Ref::map(self.0.borrow(), |(seen, len)| {
+                    seen.get(..*len).unwrap_or(&[])
+                })
+            }
+
+            fn count(&self, event: Ev) -> usize {
+                self.seen().iter().filter(|&&e| e == event).count()
+            }
+        }
+
+        /// Every actuator but `index`.
+        fn all_but(index: usize) -> Mask<N> {
+            let mut mask = Mask::ALL;
+            mask.clear(index);
+            mask
+        }
+
+        /// A member owning every actuator whose presence after its read
+        /// call `k` (read_all included) is `script[k]`, the last one
+        /// past the script. Each read refreshes the present actuators.
+        struct Flaky<'a> {
+            events: &'a Events,
+            log: &'a Log<N>,
+            script: [Mask<N>; 4],
+            reads: usize,
+            overrides: Option<Overrides>,
+        }
+
+        impl<'a> Flaky<'a> {
+            fn new(events: &'a Events, log: &'a Log<N>, script: [Mask<N>; 4]) -> Self {
+                Self {
+                    events,
+                    log,
+                    script,
+                    reads: 0,
+                    overrides: None,
+                }
+            }
+        }
+
+        impl seal::Adapter for Flaky<'_> {}
+
+        impl Hal<N> for Flaky<'_> {
+            type Error = core::convert::Infallible;
+
+            fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, Self::Error> {
+                self.overrides = Some(overrides);
+                Hal::<N>::check(&mut NoHardware, overrides)
+            }
+
+            fn open(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn zero(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn ping(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn health(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn configure(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error> {
+                *sample.q = [SEED; N];
+                self.reads += 1;
+                Ok(())
+            }
+
+            fn torque_on(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn read(&mut self, _sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
+                self.events.push(Ev::Read);
+                self.reads += 1;
+                self.present()
+            }
+
+            fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, _: &mut Faults<N>) {
+                self.events.push(Ev::Write);
+                let mut actuators = Mask::NONE;
+                for &actuator in batch.runs().flat_map(|(_group, run)| run) {
+                    actuators.set(actuator);
+                }
+                self.log.write.set(Some(Sent {
+                    q: *command.q,
+                    written: *command.written,
+                    batch: actuators,
+                }));
+            }
+
+            fn telemetry(&mut self, _: &mut Telemetry<N>, _: &mut Faults<N>) -> Mask<N> {
+                self.events.push(Ev::Telemetry);
+                Mask::NONE
+            }
+
+            fn present(&self) -> Mask<N> {
+                let k = self.reads.saturating_sub(1).min(self.script.len() - 1);
+                self.script.get(k).copied().unwrap_or(Mask::ALL)
+            }
+
+            fn upkeep(&mut self) {
+                self.events.push(Ev::Upkeep);
+            }
+
+            fn hold(&mut self, target: Command<'_, N>) {
+                self.log.hold.set(Some(Sent {
+                    q: *target.q,
+                    written: *target.written,
+                    batch: Mask::ALL,
+                }));
+            }
+
+            fn torque_off(&mut self) {}
+
+            fn close(&mut self) {}
+        }
+
+        /// A scripted host whose clock reads and bus checks are events.
+        struct Watched<'a> {
+            inner: Scripted,
+            events: &'a Events,
+        }
+
+        impl crate::runtime::seal::Host for Watched<'_> {}
+
+        impl Host for Watched<'_> {
+            fn now(&mut self) -> Instant {
+                self.events.push(Ev::Now);
+                self.inner.now()
+            }
+
+            fn sleep_until(&mut self, deadline: Instant) {
+                self.inner.sleep_until(deadline);
+            }
+
+            fn poll(&mut self) -> Option<Signal> {
+                self.events.push(Ev::Poll);
+                self.inner.poll()
+            }
+        }
+
+        /// Bus checks per tick under [`JoinPolicy::Declared`]: one more, before
+        /// the upkeep.
+        const PER_JOIN_TICK: usize = PER_TICK + 1;
+
+        /// The bus check before the upkeep of tick `k`, under
+        /// [`JoinPolicy::Declared`].
+        const fn before_upkeep(k: usize) -> usize {
+            TICK_START + k * PER_JOIN_TICK + 4
+        }
+
+        /// The bus check at the end of tick `k`, under [`JoinPolicy::Declared`].
+        const fn join_tick_end(k: usize) -> usize {
+            before_upkeep(k) + 1
+        }
+
+        #[test]
+        fn claim_gets_the_policies_in_overrides() {
+            let (events, log) = (Events::new(), Log::new());
+            let mut flaky = Flaky::new(&events, &log, [Mask::ALL; 4]);
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .set_missing_policy(MissingPolicy::Tolerate)
+                .set_join_policy(JoinPolicy::Declared)
+                .add_controller(
+                    crate::EachTick,
+                    |_t: &Time, _s: &mut RobotState<N>, _: &Sensors| {},
+                );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+
+            let result = run_with(&mut robot, &mut host, &mut one(&mut flaky));
+
+            assert!(result.is_ok());
+            let overrides = flaky.overrides.expect("checked");
+            assert_eq!(overrides.missing, MissingPolicy::Tolerate);
+            assert_eq!(overrides.join, JoinPolicy::Declared);
+        }
+
+        #[test]
+        fn present_reaches_state_after_read_before_first() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(
+                &events,
+                &log,
+                [all_but(3), Mask::ALL, all_but(1), all_but(1)],
+            );
+            let post_init = Cell::new(Mask::NONE);
+            let first = RefCell::new([Mask::NONE; 2]);
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .add_controller(
+                    crate::PostInit,
+                    |_t: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                        post_init.set(state.present());
+                    },
+                )
+                .add_controller(
+                    crate::First,
+                    |time: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                        let tick = usize::try_from(time.tick()).expect("small");
+                        if let Some(slot) = first.borrow_mut().get_mut(tick) {
+                            *slot = state.present();
+                        }
+                    },
+                );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + PER_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert!(result.is_ok());
+            assert_eq!(post_init.get(), all_but(3));
+            assert_eq!(first.into_inner(), [Mask::ALL, all_but(1)]);
+        }
+
+        #[test]
+        fn read_all_samples_only_present_slots() {
+            let (events, log) = (Events::new(), Log::new());
+            let mut drivers = one(Flaky::new(&events, &log, [all_but(2); 4]));
+            let layout = Layout::new(
+                [Group(0); N],
+                [NonZeroU32::MIN; N],
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+            let mut state = RobotState::<N>::default();
+            let sample = state.push_slot().expect("a history slot");
+
+            let read = drivers.read_all(sample, layout.slots(), &mut Audit::default());
+
+            assert_eq!(read.ok(), Some(all_but(2)));
+            assert_eq!(drivers.present(layout.slots()), all_but(2));
+        }
+
+        #[test]
+        fn set_all_writes_only_present_slots() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(
+                &events,
+                &log,
+                [Mask::ALL, all_but(2), all_but(2), all_but(2)],
+            );
+            let mut robot = Robot::new().set_dt(DT).add_controller(
+                crate::EachTick,
+                |_t: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                    state.set_all([Q(1.0); N]);
+                    state.set_at(Qd(1.0), 2).expect("in range");
+                },
+            );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END);
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert!(result.is_ok());
+            let sent = log.write.get().expect("tick 0 wrote");
+            assert_eq!(sent.written.q, all_but(2));
+            assert!(sent.written.qd.is_empty());
+            assert_eq!(sent.batch, all_but(2));
+        }
+
+        #[test]
+        fn hold_skips_absent_slots() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(
+                &events,
+                &log,
+                [Mask::ALL, all_but(2), all_but(2), all_but(2)],
+            );
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .set_hold(Duration::ZERO)
+                .add_controller(
+                    crate::EachTick,
+                    |_t: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                        state.set_all([Q(1.0); N]);
+                    },
+                );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_FIRST);
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            let held = log.hold.get().expect("the shutdown held");
+            assert_eq!(held.written.q, all_but(2));
+        }
+
+        // A macro, not a fn: the robot's `HCons` type is not worth spelling.
+        macro_rules! logging_robot {
+            ($events:expr) => {
+                Robot::new().set_dt(DT).add_controller(
+                    crate::Last,
+                    |_t: &Time, _s: &mut RobotState<N>, _: &Sensors| $events.push(Ev::Last),
+                )
+            };
+        }
+
+        #[test]
+        fn upkeep_runs_once_per_tick_after_telemetry_before_end_tick() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(&events, &log, [Mask::ALL; 4]);
+            let mut robot = logging_robot!(events).set_join_policy(JoinPolicy::Declared);
+            let mut host = Watched {
+                inner: Scripted::new(Instant::now()).shutdown_from(join_tick_end(2)),
+                events: &events,
+            };
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(events.count(Ev::Last), 3);
+            assert_eq!(events.count(Ev::Upkeep), 3);
+            let seen = events.seen();
+            for (at, _) in seen.iter().enumerate().filter(|(_, e)| **e == Ev::Upkeep) {
+                let around = seen.get(at.saturating_sub(2)..at + 2);
+                assert_eq!(
+                    around,
+                    Some(&[Ev::Telemetry, Ev::Poll, Ev::Upkeep, Ev::Now][..])
+                );
+            }
+        }
+
+        #[test]
+        fn upkeep_never_runs_with_join_never() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(&events, &log, [Mask::ALL; 4]);
+            let mut robot = logging_robot!(events).set_missing_policy(MissingPolicy::Tolerate);
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 2 * PER_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(events.count(Ev::Last), 3);
+            assert_eq!(events.count(Ev::Upkeep), 0);
+            assert_eq!(host.poll_calls, TICK_END + 2 * PER_TICK + 2);
+        }
+
+        #[test]
+        fn estop_raised_before_upkeep_skips_it() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(&events, &log, [Mask::ALL; 4]);
+            let mut robot = logging_robot!(events).set_join_policy(JoinPolicy::Declared);
+            let mut host = Scripted::new(Instant::now()).estop_from(before_upkeep(0));
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::EmergencyStop));
+            assert_eq!(events.count(Ev::Telemetry), 2);
+            assert_eq!(events.count(Ev::Upkeep), 0);
+            assert_eq!(robot.config.time.last_update(), None);
+        }
+
+        #[test]
+        fn shutdown_raised_before_upkeep_skips_it_and_completes_the_tick() {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(&events, &log, [Mask::ALL; 4]);
+            let mut robot = logging_robot!(events).set_join_policy(JoinPolicy::Declared);
+            let mut host = Scripted::new(Instant::now())
+                .script(&[0, 0, 4])
+                .shutdown_from(before_upkeep(0));
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert_eq!(result.map(|s| s.kind()), Ok(SignalKind::Shutdown));
+            assert_eq!(events.count(Ev::Upkeep), 0);
+            assert_eq!(robot.config.time.last_update(), Some(&host.at(4)));
         }
     }
 }
