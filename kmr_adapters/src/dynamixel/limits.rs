@@ -208,6 +208,16 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             let (Some(saved), Some(&actuator)) = (saved, self.actuators.get(index)) else {
                 continue;
             };
+            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
+            if self.presence.tolerates() && !self.backend.holds(bus, model, id) {
+                if !saved.is_empty() {
+                    warn!(
+                        bus = self.label(bus),
+                        "limits of actuator id {id} not restored: not reachable"
+                    );
+                }
+                continue;
+            }
             if let Some(celsius) = saved.temperature_c {
                 self.restore(
                     index,

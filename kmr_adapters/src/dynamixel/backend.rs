@@ -590,7 +590,6 @@ pub(crate) trait Backend {
 
     /// Whether the port holds `id`: its last declare named it and
     /// succeeded. No I/O.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the exit path of T5 calls it"))]
     fn holds(&self, port: usize, model: Model, id: u8) -> bool;
 
     /// Present position of one actuator.

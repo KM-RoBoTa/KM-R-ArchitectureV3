@@ -43,6 +43,8 @@ use super::{
 use crate::binding::{Binding, Port};
 use crate::presets::{Rx28Chain, XmBench};
 
+mod presence;
+
 /// Actuators of the robot the scenarios drive: they name actuators 0 to 3.
 const N: usize = 4;
 

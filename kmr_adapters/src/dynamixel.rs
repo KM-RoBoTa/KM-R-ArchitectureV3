@@ -11,6 +11,7 @@ mod dxl_rs_v2;
 mod io;
 mod limits;
 mod port;
+mod presence;
 mod status;
 mod telemetry;
 mod units;
@@ -36,6 +37,7 @@ use backend::{
 };
 use io::{Goals, Groups, Outcome};
 use port::DevicePath;
+use presence::{Event, Presence};
 
 #[cfg(feature = "dynamixel")]
 pub use self::dxl_rs_v2::DxlRsV2;
@@ -663,6 +665,8 @@ pub struct Dynamixel<B, const NB: usize, const N: usize> {
     /// Per engine index, the limit registers `health` replaced, kept for
     /// `close` to put back when the actuator's settings ask for it.
     saved: [limits::Limits; N],
+    /// Which actuators are live for the run, under the missing policy.
+    presence: Presence<N>,
 }
 
 impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
@@ -684,6 +688,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             reads: 0,
             rounds: telemetry::Rounds::NEW,
             saved: [limits::Limits::NONE; N],
+            presence: Presence::new(),
         }
     }
 
@@ -994,6 +999,37 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             Some((index, Outcome::Invalid(raw))) => Err(self.position_range(index, raw)),
         }
     }
+
+    /// Takes actuator `index`, found silent by a bring-up call, out of the
+    /// run: one `Lost` line.
+    fn lose(&mut self, index: usize) {
+        self.presence.drop_slot(index);
+        let (bus, id) = self.named(index);
+        presence::report(bus, &mut [id], Event::Lost);
+    }
+
+    /// One `event` line per bus and run of consecutive ids among `slots`.
+    fn report_slots(&self, slots: Mask<N>, event: Event) {
+        if slots.is_empty() {
+            return;
+        }
+        for bus in 0..NB {
+            let (mut ids, mut len) = ([0; N], 0);
+            for index in slots.iter() {
+                if let (Some(actuator), Some(slot)) = (self.actuators.get(index), ids.get_mut(len))
+                    && actuator.bus == bus
+                {
+                    *slot = actuator.id;
+                    len += 1;
+                }
+            }
+            if let Some(ids) = ids.get_mut(..len)
+                && !ids.is_empty()
+            {
+                presence::report(self.label(bus), ids, event);
+            }
+        }
+    }
 }
 
 #[expect(
@@ -1031,6 +1067,301 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         }
         Ok(())
     }
+
+    /// Under `Tolerate`: while the setup of bus `bus` stops at a silent
+    /// actuator, takes it out of the run and sets up the live rest again,
+    /// one attempt per pass, at most `passes`; no actuator left, no setup,
+    /// and the bus holds none. Any other failure is returned. One `Start`
+    /// line names the actuators taken out.
+    fn declare_present(
+        &mut self,
+        bus: usize,
+        passes: usize,
+        mut answer: Result<(), Undeclared>,
+    ) -> Result<(), Undeclared> {
+        let mut absent = Mask::NONE;
+        for _ in 0..passes {
+            let Err(Undeclared {
+                id: Some(id),
+                source: BackendError::Timeout,
+            }) = answer
+            else {
+                break;
+            };
+            let silent = self
+                .actuators
+                .iter()
+                .find(|(index, actuator)| {
+                    actuator.bus == bus && actuator.id == id && self.presence.live.get(*index)
+                })
+                .map(|(index, _)| index);
+            let Some(index) = silent else {
+                break;
+            };
+            self.presence.drop_slot(index);
+            absent.set(index);
+            let (mut rest, mut len) = ([(0, Model::Xm430W210); N], 0);
+            for (index, actuator) in self.actuators.iter() {
+                if let (true, Some(slot)) = (
+                    actuator.bus == bus && self.presence.live.get(index),
+                    rest.get_mut(len),
+                ) {
+                    *slot = (actuator.id, actuator.model);
+                    len += 1;
+                }
+            }
+            let rest = rest.get(..len).unwrap_or_default();
+            answer = if rest.is_empty() {
+                Ok(())
+            } else {
+                self.backend.declare(bus, rest)
+            };
+        }
+        self.report_slots(absent, Event::Start);
+        answer
+    }
+
+    /// The `health` of actuator `index` alone: its limits written, its
+    /// fault asked, then its values checked.
+    fn health_one(&mut self, index: usize) -> Result<(), DynamixelError> {
+        let Some(&actuator) = self.actuators.get(index) else {
+            return Ok(());
+        };
+        let (model, id) = (actuator.model, actuator.id);
+        let writes = self.limit_writes(index);
+        if !writes.is_empty() {
+            self.write_limits(index, actuator, writes)?;
+        }
+        if self.backend.faulted(actuator.bus, model, id) {
+            self.clear_fault(index, actuator)?;
+        }
+        let bus = self.label(actuator.bus);
+        let health = self
+            .backend
+            .read_health(actuator.bus, model, id)
+            .map_err(|error| self.actuator_error(index, error))?;
+        let read = HealthLimits {
+            min_voltage_dv: health.min_voltage_dv,
+            max_voltage_dv: health.max_voltage_dv,
+            temperature_c: health.temperature_limit_c,
+        };
+        // DECISION: a register left alone is expected as read, so a
+        // mismatch names the written ones only.
+        if let Some(mismatch) = self.mismatch(index, writes, read) {
+            return Err(mismatch);
+        }
+        if model.protocol() == Protocol::Two && health.error_status != 0 {
+            return Err(DynamixelError::HardwareError {
+                actuator: index,
+                bus,
+                id,
+                status: health.error_status,
+            });
+        }
+        let (min_dv, max_dv) = (health.min_voltage_dv, health.max_voltage_dv);
+        if !(min_dv..=max_dv).contains(&health.voltage_dv) {
+            return Err(DynamixelError::Voltage {
+                actuator: index,
+                bus,
+                id,
+                measured_dv: health.voltage_dv,
+                min_dv,
+                max_dv,
+            });
+        }
+        if health.temperature_c > health.temperature_limit_c {
+            return Err(DynamixelError::Temperature {
+                actuator: index,
+                bus,
+                id,
+                measured_c: health.temperature_c,
+                limit_c: health.temperature_limit_c,
+            });
+        }
+        let (low_dv, high_dv) = model.datasheet_voltage_dv();
+        if !(low_dv..=high_dv).contains(&health.voltage_dv) {
+            warn!(
+                actuator = index,
+                bus,
+                id,
+                "input voltage {} V outside the {} datasheet range {}–{} V, inside the actuator's limits {}–{} V",
+                Volts(health.voltage_dv),
+                model.name(),
+                Volts(low_dv),
+                Volts(high_dv),
+                Volts(min_dv),
+                Volts(max_dv),
+            );
+        }
+        let hottest = model.datasheet_max_temperature_c();
+        if health.temperature_c > hottest {
+            warn!(
+                actuator = index,
+                bus,
+                id,
+                "temperature {} °C above the {} datasheet maximum {hottest} °C, within the actuator's limit {} °C",
+                health.temperature_c,
+                model.name(),
+                health.temperature_limit_c,
+            );
+        }
+        Ok(())
+    }
+
+    /// The checks `configure` runs on actuator `index` before any setting is
+    /// written: its mode and its position limits, kept as its goal range.
+    fn configure_one(&mut self, index: usize) -> Result<(), DynamixelError> {
+        let Some(&actuator) = self.actuators.get(index) else {
+            return Ok(());
+        };
+        let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
+        if model.protocol() != Protocol::Two {
+            if model.has_torque_ctrl_mode() {
+                let found = self
+                    .backend
+                    .read_setting(bus, model, id, Setting::TorqueCtrlModeEnable)
+                    .map_err(|error| self.actuator_error(index, error))?;
+                if found != 0 {
+                    return Err(DynamixelError::TorqueCtrlMode {
+                        actuator: index,
+                        bus: self.label(bus),
+                        id,
+                        found,
+                    });
+                }
+            }
+            let (cw, ccw) = self
+                .backend
+                .read_angle_limits(bus, model, id)
+                .map_err(|error| self.actuator_error(index, error))?;
+            let bus = self.label(bus);
+            if cw == 0 && ccw == 0 {
+                return Err(DynamixelError::WheelMode {
+                    actuator: index,
+                    bus,
+                    id,
+                });
+            }
+            if model
+                .multi_turn_limit()
+                .is_some_and(|limit| cw == limit && ccw == limit)
+            {
+                return Err(DynamixelError::MultiTurnMode {
+                    actuator: index,
+                    bus,
+                    id,
+                    limit: cw,
+                });
+            }
+            if cw > ccw {
+                return Err(DynamixelError::AngleLimitsReversed {
+                    actuator: index,
+                    bus,
+                    id,
+                    cw,
+                    ccw,
+                });
+            }
+            if let Some(limits) = self.limits.get_mut(index) {
+                *limits = (cw, ccw);
+            }
+            debug!(actuator = index, "Protocol 1 torque state not read");
+            return Ok(());
+        }
+        let mode = self
+            .backend
+            .read_setting(bus, model, id, Setting::OperatingMode)
+            .map_err(|error| self.actuator_error(index, error))?;
+        if mode != POSITION_MODE {
+            return Err(DynamixelError::OperatingMode {
+                actuator: index,
+                bus: self.label(bus),
+                id,
+                found: mode,
+                expected: POSITION_MODE,
+            });
+        }
+        // DECISION: the Protocol 2 position limits are kept too, so a goal
+        // outside them is `rejected` alone: dxl_rs_v2 would refuse the
+        // whole group's write where the firmware once clamped it.
+        let range = self
+            .backend
+            .read_angle_limits(bus, model, id)
+            .map_err(|error| self.actuator_error(index, error))?;
+        if let Some(limits) = self.limits.get_mut(index) {
+            *limits = range;
+        }
+        let powered = self
+            .backend
+            .read_setting(bus, model, id, Setting::TorqueEnable)
+            .map_err(|error| self.actuator_error(index, error))?
+            != 0;
+        match (actuator.torque, powered) {
+            (Torque::ReadOnly, true) => warn!(
+                actuator = index,
+                id, "read-only but torque already on before bring-up; switched off at torque_on"
+            ),
+            (Torque::On, true) => {
+                warn!(actuator = index, id, "torque already on before bring-up")
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `step` on every live actuator in index order; one that a call finds
+    /// silent is taken out of the run under `Tolerate`, and fails it
+    /// otherwise, as any other error does.
+    fn each_live(
+        &mut self,
+        mut step: impl FnMut(&mut Self, usize) -> Result<(), DynamixelError>,
+    ) -> Result<Mask<N>, DynamixelError> {
+        let mut done = Mask::NONE;
+        for index in self.actuators.owned().iter() {
+            if !self.presence.live.get(index) {
+                continue;
+            }
+            match step(self, index) {
+                Ok(()) => done.set(index),
+                Err(DynamixelError::Missing { .. }) if self.presence.tolerates() => {
+                    self.lose(index);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(done)
+    }
+
+    /// Under `Tolerate` at exit: one torque off for each actuator of
+    /// `unheld`, whose bus holds it no more; one `Unreached` line per bus
+    /// names those that did not answer.
+    fn cut_unheld(&mut self, unheld: Mask<N>) {
+        let mut unreached = Mask::NONE;
+        for index in unheld.iter() {
+            let Some(&actuator) = self.actuators.get(index) else {
+                continue;
+            };
+            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
+            if self.backend.force_torque_off(bus, model, id).is_err() {
+                unreached.set(index);
+            }
+        }
+        self.report_slots(unreached, Event::Unreached);
+    }
+
+    /// The owned actuators whose bus holds them no more.
+    fn unheld(&self) -> Mask<N> {
+        let mut unheld = Mask::NONE;
+        for (index, actuator) in self.actuators.iter() {
+            if !self
+                .backend
+                .holds(actuator.bus, actuator.model, actuator.id)
+            {
+                unheld.set(index);
+            }
+        }
+        unheld
+    }
 }
 
 impl<B, const NB: usize, const N: usize> seal::Adapter for Dynamixel<B, NB, N> {}
@@ -1044,7 +1375,13 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// a table field (core K3.8). A model the backend has no control table
     /// for is refused here, before any I/O, and so is a setting its model
     /// has no register for or a gain above the register's range.
-    fn check(&mut self, _overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
+    ///
+    /// Each run starts from a fresh presence: the adapter outlives a run,
+    /// and every owned actuator is live until the missing policy of
+    /// `overrides` takes one out.
+    fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
+        self.presence = Presence::new();
+        self.presence.missing = overrides.missing;
         if let Some((actuator, index)) = self.actuators.past() {
             return Err(DynamixelError::PastTheRobot {
                 actuator,
@@ -1099,6 +1436,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             );
         }
         let (read_cost, write_cost) = self.groups.costs(&self.buses, B::STATE_READS);
+        self.presence.live = self.actuators.owned();
         Ok(Claim {
             owned: self.actuators.owned(),
             group: self.groups.numbers(),
@@ -1197,6 +1535,11 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     ///
     /// One whose replies report only a hardware fault is held faulted, its
     /// torque refused, with one warning: `health` clears it or fails.
+    ///
+    /// Under [`MissingPolicy::Tolerate`](kmr_core::hal::MissingPolicy), a
+    /// bus whose setup still stops at a silent actuator after those
+    /// attempts sets up the rest without it, and that actuator is absent
+    /// for the run; one line per bus names the absent ones.
     fn ping(&mut self) -> Result<(), DynamixelError> {
         for bus in 0..self.live {
             let mut owned = [(0, Model::Xm430W210); N];
@@ -1225,11 +1568,14 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                     break;
                 }
             }
+            if self.presence.tolerates() {
+                answer = self.declare_present(bus, owned.len(), answer);
+            }
             answer.map_err(|failure| self.undeclared(bus, failure))?;
             let held = self
                 .actuators
                 .iter()
-                .filter(|(_, actuator)| actuator.bus == bus);
+                .filter(|(index, actuator)| actuator.bus == bus && self.presence.live.get(*index));
             for (index, actuator) in held {
                 if self.backend.faulted(bus, actuator.model, actuator.id) {
                     warn!(
@@ -1259,90 +1605,12 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// An actuator held faulted, at `ping` or by a limit write, is asked
     /// after its limits are written: one that still reports its fault fails
     /// with it measured, its torque still refused.
+    ///
+    /// Only live actuators are visited; under `Tolerate` one found silent
+    /// is taken out of the run and the next follows.
     fn health(&mut self) -> Result<(), DynamixelError> {
-        for index in self.actuators.owned().iter() {
-            let Some(&actuator) = self.actuators.get(index) else {
-                continue;
-            };
-            let (model, id) = (actuator.model, actuator.id);
-            let writes = self.limit_writes(index);
-            if !writes.is_empty() {
-                self.write_limits(index, actuator, writes)?;
-            }
-            if self.backend.faulted(actuator.bus, model, id) {
-                self.clear_fault(index, actuator)?;
-            }
-            let bus = self.label(actuator.bus);
-            let health = self
-                .backend
-                .read_health(actuator.bus, model, id)
-                .map_err(|error| self.actuator_error(index, error))?;
-            let read = HealthLimits {
-                min_voltage_dv: health.min_voltage_dv,
-                max_voltage_dv: health.max_voltage_dv,
-                temperature_c: health.temperature_limit_c,
-            };
-            // DECISION: a register left alone is expected as read, so a
-            // mismatch names the written ones only.
-            if let Some(mismatch) = self.mismatch(index, writes, read) {
-                return Err(mismatch);
-            }
-            if model.protocol() == Protocol::Two && health.error_status != 0 {
-                return Err(DynamixelError::HardwareError {
-                    actuator: index,
-                    bus,
-                    id,
-                    status: health.error_status,
-                });
-            }
-            let (min_dv, max_dv) = (health.min_voltage_dv, health.max_voltage_dv);
-            if !(min_dv..=max_dv).contains(&health.voltage_dv) {
-                return Err(DynamixelError::Voltage {
-                    actuator: index,
-                    bus,
-                    id,
-                    measured_dv: health.voltage_dv,
-                    min_dv,
-                    max_dv,
-                });
-            }
-            if health.temperature_c > health.temperature_limit_c {
-                return Err(DynamixelError::Temperature {
-                    actuator: index,
-                    bus,
-                    id,
-                    measured_c: health.temperature_c,
-                    limit_c: health.temperature_limit_c,
-                });
-            }
-            let (low_dv, high_dv) = model.datasheet_voltage_dv();
-            if !(low_dv..=high_dv).contains(&health.voltage_dv) {
-                warn!(
-                    actuator = index,
-                    bus,
-                    id,
-                    "input voltage {} V outside the {} datasheet range {}–{} V, inside the actuator's limits {}–{} V",
-                    Volts(health.voltage_dv),
-                    model.name(),
-                    Volts(low_dv),
-                    Volts(high_dv),
-                    Volts(min_dv),
-                    Volts(max_dv),
-                );
-            }
-            let hottest = model.datasheet_max_temperature_c();
-            if health.temperature_c > hottest {
-                warn!(
-                    actuator = index,
-                    bus,
-                    id,
-                    "temperature {} °C above the {} datasheet maximum {hottest} °C, within the actuator's limit {} °C",
-                    health.temperature_c,
-                    model.name(),
-                    health.temperature_limit_c,
-                );
-            }
-        }
+        let ran = self.each_live(Self::health_one)?;
+        self.presence.configured = self.presence.configured.union(ran);
         Ok(())
     }
 
@@ -1358,105 +1626,11 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// Then, every check passed, writes each actuator's [`Settings`], the
     /// torque still off, and reads every one back: another value read is
     /// `SettingMismatch`.
+    ///
+    /// Only live actuators are visited, as `health` visits them.
     fn configure(&mut self) -> Result<(), DynamixelError> {
-        for (index, actuator) in self.actuators.iter() {
-            let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            if model.protocol() != Protocol::Two {
-                if model.has_torque_ctrl_mode() {
-                    let found = self
-                        .backend
-                        .read_setting(bus, model, id, Setting::TorqueCtrlModeEnable)
-                        .map_err(|error| self.actuator_error(index, error))?;
-                    if found != 0 {
-                        return Err(DynamixelError::TorqueCtrlMode {
-                            actuator: index,
-                            bus: self.label(bus),
-                            id,
-                            found,
-                        });
-                    }
-                }
-                let (cw, ccw) = self
-                    .backend
-                    .read_angle_limits(bus, model, id)
-                    .map_err(|error| self.actuator_error(index, error))?;
-                let bus = self.label(bus);
-                if cw == 0 && ccw == 0 {
-                    return Err(DynamixelError::WheelMode {
-                        actuator: index,
-                        bus,
-                        id,
-                    });
-                }
-                if model
-                    .multi_turn_limit()
-                    .is_some_and(|limit| cw == limit && ccw == limit)
-                {
-                    return Err(DynamixelError::MultiTurnMode {
-                        actuator: index,
-                        bus,
-                        id,
-                        limit: cw,
-                    });
-                }
-                if cw > ccw {
-                    return Err(DynamixelError::AngleLimitsReversed {
-                        actuator: index,
-                        bus,
-                        id,
-                        cw,
-                        ccw,
-                    });
-                }
-                if let Some(limits) = self.limits.get_mut(index) {
-                    *limits = (cw, ccw);
-                }
-                debug!(actuator = index, "Protocol 1 torque state not read");
-                continue;
-            }
-            let mode = self
-                .backend
-                .read_setting(bus, model, id, Setting::OperatingMode)
-                .map_err(|error| self.actuator_error(index, error))?;
-            if mode != POSITION_MODE {
-                return Err(DynamixelError::OperatingMode {
-                    actuator: index,
-                    bus: self.label(bus),
-                    id,
-                    found: mode,
-                    expected: POSITION_MODE,
-                });
-            }
-            // DECISION: the Protocol 2 position limits are kept too, so a goal
-            // outside them is `rejected` alone: dxl_rs_v2 would refuse the
-            // whole group's write where the firmware once clamped it.
-            let range = self
-                .backend
-                .read_angle_limits(bus, model, id)
-                .map_err(|error| self.actuator_error(index, error))?;
-            if let Some(limits) = self.limits.get_mut(index) {
-                *limits = range;
-            }
-            let powered = self
-                .backend
-                .read_setting(bus, model, id, Setting::TorqueEnable)
-                .map_err(|error| self.actuator_error(index, error))?
-                != 0;
-            match (actuator.torque, powered) {
-                (Torque::ReadOnly, true) => warn!(
-                    actuator = index,
-                    id,
-                    "read-only but torque already on before bring-up; switched off at torque_on"
-                ),
-                (Torque::On, true) => {
-                    warn!(actuator = index, id, "torque already on before bring-up")
-                }
-                _ => {}
-            }
-        }
-        for index in self.actuators.owned().iter() {
-            self.apply_settings(index)?;
-        }
+        self.each_live(Self::configure_one)?;
+        self.each_live(Self::apply_settings)?;
         Ok(())
     }
 
@@ -1465,16 +1639,23 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// A seed position outside the register range is `PositionRange`: the
     /// check of the zeros SRS FR-5.2 asks for, since with a software zero
     /// every position inside it converts (research R7).
+    ///
+    /// Only live actuators are read; under `Tolerate` one that times out is
+    /// taken out of the run, one line per bus naming those.
     fn read_all(&mut self, mut sample: Sample<'_, N>) -> Result<(), DynamixelError> {
-        let mut failed = None;
+        let (tolerates, only) = (self.presence.tolerates(), self.presence.live);
+        let (mut failed, mut lost) = (None, Mask::NONE);
         for table in self.groups.tables() {
             io::read_table(
                 &mut self.backend,
                 table,
                 &self.actuators,
                 &mut sample,
-                |index, outcome| {
-                    if !matches!(outcome, Outcome::Read) {
+                only,
+                |index, outcome| match outcome {
+                    Outcome::Read => {}
+                    Outcome::Lost(BackendError::Timeout) if tolerates => lost.set(index),
+                    outcome => {
                         failed.get_or_insert((index, outcome));
                     }
                 },
@@ -1483,6 +1664,10 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 break;
             }
         }
+        for index in lost.iter() {
+            self.presence.drop_slot(index);
+        }
+        self.report_slots(lost, Event::Lost);
         self.read_failure(failed)
     }
 
@@ -1492,19 +1677,32 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// failed read or goal write powers nothing. Torque written off for
     /// [`Torque::ReadOnly`] ones, whatever an earlier run left (SRS FR-5.2,
     /// FR-5.8).
+    ///
+    /// Only live actuators get a goal and their torque; under `Tolerate`
+    /// one found silent is taken out of the run and the rest powered.
     fn torque_on(&mut self) -> Result<(), DynamixelError> {
         for number in 0..self.groups.tables().len() {
-            io::write_start_goals(self, number)?;
+            let live = self.presence.live;
+            io::write_start_goals(self, number, live)?;
         }
-        for (index, actuator) in self.actuators.iter() {
+        self.each_live(|adapter, index| {
+            let Some(&actuator) = adapter.actuators.get(index) else {
+                return Ok(());
+            };
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
             match actuator.torque {
-                Torque::On => self.backend.torque(bus, model, id, true),
-                Torque::ReadOnly => self.backend.force_torque_off(bus, model, id),
+                Torque::On => adapter.backend.torque(bus, model, id, true),
+                Torque::ReadOnly => adapter.backend.force_torque_off(bus, model, id),
             }
-            .map_err(|error| self.actuator_error(index, error))?;
-        }
+            .map_err(|error| adapter.actuator_error(index, error))
+        })?;
         Ok(())
+    }
+
+    /// The live actuators: the owned ones until the missing policy takes
+    /// one out.
+    fn present(&self) -> Mask<N> {
+        self.presence.live
     }
 
     fn read(&mut self, sample: Sample<'_, N>, faults: &mut Faults<N>) -> Mask<N> {
@@ -1524,8 +1722,8 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
         telemetry::refresh(self, telemetry, faults)
     }
 
-    /// Sends `last.q` to every powered position actuator, one transaction per
-    /// group (FR-016).
+    /// Sends `last.q` to every live powered position actuator, one
+    /// transaction per group (FR-016).
     fn hold(&mut self, last: Command<'_, N>) {
         if !self.open {
             return;
@@ -1536,6 +1734,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 let Some(actuator) = self.actuators.get(index) else {
                     continue;
                 };
+                if !self.presence.live.get(index) {
+                    continue;
+                }
                 let raw = last.q.get(index).and_then(|&q| self.goal(index, q));
                 match raw {
                     Some(raw) => goals.push(index, actuator.id, raw),
@@ -1559,11 +1760,26 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// Nothing before the ports are open. Each actuator gets up to
     /// [`TORQUE_OFF_ATTEMPTS`], without sleep; one that fails them all is
     /// logged and the next actuator follows.
+    ///
+    /// Under `Tolerate`, only the actuators their bus holds, live or not:
+    /// a torque off to one not held would set it up alone and wipe what
+    /// the bus holds before `close` restores the limits. `close` cuts the
+    /// others.
+    // DECISION (plan, DECISION 12): held ones are cut here, before the
+    // restore; unheld ones once, after it.
     fn torque_off(&mut self) {
         if !self.open {
             return;
         }
+        let tolerates = self.presence.tolerates();
         for (index, actuator) in self.actuators.iter() {
+            if tolerates
+                && !self
+                    .backend
+                    .holds(actuator.bus, actuator.model, actuator.id)
+            {
+                continue;
+            }
             let mut answer = Err(BackendError::Timeout);
             for _ in 0..TORQUE_OFF_ATTEMPTS {
                 answer = self
@@ -1590,9 +1806,18 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// ask for it, once each, a failure only warned; then flushes every
     /// resolved port and closes them all (SRS FR-5.6). After `torque_off`,
     /// a failed bring-up included, so a partial one restores what it wrote.
+    ///
+    /// Under `Tolerate`, limits are put back on the actuators their bus
+    /// holds only; then each actuator not held gets one torque off, those
+    /// that do not answer named in one line per bus. Every owned actuator
+    /// so gets a torque off at exit.
     fn close(&mut self) {
         if self.open {
+            let unheld = self.presence.tolerates().then(|| self.unheld());
             self.restore_limits();
+            if let Some(unheld) = unheld {
+                self.cut_unheld(unheld);
+            }
         }
         for (bus, device) in self.devices.iter().enumerate() {
             if let Some(device) = device
