@@ -53,6 +53,11 @@ required-features = ["c"]
 name = "clap_cpp"
 required-features = ["c"]
 
+# The clap controller of src/main.rs without the microphone, actuators plugged and unplugged at run time.
+[[example]]
+name = "runtime_actuators"
+required-features = ["hardware"]
+
 # c/clap.c and cpp/clap.cpp over scripted ticks, with a fake microphone.
 [[test]]
 name = "clap"
