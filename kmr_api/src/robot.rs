@@ -6,7 +6,8 @@ use crate::controller::IntoController;
 use crate::plugin::{Plugin, Plugins};
 use crate::spec::Lend;
 use crate::{
-    Binding, Envelope, Limit, MemberError, Payload, Policy, Schedule, SensorPolicy, Spec, UserError,
+    Binding, Envelope, JoinPolicy, Limit, MemberError, MissingPolicy, Payload, Policy, Schedule,
+    SensorPolicy, Spec, UserError,
 };
 use kmr_core::hal::{Drivers, NoHardware, Sensing, SensorHal};
 use kmr_core::{Empty, Filled, HCons, HNil, HasController, Scheduled};
@@ -182,6 +183,25 @@ impl<const N: usize, H, C, E, SN> Robot<N, H, C, E, SN> {
     pub fn set_sensor_policy(self, policy: SensorPolicy) -> Self {
         Self {
             inner: self.inner.set_sensor_policy(policy),
+            ..self
+        }
+    }
+
+    /// What a declared actuator that does not answer, at open or at run time, means. Without
+    /// it, [`MissingPolicy::Fail`]: bring-up fails. With [`MissingPolicy::Tolerate`] it is
+    /// absent, logged once, and [`State::present`](crate::State::present) leaves it out.
+    pub fn set_missing_policy(self, policy: MissingPolicy) -> Self {
+        Self {
+            inner: self.inner.set_missing_policy(policy),
+            ..self
+        }
+    }
+
+    /// Whether an absent declared actuator may join the run. Without it, [`JoinPolicy::Never`].
+    /// It needs [`MissingPolicy::Tolerate`] to have any effect.
+    pub fn set_join_policy(self, policy: JoinPolicy) -> Self {
+        Self {
+            inner: self.inner.set_join_policy(policy),
             ..self
         }
     }

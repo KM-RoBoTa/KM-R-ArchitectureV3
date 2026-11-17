@@ -71,6 +71,9 @@ pub use kmr_core::hal::MemberError;
 /// The drivers of a robot without a bus plugin: it simulates, reading and
 /// writing nothing.
 pub use kmr_core::hal::NoHardware;
+/// What a declared actuator that does not answer means, and whether an absent one may join
+/// the run: set them with [`Robot::set_missing_policy`] and [`Robot::set_join_policy`].
+pub use kmr_core::hal::{JoinPolicy, MissingPolicy};
 
 mod brand;
 mod spec;
