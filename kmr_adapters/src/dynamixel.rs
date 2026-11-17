@@ -9,6 +9,7 @@ mod config;
 #[cfg(feature = "dynamixel")]
 mod dxl_rs_v2;
 mod io;
+mod join;
 mod limits;
 mod port;
 mod presence;
@@ -24,8 +25,11 @@ mod tests;
 use core::fmt;
 use core::time::Duration;
 use std::path::Path;
+use std::time::Instant;
 
-use kmr_core::hal::{Batch, Claim, Command, Faults, Hal, Mask, Overrides, Sample, seal};
+use kmr_core::hal::{
+    Batch, Claim, Command, Faults, Hal, JoinPolicy, Mask, MissingPolicy, Overrides, Sample, seal,
+};
 use kmr_core::state::Q;
 use kmr_core::telemetry::Telemetry;
 use tracing::{debug, warn};
@@ -1010,6 +1014,12 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
 
     /// One `event` line per bus and run of consecutive ids among `slots`.
     fn report_slots(&self, slots: Mask<N>, event: Event) {
+        self.each_bus(slots, |bus, ids| presence::report(bus, ids, event));
+    }
+
+    /// `emit` once per bus with the firmware ids of `slots` on it, when it
+    /// has any.
+    fn each_bus(&self, slots: Mask<N>, mut emit: impl FnMut(&'static str, &mut [u8])) {
         if slots.is_empty() {
             return;
         }
@@ -1026,7 +1036,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             if let Some(ids) = ids.get_mut(..len)
                 && !ids.is_empty()
             {
-                presence::report(self.label(bus), ids, event);
+                emit(self.label(bus), ids);
             }
         }
     }
@@ -1127,14 +1137,28 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         let Some(&actuator) = self.actuators.get(index) else {
             return Ok(());
         };
-        let (model, id) = (actuator.model, actuator.id);
         let writes = self.limit_writes(index);
         if !writes.is_empty() {
             self.write_limits(index, actuator, writes)?;
         }
-        if self.backend.faulted(actuator.bus, model, id) {
+        if self
+            .backend
+            .faulted(actuator.bus, actuator.model, actuator.id)
+        {
             self.clear_fault(index, actuator)?;
         }
+        self.check_health(index, writes)
+    }
+
+    /// The checks of `health` on actuator `index`, whose limits `writes`
+    /// were written: its limits read back, its Hardware Error Status on
+    /// Protocol 2, its voltage and temperature against its own limits, then
+    /// a warning per value outside the datasheet.
+    fn check_health(&mut self, index: usize, writes: limits::Limits) -> Result<(), DynamixelError> {
+        let Some(&actuator) = self.actuators.get(index) else {
+            return Ok(());
+        };
+        let (model, id) = (actuator.model, actuator.id);
         let bus = self.label(actuator.bus);
         let health = self
             .backend
@@ -1382,6 +1406,12 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, DynamixelError> {
         self.presence = Presence::new();
         self.presence.missing = overrides.missing;
+        self.presence.join = overrides.join;
+        // DECISION (plan, DECISION 10): a join policy without `Tolerate` is
+        // one warning, no error: nothing is ever absent to join.
+        if overrides.join == JoinPolicy::Declared && overrides.missing == MissingPolicy::Fail {
+            warn!("the join policy has no effect without MissingPolicy::Tolerate");
+        }
         if let Some((actuator, index)) = self.actuators.past() {
             return Err(DynamixelError::PastTheRobot {
                 actuator,
@@ -1679,7 +1709,8 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// FR-5.8).
     ///
     /// Only live actuators get a goal and their torque; under `Tolerate`
-    /// one found silent is taken out of the run and the rest powered.
+    /// one found silent is taken out of the run and the rest powered. Under
+    /// both policies, the first probe is one probe period after this call.
     fn torque_on(&mut self) -> Result<(), DynamixelError> {
         for number in 0..self.groups.tables().len() {
             let live = self.presence.live;
@@ -1696,6 +1727,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             }
             .map_err(|error| adapter.actuator_error(index, error))
         })?;
+        if self.presence.joins() {
+            self.presence.last_probe = Some(Instant::now());
+        }
         Ok(())
     }
 
@@ -1711,6 +1745,14 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
 
     fn write(&mut self, command: Command<'_, N>, batch: &Batch<'_, N>, faults: &mut Faults<N>) {
         io::write_batch(self, &command, batch, faults);
+    }
+
+    /// Under both policies, one bounded piece of presence work: the next
+    /// stage of a join, the check of a slot that missed reads, or a quiet
+    /// probe of an absent one. A join stage may stall the
+    /// tick: a Hold re-declares a bus, a Health writes EEPROM limits.
+    fn upkeep(&mut self) {
+        join::upkeep(self);
     }
 
     /// Input voltage, temperature and Hardware Error Status, read-only

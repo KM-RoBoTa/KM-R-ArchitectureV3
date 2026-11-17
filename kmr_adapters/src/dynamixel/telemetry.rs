@@ -122,10 +122,6 @@ pub(super) fn refresh<B: Backend, const NB: usize, const N: usize>(
 }
 
 /// Whether this tick's telemetry call sent a transaction.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the probe of T6 keeps off the ticks it sent")
-)]
 pub(super) fn sent<B, const NB: usize, const N: usize>(adapter: &Dynamixel<B, NB, N>) -> bool {
     adapter.rounds.since == 0
 }

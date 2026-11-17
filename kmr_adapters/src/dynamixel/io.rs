@@ -183,6 +183,14 @@ impl<const N: usize> Groups<N> {
         self.tables.get(..self.len).unwrap_or_default()
     }
 
+    /// Number of the table actuator `index` is in; `None` past the tables.
+    pub(crate) fn table_of(&self, index: usize) -> Option<usize> {
+        self.of
+            .get(index)
+            .copied()
+            .filter(|&table| table < self.len)
+    }
+
     /// Group number of each actuator. A number past `u8::MAX` saturates:
     /// `write` looks up each actuator's own table, so a shared number never
     /// mixes two tables in one transaction.
@@ -635,8 +643,8 @@ pub(super) fn write_batch<B: Backend, const NB: usize, const N: usize>(
 /// Writes, torque still off, the goal each powered actuator of group
 /// `number` in `only` holds once powered: its present position, read now,
 /// or a zero velocity or current. One `sync_write_start_goal` per goal
-/// register. Under `Tolerate`, one whose read times out is taken out of the
-/// run and gets no goal.
+/// register. Under `Tolerate`, a live one whose read times out is taken out
+/// of the run and gets no goal; a joiner, not live yet, fails `Missing`.
 pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     number: usize,
@@ -649,18 +657,17 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
     let reads = table.members().iter().any(|&index| {
         only.get(index) && adapter.actuators.get(index).is_some_and(starts_at_present)
     });
-    if reads {
-        read_present(adapter, &table, &mut present, only)?;
-    }
+    let lost = if reads {
+        read_present(adapter, &table, &mut present, only)?
+    } else {
+        Mask::NONE
+    };
     let mut goals = GoalRegister::ALL.map(|_| Goals::new(number));
     for &index in table.members() {
         let Some(actuator) = adapter.actuators.get(index) else {
             continue;
         };
-        if actuator.torque == Torque::ReadOnly
-            || !only.get(index)
-            || !adapter.presence.live.get(index)
-        {
+        if actuator.torque == Torque::ReadOnly || !only.get(index) || lost.get(index) {
             continue;
         }
         let q = present.get(index).copied().unwrap_or_default();
@@ -686,19 +693,22 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
 
 /// Reads the present position of every member of `table` in `only` into
 /// `present`; fails on the first one a start goal needs. Under `Tolerate`,
-/// one that times out is taken out of the run instead, one line per bus
-/// naming those.
+/// a live one that times out is taken out of the run instead, one line per
+/// bus naming those; returns them.
+// DECISION: only a live slot is taken out on a timeout: a joiner is not
+// live yet, so its silence fails the Power stage `Missing`, and the join
+// puts it back to absent quietly.
 fn read_present<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     table: &Table<N>,
     present: &mut [Q; N],
     only: Mask<N>,
-) -> Result<(), DynamixelError> {
+) -> Result<Mask<N>, DynamixelError> {
     let (mut qd, mut tau) = ([Qd::default(); N], [Tau::default(); N]);
     let (mut kp, mut kd) = ([Kp::default(); N], [Kd::default(); N]);
     let mut sample = Sample::new(present, &mut qd, &mut tau, &mut kp, &mut kd);
     let actuators = &adapter.actuators;
-    let tolerates = adapter.presence.tolerates();
+    let (tolerates, live) = (adapter.presence.tolerates(), adapter.presence.live);
     let (mut failed, mut lost) = (None, Mask::NONE);
     read_table(
         &mut adapter.backend,
@@ -710,7 +720,9 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
             let needed = actuators.get(index).is_some_and(starts_at_present);
             match outcome {
                 Outcome::Read => {}
-                Outcome::Lost(BackendError::Timeout) if tolerates => lost.set(index),
+                Outcome::Lost(BackendError::Timeout) if tolerates && live.get(index) => {
+                    lost.set(index);
+                }
                 outcome if needed => {
                     failed.get_or_insert((index, outcome));
                 }
@@ -722,7 +734,7 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
         adapter.presence.drop_slot(index);
     }
     adapter.report_slots(lost, Event::Lost);
-    adapter.read_failure(failed)
+    adapter.read_failure(failed).map(|()| lost)
 }
 
 /// Sends `goals`, `bus_error` on what they carried if it fails.

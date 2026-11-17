@@ -13,19 +13,21 @@ use crate::dynamixel::backend::{Fault, Reply};
 use crate::dynamixel::presence::LOST_AFTER;
 
 /// `Overrides` with the missing policy `Tolerate`, the join policy off.
-fn tolerate() -> Overrides {
+pub(super) fn tolerate() -> Overrides {
     let mut overrides = Overrides::default();
     overrides.missing = MissingPolicy::Tolerate;
     overrides
 }
 
 /// An adapter on a fresh strict fake owning `0..M` in table order.
-fn strict<const NB: usize, const M: usize>(table: Table<NB, M>) -> Dynamixel<Scripted, NB, N> {
+pub(super) fn strict<const NB: usize, const M: usize>(
+    table: Table<NB, M>,
+) -> Dynamixel<Scripted, NB, N> {
     strict_placed(table.in_order())
 }
 
 /// An adapter on a fresh strict fake owning `placement`.
-fn strict_placed<const NB: usize, const M: usize>(
+pub(super) fn strict_placed<const NB: usize, const M: usize>(
     placement: Placement<NB, M>,
 ) -> Dynamixel<Scripted, NB, N> {
     let mut backend = Scripted::new();
@@ -35,7 +37,7 @@ fn strict_placed<const NB: usize, const M: usize>(
 
 /// `check` with `overrides`, then Init and PostInit in the engine's order on
 /// an adapter marked open, as [`powered`] does; the log is cleared after.
-fn powered_with<const NB: usize>(
+pub(super) fn powered_with<const NB: usize>(
     adapter: &mut Dynamixel<Scripted, NB, N>,
     overrides: Overrides,
 ) -> Result<Claim<N>, DynamixelError> {
@@ -52,7 +54,7 @@ fn powered_with<const NB: usize>(
 }
 
 /// Whether a recorded call names firmware id `id`.
-fn names(backend: &Scripted, id: u8) -> bool {
+pub(super) fn names(backend: &Scripted, id: u8) -> bool {
     backend
         .calls()
         .iter()
@@ -60,7 +62,10 @@ fn names(backend: &Scripted, id: u8) -> bool {
 }
 
 /// `times` reads of every due group.
-fn reads<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB, N>, times: u8) -> Faults<N> {
+pub(super) fn reads<const NB: usize>(
+    adapter: &mut Dynamixel<Scripted, NB, N>,
+    times: u8,
+) -> Faults<N> {
     let mut seen = Faults::default();
     for _ in 0..times {
         let (_, faults) = read(adapter, &mut Slot::filled(0.0));
@@ -74,7 +79,7 @@ fn reads<const NB: usize>(adapter: &mut Dynamixel<Scripted, NB, N>, times: u8) -
 /// Events at `level` logged on this thread by `run`: how many hold
 /// `family` in their message, and how many say exactly `message` with the
 /// field `bus` at `bus`.
-fn logged(
+pub(super) fn logged(
     level: Level,
     (family, message, bus): (&'static str, &'static str, &'static str),
     run: impl FnOnce(),

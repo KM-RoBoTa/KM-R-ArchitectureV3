@@ -575,17 +575,14 @@ pub(crate) trait Backend {
     /// One typed ping of `id` over the port's side line; Ok when it answers
     /// as `model` (a fault-only answer counts). What the port holds is
     /// untouched.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the join of T6 calls it"))]
     fn probe(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
     /// Torque Enable = 1 on held actuator `id`, no start goal: for one whose
     /// torque is on but that a re-declare holds Off.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the join of T6 calls it"))]
     fn rearm(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
     /// One fault ask, as [`clear_fault`](Backend::clear_fault) asks, with no
     /// settle loop.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the join of T6 calls it"))]
     fn clear_fault_once(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
 
     /// Whether the port holds `id`: its last declare named it and

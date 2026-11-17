@@ -136,13 +136,6 @@ struct Port<T: Transport, C, const N: usize> {
 /// actuator a probe named.
 // DECISION: two more handles of the device, not a ping on the main buses:
 // dxl_rs_v2 has no public ping, and a Setup on a main bus replaces its list.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only `probe` reads them, which the join of T6 calls"
-    )
-)]
 struct Side<T: Transport, C> {
     /// Protocol 1 probes.
     one: Bus<P1, T, C, 1>,
