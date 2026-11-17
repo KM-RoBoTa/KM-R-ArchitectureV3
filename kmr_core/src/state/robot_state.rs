@@ -357,7 +357,11 @@ impl<const N: usize> RobotState<N> {
     /// Clears the written bits of absent actuators, before the limit stage
     /// and the batch see them.
     pub(crate) fn drop_absent(&mut self) {
-        self.desired.written = self.desired.written.within(self.present);
+        // DECISION: nothing to cut while every actuator is present, so the
+        // path from `Last` to the end stamp stays as short as without presence.
+        if self.present != Mask::ALL {
+            self.desired.written = self.desired.written.within(self.present);
+        }
     }
 
     /// The latest sample overlaid with this tick's writes, never the cleared
