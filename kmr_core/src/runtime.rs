@@ -3407,6 +3407,69 @@ mod tests {
             assert_eq!(first.into_inner(), [Mask::ALL, all_but(1)]);
         }
 
+        /// Actuator `index` alone.
+        fn only(index: usize) -> Mask<N> {
+            let mut mask = Mask::NONE;
+            mask.set(index);
+            mask
+        }
+
+        /// `(joined, left)` as each of PostInit and `First` of ticks 0 to 2
+        /// saw them, over one run of a member following `script`.
+        fn joins_seen(script: [Mask<N>; 4]) -> [(Mask<N>, Mask<N>); 4] {
+            let (events, log) = (Events::new(), Log::new());
+            let flaky = Flaky::new(&events, &log, script);
+            let seen = RefCell::new([(Mask::ALL, Mask::ALL); 4]);
+            let record = |at: usize, state: &RobotState<N>| {
+                if let Some(slot) = seen.borrow_mut().get_mut(at) {
+                    *slot = (state.joined(), state.left());
+                }
+            };
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .add_controller(
+                    crate::PostInit,
+                    |_t: &Time, state: &mut RobotState<N>, _: &Sensors| record(0, state),
+                )
+                .add_controller(
+                    crate::First,
+                    |time: &Time, state: &mut RobotState<N>, _: &Sensors| {
+                        let tick = usize::try_from(time.tick()).expect("small");
+                        record(tick + 1, state);
+                    },
+                );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(TICK_END + 2 * PER_TICK);
+
+            let result = run_with(&mut robot, &mut host, &mut one(flaky));
+
+            assert!(result.is_ok());
+            seen.into_inner()
+        }
+
+        #[test]
+        fn joined_and_left_follow_the_reads_from_the_first_presence_on() {
+            let seen = joins_seen([all_but(3), all_but(3), Mask::ALL, all_but(1)]);
+
+            assert_eq!(
+                seen,
+                [
+                    (Mask::NONE, Mask::NONE),
+                    (Mask::NONE, Mask::NONE),
+                    (only(3), Mask::NONE),
+                    (Mask::NONE, only(1)),
+                ]
+            );
+        }
+
+        #[test]
+        fn present_at_the_first_tick_is_never_joined_in_any_run() {
+            let first = joins_seen([all_but(2), all_but(2), all_but(2), all_but(2)]);
+            let second = joins_seen([Mask::ALL, Mask::ALL, Mask::ALL, Mask::ALL]);
+
+            assert_eq!(first, [(Mask::NONE, Mask::NONE); 4]);
+            assert_eq!(second, [(Mask::NONE, Mask::NONE); 4]);
+        }
+
         #[test]
         fn read_all_samples_only_present_slots() {
             let (events, log) = (Events::new(), Log::new());

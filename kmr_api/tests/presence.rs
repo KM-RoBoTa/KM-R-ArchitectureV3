@@ -247,3 +247,261 @@ fn present_at_past_n_is_false() {
         .run();
     assert!(res.is_ok(), "{res:?}");
 }
+
+// ---- Joined, left and the join ramp, on a scripted host ----
+
+/// Where each slot reads: one tenth of a radian per `read` call so far, so a joiner's start
+/// differs from where it is later.
+fn position(reads: u64) -> Q {
+    Q(f32::from(u16::try_from(reads).unwrap_or(u16::MAX)) / 10.0)
+}
+
+/// A fake adapter that owns every slot, reads every present one at [`position`], and is
+/// missing slot `GONE` on the ticks `away` names. Its full read is at "tick" -1.
+struct Plugged {
+    /// Calls to `read_all` and `read` so far.
+    reads: u64,
+    /// Whether slot `GONE` is absent at a tick.
+    away: fn(i64) -> bool,
+}
+
+impl Plugged {
+    /// The tick of the latest read: -1 for the full read.
+    fn tick(&self) -> i64 {
+        i64::try_from(self.reads).unwrap_or(i64::MAX) - 2
+    }
+}
+
+impl seal::Adapter for Plugged {}
+
+impl Hal<N> for Plugged {
+    type Error = core::convert::Infallible;
+
+    fn check(&mut self, overrides: Overrides) -> Result<Claim<N>, Self::Error> {
+        Fading { reads: 0 }.check(overrides)
+    }
+
+    fn open(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn zero(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn ping(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn health(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn configure(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error> {
+        self.reads += 1;
+        *sample.q = [position(self.reads); N];
+        Ok(())
+    }
+
+    fn torque_on(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn read(&mut self, sample: Sample<'_, N>, _faults: &mut Faults<N>) -> Mask<N> {
+        self.reads += 1;
+        let present = self.present();
+        for i in present.iter() {
+            if let Some(q) = sample.q.get_mut(i) {
+                *q = position(self.reads);
+            }
+        }
+        present
+    }
+
+    fn write(&mut self, _: Command<'_, N>, _: &Batch<'_, N>, _: &mut Faults<N>) {}
+
+    fn present(&self) -> Mask<N> {
+        if (self.away)(self.tick()) {
+            without_gone()
+        } else {
+            Mask::ALL
+        }
+    }
+
+    fn hold(&mut self, _last: Command<'_, N>) {}
+
+    fn torque_off(&mut self) {}
+
+    fn close(&mut self) {}
+}
+
+/// What one tick of a scripted run saw.
+#[derive(Debug, PartialEq)]
+struct Seen {
+    elapsed: Duration,
+    joined: Mask<N>,
+    left: Mask<N>,
+    /// The ramp's target of every slot, the controller's being 0 rad.
+    target: [Q; N],
+    easing: Mask<N>,
+    /// `q_at(GONE)`, `None` when it fails.
+    gone: Option<Q>,
+    /// Whether `q_at(GONE)` failed with `NoSample` at depth 0.
+    gone_unsampled: bool,
+    /// `q()`.
+    all: Option<[Q; N]>,
+}
+
+static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+/// The join ramp the scripted runs take: four ticks.
+const RAMP: Duration = Duration::from_millis(4);
+
+/// Records what each tick sees through the presence queries and a [`JoinRamp`] of [`RAMP`]
+/// towards 0 rad.
+fn ramp(
+    ramp: &mut kmr_api::experimental::JoinRamp<N>,
+    time: &Time,
+    robot: &mut State,
+    _: &Sensors,
+) {
+    let mut target = [Q(0.0); N];
+    ramp.apply(time, robot, &mut target);
+    SEEN.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(Seen {
+            elapsed: time.elapsed(),
+            joined: robot.joined(),
+            left: robot.left(),
+            target,
+            easing: ramp.easing(),
+            gone: robot.q_at(GONE).ok(),
+            gone_unsampled: matches!(
+                robot.q_at(GONE),
+                Err(kmr_api::StateError::NoSample { depth: 0 })
+            ),
+            all: robot.q(),
+        });
+}
+
+/// `ticks` ticks of a scripted run where slot `GONE` is absent at the ticks `away` names.
+fn scripted(away: fn(i64) -> bool, ticks: u64) -> Vec<Seen> {
+    let _bus = bus();
+    SEEN.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    let robot = kmr_api::Robot::<N, Fades>::new()
+        .set_dt(kmr_api::test_util::DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .set_missing_policy(MissingPolicy::Tolerate)
+        .add_controller(
+            EachTick,
+            kmr_api::with(kmr_api::experimental::JoinRamp::new(RAMP), ramp),
+        );
+    let mut host = kmr_api::test_util::Ticking::new(std::time::Instant::now(), ticks);
+    let mut drivers = kmr_api::HCons {
+        head: Plugged { reads: 0, away },
+        tail: kmr_api::HNil,
+    };
+    let stop = kmr_api::test_util::run_scripted(robot, &mut host, &mut drivers);
+    assert_eq!(stop.ok(), Some(kmr_api::test_util::Stop::Shutdown));
+    std::mem::take(&mut *SEEN.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Slot `GONE` alone.
+fn gone() -> Mask<N> {
+    let mut mask = Mask::NONE;
+    mask.set(GONE);
+    mask
+}
+
+#[test]
+fn joined_and_left_name_the_slots_that_changed_at_that_tick() {
+    // Absent from the start, present at 2 and 3, absent at 4, back at 5.
+    let seen = scripted(|tick| tick < 2 || tick == 4, 7);
+
+    let changes: Vec<_> = seen.iter().map(|s| (s.joined, s.left)).collect();
+    let none = (Mask::NONE, Mask::NONE);
+    assert_eq!(
+        changes,
+        [
+            none,
+            none,
+            (gone(), Mask::NONE),
+            none,
+            (Mask::NONE, gone()),
+            (gone(), Mask::NONE),
+            none
+        ]
+    );
+}
+
+#[test]
+fn present_from_the_start_never_joined_and_never_eases() {
+    let seen = scripted(|_| false, 3);
+
+    assert!(
+        seen.iter()
+            .all(|s| s.joined.is_empty() && s.left.is_empty())
+    );
+    assert!(seen.iter().all(|s| s.easing.is_empty()));
+    assert!(seen.iter().all(|s| s.target == [Q(0.0); N]));
+}
+
+#[test]
+fn a_joiner_eases_from_where_it_joined_to_the_target_over_the_ramp() {
+    let seen = scripted(|tick| tick < 2, 9);
+    let join = seen.get(2).expect("tick 2");
+    let start = join.gone.expect("a joiner has its first sample");
+
+    for s in &seen[2..] {
+        let age = s.elapsed - join.elapsed;
+        let [first, .., last] = s.target;
+        assert_eq!((first, last), (Q(0.0), Q(0.0)), "the others are untouched");
+        if age < RAMP {
+            let left = 1.0 - age.as_secs_f32() / RAMP.as_secs_f32();
+            assert!(s.easing == gone(), "{s:?}");
+            assert!((s.target[GONE].0 - start.0 * left).abs() < 1e-6, "{s:?}");
+        } else {
+            assert!(s.easing.is_empty(), "{s:?}");
+            assert_eq!(s.target[GONE], Q(0.0));
+        }
+    }
+    assert_eq!(join.target[GONE], start, "no jump at the join tick");
+    assert!(
+        seen.last()
+            .is_some_and(|s| s.elapsed - join.elapsed >= RAMP)
+    );
+}
+
+#[test]
+fn a_slot_that_leaves_mid_ramp_stops_easing_and_starts_over_when_back() {
+    // Joins at 2, leaves at 4, back at 6.
+    let seen = scripted(|tick| tick < 2 || tick == 4 || tick == 5, 8);
+    let (first, back) = (&seen[2], &seen[6]);
+
+    assert!(seen[3].easing == gone());
+    assert!(seen[4].easing.is_empty() && seen[5].easing.is_empty());
+    assert_eq!(seen[4].target[GONE], Q(0.0));
+    assert!(back.easing == gone());
+    let restart = back.gone.expect("a joiner has its first sample");
+    assert_eq!(back.target[GONE], restart);
+    assert_ne!(restart, first.gone.expect("sampled"));
+}
+
+#[test]
+fn reads_of_an_absent_slot_are_no_sample_one_by_one_and_stale_in_the_array() {
+    // Present at 0 and 1, absent from 2 on.
+    let seen = scripted(|tick| tick >= 2, 5);
+
+    assert!(seen[1].gone.is_some());
+    let last_read = seen[1].all.expect("all sampled")[GONE];
+    for s in &seen[2..] {
+        assert!(s.gone_unsampled, "{s:?}");
+        let all = s.all.expect("the present slots are sampled");
+        assert_eq!(all[GONE], last_read, "its last sample, copied forward");
+        assert!(all[0] != last_read, "the others are read on");
+    }
+}

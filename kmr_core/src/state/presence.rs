@@ -1,5 +1,5 @@
 //! Which actuators are present, as their adapters report them after each
-//! read.
+//! read, and which of them joined or left at this tick.
 
 use crate::hal::Mask;
 
@@ -10,17 +10,40 @@ use super::RobotState;
 pub(crate) struct Presence<const N: usize> {
     /// Present now.
     now: Mask<N>,
+    /// Present now and absent at the previous report.
+    joined: Mask<N>,
+    /// Absent now and present at the previous report.
+    left: Mask<N>,
+    /// Whether this run's first report came in.
+    started: bool,
 }
 
 impl<const N: usize> Presence<N> {
-    /// Every actuator present.
+    /// Every actuator present, nothing joined or left, no report yet.
     pub(crate) const fn new() -> Self {
-        Self { now: Mask::ALL }
+        Self {
+            now: Mask::ALL,
+            joined: Mask::NONE,
+            left: Mask::NONE,
+            started: false,
+        }
     }
 
     /// The actuators present now.
     pub(crate) const fn now(&self) -> Mask<N> {
         self.now
+    }
+
+    /// Takes one report: what joined and left since the previous one.
+    // DECISION: the first report of a run, PostInit's full read, is the
+    // baseline: an actuator present from the start never joined.
+    fn report(&mut self, present: Mask<N>) {
+        if self.started {
+            self.joined = present.difference(self.now);
+            self.left = self.now.difference(present);
+        }
+        self.started = true;
+        self.now = present;
     }
 }
 
@@ -29,6 +52,18 @@ impl<const N: usize> RobotState<N> {
     /// writes out of the command and has no sample.
     pub fn present(&self) -> Mask<N> {
         self.presence.now
+    }
+
+    /// The actuators that became present at this tick. None at the first
+    /// presence of a run, PostInit's: one present from the start never
+    /// joined.
+    pub fn joined(&self) -> Mask<N> {
+        self.presence.joined
+    }
+
+    /// The actuators that became absent at this tick.
+    pub fn left(&self) -> Mask<N> {
+        self.presence.left
     }
 
     /// Takes the adapters' presence after a read. An actuator that left
@@ -42,7 +77,7 @@ impl<const N: usize> RobotState<N> {
                 *age = 0;
             }
         }
-        self.presence.now = present;
+        self.presence.report(present);
     }
 
     /// Clears the written bits of absent actuators, before the limit stage
@@ -200,5 +235,44 @@ mod tests {
         robot.set_present(all_but(2));
         assert_eq!(robot.set_at(Q(1.0), 2), Ok(()));
         assert!(robot.written().q.get(2));
+    }
+
+    #[test]
+    fn nothing_joined_or_left_before_the_first_report() {
+        let robot = RobotState::<N>::default();
+        assert!(robot.joined().is_empty());
+        assert!(robot.left().is_empty());
+    }
+
+    #[test]
+    fn the_first_report_is_the_baseline() {
+        let mut robot = RobotState::<N>::default();
+        robot.set_present(all_but(2));
+
+        assert!(robot.joined().is_empty());
+        assert!(robot.left().is_empty());
+        assert_eq!(robot.present(), all_but(2));
+    }
+
+    #[test]
+    fn joined_and_left_last_one_report() {
+        let mut robot = RobotState::<N>::default();
+        robot.set_present(all_but(2));
+        robot.set_present(all_but(1));
+
+        let mut two = Mask::NONE;
+        two.set(2);
+        let mut one = Mask::NONE;
+        one.set(1);
+        assert_eq!(robot.joined(), two);
+        assert_eq!(robot.left(), one);
+
+        robot.set_present(all_but(1));
+        assert!(robot.joined().is_empty());
+        assert!(robot.left().is_empty());
+
+        robot.set_present(Mask::ALL);
+        assert_eq!(robot.joined(), one);
+        assert!(robot.left().is_empty());
     }
 }
