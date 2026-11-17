@@ -320,8 +320,9 @@ fn hold_rearms_only_slots_reading_torque_on() -> Result<(), DynamixelError> {
     assert!(calls_of(&adapter.backend, Call::Rearm).eq([id(1), id(3)]));
     assert!(!adapter.backend.torqued(0, id(0)));
     assert_eq!(adapter.present(), mask(|index| index == 1 || index == 3));
-    assert_eq!(adapter.presence.rejoins[0], 1);
     assert!(!adapter.presence.refused.get(0));
+    assert!(until_present(&mut adapter, &claim, 0, 10).is_some());
+    assert_eq!(adapter.presence.rejoins[0], 1, "counted once powered again");
     Ok(())
 }
 
@@ -773,6 +774,7 @@ fn second_run_starts_from_a_fresh_presence() -> Result<(), DynamixelError> {
         .model_number(0, id(2), Model::Rx28.number());
     ticks(&mut adapter, &claim, 3);
     restart(&mut adapter, &claim, 1);
+    assert!(until_present(&mut adapter, &claim, 1, 10).is_some());
     assert!(adapter.presence.refused.get(2));
     assert_eq!(adapter.presence.rejoins[1], 1);
     adapter.torque_off();
@@ -790,5 +792,35 @@ fn second_run_starts_from_a_fresh_presence() -> Result<(), DynamixelError> {
     assert_eq!(fresh.joining, None);
     assert_eq!(fresh.last_probe, None);
     assert_eq!(fresh.join, JoinPolicy::Declared);
+    Ok(())
+}
+
+#[test]
+fn long_power_losses_count_as_rejoins_too() -> Result<(), DynamixelError> {
+    let mut adapter = strict(AX_TABLE);
+    let claim = joined_rig(&mut adapter)?;
+    let lose = |adapter: &mut Dynamixel<Scripted, 1, N>| {
+        adapter.backend.missing(0, id(2));
+        ticks(adapter, &claim, usize::from(LOST_AFTER));
+        assert!(!adapter.present().get(2));
+        adapter.backend.plug(0, id(2), true);
+    };
+    for rejoin in 1..=MAX_REJOINS {
+        lose(&mut adapter);
+        assert!(
+            until_present(&mut adapter, &claim, 2, 10).is_some(),
+            "rejoin {rejoin}"
+        );
+        assert_eq!(adapter.presence.rejoins[2], rejoin);
+    }
+    lose(&mut adapter);
+
+    let line = "actuator id 3 restarted 3 times: not driven anymore";
+    let seen = warnings(line, || ticks(&mut adapter, &claim, 10));
+
+    assert_eq!(seen, 1);
+    assert!(adapter.presence.refused.get(2));
+    assert!(!adapter.present().get(2));
+    assert!(!adapter.backend.torqued(0, id(2)));
     Ok(())
 }

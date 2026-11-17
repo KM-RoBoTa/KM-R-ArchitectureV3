@@ -370,6 +370,10 @@ fn health<B: Backend, const NB: usize, const N: usize>(
         Ok(()) | Err(BackendError::Fault(_)) => {}
         Err(error) => return Err(adapter.actuator_error(index, error)),
     }
+    if rejoined(adapter, index) && out_of_rejoins(adapter, index) {
+        give_up(adapter, index);
+        return Ok(None);
+    }
     let writes = adapter.limit_writes(index);
     if !writes.is_empty() {
         adapter.write_limits(index, actuator, writes)?;
@@ -434,8 +438,52 @@ fn power<B: Backend, const NB: usize, const N: usize>(
         Torque::ReadOnly => adapter.backend.force_torque_off(bus, model, id),
     }
     .map_err(|error| adapter.actuator_error(index, error))?;
+    if rejoined(adapter, index)
+        && let Some(rejoins) = adapter.presence.rejoins.get_mut(index)
+    {
+        *rejoins = rejoins.saturating_add(1);
+    }
     seed(adapter, index);
     Ok(())
+}
+
+/// Whether joiner `index` is a powered actuator set up earlier this run:
+/// its cold join powers it again, one of its [`MAX_REJOINS`].
+// DECISION: a cold rejoin is counted when Power switches it on, whatever
+// took it out, a restart seen or a loss longer than `LOST_AFTER` reads; a
+// read-only one is never powered and never counted.
+fn rejoined<B, const NB: usize, const N: usize>(
+    adapter: &Dynamixel<B, NB, N>,
+    index: usize,
+) -> bool {
+    adapter.presence.configured.get(index)
+        && adapter
+            .actuators
+            .get(index)
+            .is_some_and(|actuator| actuator.torque == Torque::On)
+}
+
+/// Whether slot `index` made its [`MAX_REJOINS`] cold rejoins already.
+fn out_of_rejoins<B, const NB: usize, const N: usize>(
+    adapter: &Dynamixel<B, NB, N>,
+    index: usize,
+) -> bool {
+    adapter
+        .presence
+        .rejoins
+        .get(index)
+        .is_none_or(|&rejoins| rejoins >= MAX_REJOINS)
+}
+
+/// Slot `index` restarted once more than [`MAX_REJOINS`] allows: not
+/// driven for the rest of the run; one warning.
+fn give_up<B, const NB: usize, const N: usize>(adapter: &mut Dynamixel<B, NB, N>, index: usize) {
+    adapter.presence.refuse(index);
+    let (bus, id) = adapter.named(index);
+    warn!(
+        bus,
+        "actuator id {id} restarted {MAX_REJOINS} times: not driven anymore"
+    );
 }
 
 /// Joiner `index` is set up: read from the next tick on, driven once it
@@ -472,22 +520,13 @@ fn held_faulted<B, const NB: usize, const N: usize>(
 }
 
 /// Live slot `index` answers with its torque off: it lost its power. Out of
-/// the run, to rejoin cold, until it did [`MAX_REJOINS`] times.
+/// the run, to rejoin cold, unless it made its [`MAX_REJOINS`] already.
 fn restarted<B, const NB: usize, const N: usize>(adapter: &mut Dynamixel<B, NB, N>, index: usize) {
-    let (bus, id) = adapter.named(index);
-    let presence = &mut adapter.presence;
-    let rejoins = presence.rejoins.get_mut(index).map_or(u8::MAX, |rejoins| {
-        *rejoins = rejoins.saturating_add(1);
-        *rejoins
-    });
-    if rejoins > MAX_REJOINS {
-        presence.refuse(index);
-        warn!(
-            bus,
-            "actuator id {id} restarted {MAX_REJOINS} times: not driven anymore"
-        );
-    } else {
-        presence.drop_slot(index);
-        warn!(bus, "actuator id {id} restarted: set up again");
+    if out_of_rejoins(adapter, index) {
+        give_up(adapter, index);
+        return;
     }
+    adapter.presence.drop_slot(index);
+    let (bus, id) = adapter.named(index);
+    warn!(bus, "actuator id {id} restarted: set up again");
 }
