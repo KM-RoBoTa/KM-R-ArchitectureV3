@@ -5,7 +5,9 @@
 //! of the one serial device, so a bus may carry Protocol 1 and Protocol 2
 //! actuators. `dxl_rs_v2` keeps the torque state of each actuator it holds
 //! and refuses a goal to one whose torque is off; the backend keeps, per
-//! port, which actuators got their start goal.
+//! port, which actuators got their start goal. Two more handles carry the
+//! side buses a probe pings on, so a probe never touches what the main
+//! buses hold.
 
 use core::time::Duration;
 use std::io::ErrorKind;
@@ -126,6 +128,26 @@ struct Port<T: Transport, C, const N: usize> {
     two: Bus<P2, T, C, N>,
     /// Actuators given a start goal since their torque was last switched.
     started: IdSet,
+    /// The buses a probe sets up one actuator on; `None` until attached.
+    side: Option<Side<T, C>>,
+}
+
+/// The side buses of a port, one per protocol, each holding at most the one
+/// actuator a probe named.
+// DECISION: two more handles of the device, not a ping on the main buses:
+// dxl_rs_v2 has no public ping, and a Setup on a main bus replaces its list.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only `probe` reads them, which the join of T6 calls"
+    )
+)]
+struct Side<T: Transport, C> {
+    /// Protocol 1 probes.
+    one: Bus<P1, T, C, 1>,
+    /// Protocol 2 probes.
+    two: Bus<P2, T, C, 1>,
 }
 
 /// Binds `$bus` to the bus of `$port` that speaks `$model`'s protocol, then
@@ -163,21 +185,30 @@ impl<const N: usize> Default for DxlRsV2<N> {
     }
 }
 
-/// A line the backend opens from a device path: two handles of one device,
-/// each with its clock.
+/// A line the backend opens from a device path: four handles of one device,
+/// each with its clock: the two main buses, then the two side buses.
 pub(crate) trait Open<C>: Sized {
     /// Opens `path` at `baud` bit/s.
-    fn open_pair(path: &str, baud: u32) -> Result<[(Self, C); 2], BackendError>;
+    fn open_lines(path: &str, baud: u32) -> Result<[(Self, C); 4], BackendError>;
 }
 
 impl Open<StdClock> for SerialTransport {
-    /// 8N1, no flow control; the second handle is a duplicate of the first.
-    fn open_pair(path: &str, baud: u32) -> Result<[(Self, StdClock); 2], BackendError> {
+    /// 8N1, no flow control; the three later handles duplicate the first.
+    fn open_lines(path: &str, baud: u32) -> Result<[(Self, StdClock); 4], BackendError> {
         let mut first = Self::open(path, baud).map_err(refused)?;
-        let second = first.port_mut().try_clone_native().map_err(refused)?;
+        let mut clone = || {
+            first
+                .port_mut()
+                .try_clone_native()
+                .map(Self::from)
+                .map_err(refused)
+        };
+        let (second, third, fourth) = (clone()?, clone()?, clone()?);
         Ok([
             (first, StdClock::default()),
-            (Self::from(second), StdClock::default()),
+            (second, StdClock::default()),
+            (third, StdClock::default()),
+            (fourth, StdClock::default()),
         ])
     }
 }
@@ -217,6 +248,19 @@ impl<const N: usize, T: Transport, C: Clock> Ports<N, T, C> {
                 one: Bus::new(one.0, one.1, config),
                 two: Bus::new(two.0, two.1, config),
                 started: IdSet::new(),
+                side: None,
+            });
+        }
+    }
+
+    /// Gives open port `port` its side buses on lines `three` and `four`,
+    /// at `baud` bit/s.
+    fn attach_side(&mut self, port: usize, three: (T, C), four: (T, C), baud: u32) {
+        let config = config(baud);
+        if let Some(Some(open)) = self.ports.get_mut(port) {
+            open.side = Some(Side {
+                one: Bus::new(three.0, three.1, config),
+                two: Bus::new(four.0, four.1, config),
             });
         }
     }
@@ -703,9 +747,10 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
                 .path
                 .to_str()
                 .ok_or(on_port(port, BackendError::PathNotUtf8))?;
-            let [one, two] =
-                T::open_pair(path, spec.baud).map_err(|source| on_port(port, source))?;
+            let [one, two, three, four] =
+                T::open_lines(path, spec.baud).map_err(|source| on_port(port, source))?;
             self.attach(port, one, two, spec.baud);
+            self.attach_side(port, three, four, spec.baud);
         }
         Ok(())
     }
@@ -756,6 +801,54 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
             std::thread::sleep(pause);
         }
         answer.map_err(backend_error)
+    }
+
+    /// A Setup of `id` alone on the side bus of `model`'s protocol: a ping
+    /// and the reads `dxl_rs_v2` checks the model with.
+    fn probe(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        let side = open
+            .side
+            .as_mut()
+            .ok_or(BackendError::PortNotOpen { port })?;
+        let entry = [(target, ModelNumber(model.number()))];
+        match model.protocol() {
+            Protocol::One => side.one.declare(entry).map(|_| ()),
+            Protocol::Two => side.two.declare(entry).map(|_| ()),
+        }
+        .map_err(backend_error)
+    }
+
+    /// `enable_torque` on the main bus.
+    // DECISION: no start goal is asked, unlike `torque`: a rearmed actuator
+    // kept its torque on and its goal through the re-declare that held it
+    // Off, so it does not move.
+    fn rearm(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        on_bus!(open, model, |bus| held(bus, target)?
+            .enable_torque()
+            .map_err(backend_error))?;
+        open.started.remove(target);
+        Ok(())
+    }
+
+    /// One `dxl_rs_v2` `clear_fault`, whatever the protocol.
+    fn clear_fault_once(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        let (open, target) = (self.port(port)?, id_of(id)?);
+        on_bus!(open, model, |bus| held(bus, target)?
+            .clear_fault()
+            .map_err(backend_error))
+    }
+
+    /// Whether the bus of `model`'s protocol keeps a torque state for `id`.
+    fn holds(&self, port: usize, model: Model, id: u8) -> bool {
+        let (Some(Some(open)), Ok(target)) = (self.ports.get(port), Id::new(id)) else {
+            return false;
+        };
+        match model.protocol() {
+            Protocol::One => open.one.torque_state(target).is_some(),
+            Protocol::Two => open.two.torque_state(target).is_some(),
+        }
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
@@ -1244,6 +1337,22 @@ impl<const N: usize> Backend for DxlRsV2<N> {
 
     fn clear_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
         self.0.clear_fault(port, model, id)
+    }
+
+    fn probe(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.0.probe(port, model, id)
+    }
+
+    fn rearm(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.0.rearm(port, model, id)
+    }
+
+    fn clear_fault_once(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.0.clear_fault_once(port, model, id)
+    }
+
+    fn holds(&self, port: usize, model: Model, id: u8) -> bool {
+        self.0.holds(port, model, id)
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {

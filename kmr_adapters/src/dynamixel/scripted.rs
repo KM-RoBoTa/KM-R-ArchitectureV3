@@ -12,6 +12,10 @@
 //! [`Scripted::measured`]); a scripted error of a call kind never does. As
 //! `dxl_rs_v2`, it takes a limit write only once a torque off answered since
 //! the actuator's setup, its last torque on or a raw write.
+//!
+//! [`Scripted::strict`] adds what `dxl_rs_v2` holds: a declare replaces the
+//! port's list, holds each Off, and a call naming an actuator not held is
+//! refused. Tests that never set it see none of that.
 
 use core::iter;
 use std::ffi::OsStr;
@@ -35,7 +39,7 @@ pub(crate) const PORTS: usize = 4;
 /// Ids the script covers on each port, `0..=252`.
 pub(crate) const IDS: usize = 253;
 /// Variants of [`Call`].
-const KINDS: usize = 21;
+const KINDS: usize = 24;
 /// Distinct errors scripted at once; past it, the last one is reused.
 const ERRORS: usize = 16;
 /// Failures left of a fault that lasts until [`Scripted::heal`].
@@ -158,6 +162,12 @@ pub(crate) enum Call {
     ReadRam,
     /// [`Backend::close_ports`].
     ClosePorts,
+    /// [`Backend::probe`].
+    Probe,
+    /// [`Backend::rearm`].
+    Rearm,
+    /// [`Backend::clear_fault_once`].
+    ClearFaultOnce,
 }
 
 impl Call {
@@ -282,6 +292,15 @@ pub(crate) struct Scripted {
     port_faults: [[Option<BackendError>; KINDS]; PORTS],
     /// The failure `open_ports` returns.
     open_fault: Option<OpenFailure>,
+    /// Whether the held lists of `dxl_rs_v2` are kept: see
+    /// [`Scripted::strict`].
+    strict: bool,
+    /// Per actuator, under `strict`, the protocol of the bus that holds it;
+    /// `None` while no bus does.
+    // DECISION: the protocol, not a flag: `DxlRsV2` keeps one list per
+    // protocol, and a torque off declaring one actuator alone replaces only
+    // the list of its own protocol.
+    held: [[Option<Protocol>; IDS]; PORTS],
 }
 
 impl Default for Scripted {
@@ -323,7 +342,38 @@ impl Scripted {
             left: [[[UNTIL_HEALED; KINDS]; IDS]; PORTS],
             port_faults: [[None; KINDS]; PORTS],
             open_fault: None,
+            strict: false,
+            held: [[None; IDS]; PORTS],
         }
+    }
+
+    /// Keeps what `dxl_rs_v2` holds from now on: a declare first forgets
+    /// every actuator of its port, their torque held Off and their start
+    /// goals, then holds the ones named only when it succeeds; a call
+    /// naming one not held fails `NotDeclared`; a torque off of one not
+    /// held declares it alone first.
+    pub(crate) fn strict(&mut self) -> &mut Self {
+        self.strict = true;
+        self
+    }
+
+    /// Actuator `id` answers again. After a power loss (`power_cycled`) it
+    /// comes back as from the factory: torque off, not faulted, its RAM
+    /// reset; the port still holds it, as `dxl_rs_v2` does.
+    pub(crate) fn plug(&mut self, port: usize, id: u8, power_cycled: bool) -> &mut Self {
+        if let Some(missing) = at(&mut self.missing, port, id) {
+            *missing = false;
+        }
+        if power_cycled {
+            self.set_torque(port, id, false);
+            if let Some(faulted) = at(&mut self.faulted, port, id) {
+                *faulted = false;
+            }
+            if let Some(ram) = at(&mut self.ram, port, id) {
+                *ram = [0; RAM];
+            }
+        }
+        self
     }
 
     /// Limit writes to actuator `id` answer but change nothing, as an
@@ -770,6 +820,47 @@ impl Scripted {
         self.answer(call, port, id)
     }
 
+    /// Under `strict`, `NotDeclared` unless the bus of `model`'s protocol
+    /// holds actuator `id`.
+    fn declared(&self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        if self.holds(port, model, id) {
+            Ok(())
+        } else {
+            Err(BackendError::NotDeclared { id })
+        }
+    }
+
+    /// Records a call naming one actuator, then answers it when the port
+    /// holds it.
+    fn one_held(
+        &mut self,
+        call: Call,
+        port: usize,
+        model: Model,
+        id: u8,
+    ) -> Result<(), BackendError> {
+        self.note(call, port, model, id, false);
+        self.transaction(call, port)?;
+        self.declared(port, model, id)?;
+        self.answer(call, port, id)
+    }
+
+    /// Under `strict`, forgets every actuator `port` holds on the bus of
+    /// `protocol`, every protocol when `None`: no longer held, and no
+    /// longer switched on through this backend.
+    fn forget(&mut self, port: usize, protocol: Option<Protocol>) {
+        let (Some(held), Some(powered)) = (self.held.get_mut(port), self.powered.get_mut(port))
+        else {
+            return;
+        };
+        for (held, powered) in held.iter_mut().zip(powered.iter_mut()) {
+            if held.is_some() && (protocol.is_none() || *held == protocol) {
+                *held = None;
+                *powered = false;
+            }
+        }
+    }
+
     /// `NotPowered` unless actuator `id` was switched on through this
     /// backend, as `DxlRsV2` holds no other as torque on.
     fn held(&self, port: usize, id: u8) -> Result<(), BackendError> {
@@ -814,6 +905,16 @@ impl Scripted {
         }
     }
 
+    /// Holds actuator `id` faulted while its script still reports a fault,
+    /// which it fails with; clears it otherwise.
+    fn settle_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        let still = self.measured(port, model, id);
+        if let Some(faulted) = at(&mut self.faulted, port, id) {
+            *faulted = still.is_some();
+        }
+        still.map_or(Ok(()), |fault| Err(BackendError::Fault(fault)))
+    }
+
     /// The fault measured when actuator `id` is held faulted and its script
     /// still reports one: `dxl_rs_v2` returns no value beside it.
     fn unflagged(&self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
@@ -850,6 +951,7 @@ impl Scripted {
         if let Some(reason) = refused {
             return Err(BackendError::Refused { reason });
         }
+        self.declared(port, model, id)?;
         self.answer(call, port, id)
     }
 
@@ -1036,6 +1138,15 @@ impl Backend for Scripted {
         self.record(Call::Declare, port, model, actuators.len(), false, entries);
         self.transaction(Call::Declare, port)
             .map_err(|source| Undeclared { id: None, source })?;
+        if self.strict {
+            self.forget(port, None);
+            if let (Some(powered), Some(started)) =
+                (self.powered.get_mut(port), self.started.get_mut(port))
+            {
+                *powered = [false; IDS];
+                *started = [false; IDS];
+            }
+        }
         if let Some(faulted) = self.faulted.get_mut(port) {
             *faulted = [false; IDS];
         }
@@ -1061,8 +1172,57 @@ impl Backend for Scripted {
             if let Some(faulted) = at(&mut self.faulted, port, id) {
                 *faulted = held;
             }
+            if self.strict
+                && let Some(slot) = at(&mut self.held, port, id)
+            {
+                *slot = Some(model.protocol());
+            }
         }
         Ok(())
+    }
+
+    /// Answers as `declare` would for `id` alone, holding nothing: a
+    /// missing actuator times out, another Model Number is `WrongModel`.
+    fn probe(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.one(Call::Probe, port, model, id, false)?;
+        match self.numbers[port].get(usize::from(id)).copied().flatten() {
+            Some(found) if found != model.number() => Err(BackendError::WrongModel { found }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Switches handle and register on, with no start goal asked; a faulted
+    /// actuator is refused.
+    // DECISION: refused faulted with or without `strict`, as `torque` is:
+    // `dxl_rs_v2` refuses any torque on to an actuator it holds faulted.
+    fn rearm(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.note(Call::Rearm, port, model, id, true);
+        self.transaction(Call::Rearm, port)?;
+        self.declared(port, model, id)?;
+        if get(&self.faulted, port, id) {
+            return Err(BackendError::Faulted { id });
+        }
+        self.answer(Call::Rearm, port, id)?;
+        self.set_torque(port, id, true);
+        self.confirm(port, id, false);
+        Ok(())
+    }
+
+    /// Answered as `clear_fault` is.
+    fn clear_fault_once(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        self.one_held(Call::ClearFaultOnce, port, model, id)?;
+        self.settle_fault(port, model, id)
+    }
+
+    /// Under `strict`, whether the bus of `model`'s protocol holds `id`;
+    /// always without.
+    fn holds(&self, port: usize, model: Model, id: u8) -> bool {
+        !self.strict
+            || self
+                .held
+                .get(port)
+                .and_then(|ids| ids.get(usize::from(id)))
+                .is_some_and(|held| *held == Some(model.protocol()))
     }
 
     fn faulted(&self, port: usize, _model: Model, id: u8) -> bool {
@@ -1072,16 +1232,12 @@ impl Backend for Scripted {
     /// Clears unless the script still reports a fault, which keeps the
     /// actuator faulted, held so before or not, as `dxl_rs_v2`'s answer does.
     fn clear_fault(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
-        self.one(Call::ClearFault, port, model, id, false)?;
-        let still = self.measured(port, model, id);
-        if let Some(faulted) = at(&mut self.faulted, port, id) {
-            *faulted = still.is_some();
-        }
-        still.map_or(Ok(()), |fault| Err(BackendError::Fault(fault)))
+        self.one_held(Call::ClearFault, port, model, id)?;
+        self.settle_fault(port, model, id)
     }
 
     fn read_position(&mut self, port: usize, model: Model, id: u8) -> Result<u32, BackendError> {
-        self.one(Call::ReadPosition, port, model, id, false)?;
+        self.one_held(Call::ReadPosition, port, model, id)?;
         Ok(self.states[port][usize::from(id)].position.cast_unsigned())
     }
 
@@ -1116,7 +1272,8 @@ impl Backend for Scripted {
         self.transaction(Call::SyncReadState, port)?;
         for (entry, &id) in out.iter_mut().zip(ids) {
             *entry = self
-                .answer(Call::SyncReadState, port, id)
+                .declared(port, model, id)
+                .and_then(|()| self.answer(Call::SyncReadState, port, id))
                 .map(|()| self.states[port][usize::from(id)]);
         }
         Ok(())
@@ -1162,10 +1319,13 @@ impl Backend for Scripted {
                 );
             }
             self.transaction(Call::ReadVitals, port)?;
-            *slot = self.answer(Call::ReadVitals, port, *id).map(|()| {
-                let health = self.vitals[port][usize::from(*id)];
-                vitals_of(model, vital, health)
-            });
+            *slot = self
+                .declared(port, model, *id)
+                .and_then(|()| self.answer(Call::ReadVitals, port, *id))
+                .map(|()| {
+                    let health = self.vitals[port][usize::from(*id)];
+                    vitals_of(model, vital, health)
+                });
         }
         Ok(())
     }
@@ -1218,6 +1378,7 @@ impl Backend for Scripted {
         }
         self.transaction(Call::SyncWriteStartGoal, port)?;
         for &(id, raw) in goals {
+            self.declared(port, model, id)?;
             self.set_goal(port, id, register, raw);
             self.confirm(port, id, false);
             if let Some(started) = at(&mut self.started, port, id) {
@@ -1231,11 +1392,13 @@ impl Backend for Scripted {
         self.note(Call::Torque, port, model, id, on);
         if on {
             self.start_written(port, id)?;
+            self.declared(port, model, id)?;
             if get(&self.faulted, port, id) {
                 return Err(BackendError::Faulted { id });
             }
         } else {
             self.held(port, id)?;
+            self.declared(port, model, id)?;
         }
         self.answer(Call::Torque, port, id)?;
         self.set_torque(port, id, on);
@@ -1247,7 +1410,21 @@ impl Backend for Scripted {
     /// fault, as `dxl_rs_v2` returns it.
     // DECISION: a write that fails past the port leaves the handle off and
     // the torque unconfirmed, the register as it was, as `dxl_rs_v2` does.
+    // DECISION: under `strict`, one not held is declared alone first, as
+    // `DxlRsV2` does: its protocol's list is replaced, nothing held when the
+    // actuator stays silent. No `Declare` is recorded for it, as in `DxlRsV2`
+    // it is no call of the backend.
     fn force_torque_off(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError> {
+        if !self.holds(port, model, id) && self.transaction(Call::ForceTorqueOff, port).is_ok() {
+            self.forget(port, Some(model.protocol()));
+            if let Err(error) = self.answer(Call::Declare, port, id) {
+                self.note(Call::ForceTorqueOff, port, model, id, false);
+                return Err(error);
+            }
+            if let Some(slot) = at(&mut self.held, port, id) {
+                *slot = Some(model.protocol());
+            }
+        }
         if let Err(error) = self.one(Call::ForceTorqueOff, port, model, id, false) {
             if !error.is_bus()
                 && let Some(powered) = at(&mut self.powered, port, id)
@@ -1270,7 +1447,7 @@ impl Backend for Scripted {
         model: Model,
         id: u8,
     ) -> Result<(), BackendError> {
-        self.one(Call::ConfirmTorqueOff, port, model, id, false)?;
+        self.one_held(Call::ConfirmTorqueOff, port, model, id)?;
         self.set_torque(port, id, false);
         self.confirm(port, id, true);
         Ok(())
@@ -1278,7 +1455,7 @@ impl Backend for Scripted {
 
     /// Protocol 1 answers too, error status included: scripted, not read.
     fn read_health(&mut self, port: usize, model: Model, id: u8) -> Result<Health, BackendError> {
-        self.one(Call::ReadHealth, port, model, id, false)?;
+        self.one_held(Call::ReadHealth, port, model, id)?;
         self.unflagged(port, model, id)?;
         Ok(self.vitals[port][usize::from(id)])
     }
@@ -1302,6 +1479,8 @@ impl Backend for Scripted {
             }
             _ => {}
         }
+        self.transaction(Call::ReadSetting, port)?;
+        self.declared(port, model, id)?;
         self.answer(Call::ReadSetting, port, id)?;
         self.unflagged(port, model, id)?;
         let id = usize::from(id);
@@ -1318,8 +1497,7 @@ impl Backend for Scripted {
         model: Model,
         id: u8,
     ) -> Result<(u32, u32), BackendError> {
-        self.note(Call::ReadAngleLimits, port, model, id, false);
-        self.answer(Call::ReadAngleLimits, port, id)?;
+        self.one_held(Call::ReadAngleLimits, port, model, id)?;
         Ok(self.limits[port][usize::from(id)].unwrap_or(factory_limits(model)))
     }
 
@@ -1331,7 +1509,7 @@ impl Backend for Scripted {
         model: Model,
         id: u8,
     ) -> Result<(u16, u16), BackendError> {
-        self.one(Call::ReadVoltageLimits, port, model, id, false)?;
+        self.one_held(Call::ReadVoltageLimits, port, model, id)?;
         self.unflagged(port, model, id)?;
         let health = self.vitals[port][usize::from(id)];
         Ok((health.min_voltage_dv, health.max_voltage_dv))
@@ -1344,7 +1522,7 @@ impl Backend for Scripted {
         model: Model,
         id: u8,
     ) -> Result<u8, BackendError> {
-        self.one(Call::ReadTemperatureLimit, port, model, id, false)?;
+        self.one_held(Call::ReadTemperatureLimit, port, model, id)?;
         self.unflagged(port, model, id)?;
         Ok(self.vitals[port][usize::from(id)].temperature_limit_c)
     }
@@ -1424,6 +1602,8 @@ impl Backend for Scripted {
                 register: setting.name(),
             });
         }
+        self.transaction(Call::WriteRam, port)?;
+        self.declared(port, model, id)?;
         self.answer(Call::WriteRam, port, id)?;
         if setting == RamSetting::IGain {
             self.confirm(port, id, false);
@@ -1452,6 +1632,8 @@ impl Backend for Scripted {
                 register: setting.name(),
             });
         }
+        self.transaction(Call::ReadRam, port)?;
+        self.declared(port, model, id)?;
         self.answer(Call::ReadRam, port, id)?;
         Ok(self.ram(port, id, setting))
     }
@@ -1968,5 +2150,246 @@ mod tests {
 
         assert!(!backend.torqued(0, 253));
         assert!(!backend.torqued(PORTS, 1));
+    }
+
+    // ── Presence seam: probe, rearm, strict declares, plug ──────────────
+
+    /// A strict fake, its ports open, holding `ids` on port 0.
+    fn strict_holding(ids: &[u8]) -> Scripted {
+        let mut backend = Scripted::new();
+        backend.strict();
+        backend.open_ports(&[]).unwrap();
+        let list: [(u8, Model); 4] =
+            core::array::from_fn(|i| (ids.get(i).copied().unwrap_or(0), MODEL));
+        backend.declare(0, &list[..ids.len()]).unwrap();
+        backend
+    }
+
+    /// Start goal then torque on for actuator `id` on port 0.
+    fn power(backend: &mut Scripted, id: u8) {
+        start(backend, id).unwrap();
+        backend.torque(0, MODEL, id, true).unwrap();
+    }
+
+    #[test]
+    fn probe_answers_without_changing_what_the_port_holds() {
+        let mut backend = strict_holding(&[1]);
+
+        assert_eq!(backend.probe(0, MODEL, 2), Ok(()));
+
+        assert!(backend.holds(0, MODEL, 1));
+        assert!(!backend.holds(0, MODEL, 2));
+        assert_eq!(backend.count(Call::Probe), 1);
+        assert_eq!(backend.count(Call::Declare), 1);
+        assert_eq!(last_call(&backend), Some(Call::Probe));
+    }
+
+    #[test]
+    fn probe_of_an_unplugged_id_times_out() {
+        let mut backend = strict_holding(&[1]);
+        backend.missing(0, 2);
+
+        assert_eq!(backend.probe(0, MODEL, 2), Err(BackendError::Timeout));
+        assert!(!backend.holds(0, MODEL, 2));
+        backend.close_ports();
+        assert_eq!(
+            backend.probe(0, MODEL, 1),
+            Err(BackendError::PortNotOpen { port: 0 })
+        );
+    }
+
+    #[test]
+    fn probe_of_another_model_is_wrong_model() {
+        let mut backend = strict_holding(&[1]);
+        backend.model_number(0, 2, Model::Ax12a.number());
+
+        assert_eq!(
+            backend.probe(0, MODEL, 2),
+            Err(BackendError::WrongModel {
+                found: Model::Ax12a.number()
+            })
+        );
+        assert_eq!(backend.probe(0, Model::Ax12a, 2), Ok(()));
+    }
+
+    #[test]
+    fn strict_declare_replaces_the_held_list_and_holds_each_off() {
+        let mut backend = strict_holding(&[1, 2]);
+        power(&mut backend, 1);
+        power(&mut backend, 2);
+
+        backend.declare(0, &[(2, MODEL), (3, MODEL)]).unwrap();
+
+        assert!(!backend.holds(0, MODEL, 1));
+        assert!(backend.holds(0, MODEL, 2) && backend.holds(0, MODEL, 3));
+        assert_eq!(
+            backend.sync_write_goal(0, MODEL, &[(2, 100)]),
+            Err(BackendError::NotPowered { id: 2 })
+        );
+        assert_eq!(
+            backend.torque(0, MODEL, 2, true),
+            Err(BackendError::NoStartGoal { id: 2 })
+        );
+        assert!(backend.torqued(0, 2), "the register is untouched");
+    }
+
+    #[test]
+    fn strict_failed_declare_holds_nothing() {
+        let mut backend = strict_holding(&[1, 2]);
+        backend.missing(0, 3);
+
+        assert_eq!(
+            backend.declare(0, &[(1, MODEL), (3, MODEL)]),
+            Err(Undeclared {
+                id: Some(3),
+                source: BackendError::Timeout
+            })
+        );
+
+        assert!(!backend.holds(0, MODEL, 1) && !backend.holds(0, MODEL, 2));
+        assert_eq!(
+            backend.read_position(0, MODEL, 1),
+            Err(BackendError::NotDeclared { id: 1 })
+        );
+    }
+
+    #[test]
+    fn strict_read_of_an_unheld_id_is_not_declared() {
+        let not_declared = Err(BackendError::NotDeclared { id: 2 });
+        let mut backend = strict_holding(&[1]);
+
+        assert_eq!(backend.read_position(0, MODEL, 2), not_declared);
+        assert_eq!(
+            backend.read_setting(0, MODEL, 2, Setting::TorqueEnable),
+            Err(BackendError::NotDeclared { id: 2 })
+        );
+        assert_eq!(
+            backend.read_health(0, MODEL, 2),
+            Err(BackendError::NotDeclared { id: 2 })
+        );
+        assert_eq!(
+            backend.clear_fault_once(0, MODEL, 2),
+            Err(BackendError::NotDeclared { id: 2 })
+        );
+        assert_eq!(
+            backend.rearm(0, MODEL, 2),
+            Err(BackendError::NotDeclared { id: 2 })
+        );
+        assert_eq!(
+            start(&mut backend, 2),
+            Err(BackendError::NotDeclared { id: 2 })
+        );
+        let mut out = [Ok(RawState::default()); 2];
+        backend
+            .sync_read_state(0, MODEL, &[1, 2], &mut out)
+            .unwrap();
+        assert_eq!(
+            out,
+            [
+                Ok(RawState::default()),
+                Err(BackendError::NotDeclared { id: 2 })
+            ]
+        );
+        let mut vitals = [Ok(Reading::default()); 2];
+        backend
+            .read_vitals(0, MODEL, Vital::Voltage, &[1, 2], &mut vitals)
+            .unwrap();
+        assert_eq!(vitals[1], Err(BackendError::NotDeclared { id: 2 }));
+
+        let mut lenient = Scripted::new();
+        lenient.open_ports(&[]).unwrap();
+        assert_eq!(lenient.read_position(0, MODEL, 2), Ok(0));
+        assert!(lenient.holds(0, MODEL, 2));
+    }
+
+    #[test]
+    fn strict_torque_off_of_an_unheld_id_declares_it_alone() {
+        let mut backend = strict_holding(&[1, 2]);
+        power(&mut backend, 1);
+
+        assert_eq!(backend.force_torque_off(0, MODEL, 3), Ok(()));
+
+        assert!(backend.holds(0, MODEL, 3));
+        assert!(!backend.holds(0, MODEL, 1) && !backend.holds(0, MODEL, 2));
+        assert_eq!(backend.count(Call::Declare), 1, "no call of the backend");
+        backend.missing(0, 4);
+        assert_eq!(
+            backend.force_torque_off(0, MODEL, 4),
+            Err(BackendError::Timeout)
+        );
+        assert!(!backend.holds(0, MODEL, 3), "a failed setup holds none");
+    }
+
+    #[test]
+    fn rearm_powers_again_without_a_start_goal() {
+        let mut backend = strict_holding(&[1, 2]);
+        power(&mut backend, 1);
+        backend.declare(0, &[(1, MODEL), (2, MODEL)]).unwrap();
+        backend.clear_log();
+
+        assert_eq!(backend.rearm(0, MODEL, 1), Ok(()));
+
+        assert_eq!(backend.sync_write_goal(0, MODEL, &[(1, 100)]), Ok(()));
+        assert!(backend.torqued(0, 1));
+        assert_eq!(backend.count(Call::SyncWriteStartGoal), 0);
+        assert_eq!(backend.count(Call::Rearm), 1);
+        backend.missing(0, 2);
+        assert_eq!(backend.rearm(0, MODEL, 2), Err(BackendError::Timeout));
+        backend.heal().health(
+            0,
+            2,
+            Health {
+                error_status: 0x04,
+                ..HEALTHY
+            },
+        );
+        backend.declare(0, &[(1, MODEL), (2, MODEL)]).unwrap();
+        assert!(backend.faulted(0, MODEL, 2));
+        assert_eq!(
+            backend.rearm(0, MODEL, 2),
+            Err(BackendError::Faulted { id: 2 })
+        );
+    }
+
+    #[test]
+    fn clear_fault_once_is_recorded_as_its_own_kind() {
+        let mut backend = strict_holding(&[1]);
+
+        assert_eq!(backend.clear_fault_once(0, MODEL, 1), Ok(()));
+
+        assert_eq!(backend.count(Call::ClearFaultOnce), 1);
+        assert_eq!(backend.count(Call::ClearFault), 0);
+    }
+
+    #[test]
+    fn plug_after_power_loss_comes_back_torque_off() {
+        let mut backend = strict_holding(&[1, 2]);
+        power(&mut backend, 1);
+        power(&mut backend, 2);
+        backend
+            .write_ram(0, MODEL, 1, RamSetting::PGain, 800)
+            .unwrap();
+        backend.missing(0, 1).missing(0, 2);
+        assert_eq!(
+            backend.read_position(0, MODEL, 1),
+            Err(BackendError::Timeout)
+        );
+
+        backend.plug(0, 1, true).plug(0, 2, false);
+
+        assert!(!backend.torqued(0, 1) && backend.torqued(0, 2));
+        assert!(backend.holds(0, MODEL, 1), "dxl_rs_v2 still holds it");
+        assert_eq!(backend.ram(0, 1, RamSetting::PGain), 0);
+        assert_eq!(
+            backend.torque(0, MODEL, 1, false),
+            Err(BackendError::NotPowered { id: 1 })
+        );
+        assert_eq!(backend.read_position(0, MODEL, 1), Ok(0));
+        assert_eq!(backend.sync_write_goal(0, MODEL, &[(2, 100)]), Ok(()));
+    }
+
+    /// The kind of the newest recorded call.
+    fn last_call(backend: &Scripted) -> Option<Call> {
+        backend.calls().last().map(|record| record.call)
     }
 }
