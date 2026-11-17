@@ -7,8 +7,8 @@
 //!
 //! `cargo run -p controllers --example runtime_actuators --features hardware,experimental --release`
 
-use kmr_api::experimental::{JoinPolicy, MissingPolicy, Presence, RobotExt};
-use kmr_api::{Bus, EachTick, Mask, Policy, Q, Sensors, Time, presets::home::Home, shutdown, with};
+use kmr_api::experimental::{JoinPolicy, JoinRamp, MissingPolicy, RobotExt};
+use kmr_api::{Bus, EachTick, Policy, Q, Sensors, Time, presets::home::Home, shutdown, with};
 use std::{f32::consts::TAU, time::Duration};
 
 kmr_api::robot!(model = "models/ax_12_12act_an_rx28_10act.urdf");
@@ -67,62 +67,16 @@ fn base(i: usize, now: Duration) -> Q {
     }
 }
 
-/// The point a fraction `s` of the way from `from` to `to`.
-#[inline]
-fn lerp(from: Q, to: Q, s: f32) -> Q {
-    Q(from.0 + (to.0 - from.0) * s)
-}
-
-/// The actuators seen present last tick, and when and where each joiner started its ease-in.
-struct Joins {
-    seen: Mask<N>,
-    since: [Option<(Duration, Q)>; N],
-    started: bool,
-}
-
-impl Joins {
-    /// Nothing seen yet, no joiner.
-    const fn new() -> Self {
-        Self {
-            seen: Mask::NONE,
-            since: [None; N],
-            started: false,
-        }
-    }
-}
-
-/// Both sines after the home ramp; an actuator that becomes present after the first tick eases
-/// in from its first sample over `JOIN_RAMP`, during the ramp as after it. Added after `HOME`,
-/// so a joiner's ease-in during the ramp wins over Home's write.
-fn sway(joins: &mut Joins, time: &Time, robot: &mut State, _: &Sensors) {
+/// Both sines after the home ramp; a joiner eases in from where it joined over `JOIN_RAMP`,
+/// during the ramp as after it. Added after `HOME`, so a joiner's ease-in during the ramp wins
+/// over Home's write.
+fn sway(ramp: &mut JoinRamp<N>, time: &Time, robot: &mut State, _: &Sensors) {
     let now = time.elapsed();
-    let present = robot.present();
-    // Actuators present at the first tick never ease in: Home covers them.
-    if joins.started {
-        for i in present.difference(joins.seen).iter() {
-            joins.since[i] = robot.q_at(i).ok().map(|q| (now, q));
-        }
-    }
-    joins.seen = present;
-    joins.started = true;
-
-    let mut target = [CENTER; N];
-    let mut easing = Mask::<N>::NONE;
-    for (i, q) in target.iter_mut().enumerate() {
-        *q = base(i, now);
-        if let Some((start, from)) = joins.since[i] {
-            let age = now - start;
-            if age < JOIN_RAMP {
-                *q = lerp(from, *q, age.as_secs_f32() / JOIN_RAMP.as_secs_f32());
-                easing.set(i);
-            } else {
-                joins.since[i] = None;
-            }
-        }
-    }
+    let mut target: [Q; N] = core::array::from_fn(|i| base(i, now));
+    ramp.apply(time, robot, &mut target);
 
     if now < HOME_TIME {
-        for i in easing.iter() {
+        for i in ramp.easing().iter() {
             if let Err(e) = robot.set_q_at(target[i], i) {
                 eprintln!("{e}");
                 shutdown!("joiner write failed");
@@ -165,7 +119,7 @@ fn main() {
                 .on(rx_snake),
         )
         .add_controller(EachTick, HOME.controller())
-        .add_controller(EachTick, with(Joins::new(), sway));
+        .add_controller(EachTick, with(JoinRamp::new(JOIN_RAMP), sway));
 
     if let Err(e) = robot.run() {
         eprintln!("{e}");
