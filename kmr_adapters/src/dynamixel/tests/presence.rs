@@ -618,3 +618,26 @@ fn one_lost_reply_at_a_redeclare_drops_no_present_actuator() -> Result<(), Dynam
     assert_eq!(adapter.present(), mask(|index| index != 1));
     Ok(())
 }
+
+#[test]
+fn slots_lost_together_in_bring_up_share_one_line() -> Result<(), DynamixelError> {
+    let mut adapter = strict(AX_TABLE);
+    for index in [2, 3] {
+        adapter.backend.fail_times(
+            Call::ReadAngleLimits,
+            0,
+            id(index),
+            BackendError::Timeout,
+            1,
+        );
+    }
+
+    let line = ("not available", "ids 3 to 4 not available anymore", "ax");
+    let seen = logged(Level::WARN, line, || {
+        assert!(powered_with(&mut adapter, tolerate()).is_ok());
+    });
+
+    assert_eq!(seen, (1, 1));
+    assert_eq!(adapter.present(), mask(|index| index < 2));
+    Ok(())
+}

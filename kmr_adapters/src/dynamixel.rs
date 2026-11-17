@@ -1004,8 +1004,7 @@ impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
         }
     }
 
-    /// Takes actuator `index`, found silent by a bring-up call, out of the
-    /// run: one `Lost` line.
+    /// Takes actuator `index` out of the run: one `Lost` line.
     fn lose(&mut self, index: usize) {
         self.presence.drop_slot(index);
         let (bus, id) = self.named(index);
@@ -1358,12 +1357,13 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
 
     /// `step` on every live actuator in index order; one that a call finds
     /// silent is taken out of the run under `Tolerate`, and fails it
-    /// otherwise, as any other error does.
+    /// otherwise, as any other error does. Those taken out are named in
+    /// one `Lost` line per bus, after the walk.
     fn each_live(
         &mut self,
         mut step: impl FnMut(&mut Self, usize) -> Result<(), DynamixelError>,
     ) -> Result<Mask<N>, DynamixelError> {
-        let mut done = Mask::NONE;
+        let (mut done, mut lost) = (Mask::NONE, Mask::NONE);
         for index in self.actuators.owned().iter() {
             if !self.presence.live.get(index) {
                 continue;
@@ -1371,11 +1371,16 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             match step(self, index) {
                 Ok(()) => done.set(index),
                 Err(DynamixelError::Missing { .. }) if self.presence.tolerates() => {
-                    self.lose(index);
+                    self.presence.drop_slot(index);
+                    lost.set(index);
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.report_slots(lost, Event::Lost);
+                    return Err(error);
+                }
             }
         }
+        self.report_slots(lost, Event::Lost);
         Ok(done)
     }
 
