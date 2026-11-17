@@ -137,18 +137,23 @@ fn read_this_tick<B, const NB: usize, const N: usize>(
 }
 
 /// Whether this tick's `read` read the bus of group `number`, as
-/// [`read_this_tick`] tells it.
+/// [`read_this_tick`] tells it: due, or a seeded member of it read off
+/// its cadence.
 pub(super) fn table_read_this_tick<B, const NB: usize, const N: usize>(
     adapter: &Dynamixel<B, NB, N>,
     number: usize,
 ) -> bool {
-    let every = adapter
-        .groups
-        .tables()
-        .get(number)
-        .map_or(1, |table| u64::from(table.every.get()));
+    let Some(table) = adapter.groups.tables().get(number) else {
+        return false;
+    };
+    let every = u64::from(table.every.get());
     let call = adapter.reads.checked_sub(1);
-    every > 1 && call.is_some_and(|call| call.is_multiple_of(every))
+    let due = call.is_some_and(|call| call.is_multiple_of(every));
+    let seeded = table
+        .members()
+        .iter()
+        .any(|&index| adapter.presence.seed_read.get(index));
+    every > 1 && (due || seeded)
 }
 
 /// The live actuators `step` reads, at most `N`.

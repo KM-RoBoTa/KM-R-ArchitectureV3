@@ -537,6 +537,7 @@ pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
     let call = adapter.reads;
     adapter.reads = adapter.reads.wrapping_add(1);
     let (driven, seed) = (adapter.presence.driven(), adapter.presence.seed);
+    adapter.presence.seed_read = seed;
     let (mut refreshed, mut lost) = (Mask::NONE, Mask::NONE);
     let presence = &mut adapter.presence;
     for table in adapter.groups.tables() {

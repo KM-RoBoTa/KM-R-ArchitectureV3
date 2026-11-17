@@ -901,3 +901,29 @@ fn a_suspect_slot_whose_check_keeps_failing_never_blocks_the_probe() -> Result<(
     assert!(!adapter.presence.suspect.get(1));
     Ok(())
 }
+
+#[test]
+fn probe_never_shares_a_tick_with_a_seed_read_of_its_bus() -> Result<(), DynamixelError> {
+    let mut adapter = strict(every(AX_TABLE, 2));
+    adapter.backend.missing(0, id(1)).missing(0, id(3));
+    let claim = joined_rig(&mut adapter)?;
+    adapter.backend.plug(0, id(3), true);
+    for _ in 0..20 {
+        if adapter.presence.seed.get(3) {
+            break;
+        }
+        tick(&mut adapter, &claim);
+    }
+    assert!(adapter.presence.seed.get(3));
+    adapter.backend.missing(0, id(3));
+
+    for tick_number in 0..2 {
+        adapter.backend.clear_log();
+        tick(&mut adapter, &claim);
+        let bus_read = adapter.backend.count(Call::ReadPosition) > 0;
+        let probe = adapter.backend.count(Call::Probe) > 0;
+        assert!(bus_read, "tick {tick_number}: the seed is read every tick");
+        assert!(!probe, "tick {tick_number}");
+    }
+    Ok(())
+}

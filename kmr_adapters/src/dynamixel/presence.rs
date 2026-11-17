@@ -48,6 +48,8 @@ pub(crate) struct Presence<const N: usize> {
     pub(crate) refused: Mask<N>,
     /// Live slots that missed at least one due read, then answered.
     pub(crate) suspect: Mask<N>,
+    /// The seeded slots the last `read` read, cadence or not.
+    pub(crate) seed_read: Mask<N>,
     /// Consecutive due reads each slot missed.
     misses: [u8; N],
     /// Cold rejoins each slot made this run.
@@ -104,6 +106,7 @@ impl<const N: usize> Presence<N> {
             configured: Mask::NONE,
             refused: Mask::NONE,
             suspect: Mask::NONE,
+            seed_read: Mask::NONE,
             misses: [0; N],
             rejoins: [0; N],
             joining: None,
