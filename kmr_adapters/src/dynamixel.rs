@@ -1080,9 +1080,9 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
 
     /// Under `Tolerate`: while the setup of bus `bus` stops at a silent
     /// actuator, takes it out of the run and sets up the live rest again,
-    /// one attempt per pass, at most `passes`; no actuator left, no setup,
-    /// and the bus holds none. Any other failure is returned. One `Start`
-    /// line names the actuators taken out.
+    /// as many attempts per pass as the first setup, at most `passes`; no
+    /// actuator left, no setup, and the bus holds none. Any other failure
+    /// is returned. One `Start` line names the actuators taken out.
     fn declare_present(
         &mut self,
         bus: usize,
@@ -1121,13 +1121,36 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
                 }
             }
             let rest = rest.get(..len).unwrap_or_default();
+            // DECISION: each pass retries as the first setup does, so one
+            // lost reply never leaves a present actuator out of the run;
+            // the plan's one attempt per pass would.
             answer = if rest.is_empty() {
                 Ok(())
             } else {
-                self.backend.declare(bus, rest)
+                self.declare_tries(bus, rest)
             };
         }
         self.report_slots(absent, Event::Start);
+        answer
+    }
+
+    /// Sets up bus `bus` with `list`, again while it stops at a silent
+    /// actuator, up to [`PING_ATTEMPTS`] times; the last answer.
+    fn declare_tries(&mut self, bus: usize, list: &[(u8, Model)]) -> Result<(), Undeclared> {
+        let mut answer = Ok(());
+        for _ in 0..PING_ATTEMPTS {
+            answer = self.backend.declare(bus, list);
+            let silent = matches!(
+                answer,
+                Err(Undeclared {
+                    source: BackendError::Timeout,
+                    ..
+                })
+            );
+            if !silent {
+                break;
+            }
+        }
         answer
     }
 
@@ -1598,20 +1621,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
             if owned.is_empty() {
                 continue;
             }
-            let mut answer = Ok(());
-            for _ in 0..PING_ATTEMPTS {
-                answer = self.backend.declare(bus, owned);
-                let silent = matches!(
-                    answer,
-                    Err(Undeclared {
-                        source: BackendError::Timeout,
-                        ..
-                    })
-                );
-                if !silent {
-                    break;
-                }
-            }
+            let mut answer = self.declare_tries(bus, owned);
             if self.presence.tolerates() {
                 answer = self.declare_present(bus, owned.len(), answer);
             }

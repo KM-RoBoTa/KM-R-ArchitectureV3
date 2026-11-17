@@ -604,3 +604,17 @@ fn policies_off_exit_is_unchanged() -> Result<(), DynamixelError> {
     assert!(kinds.eq(off.chain([Call::ClosePorts])));
     Ok(())
 }
+
+#[test]
+fn one_lost_reply_at_a_redeclare_drops_no_present_actuator() -> Result<(), DynamixelError> {
+    let mut adapter = strict(AX_TABLE);
+    adapter
+        .backend
+        .missing(0, id(1))
+        .fail_times(Call::Declare, 0, id(2), BackendError::Timeout, 1);
+
+    powered_with(&mut adapter, tolerate())?;
+
+    assert_eq!(adapter.present(), mask(|index| index != 1));
+    Ok(())
+}
