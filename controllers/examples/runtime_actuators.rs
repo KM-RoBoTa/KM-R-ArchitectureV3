@@ -68,15 +68,15 @@ fn base(i: usize, now: Duration) -> Q {
 }
 
 /// Both sines after the home ramp; a joiner eases in from where it joined over `JOIN_RAMP`,
-/// during the ramp as after it. Added after `HOME`, so a joiner's ease-in during the ramp wins
-/// over Home's write.
+/// during the ramp as after it. Added after `HOME`, so during the ramp a joiner's target wins
+/// over Home's write, whose line started from where it was before it left.
 fn sway(ramp: &mut JoinRamp<N>, time: &Time, robot: &mut State, _: &Sensors) {
     let now = time.elapsed();
     let mut target: [Q; N] = core::array::from_fn(|i| base(i, now));
     ramp.apply(time, robot, &mut target);
 
     if now < HOME_TIME {
-        for i in ramp.easing().iter() {
+        for i in ramp.joiners().iter() {
             if let Err(e) = robot.set_q_at(target[i], i) {
                 eprintln!("{e}");
                 shutdown!("joiner write failed");

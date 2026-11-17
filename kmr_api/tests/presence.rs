@@ -263,7 +263,12 @@ struct Plugged {
     reads: u64,
     /// Whether slot `GONE` is absent at a tick.
     away: fn(i64) -> bool,
+    /// Where every slot reads after `reads` calls.
+    at: fn(u64) -> Q,
 }
+
+/// The `Q` written to slot `GONE` by each `write`, `None` when it was not written.
+static WRITES: Mutex<Vec<Option<Q>>> = Mutex::new(Vec::new());
 
 impl Plugged {
     /// The tick of the latest read: -1 for the full read.
@@ -303,7 +308,7 @@ impl Hal<N> for Plugged {
 
     fn read_all(&mut self, sample: Sample<'_, N>) -> Result<(), Self::Error> {
         self.reads += 1;
-        *sample.q = [position(self.reads); N];
+        *sample.q = [(self.at)(self.reads); N];
         Ok(())
     }
 
@@ -316,13 +321,19 @@ impl Hal<N> for Plugged {
         let present = self.present();
         for i in present.iter() {
             if let Some(q) = sample.q.get_mut(i) {
-                *q = position(self.reads);
+                *q = (self.at)(self.reads);
             }
         }
         present
     }
 
-    fn write(&mut self, _: Command<'_, N>, _: &Batch<'_, N>, _: &mut Faults<N>) {}
+    fn write(&mut self, command: Command<'_, N>, _: &Batch<'_, N>, _: &mut Faults<N>) {
+        let q = command.written.q.get(GONE).then_some(command.q[GONE]);
+        WRITES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(q);
+    }
 
     fn present(&self) -> Mask<N> {
         if (self.away)(self.tick()) {
@@ -414,7 +425,11 @@ fn scripted_skipping(away: fn(i64) -> bool, skip: fn(u64) -> bool, ticks: u64) -
         );
     let mut host = kmr_api::test_util::Ticking::new(std::time::Instant::now(), ticks);
     let mut drivers = kmr_api::HCons {
-        head: Plugged { reads: 0, away },
+        head: Plugged {
+            reads: 0,
+            away,
+            at: position,
+        },
         tail: kmr_api::HNil,
     };
     let stop = kmr_api::test_util::run_scripted(robot, &mut host, &mut drivers);
@@ -549,4 +564,79 @@ fn skipped_calls_never_ease_a_slot_that_stayed() {
     let seen = scripted_skipping(|_| false, |tick| (1..=5).contains(&tick), 9);
 
     assert!(seen.iter().all(|s| s.easing.is_empty()), "{seen:?}");
+}
+
+/// The home ramp of the Home scenario: forty ticks.
+const HOME_RAMP: Duration = Duration::from_millis(40);
+
+/// The runtime_actuators example's controller on the scripted host: during the home ramp it
+/// writes the ramp's target for every joiner of the run, after it every target.
+fn sway_home(
+    ramp: &mut kmr_api::experimental::JoinRamp<N>,
+    time: &Time,
+    robot: &mut State,
+    _: &Sensors,
+) {
+    let mut target = [Q(0.0); N];
+    ramp.apply(time, robot, &mut target);
+    if time.elapsed() < HOME_RAMP {
+        for i in ramp.joiners().iter() {
+            if let Err(e) = robot.set_q_at(target[i], i) {
+                panic!("{e}");
+            }
+        }
+        return;
+    }
+    robot.set_all_q(target);
+}
+
+#[test]
+fn a_joiner_that_ends_its_ease_before_home_stays_on_its_target() {
+    // Every slot at 0.6 rad; Home latches it at tick 0. `GONE` is unplugged from 5 to 9, eases
+    // back over 8 ticks from 10, and must then stay at 0 rad, not go back to Home's line.
+    let _bus = bus();
+    WRITES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+    let robot = kmr_api::Robot::<N, Fades>::new()
+        .set_dt(kmr_api::test_util::DT)
+        .set_limit_policy_all(Policy::Clamp)
+        .set_missing_policy(MissingPolicy::Tolerate)
+        .add_controller(
+            EachTick,
+            kmr_api::presets::home::Home::new([Q(0.0); N], HOME_RAMP).controller(),
+        )
+        .add_controller(
+            EachTick,
+            kmr_api::with(
+                kmr_api::experimental::JoinRamp::new(Duration::from_millis(8)),
+                sway_home,
+            ),
+        );
+    let mut host = kmr_api::test_util::Ticking::new(std::time::Instant::now(), 50);
+    let mut drivers = kmr_api::HCons {
+        head: Plugged {
+            reads: 0,
+            away: |tick| (5..=9).contains(&tick),
+            at: |_| Q(0.6),
+        },
+        tail: kmr_api::HNil,
+    };
+    let stop = kmr_api::test_util::run_scripted(robot, &mut host, &mut drivers);
+    assert_eq!(stop.ok(), Some(kmr_api::test_util::Stop::Shutdown));
+    let writes = std::mem::take(&mut *WRITES.lock().unwrap_or_else(PoisonError::into_inner));
+
+    let gone: Vec<Q> = writes.iter().skip(10).flatten().copied().collect();
+    assert!(gone.len() > 30, "{writes:?}");
+    for pair in gone.windows(2) {
+        assert!(
+            (pair[1].0 - pair[0].0).abs() <= 0.6 / 8.0 + 1e-6,
+            "a step: {gone:?}"
+        );
+    }
+    assert!(
+        writes[20..40].iter().all(|q| *q == Some(Q(0.0))),
+        "{writes:?}"
+    );
 }

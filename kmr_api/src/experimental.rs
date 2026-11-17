@@ -119,6 +119,8 @@ pub struct JoinRamp<const N: usize> {
     since: [Duration; N],
     /// The actuators still easing.
     easing: Mask<N>,
+    /// Every actuator taken as a joiner since the run's first call.
+    joiners: Mask<N>,
     /// The actuators present at the last call.
     seen: Mask<N>,
     /// The tick of the last call this run; `None` before the first.
@@ -133,6 +135,7 @@ impl<const N: usize> JoinRamp<N> {
             from: [Q(0.0); N],
             since: [Duration::ZERO; N],
             easing: Mask::NONE,
+            joiners: Mask::NONE,
             seen: Mask::NONE,
             last: None,
         }
@@ -159,10 +162,12 @@ impl<const N: usize> JoinRamp<N> {
                     .union(present.difference(self.seen))
                     .union(self.rejoined(robot, tick - last));
             }
-            _ => self.easing = Mask::NONE,
+            _ => (self.easing, self.joiners) = (Mask::NONE, Mask::NONE),
         }
         (self.seen, self.last) = (present, Some(tick));
-        for i in joining.intersection(present).iter() {
+        let joining = joining.intersection(present);
+        self.joiners = self.joiners.union(joining);
+        for i in joining.iter() {
             let (Ok(at), Some(from), Some(since)) =
                 (robot.q_at(i), self.from.get_mut(i), self.since.get_mut(i))
             else {
@@ -212,5 +217,15 @@ impl<const N: usize> JoinRamp<N> {
     /// The actuators still easing: their target is not the controller's yet.
     pub fn easing(&self) -> Mask<N> {
         self.easing
+    }
+
+    /// Every actuator that joined since the run's first call, easing or done. A controller
+    /// that leaves the others to a preset, such as `Home` during its ramp, writes these
+    /// itself: once eased in, a joiner stays on the controller's target, not back on the
+    /// preset's line, which started from where it was before it left.
+    // DECISION: `joiners`, kept for the whole run (a new baseline clears it), one taken
+    // without a sample included: it is off the preset's line either way.
+    pub fn joiners(&self) -> Mask<N> {
+        self.joiners
     }
 }
