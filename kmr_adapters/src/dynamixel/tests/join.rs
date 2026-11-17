@@ -878,3 +878,26 @@ fn a_slot_lost_before_its_settings_rejoins_cold() -> Result<(), DynamixelError> 
     assert_eq!(adapter.backend.ram(0, id(2), RamSetting::Led), 1);
     Ok(())
 }
+
+#[test]
+fn a_suspect_slot_whose_check_keeps_failing_never_blocks_the_probe() -> Result<(), DynamixelError> {
+    let mut adapter = strict(AX_TABLE);
+    adapter.backend.missing(0, id(2));
+    let claim = joined_rig(&mut adapter)?;
+    adapter.backend.missing(0, id(1));
+    tick(&mut adapter, &claim);
+    adapter
+        .backend
+        .plug(0, id(1), false)
+        .fail(
+            Call::ReadSetting,
+            0,
+            id(1),
+            BackendError::Reply(Reply::Corrupt),
+        )
+        .plug(0, id(2), true);
+
+    assert!(until_present(&mut adapter, &claim, 2, 50).is_some());
+    assert!(!adapter.presence.suspect.get(1));
+    Ok(())
+}

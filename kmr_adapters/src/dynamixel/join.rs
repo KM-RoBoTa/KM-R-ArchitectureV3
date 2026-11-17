@@ -42,8 +42,9 @@ fn suspect<B, const NB: usize, const N: usize>(adapter: &Dynamixel<B, NB, N>) ->
 }
 
 /// One Torque Enable read of suspect slot `index`: on, no longer suspect;
-/// off, restarted or held faulted. A read that fails leaves it suspect,
-/// unless its bus holds it faulted: the miss count decides a silent one.
+/// off, restarted or held faulted. A read that times out leaves it
+/// suspect: the miss count decides a silent one. One that fails otherwise
+/// is held faulted, or lost.
 fn check_suspect<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     index: usize,
@@ -61,9 +62,11 @@ fn check_suspect<B: Backend, const NB: usize, const N: usize>(
         Ok(0) => restarted(adapter, index),
         Ok(_) => adapter.presence.suspect.clear(index),
         Err(_) if faulted(adapter) => held_faulted(adapter, index),
-        // DECISION: any other failed read keeps the bit, a timeout as the
-        // plan says and a garbled reply too: the next tick asks again.
-        Err(_) => {}
+        Err(BackendError::Timeout) => {}
+        // DECISION: as at a Hold (plan, DECISION 5), any other failure is a
+        // loss: no proof it is safe to drive, and a check that kept the bit
+        // would run every tick and starve the probe. It rejoins through it.
+        Err(_) => adapter.lose(index),
     }
 }
 
