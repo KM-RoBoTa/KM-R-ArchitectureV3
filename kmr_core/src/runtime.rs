@@ -3149,7 +3149,7 @@ mod tests {
         //! the join policy.
 
         use super::*;
-        use crate::hal::{JoinPolicy, MissingPolicy, Overrides};
+        use crate::hal::{HealthPolicy, JoinPolicy, MissingPolicy, Overrides};
         use crate::telemetry::Telemetry;
 
         /// An adapter call, a host call or a walk, in the order they came.
@@ -3369,6 +3369,27 @@ mod tests {
             let overrides = flaky.overrides.expect("checked");
             assert_eq!(overrides.missing, MissingPolicy::Tolerate);
             assert_eq!(overrides.join, JoinPolicy::Declared);
+        }
+
+        #[test]
+        fn claim_gets_the_health_policy_in_overrides() {
+            let (events, log) = (Events::new(), Log::new());
+            let mut flaky = Flaky::new(&events, &log, [Mask::ALL; 4]);
+            let mut robot = Robot::new()
+                .set_dt(DT)
+                .set_health_policy(HealthPolicy::Warn)
+                .add_controller(
+                    crate::EachTick,
+                    |_t: &Time, _s: &mut RobotState<N>, _: &Sensors| {},
+                );
+            let mut host = Scripted::new(Instant::now()).shutdown_from(AFTER_PRE_INIT);
+
+            let result = run_with(&mut robot, &mut host, &mut one(&mut flaky));
+
+            assert!(result.is_ok());
+            let overrides = flaky.overrides.expect("checked");
+            assert_eq!(overrides.health, HealthPolicy::Warn);
+            assert_eq!(overrides.missing, MissingPolicy::Fail);
         }
 
         #[test]

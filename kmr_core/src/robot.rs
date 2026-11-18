@@ -38,7 +38,7 @@ use crate::controllers::{
 use crate::error::RunError;
 use crate::hal::{Drivers, HardwareError, Mask, MemberError, NoHardware, Sensing, SensorPolicy};
 #[cfg(feature = "experimental")]
-use crate::hal::{JoinPolicy, MissingPolicy};
+use crate::hal::{HealthPolicy, JoinPolicy, MissingPolicy};
 use crate::limits::{Envelope, Limit, Policy};
 use crate::schedule::{Drive, Insert, Schedule};
 use crate::state::RobotState;
@@ -210,6 +210,14 @@ impl<const N: usize, CS, E> Robot<N, CS, E> {
     #[cfg(feature = "experimental")]
     pub fn set_join_policy(mut self, policy: JoinPolicy) -> Self {
         self.config.overrides.join = policy;
+        self
+    }
+
+    /// What an actuator whose bring-up health check fails means. Without
+    /// it, [`HealthPolicy::Fail`]: bring-up fails.
+    #[cfg(feature = "experimental")]
+    pub fn set_health_policy(mut self, policy: HealthPolicy) -> Self {
+        self.config.overrides.health = policy;
         self
     }
 

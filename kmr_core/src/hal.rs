@@ -16,11 +16,15 @@ use crate::state::{Kd, Kp, Q, Qd, Tau};
 use crate::telemetry::Telemetry;
 
 #[cfg(feature = "experimental")]
+mod health;
+#[cfg(feature = "experimental")]
 mod presence;
 mod sensing;
 mod sensor;
 mod set;
 
+#[cfg(feature = "experimental")]
+pub use health::HealthPolicy;
 #[cfg(feature = "experimental")]
 pub use presence::{JoinPolicy, MissingPolicy};
 pub use sensing::{Sensing, SensorPolicy};
@@ -276,6 +280,9 @@ pub struct Overrides {
     /// Whether an absent declared actuator may join the run.
     #[cfg(feature = "experimental")]
     pub join: JoinPolicy,
+    /// What an actuator whose bring-up health check fails means.
+    #[cfg(feature = "experimental")]
+    pub health: HealthPolicy,
 }
 
 /// Which desired fields were written this tick, one mask per field.

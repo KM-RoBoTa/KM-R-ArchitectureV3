@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use kmr_api::experimental::{JoinPolicy, MissingPolicy, Presence, RobotExt};
+use kmr_api::experimental::{HealthPolicy, JoinPolicy, MissingPolicy, Presence, RobotExt};
 use kmr_api::{Bus, EachTick, Mask, Policy, Q, Sensors, Spec, Time, UserError};
 use kmr_core::hal::{Batch, Claim, Command, Faults, Group, Hal, Overrides, Sample, seal};
 
@@ -226,6 +226,31 @@ fn fr_5_5_presence_reaches_controllers_and_absent_slots_get_no_command() {
         })
         .collect();
     assert_eq!(log.written, written);
+}
+
+#[test]
+fn the_health_policy_reaches_the_adapter() {
+    let _bus = bus();
+    take();
+    let res = kmr_api::Robot::<N, Fades>::new()
+        .set_dt(Duration::from_millis(1))
+        .set_limit_policy_all(Policy::Clamp)
+        .set_health_policy(HealthPolicy::Warn)
+        .add_plugins(Bus::by_id("kmr-test-no-such-serial"))
+        .add_controller(EachTick, |time: &Time, _robot: &mut State, _s: &Sensors| {
+            if time.tick() == STOP {
+                kmr_api::shutdown!("test: stop tick reached");
+            }
+        })
+        .run();
+    assert!(res.is_ok(), "{res:?}");
+    let log = take();
+
+    let [overrides] = log.overrides[..] else {
+        panic!("one check expected: {:?}", log.overrides);
+    };
+    assert_eq!(overrides.health, HealthPolicy::Warn);
+    assert_eq!(overrides.missing, MissingPolicy::Fail);
 }
 
 #[test]

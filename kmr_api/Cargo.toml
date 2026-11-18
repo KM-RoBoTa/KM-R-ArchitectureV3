@@ -36,7 +36,7 @@ ffi-build = ["ffi", "kmr_ffi/build"]
 python = ["dep:pyo3"]
 # A Lua file as a controller: `kmr_api::lua!` (Lua 5.4, vendored: no system library).
 lua = ["dep:mlua"]
-# Hot-plug of declared actuators, `kmr_api::experimental`: the missing and join policies,
+# Hot-plug of declared actuators, `kmr_api::experimental`: the missing, join and health policies,
 # presence in the state and the join ramp. Niche and off by default: without it none of it is
 # compiled, in kmr_core and kmr_adapters either.
 experimental = ["kmr_core/experimental", "kmr_adapters/experimental"]

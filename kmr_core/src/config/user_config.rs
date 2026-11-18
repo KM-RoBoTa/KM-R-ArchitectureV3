@@ -19,7 +19,7 @@ pub(crate) struct RobotConfig<const N: usize> {
     /// What a sensor lost at run time does beyond its flag (SRS FR-5.7).
     pub(crate) sensor_policy: SensorPolicy,
     /// What the claim hands the adapters: empty without the `experimental`
-    /// feature, the two presence policies with it.
+    /// feature, the two presence policies and the health policy with it.
     // DECISION: the overrides themselves, not one field per policy, so the
     // claim passes them as they are and needs no feature gate.
     pub(crate) overrides: Overrides,

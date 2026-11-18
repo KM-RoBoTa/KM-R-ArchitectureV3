@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use crate::{HISTORY_DEPTH, Mask, Q, Robot, State, StateError, Time};
 
-/// What a declared actuator that does not answer means, and whether an absent one may join
-/// the run: set them with [`RobotExt`].
-pub use kmr_core::hal::{JoinPolicy, MissingPolicy};
+/// What a declared actuator that does not answer means, whether an absent one may join the
+/// run, and what a failed bring-up health check means: set them with [`RobotExt`].
+pub use kmr_core::hal::{HealthPolicy, JoinPolicy, MissingPolicy};
 
 mod seal {
     /// Only kmr_api's types take the extension traits of [`super`].
@@ -20,7 +20,7 @@ mod seal {
     impl<const N: usize> Sealed for crate::State<'_, N> {}
 }
 
-/// The presence policies on the robot builder.
+/// The presence and health policies on the robot builder.
 // DECISION: `RobotExt`, on `Robot` only: `Bound` takes no setting.
 pub trait RobotExt: seal::Sealed + Sized {
     /// What a declared actuator that does not answer, at open or at run time, means. Without
@@ -31,6 +31,14 @@ pub trait RobotExt: seal::Sealed + Sized {
     /// Whether an absent declared actuator may join the run. Without it, [`JoinPolicy::Never`].
     /// It needs [`MissingPolicy::Tolerate`] to have any effect.
     fn set_join_policy(self, policy: JoinPolicy) -> Self;
+
+    /// What an actuator whose bring-up health check fails (a hardware fault that does not
+    /// clear, its voltage outside its limits, its temperature above its limit, a hardware error
+    /// status) means. Without it, [`HealthPolicy::Fail`]: bring-up fails. With
+    /// [`HealthPolicy::Warn`] it is logged once and set up and driven like the others; one
+    /// whose own alarm cut its torque does not move. A bus error, a wrong model or limits that
+    /// do not read back as written still fail. A joiner gets the same policy.
+    fn set_health_policy(self, policy: HealthPolicy) -> Self;
 }
 
 impl<const N: usize, H, C, E, SN> RobotExt for Robot<N, H, C, E, SN> {
@@ -40,6 +48,10 @@ impl<const N: usize, H, C, E, SN> RobotExt for Robot<N, H, C, E, SN> {
 
     fn set_join_policy(self, policy: JoinPolicy) -> Self {
         self.map_core(|inner| inner.set_join_policy(policy))
+    }
+
+    fn set_health_policy(self, policy: HealthPolicy) -> Self {
+        self.map_core(|inner| inner.set_health_policy(policy))
     }
 }
 
