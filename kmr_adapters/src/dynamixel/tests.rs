@@ -49,6 +49,7 @@ mod health;
 mod join;
 #[cfg(feature = "experimental")]
 mod presence;
+mod unapplied;
 
 /// Actuators of the robot the scenarios drive: they name actuators 0 to 3.
 const N: usize = 4;

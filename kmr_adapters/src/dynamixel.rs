@@ -1066,12 +1066,28 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
     }
 
     /// The `health` of actuator `index` alone: its limits written, its
-    /// fault asked, then its values checked.
+    /// fault asked, then its values checked. A fault answered with a limit
+    /// other than the one written is one warning more, its error unchanged.
     fn health_one(&mut self, index: usize) -> Result<(), DynamixelError> {
         let Some(&actuator) = self.actuators.get(index) else {
             return Ok(());
         };
         let writes = self.limit_writes(index);
+        let answer = self.health_steps(index, actuator, writes);
+        if let Err(error) = &answer {
+            self.note_unapplied(index, writes, error);
+        }
+        answer
+    }
+
+    /// The steps of [`health_one`](Self::health_one) on `actuator` at
+    /// `index`, whose limits are `writes`.
+    fn health_steps(
+        &mut self,
+        index: usize,
+        actuator: Actuator,
+        writes: limits::Limits,
+    ) -> Result<(), DynamixelError> {
         if !writes.is_empty() {
             self.write_limits(index, actuator, writes)?;
         }

@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use super::backend::{Backend, BackendError, Setting, Undeclared};
 use super::config::{Model, Torque};
+use super::limits::Limits;
 use super::presence::{self, Event, Join, MAX_REJOINS, SETTLE_FOR, Stage};
 use super::{Dynamixel, DynamixelError, io, telemetry};
 
@@ -141,7 +142,9 @@ fn advance<B: Backend, const NB: usize, const N: usize>(
         Stage::Health => health(adapter, join),
         Stage::Settle => settle(adapter, join),
         Stage::Check => {
-            let checked = adapter.check_health(index, adapter.limit_writes(index));
+            let writes = adapter.limit_writes(index);
+            let checked = adapter.check_health(index, writes);
+            noted(adapter, index, writes, &checked);
             adapter
                 .waive_health(index, checked)
                 .map(|()| then(Stage::Configure))
@@ -389,6 +392,7 @@ fn health<B: Backend, const NB: usize, const N: usize>(
     let writes = adapter.limit_writes(index);
     if !writes.is_empty() {
         let written = adapter.write_limits(index, actuator, writes);
+        noted(adapter, index, writes, &written);
         adapter.waive_health(index, written)?;
     }
     Ok(Some(Join {
@@ -410,7 +414,9 @@ fn settle<B: Backend, const NB: usize, const N: usize>(
     };
     let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
     if !adapter.backend.faulted(bus, model, id) {
-        let checked = adapter.check_health(index, adapter.limit_writes(index));
+        let writes = adapter.limit_writes(index);
+        let checked = adapter.check_health(index, writes);
+        noted(adapter, index, writes, &checked);
         adapter.waive_health(index, checked)?;
         return Ok(Some(Join {
             stage: Stage::Configure,
@@ -431,12 +437,26 @@ fn settle<B: Backend, const NB: usize, const N: usize>(
         // only read the same fault back; the joiner goes on to Configure.
         Err(error) => {
             let error = adapter.actuator_error(index, error);
+            adapter.note_unapplied(index, adapter.limit_writes(index), &error);
             adapter.waive_health(index, Err(error))?;
             Ok(Some(Join {
                 stage: Stage::Configure,
                 ..join
             }))
         }
+    }
+}
+
+/// `answer`, what joiner `index` answered once `writes` were sent: one
+/// warning when it is a fault carrying another limit than written.
+fn noted<B: Backend, const NB: usize, const N: usize>(
+    adapter: &Dynamixel<B, NB, N>,
+    index: usize,
+    writes: Limits,
+    answer: &Result<(), DynamixelError>,
+) {
+    if let Err(error) = answer {
+        adapter.note_unapplied(index, writes, error);
     }
 }
 
