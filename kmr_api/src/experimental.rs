@@ -153,7 +153,16 @@ impl<const N: usize> JoinRamp<N> {
     // DECISION: a joiner without a sample at the call that takes it is not eased: there is no
     // start to blend from, so it takes the controller's target as it would without the ramp.
     pub fn apply(&mut self, time: &Time, robot: &State<'_, N>, target: &mut [Q; N]) {
-        let (now, tick) = (time.elapsed(), time.tick());
+        let now = time.elapsed();
+        let joining = self.take_joiners(time.tick(), robot);
+        self.start(joining, now, robot);
+        self.blend(now, target);
+    }
+
+    /// The actuators that joined since the last call and are still present, noted as
+    /// joiners. The first call of a run, or a clock that went back, is a new baseline:
+    /// nothing eases and nobody joined yet.
+    fn take_joiners(&mut self, tick: u64, robot: &State<'_, N>) -> Mask<N> {
         let present = robot.present();
         let mut joining = robot.joined();
         match self.last {
@@ -167,6 +176,12 @@ impl<const N: usize> JoinRamp<N> {
         (self.seen, self.last) = (present, Some(tick));
         let joining = joining.intersection(present);
         self.joiners = self.joiners.union(joining);
+        joining
+    }
+
+    /// Starts the ease of each actuator of `joining` from where it is at `now`; one
+    /// without a sample is not eased.
+    fn start(&mut self, joining: Mask<N>, now: Duration, robot: &State<'_, N>) {
         for i in joining.iter() {
             let (Ok(at), Some(from), Some(since)) =
                 (robot.q_at(i), self.from.get_mut(i), self.since.get_mut(i))
@@ -177,6 +192,11 @@ impl<const N: usize> JoinRamp<N> {
             (*from, *since) = (at, now);
             self.easing.set(i);
         }
+    }
+
+    /// Moves the target of each easing actuator to its point at `now` on the line from
+    /// where it joined; one that left, or whose duration is over, stops easing.
+    fn blend(&mut self, now: Duration, target: &mut [Q; N]) {
         let easing = self.easing;
         for i in easing.iter() {
             let (Some(&from), Some(&since), Some(goal)) =
@@ -185,7 +205,7 @@ impl<const N: usize> JoinRamp<N> {
                 continue;
             };
             let age = now.saturating_sub(since);
-            if !present.get(i) || age >= self.duration {
+            if !self.seen.get(i) || age >= self.duration {
                 self.easing.clear(i);
                 continue;
             }
@@ -214,6 +234,7 @@ impl<const N: usize> JoinRamp<N> {
         }
         rejoined
     }
+
     /// The actuators still easing: their target is not the controller's yet.
     pub fn easing(&self) -> Mask<N> {
         self.easing
