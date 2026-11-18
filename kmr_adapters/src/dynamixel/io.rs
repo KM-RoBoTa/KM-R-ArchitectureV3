@@ -686,7 +686,8 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
 /// Reads the present position of every member of `table` in `only` into
 /// `present`; fails on the first one a start goal needs. Under `Tolerate`,
 /// a live one that times out is taken out of the run instead, one line per
-/// bus naming those; returns them.
+/// bus naming those; returns them, with those `HealthPolicy::Warn` let
+/// through that answered a fault.
 // DECISION: only a live slot is taken out on a timeout: a joiner is not
 // live yet, so its silence fails the Power stage `Missing`, and the join
 // puts it back to absent quietly.
@@ -699,9 +700,10 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
     let (mut qd, mut tau) = ([Qd::default(); N], [Tau::default(); N]);
     let (mut kp, mut kd) = ([Kp::default(); N], [Kd::default(); N]);
     let mut sample = Sample::new(present, &mut qd, &mut tau, &mut kp, &mut kd);
+    let waived = adapter.waived();
     let actuators = &adapter.actuators;
     let (tolerates, live) = (adapter.presence.tolerates(), adapter.presence.live());
-    let (mut failed, mut lost) = (None, Mask::NONE);
+    let (mut failed, mut lost, mut unread) = (None, Mask::NONE, Mask::NONE);
     read_table(
         &mut adapter.backend,
         table,
@@ -715,6 +717,10 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
                 Outcome::Lost(BackendError::Timeout) if tolerates && live.get(index) => {
                     lost.set(index);
                 }
+                // DECISION: one `Warn` let through that answers its fault
+                // gets no start goal, and so no torque: the rest of its
+                // group is still powered.
+                Outcome::Lost(BackendError::Fault(_)) if waived.get(index) => unread.set(index),
                 outcome if needed => {
                     failed.get_or_insert((index, outcome));
                 }
@@ -723,7 +729,7 @@ fn read_present<B: Backend, const NB: usize, const N: usize>(
         },
     );
     adapter.lose_slots(lost);
-    adapter.read_failure(failed).map(|()| lost)
+    adapter.read_failure(failed).map(|()| lost.union(unread))
 }
 
 /// Sends `goals`, `bus_error` on what they carried if it fails.

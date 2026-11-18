@@ -1,11 +1,12 @@
 //! Without the `experimental` feature: every owned actuator is live for the
-//! whole run, a silent one fails bring-up and nothing is ever probed. The
-//! same calls as the feature's presence, each a constant or a no-op.
+//! whole run, a silent one or a failed health check fails bring-up and
+//! nothing is ever probed. The same calls as the feature's presence, each a
+//! constant or a no-op.
 
 use kmr_core::hal::{Mask, Overrides};
 
-use super::Dynamixel;
 use super::backend::Undeclared;
+use super::{Dynamixel, DynamixelError};
 
 /// Where the actuators of one adapter stand: all live, always.
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +62,29 @@ impl<const N: usize> Presence<N> {
 }
 
 impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
+    /// The health check's answer, as it is.
+    pub(super) fn waive_health(
+        &mut self,
+        _index: usize,
+        answer: Result<(), DynamixelError>,
+    ) -> Result<(), DynamixelError> {
+        answer
+    }
+
+    /// The step's answer, as it is.
+    pub(super) fn waive_fault(
+        &self,
+        _index: usize,
+        answer: Result<(), DynamixelError>,
+    ) -> Result<(), DynamixelError> {
+        answer
+    }
+
+    /// None let through.
+    pub(super) fn waived(&self) -> Mask<N> {
+        Mask::NONE
+    }
+
     /// Nothing is ever lost.
     pub(super) fn lose_slots(&mut self, _lost: Mask<N>) {}
 

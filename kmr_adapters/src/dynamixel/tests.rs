@@ -44,6 +44,8 @@ use crate::binding::{Binding, Port};
 use crate::presets::{Rx28Chain, XmBench};
 
 #[cfg(feature = "experimental")]
+mod health;
+#[cfg(feature = "experimental")]
 mod join;
 #[cfg(feature = "experimental")]
 mod presence;

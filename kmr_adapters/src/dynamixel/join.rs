@@ -140,13 +140,22 @@ fn advance<B: Backend, const NB: usize, const N: usize>(
         }
         Stage::Health => health(adapter, join),
         Stage::Settle => settle(adapter, join),
-        Stage::Check => adapter
-            .check_health(index, adapter.limit_writes(index))
-            .map(|()| then(Stage::Configure)),
-        Stage::Configure => adapter
-            .configure_one(index)
-            .and_then(|()| adapter.apply_settings(index))
-            .map(|()| then(Stage::Power)),
+        Stage::Check => {
+            let checked = adapter.check_health(index, adapter.limit_writes(index));
+            adapter
+                .waive_health(index, checked)
+                .map(|()| then(Stage::Configure))
+        }
+        Stage::Configure => {
+            let checked = adapter.configure_one(index);
+            adapter
+                .waive_fault(index, checked)
+                .and_then(|()| {
+                    let applied = adapter.apply_settings(index);
+                    adapter.waive_fault(index, applied)
+                })
+                .map(|()| then(Stage::Power))
+        }
         Stage::Power => power(adapter, index).map(|()| None),
     };
     adapter.presence.joining = None;
@@ -379,7 +388,8 @@ fn health<B: Backend, const NB: usize, const N: usize>(
     }
     let writes = adapter.limit_writes(index);
     if !writes.is_empty() {
-        adapter.write_limits(index, actuator, writes)?;
+        let written = adapter.write_limits(index, actuator, writes);
+        adapter.waive_health(index, written)?;
     }
     Ok(Some(Join {
         stage: Stage::Settle,
@@ -400,7 +410,8 @@ fn settle<B: Backend, const NB: usize, const N: usize>(
     };
     let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
     if !adapter.backend.faulted(bus, model, id) {
-        adapter.check_health(index, adapter.limit_writes(index))?;
+        let checked = adapter.check_health(index, adapter.limit_writes(index));
+        adapter.waive_health(index, checked)?;
         return Ok(Some(Join {
             stage: Stage::Configure,
             ..join
@@ -416,7 +427,16 @@ fn settle<B: Backend, const NB: usize, const N: usize>(
             since: Some(since),
             ..join
         })),
-        Err(error) => Err(adapter.actuator_error(index, error)),
+        // DECISION: a fault `Warn` lets through skips Check, which could
+        // only read the same fault back; the joiner goes on to Configure.
+        Err(error) => {
+            let error = adapter.actuator_error(index, error);
+            adapter.waive_health(index, Err(error))?;
+            Ok(Some(Join {
+                stage: Stage::Configure,
+                ..join
+            }))
+        }
     }
 }
 
@@ -436,11 +456,12 @@ fn power<B: Backend, const NB: usize, const N: usize>(
     only.set(index);
     io::write_start_goals(adapter, number, only)?;
     let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-    match actuator.torque {
+    let powered = match actuator.torque {
         Torque::On => adapter.backend.torque(bus, model, id, true),
         Torque::ReadOnly => adapter.backend.force_torque_off(bus, model, id),
     }
-    .map_err(|error| adapter.actuator_error(index, error))?;
+    .map_err(|error| adapter.actuator_error(index, error));
+    adapter.waive_fault(index, powered)?;
     if rejoined(adapter, index)
         && let Some(rejoins) = adapter.presence.rejoins.get_mut(index)
     {
@@ -512,11 +533,19 @@ fn refuse<B, const NB: usize, const N: usize>(
 }
 
 /// Slot `index` is held faulted: not driven for the rest of the run, cut at
-/// exit; one warning.
+/// exit; one warning. One whose failed health check `Warn` let through stays
+/// driven, no longer suspect, and nothing is logged.
+// DECISION: a re-declare or a suspect check that finds it faulted finds
+// what `Warn` already accepted; refusing it then would take it out of the
+// run only because another actuator joined its bus.
 fn held_faulted<B, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     index: usize,
 ) {
+    if adapter.waived().get(index) {
+        adapter.presence.suspect.clear(index);
+        return;
+    }
     adapter.presence.refuse(index);
     let (bus, id) = adapter.named(index);
     warn!(bus, "actuator id {id} held faulted: not driven anymore");

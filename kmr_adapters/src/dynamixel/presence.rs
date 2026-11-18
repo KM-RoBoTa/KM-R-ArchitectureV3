@@ -1,17 +1,19 @@
 //! Which declared actuators are live under the missing policy: lost after a
 //! few silent reads, never an error, each loss or absence logged once per
-//! bus; and, under the join policy, where the join of an absent one stands.
+//! bus; under the join policy, where the join of an absent one stands; and,
+//! under the health policy, which failed their health check and are driven
+//! anyway.
 
 use core::fmt;
 use core::time::Duration;
 use std::time::Instant;
 
-use kmr_core::hal::{JoinPolicy, Mask, MissingPolicy, Overrides};
-use tracing::warn;
+use kmr_core::hal::{HealthPolicy, JoinPolicy, Mask, MissingPolicy, Overrides};
+use tracing::{debug, warn};
 
-use super::Dynamixel;
 use super::backend::{Backend, BackendError, Undeclared};
 use super::config::Model;
+use super::{Dynamixel, DynamixelError};
 
 /// Consecutive due reads that time out before a live slot is lost.
 // DECISION: 3 timed-out reads: one lost packet on a noisy line is no loss,
@@ -35,12 +37,19 @@ pub(crate) const SETTLE_FOR: Duration = Duration::from_millis(500);
 pub(crate) const MAX_REJOINS: u8 = 3;
 
 /// Where the actuators of one adapter stand for the run.
+// DECISION: the health policy and the slots it let through live here, next
+// to the presence policies: one value built from `Overrides` per run, with
+// the same no-op twin without the `experimental` feature.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Presence<const N: usize> {
     /// What a declared actuator that does not answer means.
     pub(crate) missing: MissingPolicy,
     /// Whether an absent declared actuator may join the run.
     pub(crate) join: JoinPolicy,
+    /// What an actuator whose health check fails means.
+    pub(crate) health: HealthPolicy,
+    /// Failed their health check this run and driven anyway, under `Warn`.
+    pub(crate) waived: Mask<N>,
     /// Read, written and telemetered: what `Hal::present` reports.
     pub(crate) live: Mask<N>,
     /// Powered joiners whose first read is pending: read, not written.
@@ -100,11 +109,13 @@ pub(crate) enum Stage {
 }
 
 impl<const N: usize> Presence<N> {
-    /// Both policies off, every slot live.
+    /// Every policy off, every slot live.
     pub(crate) const fn new() -> Self {
         Self {
             missing: MissingPolicy::Fail,
             join: JoinPolicy::Never,
+            health: HealthPolicy::Fail,
+            waived: Mask::NONE,
             live: Mask::ALL,
             seed: Mask::NONE,
             configured: Mask::NONE,
@@ -144,6 +155,11 @@ impl<const N: usize> Presence<N> {
     /// Whether a silent actuator is absent rather than an error.
     pub(crate) fn tolerates(&self) -> bool {
         self.missing == MissingPolicy::Tolerate
+    }
+
+    /// Whether a failed health check is a warning rather than an error.
+    pub(crate) fn waives(&self) -> bool {
+        self.health == HealthPolicy::Warn
     }
 
     /// Counts one due read of slot `index` that timed out; true when that
@@ -201,6 +217,7 @@ impl<const N: usize> Presence<N> {
         Self {
             missing: overrides.missing,
             join: overrides.join,
+            health: overrides.health,
             ..Self::new()
         }
     }
@@ -329,7 +346,91 @@ fn each_run(ids: &mut [u8], event: Event, mut emit: impl FnMut(Line)) {
     }
 }
 
+/// Whether `error` is an actuator-level health failure, the kind `Warn`
+/// lets through: its voltage, its temperature, its hardware error status,
+/// or another fault it keeps reporting.
+// DECISION: a status error, a bus or transport error, a wrong model,
+// `LimitsMismatch` and `LimitsTorqueOn` are not: they say nothing about the
+// actuator's health, or that a limit it should hold is not there.
+fn health_failure(error: &DynamixelError) -> bool {
+    matches!(
+        error,
+        DynamixelError::Voltage { .. }
+            | DynamixelError::Temperature { .. }
+            | DynamixelError::HardwareError { .. }
+            | DynamixelError::Actuator {
+                source: BackendError::Fault(_),
+                ..
+            }
+    )
+}
+
 impl<B, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
+    /// `answer`, the health check of actuator `index`, as it is under
+    /// `Fail`. Under `Warn`, a health failure is one warning per actuator
+    /// and run, and the actuator goes on like the others.
+    pub(super) fn waive_health(
+        &mut self,
+        index: usize,
+        answer: Result<(), DynamixelError>,
+    ) -> Result<(), DynamixelError> {
+        match answer {
+            Err(error) if self.presence.waives() && health_failure(&error) => {
+                if !self.presence.waived.get(index) {
+                    self.presence.waived.set(index);
+                    let (bus, id) = self.named(index);
+                    warn!(
+                        actuator = index,
+                        bus, id, "health check failed, driven anyway: {error}"
+                    );
+                }
+                Ok(())
+            }
+            answer => answer,
+        }
+    }
+
+    /// `answer`, a later bring-up step of actuator `index`, as it is unless
+    /// `Warn` let that actuator's health check through: then its fault,
+    /// its torque refused for that fault or for the start goal its fault
+    /// kept from being written is no error. Not logged again.
+    // DECISION: the actuator stays held faulted, so dxl_rs_v2 keeps its
+    // torque off and skips its goals; driving it means trying, as for the
+    // others, and accepting that it does not move.
+    pub(super) fn waive_fault(
+        &self,
+        index: usize,
+        answer: Result<(), DynamixelError>,
+    ) -> Result<(), DynamixelError> {
+        match answer {
+            Err(error)
+                if self.presence.waived.get(index)
+                    && (health_failure(&error)
+                        || matches!(
+                            error,
+                            DynamixelError::Actuator {
+                                source: BackendError::Faulted { .. }
+                                    | BackendError::NoStartGoal { .. },
+                                ..
+                            }
+                        )) =>
+            {
+                let (bus, id) = self.named(index);
+                debug!(
+                    actuator = index,
+                    bus, id, "health check failed earlier: {error}"
+                );
+                Ok(())
+            }
+            answer => answer,
+        }
+    }
+
+    /// The actuators whose failed health check `Warn` let through.
+    pub(super) fn waived(&self) -> Mask<N> {
+        self.presence.waived
+    }
+
     /// Takes actuator `index` out of the run: one `Lost` line.
     pub(super) fn lose(&mut self, index: usize) {
         self.presence.drop_slot(index);

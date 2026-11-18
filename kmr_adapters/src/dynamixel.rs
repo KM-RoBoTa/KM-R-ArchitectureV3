@@ -1523,8 +1523,20 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     ///
     /// Only live actuators are visited; under `Tolerate` one found silent
     /// is taken out of the run and the next follows.
+    ///
+    /// With the `experimental` feature and `HealthPolicy::Warn`, a fault
+    /// that does not clear, a voltage or temperature outside its limits or
+    /// a hardware error status is one warning per actuator, and the
+    /// actuator is configured and powered like the others. A bus error, a
+    /// wrong model, `LimitsMismatch` and `LimitsTorqueOn` still fail.
+    // DECISION: under `Warn`, a fault that stops the limit writes, a fault
+    // that does not clear, is let through too, though its limits then go
+    // unread back: it stays held faulted, so dxl_rs_v2 refuses its torque.
     fn health(&mut self) -> Result<(), DynamixelError> {
-        self.each_live(Self::health_one)?;
+        self.each_live(|adapter, index| {
+            let answer = adapter.health_one(index);
+            adapter.waive_health(index, answer)
+        })?;
         Ok(())
     }
 
@@ -1541,10 +1553,18 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// torque still off, and reads every one back: another value read is
     /// `SettingMismatch`.
     ///
-    /// Only live actuators are visited, as `health` visits them.
+    /// Only live actuators are visited, as `health` visits them; one whose
+    /// failed health check `HealthPolicy::Warn` let through fails none of
+    /// this on its fault.
     fn configure(&mut self) -> Result<(), DynamixelError> {
-        self.each_live(Self::configure_one)?;
-        self.each_live(Self::apply_settings)?;
+        self.each_live(|adapter, index| {
+            let answer = adapter.configure_one(index);
+            adapter.waive_fault(index, answer)
+        })?;
+        self.each_live(|adapter, index| {
+            let answer = adapter.apply_settings(index);
+            adapter.waive_fault(index, answer)
+        })?;
         Ok(())
     }
 
@@ -1558,6 +1578,7 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// taken out of the run, one line per bus naming those.
     fn read_all(&mut self, mut sample: Sample<'_, N>) -> Result<(), DynamixelError> {
         let (tolerates, only) = (self.presence.tolerates(), self.presence.live());
+        let waived = self.waived();
         let (mut failed, mut lost) = (None, Mask::NONE);
         for table in self.groups.tables() {
             io::read_table(
@@ -1569,6 +1590,9 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 |index, outcome| match outcome {
                     Outcome::Read => {}
                     Outcome::Lost(BackendError::Timeout) if tolerates => lost.set(index),
+                    // DECISION: a fault answered instead of a sample by one
+                    // `Warn` let through leaves its sample as it was.
+                    Outcome::Lost(BackendError::Fault(_)) if waived.get(index) => {}
                     outcome => {
                         failed.get_or_insert((index, outcome));
                     }
@@ -1592,6 +1616,8 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
     /// Only live actuators get a goal and their torque; under `Tolerate`
     /// one found silent is taken out of the run and the rest powered. Under
     /// both policies, the first probe is one probe period after this call.
+    /// One whose failed health check `HealthPolicy::Warn` let through is
+    /// asked too; its fault, or its torque refused for it, is no error.
     fn torque_on(&mut self) -> Result<(), DynamixelError> {
         for number in 0..self.groups.tables().len() {
             let live = self.presence.live();
@@ -1602,11 +1628,12 @@ impl<B: Backend, const NB: usize, const N: usize> Hal<N> for Dynamixel<B, NB, N>
                 return Ok(());
             };
             let (bus, model, id) = (actuator.bus, actuator.model, actuator.id);
-            match actuator.torque {
+            let answer = match actuator.torque {
                 Torque::On => adapter.backend.torque(bus, model, id, true),
                 Torque::ReadOnly => adapter.backend.force_torque_off(bus, model, id),
             }
-            .map_err(|error| adapter.actuator_error(index, error))
+            .map_err(|error| adapter.actuator_error(index, error));
+            adapter.waive_fault(index, answer)
         })?;
         self.presence.powered(powered);
         Ok(())
