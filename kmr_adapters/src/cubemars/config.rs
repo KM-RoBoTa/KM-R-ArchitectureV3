@@ -1,20 +1,23 @@
-//! The CubeMars hardware table: CAN interfaces and AK60-6 actuators with
-//! their fixed gains, checked at compile time (SRS FR-6.4).
+//! The CubeMars hardware table: CAN interfaces and AK actuators with their
+//! gains, start position and limits, checked at compile time (SRS FR-6.4).
 
-use kmr_core::hal::{MASK_WORDS, Mask};
+use kmr_core::hal::MASK_WORDS;
+#[cfg(feature = "cubemars")]
+use kmr_core::hal::Mask;
 
-use super::frame::{KD_MAX, KP_MAX};
 use crate::dynamixel::{Message, fail, position, same};
 
-/// Position gain of an actuator whose table gives none: cubemars_rs's, the
-/// GeckoLeg's.
+/// Position gain of an actuator whose table gives none: the GeckoLeg's.
 pub const DEFAULT_KP: f32 = 150.0;
-/// Velocity gain of an actuator whose table gives none: cubemars_rs's.
+/// Velocity gain of an actuator whose table gives none: the GeckoLeg's.
 pub const DEFAULT_KD: f32 = 1.0;
 
-/// Highest CAN id the table takes: an 11-bit standard id, and `data[0]` of
-/// the reply carries it in one byte.
-const MAX_ID: u8 = 0x7F;
+/// Highest CAN id: cubemars_rs's `Id::MAX`.
+pub(crate) const MAX_ID: u8 = 127;
+/// Highest position gain a MIT frame carries: cubemars_rs's `Kp` range.
+pub(crate) const KP_MAX: f32 = 500.0;
+/// Highest velocity gain a MIT frame carries: cubemars_rs's `Kd` range.
+pub(crate) const KD_MAX: f32 = 5.0;
 
 /// One CAN interface, bound by a bus plugin `Bus::by_dev("can0")`.
 #[derive(Clone, Copy, Debug)]
@@ -23,30 +26,93 @@ pub struct Bus {
     pub label: &'static str,
 }
 
-/// One AK60-6 in MIT mode; its engine index is its position in
+/// The AK models cubemars_rs drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Model {
+    /// AK60-6, gear ratio 6.
+    Ak60_6,
+    /// AK80-8, gear ratio 8.
+    Ak80_8,
+}
+
+/// Limits cubemars_rs checks on every goal and every reply, in SI units;
+/// `None` checks nothing. A goal outside them is refused; a reply outside
+/// them cuts that actuator's torque.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limits {
+    /// Allowed joint positions `(min, max)`, rad.
+    pub position: Option<(f32, f32)>,
+    /// Largest joint speed either way, rad/s.
+    pub velocity: Option<f32>,
+    /// Largest torque either way, N·m.
+    pub torque: Option<f32>,
+    /// Highest temperature, °C.
+    pub temperature: Option<f32>,
+    /// Largest distance between a position goal and the last measured
+    /// position, rad.
+    pub max_goal_step: Option<f32>,
+}
+
+impl Limits {
+    /// No limit.
+    pub const NONE: Self = Self {
+        position: None,
+        velocity: None,
+        torque: None,
+        temperature: None,
+        max_goal_step: None,
+    };
+}
+
+/// One AK actuator in MIT mode; its engine index is its position in
 /// [`Table::actuators`], or the one [`Table::at`] gives it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Actuator {
     /// Index into the buses.
     pub bus: usize,
     /// CAN id, `1..=127`, unique on its bus.
     pub id: u8,
+    /// The model.
+    pub model: Model,
     /// Position gain sent on a tick that does not write `Kp`, `0..=500`.
     pub kp: f32,
     /// Velocity gain sent on a tick that does not write `Kd`, `0..=5`.
     pub kd: f32,
+    /// The joint position, rad, of the pose the actuator stands in at
+    /// bring-up. The motor's stored zero is never used nor written.
+    pub start: f32,
+    /// Mounted the other way round: positions, velocities and torques are
+    /// negated.
+    pub reversed: bool,
+    /// Limits cubemars_rs enforces.
+    pub limits: Limits,
 }
 
 impl Actuator {
-    /// An AK60-6 with id `id` on bus `bus`, gains [`DEFAULT_KP`] and
-    /// [`DEFAULT_KD`].
-    pub const fn ak60_6(bus: usize, id: u8) -> Self {
+    /// An actuator of `model` with id `id` on bus `bus`: gains
+    /// [`DEFAULT_KP`] and [`DEFAULT_KD`], joint 0 where it stands at
+    /// bring-up, normal direction, no limit.
+    pub const fn new(model: Model, bus: usize, id: u8) -> Self {
         Self {
             bus,
             id,
+            model,
             kp: DEFAULT_KP,
             kd: DEFAULT_KD,
+            start: 0.0,
+            reversed: false,
+            limits: Limits::NONE,
         }
+    }
+
+    /// An AK60-6 with id `id` on bus `bus`, as [`Actuator::new`].
+    pub const fn ak60_6(bus: usize, id: u8) -> Self {
+        Self::new(Model::Ak60_6, bus, id)
+    }
+
+    /// An AK80-8 with id `id` on bus `bus`, as [`Actuator::new`].
+    pub const fn ak80_8(bus: usize, id: u8) -> Self {
+        Self::new(Model::Ak80_8, bus, id)
     }
 }
 
@@ -80,7 +146,7 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     ///
     /// const LEG: Table<1, 3> = Table {
     ///     buses: [Bus { label: "leg" }],
-    ///     actuators: [Actuator::ak60_6(0, 1), Actuator::ak60_6(0, 2), Actuator::ak60_6(0, 3)],
+    ///     actuators: [Actuator::ak60_6(0, 1), Actuator::ak60_6(0, 2), Actuator::ak80_8(0, 3)],
     /// }
     /// .check();
     /// ```
@@ -163,7 +229,7 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     }
 
     /// The table, refused when the model marks prismatic one of its rows,
-    /// the table being in model order: an AK60-6 is rotary (SRS FR-2.2).
+    /// the table being in model order: an AK actuator is rotary (SRS FR-2.2).
     ///
     /// # Panics
     ///
@@ -233,14 +299,19 @@ impl<const NB: usize, const N: usize> Table<NB, N> {
     ///
     /// On a rejected table; in const evaluation, that is the compile error.
     pub const fn in_order(self) -> Placement<NB, N> {
-        let mut at = [0; N];
-        let mut index = 0;
-        while index < N {
-            at[index] = index;
-            index += 1;
-        }
-        self.at(at)
+        self.at(identity())
     }
+}
+
+/// `[0, 1, .., N - 1]`.
+const fn identity<const N: usize>() -> [usize; N] {
+    let mut at = [0; N];
+    let mut index = 0;
+    while index < N {
+        at[index] = index;
+        index += 1;
+    }
+    at
 }
 
 /// Checks actuator `index` against `buses` buses; `later` are the actuators
@@ -294,7 +365,7 @@ const fn refuse_prismatic(index: usize, prismatic: &[u64; MASK_WORDS]) {
     if word >> (index % 64) & 1 == 1 {
         fail(
             Message::actuator(index)
-                .text("SRS FR-2.2: prismatic CubeMars actuator; an AK60-6 is rotary"),
+                .text("SRS FR-2.2: prismatic CubeMars actuator; an AK actuator is rotary"),
         );
     }
 }
@@ -335,10 +406,21 @@ impl<const NB: usize, const M: usize> Placement<NB, M> {
         }
         self
     }
+
+    /// `table`, actuator `k` at engine index `k`, unchecked: the rows
+    /// `add_actuator` declared, which the adapter's `check` verifies at
+    /// `run()` instead of the build.
+    pub const fn unchecked(table: Table<NB, M>) -> Self {
+        Self {
+            table,
+            at: identity(),
+        }
+    }
 }
 
 /// The actuators of a [`Placement`] by engine index, `None` at the indices
 /// the member does not own, out of the robot's `N`.
+#[cfg(feature = "cubemars")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Placed<const N: usize> {
     /// Actuator at each engine index.
@@ -347,6 +429,7 @@ pub(crate) struct Placed<const N: usize> {
     past: Option<(usize, usize)>,
 }
 
+#[cfg(feature = "cubemars")]
 impl<const N: usize> Placed<N> {
     /// The actuators of `placement`, each at its engine index.
     pub(crate) fn new<const NB: usize, const M: usize>(placement: &Placement<NB, M>) -> Self {
@@ -386,13 +469,6 @@ impl<const N: usize> Placed<N> {
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| slot.as_ref().map(|actuator| (index, actuator)))
-    }
-
-    /// The engine index of the actuator with CAN id `id` on bus `bus`.
-    pub(crate) fn find(&self, bus: usize, id: u8) -> Option<usize> {
-        self.iter()
-            .find(|(_, actuator)| actuator.bus == bus && actuator.id == id)
-            .map(|(index, _)| index)
     }
 
     /// The engine indices the member owns.
