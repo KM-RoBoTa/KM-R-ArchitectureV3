@@ -9,7 +9,8 @@
 //!
 //! One URDF, `controllers/models/geckoleg.urdf`, describes the leg: `robot!` reads it for kmr's
 //! actuators, and build.rs embeds it in the binary for Pinocchio's `buildModelFromXML`. The
-//! binary reads no file at run time; it needs Pinocchio's shared libraries.
+//! binary reads no model file at run time; it loads Pinocchio's shared libraries through its
+//! rpath: Pinocchio's lib dir, or with `PINOCCHIO_RPATH` set at build time, that path instead.
 //!
 //! The model's t = 0 posture is all joints 0, which cubemars_rs takes where each actuator stands
 //! at bring-up: place the leg by hand in the C++ zero posture BEFORE starting. The run stops
@@ -22,6 +23,10 @@
 //! --features pinocchio --release -- --dry-run`
 //! `--dry-run` simulates (no CAN); `--speed X` overrides `SPEED`; add the feature `cubemars` for
 //! the leg.
+//!
+//! For the robot's Pi 4: `PI_HOST=<addr> scripts/build-pi.sh geckoleg_pinocchio --deploy` builds
+//! for aarch64 against Pinocchio's pip wheels and copies the binary with, next to it,
+//! `geckoleg_pinocchio-libs/lib/`, the libraries it loads.
 
 mod leg;
 
