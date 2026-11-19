@@ -1,0 +1,44 @@
+# The GeckoLeg gait of controllers/examples/geckoleg.rs, its controller in C++ on Pinocchio.
+[package]
+name = "kmr_ffi_example_pinocchio"
+description = "A kmr controller in C++ whose kinematics are Pinocchio's."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Pinocchio found through pkg-config, and a C++17 compiler. Off: build.rs does nothing and the
+# binary and tests are skipped, so the workspace builds on a machine without Pinocchio.
+pinocchio = ["kmr_api/ffi", "dep:kmr_api"]
+# The CubeMars driver on SocketCAN: the gait on the leg. Off: it builds and simulates.
+cubemars = ["kmr_api/cubemars"]
+
+[dependencies]
+kmr_api.workspace = true
+
+# The build helper alone, for build.rs: compiles src/ and tests/ under feature `pinocchio`.
+[build-dependencies]
+kmr_api = { workspace = true, features = ["ffi-build"], optional = true }
+
+# The tests drive scripted ticks through kmr_api's test hooks.
+[dev-dependencies]
+kmr_api = { workspace = true, features = ["test-util"] }
+
+[[bin]]
+name = "kmr_ffi_example_pinocchio"
+path = "src/main.rs"
+required-features = ["pinocchio"]
+
+# The gait over scripted ticks.
+[[test]]
+name = "gait"
+required-features = ["pinocchio"]
+
+# The Init check on the real loop, in its own process: C++ stops go to the global bus.
+[[test]]
+name = "check"
+required-features = ["pinocchio"]
+
+[lints]
+workspace = true
