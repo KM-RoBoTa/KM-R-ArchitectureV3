@@ -88,17 +88,9 @@ mod model {
         assert_eq!(<__Spec as Spec<N>>::PRESET, None);
     }
 
-    #[cfg(not(feature = "dynamixel"))]
     #[test]
-    fn without_the_feature_the_driver_is_no_hardware() {
-        let _: Option<HCons<kmr_api::NoHardware, HNil>> = None::<<__Spec as Spec<N>>::Drivers>;
-    }
-
-    #[cfg(feature = "dynamixel")]
-    #[test]
-    fn with_the_feature_the_driver_is_dynamixel_on_n_bus_slots() {
-        use kmr_api::dynamixel::{DxlRsV2, Dynamixel};
-        let _: Option<HCons<Dynamixel<DxlRsV2<N>, N, N>, HNil>> =
+    fn the_driver_is_the_member_of_the_declared_brand() {
+        let _: Option<HCons<kmr_api::__DeclaredAdapter<N>, HNil>> =
             None::<<__Spec as Spec<N>>::Drivers>;
     }
 
@@ -329,7 +321,7 @@ mod mixed_brands {
         use kmr_core::hal::{Group, Hal, Overrides};
         let leg = LEG.at([1, 3]);
         let Ok(mut member) =
-            CubeMars::<SocketCan<1>, 1, N>::bind(SocketCan::new(), leg, &PLUGINS[1..])
+            CubeMars::<SocketCan, 1, N>::bind(SocketCan::new(), leg, &PLUGINS[1..])
         else {
             panic!("the plugin names the leg's interface");
         };

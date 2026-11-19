@@ -257,7 +257,7 @@ macro_rules! __robot_items {
     (@declared) => {
         $crate::__robot_items!();
         impl $crate::Spec<{ N }> for __Spec {
-            type Drivers = $crate::HCons<$crate::__DxlAdapter<{ N }, { N }>, $crate::HNil>;
+            type Drivers = $crate::HCons<$crate::__DeclaredAdapter<{ N }>, $crate::HNil>;
 
             $crate::__robot_items!(@consts);
             const PRESET: ::core::option::Option<&'static str> = ::core::option::Option::None;
@@ -271,7 +271,7 @@ macro_rules! __robot_items {
             fn declare(
                 declared: $crate::__Declared<{ N }>,
             ) -> ::core::result::Result<Self::Drivers, $crate::UserError> {
-                $crate::__declare_dynamixel(declared)
+                $crate::__declare_actuators(declared)
             }
         }
     };
