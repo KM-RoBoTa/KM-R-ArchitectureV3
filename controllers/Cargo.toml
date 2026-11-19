@@ -13,6 +13,8 @@ kmr_api.workspace = true
 # The Dynamixel SDK and the XIAO's microphone, for the bench. Off: the crate builds anywhere and
 # simulates.
 hardware = ["kmr_api/dynamixel", "kmr_api/xiao"]
+# The CubeMars driver on SocketCAN: the geckoleg example on the leg. Off: it builds and simulates.
+cubemars = ["kmr_api/cubemars"]
 # Hot-plug of declared actuators, `kmr_api::experimental`: the runtime_actuators example.
 experimental = ["kmr_api/experimental"]
 # Controllers written in Python: `kmr_api::python!` (needs the Python headers and library).
@@ -59,6 +61,10 @@ required-features = ["c"]
 [[example]]
 name = "runtime_actuators"
 required-features = ["hardware", "experimental"]
+
+# The GeckoLeg walking gait on three AK60-6; `scripts/build-pi.sh` builds it for the Pi.
+[[example]]
+name = "geckoleg"
 
 # c/clap.c and cpp/clap.cpp over scripted ticks, with a fake microphone.
 [[test]]
