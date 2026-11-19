@@ -397,6 +397,12 @@ impl<'a, const N: usize> State<'a, N> {
         self.faults().is_some_and(|faults| faults.stale().get(i))
     }
 
+    /// The core state, read by the presence queries of [`crate::experimental`].
+    #[cfg(feature = "experimental")]
+    pub(crate) fn core(&self) -> &kmr_core::RobotState<N> {
+        self.inner
+    }
+
     // ---- Sample age and read cadence ----
 
     /// Ticks since actuator `i` was last read: `0` on the tick it was read. `Ok(None)` until

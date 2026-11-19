@@ -5,7 +5,9 @@
 //! of the one serial device, so a bus may carry Protocol 1 and Protocol 2
 //! actuators. `dxl_rs_v2` keeps the torque state of each actuator it holds
 //! and refuses a goal to one whose torque is off; the backend keeps, per
-//! port, which actuators got their start goal.
+//! port, which actuators got their start goal. With the `experimental`
+//! feature, two more handles carry the side buses a probe pings on, so a
+//! probe never touches what the main buses hold.
 
 use core::time::Duration;
 use std::io::ErrorKind;
@@ -126,6 +128,9 @@ struct Port<T: Transport, C, const N: usize> {
     two: Bus<P2, T, C, N>,
     /// Actuators given a start goal since their torque was last switched.
     started: IdSet,
+    /// The buses a probe sets up one actuator on; `None` until attached.
+    #[cfg(feature = "experimental")]
+    side: Option<side::Side<T, C>>,
 }
 
 /// Binds `$bus` to the bus of `$port` that speaks `$model`'s protocol, then
@@ -144,6 +149,9 @@ macro_rules! on_bus {
         }
     };
 }
+
+#[cfg(feature = "experimental")]
+mod side;
 
 /// The `dxl_rs_v2` backend for a robot of `N` actuators, on serial ports.
 pub struct DxlRsV2<const N: usize>(Ports<N, SerialTransport, StdClock>);
@@ -168,6 +176,11 @@ impl<const N: usize> Default for DxlRsV2<N> {
 pub(crate) trait Open<C>: Sized {
     /// Opens `path` at `baud` bit/s.
     fn open_pair(path: &str, baud: u32) -> Result<[(Self, C); 2], BackendError>;
+
+    /// Two more handles of the device `first` is a handle of, for the side
+    /// buses.
+    #[cfg(feature = "experimental")]
+    fn open_side(first: &mut Self) -> Result<[(Self, C); 2], BackendError>;
 }
 
 impl Open<StdClock> for SerialTransport {
@@ -179,6 +192,16 @@ impl Open<StdClock> for SerialTransport {
             (first, StdClock::default()),
             (Self::from(second), StdClock::default()),
         ])
+    }
+
+    /// Two duplicates of `first`.
+    #[cfg(feature = "experimental")]
+    fn open_side(first: &mut Self) -> Result<[(Self, StdClock); 2], BackendError> {
+        let mut clone = || {
+            let line = first.port_mut().try_clone_native().map_err(refused)?;
+            Ok((Self::from(line), StdClock::default()))
+        };
+        Ok([clone()?, clone()?])
     }
 }
 
@@ -217,6 +240,8 @@ impl<const N: usize, T: Transport, C: Clock> Ports<N, T, C> {
                 one: Bus::new(one.0, one.1, config),
                 two: Bus::new(two.0, two.1, config),
                 started: IdSet::new(),
+                #[cfg(feature = "experimental")]
+                side: None,
             });
         }
     }
@@ -705,7 +730,11 @@ impl<const N: usize, T: Transport + Open<C>, C: Clock> Backend for Ports<N, T, C
                 .ok_or(on_port(port, BackendError::PathNotUtf8))?;
             let [one, two] =
                 T::open_pair(path, spec.baud).map_err(|source| on_port(port, source))?;
+            #[cfg(feature = "experimental")]
+            let (one, side) = side::open(one).map_err(|source| on_port(port, source))?;
             self.attach(port, one, two, spec.baud);
+            #[cfg(feature = "experimental")]
+            self.attach_side(port, side, spec.baud);
         }
         Ok(())
     }

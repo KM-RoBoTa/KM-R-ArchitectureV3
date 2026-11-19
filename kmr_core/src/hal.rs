@@ -15,10 +15,18 @@ use crate::logging::warn;
 use crate::state::{Kd, Kp, Q, Qd, Tau};
 use crate::telemetry::Telemetry;
 
+#[cfg(feature = "experimental")]
+mod health;
+#[cfg(feature = "experimental")]
+mod presence;
 mod sensing;
 mod sensor;
 mod set;
 
+#[cfg(feature = "experimental")]
+pub use health::HealthPolicy;
+#[cfg(feature = "experimental")]
+pub use presence::{JoinPolicy, MissingPolicy};
 pub use sensing::{Sensing, SensorPolicy};
 pub use sensor::{Needs, SensorHal};
 pub use set::{Claim, Coverage, Drivers, HardwareError, Member, MemberError};
@@ -260,11 +268,22 @@ impl<'a, const N: usize> Slots<'a, N> {
 
 /// Settings the control engineer may give through the API, forwarded untouched.
 ///
-/// Empty: the read cadence is the adapter's, read back through
-/// [`crate::RobotState::cadence`], with no builder knob (SRS FR-5.3).
+/// Empty without the `experimental` feature: the read cadence is the
+/// adapter's, read back through [`crate::RobotState::cadence`], with no
+/// builder knob (SRS FR-5.3).
 #[non_exhaustive]
 #[derive(Clone, Copy, Default, Debug)]
-pub struct Overrides {}
+pub struct Overrides {
+    /// What a declared actuator that does not answer means.
+    #[cfg(feature = "experimental")]
+    pub missing: MissingPolicy,
+    /// Whether an absent declared actuator may join the run.
+    #[cfg(feature = "experimental")]
+    pub join: JoinPolicy,
+    /// What an actuator whose bring-up health check fails means.
+    #[cfg(feature = "experimental")]
+    pub health: HealthPolicy,
+}
 
 /// Which desired fields were written this tick, one mask per field.
 #[non_exhaustive]
@@ -703,6 +722,21 @@ pub trait Hal<const N: usize>: seal::Adapter {
         Mask::NONE
     }
 
+    /// The claimed actuators present now: read, written and telemetered. No
+    /// I/O. The default is every actuator, which the engine cuts to the
+    /// member's claim.
+    #[cfg(feature = "experimental")]
+    fn present(&self) -> Mask<N> {
+        Mask::ALL
+    }
+
+    /// Tick, once, after `telemetry`, called only under
+    /// [`JoinPolicy::Declared`]: bounded presence work, one join stage, one
+    /// check or one probe. It may stall one tick, which then shows as an
+    /// overrun. The default does nothing.
+    #[cfg(feature = "experimental")]
+    fn upkeep(&mut self) {}
+
     /// Shutdown: holds each actuator per its mode. `written` marks values
     /// from this tick's command; the rest is the latest sample. Best effort,
     /// never fails.
@@ -769,6 +803,16 @@ impl<const N: usize, A: Hal<N>> Hal<N> for &mut A {
 
     fn telemetry(&mut self, telemetry: &mut Telemetry<N>, faults: &mut Faults<N>) -> Mask<N> {
         (**self).telemetry(telemetry, faults)
+    }
+
+    #[cfg(feature = "experimental")]
+    fn present(&self) -> Mask<N> {
+        (**self).present()
+    }
+
+    #[cfg(feature = "experimental")]
+    fn upkeep(&mut self) {
+        (**self).upkeep();
     }
 
     fn hold(&mut self, target: Command<'_, N>) {

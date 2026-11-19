@@ -533,11 +533,42 @@ pub(crate) struct Undeclared {
     pub(crate) source: BackendError,
 }
 
+/// What the hot-plug of actuators needs from an SDK, beside [`Backend`].
+/// `port` and `model` as in it.
+#[cfg(feature = "experimental")]
+pub(crate) trait HotPlug {
+    /// One typed ping of `id` over the port's side line; Ok when it answers
+    /// as `model` (a fault-only answer counts). What the port holds is
+    /// untouched.
+    fn probe(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
+
+    /// Torque Enable = 1 on held actuator `id`, no start goal: for one whose
+    /// torque is on but that a re-declare holds Off.
+    fn rearm(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
+
+    /// One fault ask, as [`clear_fault`](Backend::clear_fault) asks, with no
+    /// settle loop.
+    fn clear_fault_once(&mut self, port: usize, model: Model, id: u8) -> Result<(), BackendError>;
+
+    /// Whether the port holds `id`: its last declare named it and
+    /// succeeded. No I/O.
+    fn holds(&self, port: usize, model: Model, id: u8) -> bool;
+}
+
+/// Without the `experimental` feature, nothing: every backend has it.
+#[cfg(not(feature = "experimental"))]
+pub(crate) trait HotPlug {}
+
+#[cfg(not(feature = "experimental"))]
+impl<B> HotPlug for B {}
+
 /// What the adapter needs from an SDK.
 ///
 /// `port` indexes the slice given to `open_ports`; `model` is the model of
 /// the actuators named, one series per call.
-pub(crate) trait Backend {
+// DECISION: the hot-plug calls in a supertrait, so one gate per backend
+// covers them, not one per method.
+pub(crate) trait Backend: HotPlug {
     /// Ports one backend opens.
     const MAX_PORTS: usize;
 

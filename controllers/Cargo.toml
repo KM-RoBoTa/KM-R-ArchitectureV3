@@ -13,6 +13,8 @@ kmr_api.workspace = true
 # The Dynamixel SDK and the XIAO's microphone, for the bench. Off: the crate builds anywhere and
 # simulates.
 hardware = ["kmr_api/dynamixel", "kmr_api/xiao"]
+# Hot-plug of declared actuators, `kmr_api::experimental`: the runtime_actuators example.
+experimental = ["kmr_api/experimental"]
 # Controllers written in Python: `kmr_api::python!` (needs the Python headers and library).
 python = ["kmr_api/python"]
 # Controllers written in Lua: `kmr_api::lua!` (Lua 5.4, vendored).
@@ -52,6 +54,11 @@ required-features = ["c"]
 [[example]]
 name = "clap_cpp"
 required-features = ["c"]
+
+# The clap controller of src/main.rs without the microphone, actuators plugged and unplugged at run time.
+[[example]]
+name = "runtime_actuators"
+required-features = ["hardware", "experimental"]
 
 # c/clap.c and cpp/clap.cpp over scripted ticks, with a fake microphone.
 [[test]]

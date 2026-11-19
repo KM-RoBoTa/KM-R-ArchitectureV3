@@ -1,0 +1,44 @@
+error[E0432]: unresolved import `kmr_api::MissingPolicy`
+ --> tests/ui/experimental/no_import.rs:4:5
+  |
+4 | use kmr_api::MissingPolicy;
+  |     ^^^^^^^^^^^^^^^^^^^^^^ no `MissingPolicy` in the root
+
+error[E0599]: no method named `present` found for mutable reference `&mut kmr_api::State<'_, 4>` in the current scope
+ --> tests/ui/experimental/no_import.rs:9:19
+  |
+9 |     let _ = robot.present();
+  |                   ^^^^^^^
+  |
+  = help: items from traits can only be used if the trait is in scope
+help: there is a method `present_at` with a similar name, but with different arguments
+ --> src/experimental.rs
+  |
+  |     fn present_at(&self, i: usize) -> bool;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: trait `Presence` which provides `present` is implemented but not in scope; perhaps you want to import it
+  |
+4 + use kmr_api::experimental::Presence;
+  |
+
+error[E0599]: no method named `set_missing_policy` found for struct `kmr_api::Robot<N, H, C, E, SN>` in the current scope
+  --> tests/ui/experimental/no_import.rs:13:26
+   |
+13 |     let _ = Robot::new().set_missing_policy(MissingPolicy::Tolerate);
+   |                          ^^^^^^^^^^^^^^^^^^
+   |
+  ::: src/experimental.rs
+   |
+   |     fn set_missing_policy(self, policy: MissingPolicy) -> Self;
+   |        ------------------ the method is available for `kmr_api::Robot<4, __Spec>` here
+   |
+   = help: items from traits can only be used if the trait is in scope
+help: trait `RobotExt` which provides `set_missing_policy` is implemented but not in scope; perhaps you want to import it
+   |
+ 4 + use kmr_api::experimental::RobotExt;
+   |
+help: there is a method `set_join_policy` with a similar name
+   |
+13 -     let _ = Robot::new().set_missing_policy(MissingPolicy::Tolerate);
+13 +     let _ = Robot::new().set_join_policy(MissingPolicy::Tolerate);
+   |

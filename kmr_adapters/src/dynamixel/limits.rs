@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use super::backend::{Backend, BackendError, Fault, Setting};
 use super::config::{Actuator, HealthLimits, Model, Protocol};
-use super::{Dynamixel, DynamixelError};
+use super::{Dynamixel, DynamixelError, Volts};
 
 /// A typed write of one limit register to the actuator at `(bus, model,
 /// id)`.
@@ -67,6 +67,61 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
             temperature_c: settings
                 .temperature_limit_c
                 .or(placed.map(|limits| limits.temperature_c)),
+        }
+    }
+
+    /// One warning when `error`, what actuator `index` answered once
+    /// `written` was sent, is a fault carrying a limit other than the one
+    /// written: the actuator did not apply that write. `error` stays the
+    /// error; no I/O.
+    // DECISION: the fault's limits are compared only where `written` set
+    // that register; a write that answers a fault counts as written
+    // (`written`), so this is the one place the miss shows before the
+    // read back, which a held fault prevents.
+    pub(super) fn note_unapplied(&self, index: usize, written: Limits, error: &DynamixelError) {
+        let (bus, id) = self.named(index);
+        match *error {
+            DynamixelError::Voltage { min_dv, max_dv, .. }
+            | DynamixelError::Actuator {
+                source:
+                    BackendError::Fault(
+                        Fault::Voltage { min_dv, max_dv, .. }
+                        | Fault::VoltageInside { min_dv, max_dv, .. },
+                    ),
+                ..
+            } => {
+                if let Some((low, high)) = written.voltage_dv
+                    && (low, high) != (min_dv, max_dv)
+                {
+                    warn!(
+                        actuator = index,
+                        bus,
+                        id,
+                        "voltage limits not applied: wrote {}–{} V, the actuator still holds {}–{} V",
+                        Volts(low),
+                        Volts(high),
+                        Volts(min_dv),
+                        Volts(max_dv),
+                    );
+                }
+            }
+            DynamixelError::Temperature { limit_c, .. }
+            | DynamixelError::Actuator {
+                source: BackendError::Fault(Fault::Temperature { limit_c, .. }),
+                ..
+            } => {
+                if let Some(celsius) = written.temperature_c
+                    && celsius != limit_c
+                {
+                    warn!(
+                        actuator = index,
+                        bus,
+                        id,
+                        "temperature limit not applied: wrote {celsius} °C, the actuator still holds {limit_c} °C",
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -197,17 +252,25 @@ impl<B: Backend, const NB: usize, const N: usize> Dynamixel<B, NB, N> {
 
     /// Puts back every limit register `health` saved, Temperature Limit
     /// first: one attempt each, a warning for each that fails or that a
-    /// read back does not confirm, and the saved values forgotten.
+    /// read back does not confirm, and the saved values forgotten. Under
+    /// `Tolerate`, an actuator its bus no longer holds is left to
+    /// `cut_unheld`, which restores it once its torque off held it alone.
     // DECISION: Temperature Limit first: putting back the voltages is what
     // brings back the bench AX-12A's voltage fault, and that fault carries
     // the voltages their read back needs; a temperature read back beside it
     // would fail unconfirmed.
     pub(super) fn restore_limits(&mut self) {
         for index in self.actuators.owned().iter() {
-            let saved = self.saved.get_mut(index).map(core::mem::take);
-            let (Some(saved), Some(&actuator)) = (saved, self.actuators.get(index)) else {
-                continue;
-            };
+            if !self.left_to_close(index) {
+                self.restore_one(index);
+            }
+        }
+    }
+
+    /// The `restore_limits` of actuator `index` alone.
+    pub(super) fn restore_one(&mut self, index: usize) {
+        let saved = self.saved.get_mut(index).map(core::mem::take);
+        if let (Some(saved), Some(&actuator)) = (saved, self.actuators.get(index)) {
             if let Some(celsius) = saved.temperature_c {
                 self.restore(
                     index,

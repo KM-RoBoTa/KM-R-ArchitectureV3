@@ -32,5 +32,8 @@ pub use field::{FieldId, field_id};
 mod robot_state;
 pub use robot_state::RobotState;
 
+#[cfg(feature = "experimental")]
+mod presence;
+
 #[cfg(test)]
 mod test;

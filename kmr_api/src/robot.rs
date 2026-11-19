@@ -175,6 +175,19 @@ impl<const N: usize, H, C, E, SN> Robot<N, H, C, E, SN> {
         }
     }
 
+    /// This builder with its core robot passed through `set`: the setters of
+    /// [`crate::experimental`].
+    #[cfg(feature = "experimental")]
+    pub(crate) fn map_core(
+        self,
+        set: impl FnOnce(kmr_core::Robot<N, C, E>) -> kmr_core::Robot<N, C, E>,
+    ) -> Self {
+        Self {
+            inner: set(self.inner),
+            ..self
+        }
+    }
+
     /// What a sensor lost at run time does beyond raising
     /// [`sensor_missing`](crate::Faults::sensor_missing), which it always does (SRS FR-5.7,
     /// FR-13.4). Without it, [`SensorPolicy::Flag`]: the flag is the signal, the controllers

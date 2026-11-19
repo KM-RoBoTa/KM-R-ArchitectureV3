@@ -33,6 +33,9 @@ pub use kmr_adapters::dynamixel::{
 
 use kmr_adapters::dynamixel::{Gains, Settings};
 
+mod hardware_error;
+pub use hardware_error::HardwareError;
+
 use crate::BusHandle;
 use crate::actuator::{Actuators, Driver, IdSet};
 
@@ -187,6 +190,12 @@ macro_rules! models {
             /// One actuator per actuator of the robot model, at firmware ids `1..=N`.
             pub fn all() -> Ids {
                 Ids::new(Model::$model, IdSet::All)
+            }
+
+            /// The raw byte of [`State::hardware_error_at`](crate::State::hardware_error_at),
+            /// decoded for this model.
+            pub fn hardware_error(raw: u8) -> HardwareError {
+                HardwareError::new(Model::$model, raw)
             }
         }
     )*};

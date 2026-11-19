@@ -46,6 +46,10 @@ std = [
 # a `[dev-dependencies]` entry, so no release build carries a way to forge a
 # sample or to read the write-only staging area.
 test-util = ["std"]
+# Hot-plug of declared actuators: the presence and health policies in `Overrides`,
+# `Hal::present` and `Hal::upkeep`, presence in the robot state. Niche, off by
+# default: without it the engine has none of it.
+experimental = []
 # Batches keep declaration order instead of group order: the bench's
 # baseline for the presort (SRS FR-5.3). Off by default.
 presort-off = []

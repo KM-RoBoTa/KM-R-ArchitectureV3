@@ -182,6 +182,15 @@ impl<const N: usize> Groups<N> {
         self.tables.get(..self.len).unwrap_or_default()
     }
 
+    /// Number of the table actuator `index` is in; `None` past the tables.
+    #[cfg(feature = "experimental")]
+    pub(crate) fn table_of(&self, index: usize) -> Option<usize> {
+        self.of
+            .get(index)
+            .copied()
+            .filter(|&table| table < self.len)
+    }
+
     /// Group number of each actuator. A number past `u8::MAX` saturates:
     /// `write` looks up each actuator's own table, so a shared number never
     /// mixes two tables in one transaction.
@@ -385,29 +394,46 @@ fn start_goal(actuator: &Actuator, present: Q) -> Option<(GoalRegister, u32)> {
     }
 }
 
-/// Reads every member of `table` into `sample` and reports each one.
+/// Reads every member of `table` in `only` into `sample` and reports each
+/// one; nothing is sent for the others, nor for a table with none in it.
 ///
 /// Protocol 2 reads the group in one transaction; Protocol 1 reads each
 /// position on its own and leaves `Qd` and `Tau` as copied (research R12).
+// DECISION: Protocol 2 names only the members in `only`: dxl_rs_v2 refuses a
+// call naming an id it does not hold, and a held silent one costs a timeout.
 pub(crate) fn read_table<B: Backend, const N: usize>(
     backend: &mut B,
     table: &Table<N>,
     actuators: &Placed<N>,
     sample: &mut Sample<'_, N>,
+    only: Mask<N>,
     mut report: impl FnMut(usize, Outcome),
 ) {
     match table.model.protocol() {
         Protocol::Two => {
-            let ids = table.ids();
+            let (mut members, mut ids, mut len) = ([0; N], [0; N], 0);
+            for (&index, &id) in table.members().iter().zip(table.ids()) {
+                if let (true, Some(member), Some(slot)) =
+                    (only.get(index), members.get_mut(len), ids.get_mut(len))
+                {
+                    (*member, *slot) = (index, id);
+                    len += 1;
+                }
+            }
+            if len == 0 {
+                return;
+            }
+            let members = members.get(..len).unwrap_or_default();
+            let ids = ids.get(..len).unwrap_or_default();
             let mut out = [Ok(RawState::default()); N];
             let out = out.get_mut(..ids.len()).unwrap_or_default();
             if let Err(error) = backend.sync_read_state(table.bus, table.model, ids, out) {
-                for &index in table.members() {
+                for &index in members {
                     report(index, Outcome::Bus(error));
                 }
                 return;
             }
-            for (&index, result) in table.members().iter().zip(out.iter()) {
+            for (&index, result) in members.iter().zip(out.iter()) {
                 let Some(actuator) = actuators.get(index) else {
                     continue;
                 };
@@ -425,6 +451,9 @@ pub(crate) fn read_table<B: Backend, const N: usize>(
                 let Some(actuator) = actuators.get(index) else {
                     continue;
                 };
+                if !only.get(index) {
+                    continue;
+                }
                 match backend.read_position(table.bus, actuator.model, id) {
                     Ok(raw) => {
                         let read = i32::try_from(raw)
@@ -488,7 +517,16 @@ pub(crate) fn unread_rates<const N: usize>(actuators: &Placed<N>) -> Mask<N> {
 }
 
 /// The per-tick read: every group whose bus is due on this call, the first
-/// call included (FR-009). Faults go to `faults` (FR-014, FR-015).
+/// call included (FR-009), its live and seeded members; and the seeded
+/// members of the groups not due, so a joiner is read on the next tick
+/// whatever the cadence. Faults go to `faults` (FR-014, FR-015).
+///
+/// Under `Tolerate`, a slot whose due reads time out `LOST_AFTER` times
+/// in a row is taken out of the run, one line per bus naming those lost in
+/// this call. Only a timeout is a miss: an answer with error bits resets the
+/// count, and a bus error, a USB adapter pulled out included, leaves it as
+/// it is, the slots present and flagged `bus_error` as without the policy.
+/// A seeded slot that reads is live from this call on.
 pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     mut sample: Sample<'_, N>,
@@ -496,30 +534,52 @@ pub(super) fn read_due<B: Backend, const NB: usize, const N: usize>(
 ) -> Mask<N> {
     let call = adapter.reads;
     adapter.reads = adapter.reads.wrapping_add(1);
-    let mut refreshed = Mask::NONE;
+    let (driven, seed) = adapter.presence.begin_read();
+    let (mut refreshed, mut lost) = (Mask::NONE, Mask::NONE);
+    let presence = &mut adapter.presence;
     for table in adapter.groups.tables() {
-        if !call.is_multiple_of(u64::from(table.every.get())) {
-            continue;
-        }
+        let only = if call.is_multiple_of(u64::from(table.every.get())) {
+            driven
+        } else {
+            seed
+        };
         read_table(
             &mut adapter.backend,
             table,
             &adapter.actuators,
             &mut sample,
-            |index, outcome| match outcome {
-                Outcome::Read => refreshed.set(index),
-                Outcome::Lost(_) => {
-                    faults.stale.set(index);
-                    faults.offline.set(index);
+            only,
+            |index, outcome| {
+                match outcome {
+                    Outcome::Read => {
+                        refreshed.set(index);
+                        presence.promote(index);
+                    }
+                    Outcome::Lost(_) => {
+                        faults.stale.set(index);
+                        faults.offline.set(index);
+                    }
+                    Outcome::Bus(_) => {
+                        faults.stale.set(index);
+                        faults.bus_error.set(index);
+                    }
+                    Outcome::Invalid(_) => faults.stale.set(index),
                 }
-                Outcome::Bus(_) => {
-                    faults.stale.set(index);
-                    faults.bus_error.set(index);
+                match outcome {
+                    Outcome::Lost(BackendError::Timeout) => {
+                        if presence.miss(index) {
+                            lost.set(index);
+                        }
+                    }
+                    Outcome::Lost(BackendError::NotDeclared { .. }) | Outcome::Bus(_) => {}
+                    Outcome::Read | Outcome::Invalid(_) | Outcome::Lost(_) => {
+                        presence.answered(index);
+                    }
                 }
-                Outcome::Invalid(_) => faults.stale.set(index),
             },
         );
     }
+    adapter.lose_slots(lost);
     refreshed
 }
 
@@ -548,7 +608,9 @@ pub(super) fn write_batch<B: Backend, const NB: usize, const N: usize>(
             else {
                 continue;
             };
-            if !has_goal(command.written, index) {
+            // DECISION: an absent slot is skipped without a fault: dxl_rs_v2
+            // refuses a whole sync write naming one unpowered id.
+            if !has_goal(command.written, index) || !adapter.presence.live().get(index) {
                 continue;
             }
             if goals.is_some_and(|goals| goals.table != table) {
@@ -571,29 +633,33 @@ pub(super) fn write_batch<B: Backend, const NB: usize, const N: usize>(
 }
 
 /// Writes, torque still off, the goal each powered actuator of group
-/// `number` holds once powered: its present position, read now, or a zero
-/// velocity or current. One `sync_write_start_goal` per goal register.
+/// `number` in `only` holds once powered: its present position, read now,
+/// or a zero velocity or current. One `sync_write_start_goal` per goal
+/// register. Under `Tolerate`, a live one whose read times out is taken out
+/// of the run and gets no goal; a joiner, not live yet, fails `Missing`.
 pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     number: usize,
+    only: Mask<N>,
 ) -> Result<(), DynamixelError> {
     let Some(&table) = adapter.groups.tables().get(number) else {
         return Ok(());
     };
     let mut present = [Q::default(); N];
-    let reads = table
-        .members()
-        .iter()
-        .any(|&index| adapter.actuators.get(index).is_some_and(starts_at_present));
-    if reads {
-        read_present(adapter, &table, &mut present)?;
-    }
+    let reads = table.members().iter().any(|&index| {
+        only.get(index) && adapter.actuators.get(index).is_some_and(starts_at_present)
+    });
+    let lost = if reads {
+        read_present(adapter, &table, &mut present, only)?
+    } else {
+        Mask::NONE
+    };
     let mut goals = GoalRegister::ALL.map(|_| Goals::new(number));
     for &index in table.members() {
         let Some(actuator) = adapter.actuators.get(index) else {
             continue;
         };
-        if actuator.torque == Torque::ReadOnly {
+        if actuator.torque == Torque::ReadOnly || !only.get(index) || lost.get(index) {
             continue;
         }
         let q = present.get(index).copied().unwrap_or_default();
@@ -617,31 +683,53 @@ pub(super) fn write_start_goals<B: Backend, const NB: usize, const N: usize>(
     Ok(())
 }
 
-/// Reads the present position of every member of `table` into `present`;
-/// fails on the first one a start goal needs.
+/// Reads the present position of every member of `table` in `only` into
+/// `present`; fails on the first one a start goal needs. Under `Tolerate`,
+/// a live one that times out is taken out of the run instead, one line per
+/// bus naming those; returns them, with those `HealthPolicy::Warn` let
+/// through that answered a fault.
+// DECISION: only a live slot is taken out on a timeout: a joiner is not
+// live yet, so its silence fails the Power stage `Missing`, and the join
+// puts it back to absent quietly.
 fn read_present<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     table: &Table<N>,
     present: &mut [Q; N],
-) -> Result<(), DynamixelError> {
+    only: Mask<N>,
+) -> Result<Mask<N>, DynamixelError> {
     let (mut qd, mut tau) = ([Qd::default(); N], [Tau::default(); N]);
     let (mut kp, mut kd) = ([Kp::default(); N], [Kd::default(); N]);
     let mut sample = Sample::new(present, &mut qd, &mut tau, &mut kp, &mut kd);
+    let waived = adapter.waived();
     let actuators = &adapter.actuators;
-    let mut failed = None;
+    let (tolerates, live) = (adapter.presence.tolerates(), adapter.presence.live());
+    let (mut failed, mut lost, mut unread) = (None, Mask::NONE, Mask::NONE);
     read_table(
         &mut adapter.backend,
         table,
         actuators,
         &mut sample,
+        only,
         |index, outcome| {
             let needed = actuators.get(index).is_some_and(starts_at_present);
-            if needed && !matches!(outcome, Outcome::Read) {
-                failed.get_or_insert((index, outcome));
+            match outcome {
+                Outcome::Read => {}
+                Outcome::Lost(BackendError::Timeout) if tolerates && live.get(index) => {
+                    lost.set(index);
+                }
+                // DECISION: one `Warn` let through that answers its fault
+                // gets no start goal, and so no torque: the rest of its
+                // group is still powered.
+                Outcome::Lost(BackendError::Fault(_)) if waived.get(index) => unread.set(index),
+                outcome if needed => {
+                    failed.get_or_insert((index, outcome));
+                }
+                _ => {}
             }
         },
     );
-    adapter.read_failure(failed)
+    adapter.lose_slots(lost);
+    adapter.read_failure(failed).map(|()| lost.union(unread))
 }
 
 /// Sends `goals`, `bus_error` on what they carried if it fails.

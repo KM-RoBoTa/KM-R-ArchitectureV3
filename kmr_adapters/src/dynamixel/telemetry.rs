@@ -5,7 +5,8 @@
 //! A round is a list of steps, each one bus transaction: per Protocol 2
 //! group, one sync read per register; per Protocol 1 actuator, one read.
 //! The bring-up call takes every step; a tick takes at most one, every
-//! [`TELEMETRY_EVERY`] ticks.
+//! [`TELEMETRY_EVERY`] ticks. Only live actuators are read: a step with
+//! none sends nothing.
 
 use kmr_core::hal::{Faults, Mask};
 use kmr_core::telemetry::Telemetry;
@@ -108,9 +109,22 @@ pub(super) fn refresh<B: Backend, const NB: usize, const N: usize>(
     if read_this_tick(adapter, next) {
         return Mask::NONE;
     }
+    // DECISION: a step with no live actuator is passed over and `since` left
+    // as it is, so the next step goes on the next tick: absent slots never
+    // stretch the round.
+    if picked(adapter, next).is_none() {
+        adapter.rounds.next = (number + 1) % total;
+        return Mask::NONE;
+    }
     adapter.rounds.since = 0;
     adapter.rounds.next = (number + 1) % total;
     take(adapter, next, telemetry, faults)
+}
+
+/// Whether this tick's telemetry call sent a transaction.
+#[cfg(feature = "experimental")]
+pub(super) fn sent<B, const NB: usize, const N: usize>(adapter: &Dynamixel<B, NB, N>) -> bool {
+    adapter.rounds.since == 0
 }
 
 /// Whether this tick's `read` read the bus of `step`. A bus read every tick
@@ -120,40 +134,100 @@ fn read_this_tick<B, const NB: usize, const N: usize>(
     step: Step,
 ) -> bool {
     let (Step::Field(number, _) | Step::One(number, _)) = step;
-    let every = adapter
-        .groups
-        .tables()
-        .get(number)
-        .map_or(1, |table| u64::from(table.every.get()));
-    let call = adapter.reads.checked_sub(1);
-    every > 1 && call.is_some_and(|call| call.is_multiple_of(every))
+    table_read_this_tick(adapter, number)
 }
 
-/// Sends `step`, stores what it read and returns the actuators it read. A
-/// failed read keeps the previous values and sets `bus_error` or `offline`
-/// as `read` does, a failed group transaction `bus_error` on all of it;
-/// never `stale`, which is the state's.
+/// Whether this tick's `read` read the bus of group `number`, as
+/// [`read_this_tick`] tells it: due, or a seeded member of it read off
+/// its cadence.
+pub(super) fn table_read_this_tick<B, const NB: usize, const N: usize>(
+    adapter: &Dynamixel<B, NB, N>,
+    number: usize,
+) -> bool {
+    let Some(table) = adapter.groups.tables().get(number) else {
+        return false;
+    };
+    let every = u64::from(table.every.get());
+    let call = adapter.reads.checked_sub(1);
+    let due = call.is_some_and(|call| call.is_multiple_of(every));
+    let seeded = table
+        .members()
+        .iter()
+        .any(|&index| adapter.presence.seed_read().get(index));
+    every > 1 && (due || seeded)
+}
+
+/// The live actuators `step` reads, at most `N`.
+#[derive(Clone, Copy, Debug)]
+struct Picked<const N: usize> {
+    /// Bus and model of their group.
+    table: Table<N>,
+    /// The register read.
+    vital: Vital,
+    /// Engine indices, `len` of them used.
+    members: [usize; N],
+    /// Firmware ids, in the order of `members`.
+    ids: [u8; N],
+    /// Entries in use.
+    len: usize,
+}
+
+/// What `step` reads of the live actuators; `None` when it reads none.
+fn picked<B, const NB: usize, const N: usize>(
+    adapter: &Dynamixel<B, NB, N>,
+    step: Step,
+) -> Option<Picked<N>> {
+    let (Step::Field(number, _) | Step::One(number, _)) = step;
+    let table = adapter.groups.tables().get(number).copied()?;
+    let (vital, range) = match step {
+        Step::Field(_, vital) => (vital, 0..table.members().len()),
+        Step::One(_, member) => (Vital::Voltage, member..member + 1),
+    };
+    let mut picked = Picked {
+        table,
+        vital,
+        members: [0; N],
+        ids: [0; N],
+        len: 0,
+    };
+    let members = table.members().get(range.clone()).unwrap_or_default();
+    let ids = table.ids().get(range).unwrap_or_default();
+    for (&index, &id) in members.iter().zip(ids) {
+        if let (true, Some(member), Some(slot)) = (
+            adapter.presence.live().get(index),
+            picked.members.get_mut(picked.len),
+            picked.ids.get_mut(picked.len),
+        ) {
+            (*member, *slot) = (index, id);
+            picked.len += 1;
+        }
+    }
+    (picked.len > 0).then_some(picked)
+}
+
+/// Sends `step` to its live actuators, stores what it read and returns the
+/// actuators it read; nothing is sent when none is live. A failed read
+/// keeps the previous values and sets `bus_error` or `offline` as `read`
+/// does, a failed group transaction `bus_error` on all of it; never
+/// `stale`, which is the state's.
 fn take<B: Backend, const NB: usize, const N: usize>(
     adapter: &mut Dynamixel<B, NB, N>,
     step: Step,
     telemetry: &mut Telemetry<N>,
     faults: &mut Faults<N>,
 ) -> Mask<N> {
-    let (Step::Field(number, _) | Step::One(number, _)) = step;
-    let Some(table) = adapter.groups.tables().get(number).copied() else {
+    let Some(Picked {
+        table,
+        vital,
+        members,
+        ids,
+        len,
+    }) = picked(adapter, step)
+    else {
         return Mask::NONE;
     };
-    let (vital, members, ids) = match step {
-        Step::Field(_, vital) => (vital, table.members(), table.ids()),
-        Step::One(_, member) => {
-            let one = member..member + 1;
-            (
-                Vital::Voltage,
-                table.members().get(one.clone()).unwrap_or_default(),
-                table.ids().get(one).unwrap_or_default(),
-            )
-        }
-    };
+    let members = members.get(..len).unwrap_or_default();
+    let ids = ids.get(..len).unwrap_or_default();
     let mut out = [Ok(Reading::default()); N];
     let out = out.get_mut(..ids.len()).unwrap_or_default();
     let mut refreshed = Mask::NONE;
