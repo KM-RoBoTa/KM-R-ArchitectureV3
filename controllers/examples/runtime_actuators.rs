@@ -7,8 +7,10 @@
 //!
 //! `cargo run -p controllers --example runtime_actuators --features hardware,experimental --release`
 
-use kmr_api::experimental::{JoinPolicy, JoinRamp, MissingPolicy, RobotExt};
-use kmr_api::{Bus, EachTick, Policy, Q, Sensors, Time, presets::home::Home, shutdown, with};
+use kmr_api::experimental::{HealthPolicy, JoinPolicy, JoinRamp, MissingPolicy, RobotExt};
+use kmr_api::{
+    Bus, EachTick, Policy, Q, Sensors, Time, Volts, presets::home::Home, shutdown, with,
+};
 use std::{f32::consts::TAU, time::Duration};
 
 kmr_api::robot!(model = "models/ax_12_12act_an_rx28_10act.urdf");
@@ -67,13 +69,104 @@ fn base(i: usize, now: Duration) -> Q {
     }
 }
 
+/// TEMPORARY diagnostic, not to commit: per sine period, what the AX-12A were asked and read.
+struct Trace {
+    ramp: JoinRamp<N>,
+    window: u64,
+    ticks: u32,
+    lo: f32,
+    hi: f32,
+    sum: [f32; AX_COUNT],
+    reads: [u32; AX_COUNT],
+    /// Latest and lowest input voltage seen per AX-12A.
+    volts: [Option<(f32, f32)>; AX_COUNT],
+}
+
+impl Trace {
+    fn note(&mut self, time: &Time, robot: &State, target: &[Q; N]) {
+        let window = time.elapsed().as_secs() / 2;
+        if window != self.window {
+            // eprint!(
+            //     "[trace] t={}s ticks={} overruns={} ax_target=[{:+.3},{:+.3}] absent=",
+            //     2 * window,
+            //     self.ticks,
+            //     time.overrun_count(),
+            //     self.lo,
+            //     self.hi
+            // );
+            // for i in (0..N).filter(|&i| !robot.present_at(i)) {
+            //     eprint!("{i},");
+            // }
+            // eprint!(" joiners=");
+            // for i in self.ramp.joiners().iter() {
+            //     eprint!("{i},");
+            // }
+            // eprint!(" easing=");
+            // for i in self.ramp.easing().iter() {
+            //     eprint!("{i},");
+            // }
+            // eprintln!();
+            // let faults = robot.faults().unwrap_or_default();
+            // for i in AX {
+            //     eprintln!(
+            //         "[trace]   ax[{i}] mean_q={:+.3} reads={} age={:?} hw_error={:?} volts={:?} stale={} offline={} rejected={} bus_error={}",
+            //         self.sum[i] / self.reads[i].max(1) as f32,
+            //         self.reads[i],
+            //         robot.age_at(i).ok().flatten(),
+            //         robot.hardware_error_at(i).ok().flatten(),
+            //         robot.voltage_at(i).ok().flatten(),
+            //         faults.stale().get(i),
+            //         faults.offline().get(i),
+            //         faults.rejected().get(i),
+            //         faults.bus_error().get(i),
+            //     );
+            // }
+            eprint!("[volts] t={:>3}s  ", 2 * window);
+            for i in AX {
+                let age = robot.telemetry_age_at(i).ok().flatten();
+                let error = robot.hardware_error_at(i).ok().flatten().unwrap_or(0);
+                match (self.volts[i], age) {
+                    (Some((now, min)), Some(age)) => {
+                        eprint!("id{}: {now:.1}V min {min:.1} age {age}", i + 1);
+                    }
+                    _ => eprint!("id{}: no reading", i + 1),
+                }
+                let error = kmr_api::dynamixel::Ax12a::hardware_error(error);
+                if error.any() {
+                    eprint!(" HW_ERROR {error}");
+                }
+                eprint!(" | ");
+            }
+            eprintln!();
+            (self.window, self.ticks) = (window, 0);
+            (self.lo, self.hi) = (f32::MAX, f32::MIN);
+            (self.sum, self.reads) = ([0.0; AX_COUNT], [0; AX_COUNT]);
+        }
+        self.ticks += 1;
+        for i in AX {
+            self.lo = self.lo.min(target[i].0);
+            self.hi = self.hi.max(target[i].0);
+            if let Ok(Some(Volts(now))) = robot.voltage_at(i) {
+                let min = self.volts[i].map_or(now, |(_, min)| min.min(now));
+                self.volts[i] = Some((now, min));
+            }
+            if let (Ok(q), Ok(Some(0))) = (robot.q_at(i), robot.age_at(i)) {
+                self.sum[i] += q.0;
+                self.reads[i] += 1;
+            }
+        }
+    }
+}
+
 /// Both sines after the home ramp; a joiner eases in from where it joined over `JOIN_RAMP`,
 /// during the ramp as after it. Added after `HOME`, so during the ramp a joiner's target wins
 /// over Home's write, whose line started from where it was before it left.
-fn sway(ramp: &mut JoinRamp<N>, time: &Time, robot: &mut State, _: &Sensors) {
+fn sway(trace: &mut Trace, time: &Time, robot: &mut State, _: &Sensors) {
     let now = time.elapsed();
     let mut target: [Q; N] = core::array::from_fn(|i| base(i, now));
-    ramp.apply(time, robot, &mut target);
+    trace.ramp.apply(time, robot, &mut target);
+    trace.note(time, robot, &target);
+    let ramp = &trace.ramp;
 
     if now < HOME_TIME {
         for i in ramp.joiners().iter() {
@@ -105,10 +198,11 @@ fn main() {
         .set_limit_policy_all(Policy::Clamp)
         .set_missing_policy(MissingPolicy::Tolerate)
         .set_join_policy(JoinPolicy::Declared)
+        .set_health_policy(HealthPolicy::Warn)
         // Declaration order is the URDF's actuated-joint order: AX joints first, then RX.
         .add_actuator(
             kmr_api::dynamixel::Ax12a::ids(1..=12)
-                .voltage_limits(9.0, 13.0)
+                .voltage_limits(8.0, 13.0)
                 .restore_limits()
                 .on(ax_snake),
         )
@@ -119,7 +213,22 @@ fn main() {
                 .on(rx_snake),
         )
         .add_controller(EachTick, HOME.controller())
-        .add_controller(EachTick, with(JoinRamp::new(JOIN_RAMP), sway));
+        .add_controller(
+            EachTick,
+            with(
+                Trace {
+                    ramp: JoinRamp::new(JOIN_RAMP),
+                    window: 0,
+                    ticks: 0,
+                    lo: f32::MAX,
+                    hi: f32::MIN,
+                    sum: [0.0; AX_COUNT],
+                    reads: [0; AX_COUNT],
+                    volts: [None; AX_COUNT],
+                },
+                sway,
+            ),
+        );
 
     if let Err(e) = robot.run() {
         eprintln!("{e}");
