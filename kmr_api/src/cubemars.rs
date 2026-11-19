@@ -7,7 +7,7 @@
 //! ```
 //!
 //! Each declared actuator runs in MIT mode (`MitAk2`) on cubemars_rs. The pose it stands in at
-//! bring-up is its joint 0, unless [`start`](Ids::start) says otherwise; the motor's stored zero
+//! bring-up is its joint 0, unless [`start`](Ids::start) or [`starts`](Ids::starts) says otherwise; the motor's stored zero
 //! is never used nor written. Its limits are checked by cubemars_rs on every command and every
 //! reply. Declaring needs no feature; driving them needs `kmr_api/cubemars`.
 
@@ -34,6 +34,55 @@ use crate::{BusHandle, Q, Qd, Tau};
 pub struct Ids {
     ids: IdSet,
     row: Actuator,
+    each: PerJoint,
+}
+
+/// The settings of a declaration laid over its row at lowering: the per-actuator lists, entry k
+/// overriding the shared setting on the k-th actuator, then the position margin.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PerJoint {
+    /// From [`Ids::position_limits`]: the lows, then the highs.
+    position: Option<(Vec<f64>, Vec<f64>)>,
+    /// From [`Ids::starts`].
+    start: Option<Vec<f64>>,
+    /// From [`Ids::position_margin`].
+    margin: f32,
+}
+
+impl PerJoint {
+    /// Each list given, by setter label, with its length.
+    pub(crate) fn lengths(&self) -> impl Iterator<Item = (&'static str, usize)> {
+        let (lows, highs) = self
+            .position
+            .as_ref()
+            .map(|(l, h)| (l.len(), h.len()))
+            .unzip();
+        [
+            ("`position_limits` lows", lows),
+            ("`position_limits` highs", highs),
+            ("`starts`", self.start.as_ref().map(Vec::len)),
+        ]
+        .into_iter()
+        .filter_map(|(setter, len)| Some((setter, len?)))
+    }
+
+    /// `row`, the k-th actuator of the declaration, with entry `k` of each list, then its range
+    /// widened by the margin.
+    // DECISION: the f64 entries narrow to the f32 that Q and cubemars_rs store here, at
+    // lowering, so the setters keep whatever precision the user handed in until then.
+    pub(crate) fn apply(&self, k: usize, row: &mut Actuator) {
+        if let Some((lows, highs)) = &self.position
+            && let (Some(&lo), Some(&hi)) = (lows.get(k), highs.get(k))
+        {
+            row.limits.position = Some((lo as f32, hi as f32));
+        }
+        if let Some(&q) = self.start.as_ref().and_then(|s| s.get(k)) {
+            row.start = q as f32;
+        }
+        if let Some((lo, hi)) = &mut row.limits.position {
+            (*lo, *hi) = (*lo - self.margin, *hi + self.margin);
+        }
+    }
 }
 
 impl Ids {
@@ -42,6 +91,7 @@ impl Ids {
         Self {
             ids,
             row: Actuator::new(model, 0, 0),
+            each: PerJoint::default(),
         }
     }
 
@@ -62,6 +112,15 @@ impl Ids {
         self.with(|row| row.start = q.0)
     }
 
+    /// The k-th pose goes to the k-th actuator.
+    ///
+    /// Overrides [`start`](Self::start) there; `run()` refuses a list whose length is not the
+    /// declaration's actuator count.
+    pub fn starts(mut self, qs: impl IntoIterator<Item = impl Into<f64>>) -> Self {
+        self.each.start = Some(qs.into_iter().map(Into::into).collect());
+        self
+    }
+
     /// Mounted the other way round: positions, velocities and torques are negated.
     pub fn reversed(self) -> Self {
         self.with(|row| row.reversed = true)
@@ -70,6 +129,31 @@ impl Ids {
     /// Allowed joint positions; a goal outside is refused, a reply outside cuts the torque.
     pub fn position_limit(self, range: RangeInclusive<Q>) -> Self {
         self.with(|row| row.limits.position = Some((range.start().0, range.end().0)))
+    }
+
+    /// The k-th actuator stays within `lows[k]..=highs[k]`, rad.
+    ///
+    /// Overrides [`position_limit`](Self::position_limit) there; `run()` refuses a list whose
+    /// length is not the declaration's actuator count.
+    pub fn position_limits(
+        mut self,
+        lows: impl IntoIterator<Item = impl Into<f64>>,
+        highs: impl IntoIterator<Item = impl Into<f64>>,
+    ) -> Self {
+        self.each.position = Some((
+            lows.into_iter().map(Into::into).collect(),
+            highs.into_iter().map(Into::into).collect(),
+        ));
+        self
+    }
+
+    /// Widens every position range of this declaration by `margin` at both ends.
+    ///
+    /// Applies to [`position_limit`](Self::position_limit) and
+    /// [`position_limits`](Self::position_limits) whatever the order; no range, no effect.
+    pub fn position_margin(mut self, margin: Q) -> Self {
+        self.each.margin = margin.0;
+        self
     }
 
     /// Largest joint speed either way, on goals and replies.
@@ -97,7 +181,10 @@ impl Ids {
         Actuators {
             bus,
             ids: self.ids,
-            driver: Driver::CubeMars(self.row),
+            driver: Driver::CubeMars {
+                row: self.row,
+                each: self.each,
+            },
         }
     }
 }

@@ -44,7 +44,7 @@ impl IdSet {
 }
 
 /// The driver of a declaration, by brand, with its settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Driver {
     /// A Dynamixel model.
     Dynamixel {
@@ -54,8 +54,13 @@ pub(crate) enum Driver {
         zero: Zero,
         settings: Settings,
     },
-    /// A CubeMars model: the row each actuator gets, its bus and id set at lowering.
-    CubeMars(cubemars::Actuator),
+    /// A CubeMars model.
+    CubeMars {
+        /// The row each actuator gets, its bus and id set at lowering.
+        row: cubemars::Actuator,
+        /// The per-actuator entries laid over `row`.
+        each: crate::cubemars::PerJoint,
+    },
 }
 
 impl Actuators {
@@ -123,6 +128,20 @@ pub(crate) enum DeclarationError {
         /// Engine index.
         index: usize,
     },
+    /// A per-actuator list of a CubeMars declaration not one entry per actuator.
+    #[error(
+        "bus `{port}`: {setter} lists {given} entries for a declaration of {declared} actuators; give one per actuator"
+    )]
+    PerJointLength {
+        /// The declaration's bus.
+        port: &'static str,
+        /// The setter that took the list, and which of its lists when it takes two.
+        setter: &'static str,
+        /// Entries in the list.
+        given: usize,
+        /// Actuators in the declaration.
+        declared: usize,
+    },
 }
 
 /// Lowers `declarations` to fixed arrays, by brand: engine index `i` is the `i`th actuator
@@ -132,12 +151,13 @@ pub(crate) enum DeclarationError {
 ///
 /// [`UserError::ActuatorCount`], [`UserError::DuplicateBus`], then each brand's own:
 /// [`UserError::BusWithoutBaud`] and [`UserError::HardwareRejected`] for Dynamixel;
-/// [`UserError::BringUp`] for two brands, or a CubeMars bus or row refused (SRS FR-2.2).
+/// [`UserError::BringUp`] for two brands, or a CubeMars bus, row or per-actuator list refused
+/// (SRS FR-2.2, FR-6.4).
 pub(crate) fn lower<const N: usize>(
     declarations: Vec<Actuators>,
     prismatic: [u64; MASK_WORDS],
 ) -> Result<Declared<N>, UserError> {
-    let cubemars = |d: &Actuators| matches!(d.driver, Driver::CubeMars(_));
+    let cubemars = |d: &Actuators| matches!(d.driver, Driver::CubeMars { .. });
     let live = || declarations.iter().filter(|d| d.len(N) > 0);
     if live().all(cubemars) && live().next().is_some() {
         lower_cubemars(declarations, prismatic).map(Declared::CubeMars)
@@ -205,13 +225,24 @@ fn lower_cubemars<const N: usize>(
                 return Err(rejected(DeclarationError::BaudOnCan { port }));
             }
         }
-        let Driver::CubeMars(row) = declaration.driver else {
+        let Driver::CubeMars { row, each } = &declaration.driver else {
             continue;
         };
-        actuators.extend(declaration.ids.resolve(N).map(|id| cubemars::Actuator {
-            bus,
-            id,
-            ..row
+        // DECISION: lists are checked after the bus refusals, and not on an empty declaration,
+        // which the loop skips as it names no actuator.
+        let declared = declaration.len(N);
+        if let Some((setter, given)) = each.lengths().find(|&(_, given)| given != declared) {
+            return Err(rejected(DeclarationError::PerJointLength {
+                port: declaration.bus.port(),
+                setter,
+                given,
+                declared,
+            }));
+        }
+        actuators.extend(declaration.ids.resolve(N).enumerate().map(|(k, id)| {
+            let mut actuator = cubemars::Actuator { bus, id, ..*row };
+            each.apply(k, &mut actuator);
+            actuator
         }));
     }
     if let Some(index) = (0..actuators.len()).find(|&i| prismatic[i / 64] >> (i % 64) & 1 == 1) {
@@ -665,6 +696,160 @@ mod tests {
                 REVOLUTE,
             ));
             assert!(text.contains("mix Dynamixel and CubeMars"), "{text}");
+        }
+
+        /// The CubeMars rows `declarations` lower to on a robot of `N` actuators.
+        fn rows<const N: usize>(declarations: Vec<Actuators>) -> [cubemars::Actuator; N] {
+            match lower::<N>(declarations, REVOLUTE).expect("valid declarations") {
+                Declared::CubeMars(declared) => declared.table.actuators,
+                Declared::Dynamixel(_) => panic!("not lowered to CubeMars"),
+            }
+        }
+
+        #[test]
+        fn per_joint_position_limits_land_on_the_ids_in_declaration_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<4>(vec![
+                Ak60::id(9).on(leg),
+                Ak60::ids(1..=3)
+                    .position_limits([-1.0, -2.0, -3.0], [1.0, 2.0, 3.0])
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.id, a.limits.position)),
+                [
+                    (9, None),
+                    (1, Some((-1.0, 1.0))),
+                    (2, Some((-2.0, 2.0))),
+                    (3, Some((-3.0, 3.0))),
+                ]
+            );
+        }
+
+        #[test]
+        fn position_limits_and_starts_take_any_list_of_numbers() {
+            let leg = Plugin::by_dev("can0").build();
+            let lo64: [f64; 2] = [-0.5, -0.25];
+            let hi32: [f32; 2] = [0.5, 0.25];
+            let from_f = Ak60::ids(1..=2).position_limits(lo64, hi32).starts(lo64);
+            let from_q = Ak60::ids(1..=2)
+                .position_limits([Q(-0.5), Q(-0.25)], vec![0.5, 0.25])
+                .starts(vec![Q(-0.5), Q(-0.25)]);
+            let rows = rows::<4>(vec![from_f.on(leg), from_q.on(leg)]);
+            assert_eq!(
+                rows.map(|a| (a.limits.position, a.start)),
+                [
+                    (Some((-0.5, 0.5)), -0.5),
+                    (Some((-0.25, 0.25)), -0.25),
+                    (Some((-0.5, 0.5)), -0.5),
+                    (Some((-0.25, 0.25)), -0.25),
+                ]
+            );
+        }
+
+        #[test]
+        fn per_joint_starts_land_on_the_ids_in_declaration_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<3>(vec![
+                Ak60::ids(4..=6).starts([Q(0.1), Q(-0.2), Q(0.3)]).on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.id, a.start)),
+                [(4, 0.1), (5, -0.2), (6, 0.3)]
+            );
+        }
+
+        #[test]
+        fn a_per_joint_entry_overrides_the_shared_setting_in_either_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<2>(vec![
+                Ak60::ids(1..=2)
+                    .position_limits([-1.0, -2.0], [1.0, 2.0])
+                    .position_limit(Q(-0.5)..=Q(0.5))
+                    .start(Q(0.7))
+                    .starts([Q(0.1), Q(0.2)])
+                    .velocity_limit(Qd(4.0))
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.limits.position, a.start, a.limits.velocity)),
+                [
+                    (Some((-1.0, 1.0)), 0.1, Some(4.0)),
+                    (Some((-2.0, 2.0)), 0.2, Some(4.0)),
+                ]
+            );
+        }
+
+        #[test]
+        fn the_position_margin_widens_every_range_whatever_the_setter_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<3>(vec![
+                Ak60::ids(1..=2)
+                    .position_margin(Q(0.25))
+                    .position_limits([-1.0, -2.0], [1.0, 2.0])
+                    .on(leg),
+                Ak60::id(3)
+                    .position_limit(Q(-0.5)..=Q(0.5))
+                    .position_margin(Q(0.25))
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| a.limits.position),
+                [
+                    Some((-1.25, 1.25)),
+                    Some((-2.25, 2.25)),
+                    Some((-0.75, 0.75))
+                ]
+            );
+        }
+
+        #[test]
+        fn the_position_margin_alone_sets_no_range() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<1>(vec![Ak60::id(1).position_margin(Q(0.25)).on(leg)]);
+            assert_eq!(rows[0].limits.position, None);
+        }
+
+        #[test]
+        fn per_joint_lists_follow_all_resolved_at_run() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<2>(vec![
+                Ak60::all()
+                    .starts([Q(0.1), Q(0.2)])
+                    .position_limits([-1.0, -2.0], [1.0, 2.0])
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.id, a.start, a.limits.position)),
+                [(1, 0.1, Some((-1.0, 1.0))), (2, 0.2, Some((-2.0, 2.0)))]
+            );
+        }
+
+        #[test]
+        fn a_per_joint_list_of_the_wrong_length_is_refused_at_run() {
+            let leg = Plugin::by_dev("can0").build();
+            let short = Ak60::ids(1..=3).position_limits([-1.0, -2.0], [1.0, 2.0, 3.0]);
+            let text = refusal(lower::<3>(vec![short.on(leg)], REVOLUTE));
+            assert!(
+                text.contains("`position_limits` lows")
+                    && text.contains("2 ")
+                    && text.contains("3 "),
+                "{text}"
+            );
+            let long = Ak60::ids(1..=2).position_limits([-1.0, -2.0], [1.0, 2.0, 3.0]);
+            let text = refusal(lower::<2>(vec![long.on(leg)], REVOLUTE));
+            assert!(
+                text.contains("`position_limits` highs")
+                    && text.contains("3 ")
+                    && text.contains("2 "),
+                "{text}"
+            );
+            let long = Ak60::all().starts([Q(0.1), Q(0.2), Q(0.3)]);
+            let text = refusal(lower::<2>(vec![long.on(leg)], REVOLUTE));
+            assert!(
+                text.contains("`starts`") && text.contains("3 ") && text.contains("2 "),
+                "{text}"
+            );
         }
 
         #[test]

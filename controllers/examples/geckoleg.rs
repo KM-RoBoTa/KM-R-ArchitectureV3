@@ -252,17 +252,6 @@ fn walk(gait: &mut Gait, time: &Time, robot: &mut State, _: &Sensors) {
     }
 }
 
-/// One AK60-6 at `id`: the gait's gains, its joint range of one cycle plus the margin, the speed
-/// cap and the goal step, all checked by cubemars_rs.
-fn joint(id: u8, lo: f64, hi: f64, vmax: f32) -> kmr_api::cubemars::Ids {
-    let m = LIMIT_MARGIN;
-    Ak60::id(id)
-        .gains(KP, KD)
-        .position_limit(Q(lo as f32 - m)..=Q(hi as f32 + m))
-        .velocity_limit(Qd(vmax))
-        .max_goal_step(Q(MAX_GOAL_STEP_DEG.to_radians()))
-}
-
 fn main() {
     let dry = std::env::args().any(|a| a == "--dry-run");
     let speed = std::env::args()
@@ -300,10 +289,15 @@ fn main() {
     } else {
         let leg = Bus::by_dev("can0").build();
         let vmax = (peak * speed * 1.5 + 2.0) as f32;
-        robot
-            .add_actuator(joint(1, lo[0], hi[0], vmax).on(leg))
-            .add_actuator(joint(2, lo[1], hi[1], vmax).on(leg))
-            .add_actuator(joint(3, lo[2], hi[2], vmax).on(leg))
+        robot.add_actuator(
+            Ak60::ids(1..=3)
+                .gains(KP, KD)
+                .position_limits(lo, hi)
+                .position_margin(Q(LIMIT_MARGIN))
+                .velocity_limit(Qd(vmax))
+                .max_goal_step(Q(MAX_GOAL_STEP_DEG.to_radians()))
+                .on(leg),
+        )
     };
     if let Err(e) = robot.run() {
         eprintln!("{e}");
