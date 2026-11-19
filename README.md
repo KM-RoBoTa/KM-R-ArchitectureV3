@@ -59,7 +59,7 @@ are in [`controllers/README.md`](controllers/README.md).
 | `kmr_model/`            | Robot model: the `robot!` proc macro over `kmr_model_core`.    |
 | `kmr_model_core/`       | Robot model library: reads and checks a descriptor at build time. |
 | `kmr_ffi/`              | The C ABI and headers of C and C++ controllers.                 |
-| `kmr_ffi/examples/pinocchio/` | The GeckoLeg gait in C++ with Pinocchio's kinematics (feature `pinocchio`). |
+| `controllers/examples/geckoleg_pinocchio.rs` | The GeckoLeg gait in C++ with Pinocchio's kinematics (feature `pinocchio`). |
 | `bench/`                | The reference benchmark of the engine.                         |
 | `controllers/`          | Write your controllers here. Depends on `kmr_api` only. See its README. |
 | `docs/`                 | Architecture, roadmap and product brief.                       |

@@ -18,6 +18,17 @@
 //! }
 //! ```
 //!
+//! One robot's C and C++ sources are one `compile` call. A crate with several robots makes one
+//! call per robot in the same `build.rs`; each call has its own `kmr.h`, `kmr.hpp` and libraries,
+//! and every function name must be unique across calls:
+//!
+//! ```ignore
+//! fn main() -> Result<(), kmr_api::ffi::c::build::Error> {
+//!     kmr_api::ffi::c::build::robot("XmBench").compile(&["c/swing.c"])?;
+//!     kmr_api::ffi::c::build::model("urdf/leg.urdf").compile(&["cpp/gait.cpp"])
+//! }
+//! ```
+//!
 //! ```c
 //! /* c/swing.c */
 //! #include "kmr.h"
@@ -75,6 +86,13 @@ pub use kmr_ffi::WriteBuf;
 
 /// The build-script helper: writes `kmr.h`, `kmr.hpp` and the ABI file into `OUT_DIR` and
 /// compiles the C and C++ sources (feature `ffi-build`, in `[build-dependencies]`).
+///
+/// Call `compile` once per robot, as often as the crate has robots. Each call is a group with
+/// its own headers under `OUT_DIR/kmr/<k>/` and its own libraries; the sources still write
+/// `#include "kmr.h"`. `kmr_ffi_abi.rs` lists every function with the sizes it was built for,
+/// found with `nm`. A function two calls define is [`Error::DuplicateSymbol`]; a missing `nm` is
+/// [`Error::NoSymbolTool`]. `kmr.hpp` sits in an inline namespace named after N and the sizes,
+/// so `kmr::State` is still what user code writes.
 ///
 /// ```ignore
 /// // build.rs
@@ -189,8 +207,8 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 /// function a pointer to it: mirror its type as a `#[repr(C)]` struct.
 ///
 /// `N` from `robot!` must be in scope. The build fails with `error[E0080]` here when no
-/// `compile` call of build.rs defined the function, or one built it for another robot (SRS
-/// FR-10.2, FR-6.1). See [the module](crate::ffi::c).
+/// `compile` call of build.rs defined the function, when it was built for another robot
+/// (another N), or against another kmr (rebuild) (SRS FR-10.2, FR-6.1). See [the module](crate::ffi::c).
 // DECISION: one macro for C and C++, named after the ABI: a C++ controller is a C function
 // (`KMR_CONTROLLER` defines it), and a C++ name cannot cross without `extern "C"`. The context is
 // `with = ctx`, the word of `with(ctx, f)`, and the robot owns it as `with` does.
