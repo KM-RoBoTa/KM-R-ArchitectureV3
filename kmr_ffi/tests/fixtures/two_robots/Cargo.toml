@@ -1,0 +1,15 @@
+# A user crate whose build.rs compiles C and C++ for two robots, one group each (kmr_ffi M2).
+# Not a workspace member: kmr_ffi/tests/two_robots.rs runs cargo on its bins.
+[package]
+name = "kmr_ffi_fixture_two_robots"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+kmr_api = { path = "../../../../kmr_api", features = ["ffi"] }
+
+[build-dependencies]
+kmr_api = { path = "../../../../kmr_api", features = ["ffi-build"] }

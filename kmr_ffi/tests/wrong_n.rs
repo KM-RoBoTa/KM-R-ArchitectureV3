@@ -28,8 +28,9 @@ fn cargo(cmd: &str, model: &str) -> Output {
         .arg(cmd)
         .args(["--offline", "--quiet", "--manifest-path"])
         .arg(dir.join("Cargo.toml"))
+        // Shared with tests/two_robots.rs: the fixtures share kmr_api's build.
         .arg("--target-dir")
-        .arg(Path::new(env!("CARGO_TARGET_TMPDIR")).join("wrong_n"))
+        .arg(Path::new(env!("CARGO_TARGET_TMPDIR")).join("fixtures"))
         .env("KMR_FFI_FIXTURE_MODEL", model)
         .env_remove("RUSTFLAGS")
         .output()
@@ -53,7 +54,7 @@ fn c_built_for_another_n_fails_at_the_c_macro() {
     assert!(!out.status.success(), "{err}");
     assert!(err.contains("error[E0080]"), "{err}");
     assert!(
-        err.contains("kmr: the C and C++ sources were built for another N"),
+        err.contains("kmr: `body` was built for another robot, another N"),
         "{err}"
     );
     assert!(err.contains("src/main.rs:6:13"), "{err}");

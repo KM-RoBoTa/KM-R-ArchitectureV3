@@ -452,10 +452,162 @@ fn the_c_header_carries_n_and_the_sizes() {
     assert!(c_header(3, SIZES).contains("#define KMR_INTERNAL_ALL UINT64_C(0x7)"));
 }
 
+/// A group of `sources` built for `n`, defining `symbols`.
+fn group(sources: &[&str], n: usize, symbols: &[&str]) -> Group {
+    let mut symbols: Vec<String> = symbols.iter().map(|s| (*s).to_owned()).collect();
+    symbols.sort();
+    Group {
+        sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+        abi: abi(n, SIZES),
+        symbols,
+    }
+}
+
+/// The two comment lines at the top of `kmr_ffi_abi.rs`.
+const TABLE_TOP: &str = "// Every C and C++ function build.rs compiled, with the N, History depth, \
+                         IMU slots,\n// microphone slots and microphone window it was compiled \
+                         for.\n";
+
 #[test]
-fn the_abi_file_carries_n_and_the_sizes() {
-    let abi = abi_rs(10, SIZES);
-    assert!(abi.ends_with("\n[10, 4, 4, 1, 1024]\n"));
+fn the_abi_table_maps_each_function_to_its_group_sorted() {
+    let groups = [
+        group(&["c/clap.c"], 22, &["move_on_clap", "_ZN4clap4stepEv"]),
+        group(&["cpp/leg.cpp"], 3, &["walk_cpp", "abc"]),
+    ];
+    assert_eq!(
+        abi_table(&groups),
+        format!(
+            "{TABLE_TOP}&[\n    (\"abc\", [3, 4, 4, 1, 1024]),\n    (\"move_on_clap\", [22, 4, 4, \
+             1, 1024]),\n    (\"walk_cpp\", [3, 4, 4, 1, 1024]),\n]\n"
+        )
+    );
+    assert_eq!(abi_table(&[]), format!("{TABLE_TOP}&[\n]\n"));
+}
+
+#[test]
+fn only_identifiers_that_are_not_mangled_reach_the_table() {
+    for name in ["swing", "_swing", "a1_b2", "Walk"] {
+        assert!(nameable(name), "{name}");
+    }
+    for name in ["", "1a", "_ZN3kmr5State1qEv", "a.b", "a$b", "fn::x", "é"] {
+        assert!(!nameable(name), "{name}");
+    }
+}
+
+#[test]
+fn the_nm_beside_the_archiver_swaps_its_ar_word() {
+    let beside = |ar: &str| nm_beside(Path::new(ar)).map(|p| p.display().to_string());
+    assert_eq!(beside("ar").as_deref(), Some("nm"));
+    assert_eq!(
+        beside("aarch64-linux-gnu-ar").as_deref(),
+        Some("aarch64-linux-gnu-nm")
+    );
+    assert_eq!(
+        beside("/usr/bin/aarch64-linux-gnu-gcc-ar").as_deref(),
+        Some("/usr/bin/aarch64-linux-gnu-gcc-nm")
+    );
+    assert_eq!(beside("llvm-ar").as_deref(), Some("llvm-nm"));
+    assert_eq!(beside("llvm-ar-18").as_deref(), Some("llvm-nm-18"));
+    assert_eq!(
+        beside("x86_64-w64-mingw32-ar.exe").as_deref(),
+        Some("x86_64-w64-mingw32-nm.exe")
+    );
+    assert_eq!(beside("emar"), None);
+    assert_eq!(beside("lib.exe"), None);
+    assert_eq!(beside("/opt/arm/bin/"), None);
+}
+
+#[test]
+fn nm_is_the_override_alone_else_beside_then_llvm_then_plain() {
+    let tools = nm_tools(Some("/x/my-nm".into()), Some(Path::new("ar")));
+    assert_eq!(tools, [PathBuf::from("/x/my-nm")]);
+    let tools = nm_tools(Some("".into()), Some(Path::new("aarch64-linux-gnu-ar")));
+    assert_eq!(
+        tools,
+        ["aarch64-linux-gnu-nm", "llvm-nm", "nm"].map(PathBuf::from)
+    );
+    assert_eq!(
+        nm_tools(None, Some(Path::new("ar"))),
+        ["nm", "llvm-nm"].map(PathBuf::from)
+    );
+    assert_eq!(nm_tools(None, None), ["llvm-nm", "nm"].map(PathBuf::from));
+}
+
+/// `nm -P -g --defined-only` of one C++ object in an archive, as GNU nm 2.47 prints it.
+const GNU_NM: &str = "\
+libkmr_ffi_cpp_0.a[a.o]:
+ctrl T b 7
+g_bss B 0 4
+g_data D 0 4
+g_ro R 0 4
+_Z3inlv W 0 b
+_Z3usev T 12 66
+_ZNKSt8optionalISt5arrayIfLm3EEEcvbEv W 0 1a
+_ZTV4Base V 0 18
+_ZZ3usevE1x u 0 4
+";
+
+/// Two objects of an archive, as llvm-nm prints them.
+const LLVM_NM: &str = "
+a.o:
+_Z3inlv W 0 b
+_Z3usev T 12 66
+_ZNKSt8optionalISt5arrayIfLm3EEEcvbEv W 0 1a
+ctrl T b 7
+g_bss B 0 4
+g_data D 0 4
+
+b.o:
+walk T 0 4
+";
+
+#[test]
+fn nm_output_gives_the_strong_functions_only() {
+    assert_eq!(strong_functions(GNU_NM), ["ctrl", "_Z3usev"]);
+    assert_eq!(strong_functions(LLVM_NM), ["_Z3usev", "ctrl", "walk"]);
+    assert!(strong_functions("").is_empty());
+    assert!(strong_functions("/my dir/lib.a[x.o]:\n").is_empty());
+}
+
+#[test]
+fn a_function_two_groups_define_is_a_duplicate() {
+    let first = group(&["a.c"], 1, &["a_c", "shared"]);
+    let second = group(&["b.cpp", "util.c"], 2, &["b_cpp", "shared"]);
+    let err = check_duplicates(std::slice::from_ref(&first), &second).expect_err("duplicate");
+    assert!(
+        matches!(&err, Error::DuplicateSymbol { symbol, first, second }
+            if symbol == "shared" && first == &["a.c"] && second == &["b.cpp", "util.c"]),
+        "{err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("`shared` is defined by two compile calls"),
+        "{msg}"
+    );
+    assert!(msg.contains("[a.c] and one for [b.cpp, util.c]"), "{msg}");
+    let third = group(&["c.c"], 2, &["c_c"]);
+    assert!(check_duplicates(&[first, second], &third).is_ok());
+}
+
+#[test]
+fn no_nm_names_the_tools_and_the_fix() {
+    let tools = [PathBuf::from("/nonexistent/nm")];
+    let err = list_symbols(&tools, Path::new("lib.a")).expect_err("no such tool");
+    assert!(
+        matches!(&err, Error::NoSymbolTool { tried, .. } if tried == &["/nonexistent/nm"]),
+        "{err:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("tried /nonexistent/nm"), "{msg}");
+    assert!(msg.contains("set NM"), "{msg}");
+}
+
+#[test]
+fn the_cpp_header_lives_in_a_namespace_per_n_and_sizes() {
+    assert!(c_header(3, SIZES).contains("#define KMR_INTERNAL_ABI abi_n3_h4_i4_m1_w1024\n"));
+    let h = cpp_header();
+    assert!(h.contains("\ninline namespace KMR_INTERNAL_ABI {\n"));
+    assert!(h.contains("\n} // inline namespace KMR_INTERNAL_ABI\n} // namespace kmr\n"));
 }
 
 #[test]

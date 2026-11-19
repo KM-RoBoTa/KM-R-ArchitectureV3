@@ -25,15 +25,19 @@ lua = ["kmr_api/lua"]
 # DECISION: one feature for both languages: a C++ controller is a C function, and every toolchain
 # that has one compiler has the other.
 c = ["kmr_api/ffi", "dep:kmr_api"]
+# The GeckoLeg gait in C++ on Pinocchio: build.rs compiles cpp/geckoleg.cpp. Needs Pinocchio
+# through pkg-config and its include dirs in CXXFLAGS; with `cubemars` it drives the leg.
+pinocchio = ["kmr_api/ffi", "dep:kmr_api"]
 # DECISION: kept as a no-op so the RX-28 command line in main.rs still works:
 # `robot!(Rx28Chain)` alone sets N = 10 now (core M2).
 rx28 = []
 
-# The build helper alone, for build.rs: compiles the C and C++ controllers under feature `c`.
+# The build helper alone, for build.rs: compiles the C and C++ controllers under features `c`
+# and `pinocchio`.
 [build-dependencies]
 kmr_api = { workspace = true, features = ["ffi-build"], optional = true }
 
-# The C and C++ clap tests drive scripted ticks through kmr_api's test hooks.
+# The clap and geckoleg_pinocchio_gait tests drive scripted ticks through kmr_api's test hooks.
 [dev-dependencies]
 kmr_api = { workspace = true, features = ["test-util"] }
 
@@ -66,10 +70,27 @@ required-features = ["hardware", "experimental"]
 [[example]]
 name = "geckoleg"
 
+# The GeckoLeg gait of the geckoleg example, its controller in cpp/geckoleg.cpp on Pinocchio;
+# `scripts/build-pi.sh geckoleg_pinocchio` builds it for the Pi.
+[[example]]
+name = "geckoleg_pinocchio"
+required-features = ["pinocchio"]
+
 # c/clap.c and cpp/clap.cpp over scripted ticks, with a fake microphone.
 [[test]]
 name = "clap"
 required-features = ["c"]
+
+# cpp/geckoleg.cpp's gait over scripted ticks.
+[[test]]
+name = "geckoleg_pinocchio_gait"
+required-features = ["pinocchio"]
+
+# cpp/geckoleg.cpp's Init check on the real loop, in its own process: C++ stops go to the
+# global bus.
+[[test]]
+name = "geckoleg_pinocchio_check"
+required-features = ["pinocchio"]
 
 [lints]
 workspace = true

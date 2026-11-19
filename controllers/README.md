@@ -61,6 +61,22 @@ One more line: the preset name in `kmr_api::robot!(XmBench);`. A copied crate
 writes two files, its `Cargo.toml` (one dependency, `kmr_api`) and its
 `src/main.rs`.
 
+## C and C++ controllers
+
+C and C++ controllers for several robots live side by side in this crate. `build.rs` makes one
+`compile` call per robot (`kmr_api::ffi::c::build::robot(..).compile(&[sources])`): each call has
+its own `kmr.h`, `kmr.hpp` and libraries, and its sources still write `#include "kmr.h"`. Give
+each function its own name across calls. The snake is one call (feature `c`), the GeckoLeg
+another (feature `pinocchio`).
+
+The GeckoLeg gait in C++ with Pinocchio's kinematics is `cpp/geckoleg.cpp`, run by
+`examples/geckoleg_pinocchio.rs`. It needs Pinocchio found by pkg-config:
+
+```sh
+CXXFLAGS="$(pkg-config --cflags pinocchio)" \
+  cargo run -p controllers --example geckoleg_pinocchio --features pinocchio -- --dry-run
+```
+
 ## Before you change the numbers
 
 - **Revolute only.** `Q` is radians on a revolute actuator and millimetres on
