@@ -526,6 +526,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cubemars-rs"
+version = "0.1.0"
+dependencies = [
+ "socketcan",
+ "thiserror",
+]
+
+[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1235,6 +1243,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
@@ -1405,10 +1422,10 @@ name = "kmr_adapters"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
+ "cubemars-rs",
  "dxl_rs_v2",
  "kmr_core",
  "rustix",
- "socketcan",
  "thiserror",
  "tracing",
  "tracing-subscriber",
@@ -1748,6 +1765,19 @@ dependencies = [
 
 [[package]]
 name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
+]
+
+[[package]]
+name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
@@ -1756,7 +1786,6 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
- "memoffset",
 ]
 
 [[package]]
@@ -2835,19 +2864,19 @@ dependencies = [
 
 [[package]]
 name = "socketcan"
-version = "4.0.0"
+version = "3.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "472e000403167b1e2f65cfcf8ff235fe94b911f9bd9bdbc1f48047b8a1cf49aa"
+checksum = "ea24328be148eea05f36bc3991b1c174c586853e04d1480b92429b2df6aea865"
 dependencies = [
  "bitflags 2.13.2",
  "embedded-can",
  "hex",
+ "itertools 0.13.0",
  "libc",
  "log",
  "nb",
- "nix 0.31.3",
- "smallvec",
- "socket2 0.6.5",
+ "nix 0.29.0",
+ "socket2 0.5.10",
  "thiserror",
 ]
 

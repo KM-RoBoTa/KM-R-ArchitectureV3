@@ -3,8 +3,9 @@
 use core::ops::RangeInclusive;
 
 use kmr_adapters::binding::Port;
+use kmr_adapters::cubemars;
 use kmr_adapters::dynamixel::{
-    Actuator, Bus, Declared, Mode, Model, Settings, Table, Torque, Zero,
+    Actuator, Bus, Declared as DxlTable, Mode, Model, Settings, Table, Torque, Zero,
 };
 
 use crate::{BusHandle, MASK_WORDS, UserError};
@@ -13,7 +14,8 @@ use crate::{BusHandle, MASK_WORDS, UserError};
 ///
 /// Built by a model type, e.g. [`dynamixel::Rx28`](crate::dynamixel::Rx28), and handed to
 /// [`Robot::add_actuator`](crate::Robot::add_actuator).
-#[derive(Clone, Debug, PartialEq, Eq)]
+// DECISION: no `Eq`: a CubeMars declaration carries its gains and limits as `f32`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Actuators {
     pub(crate) bus: BusHandle,
     pub(crate) ids: IdSet,
@@ -42,7 +44,7 @@ impl IdSet {
 }
 
 /// The driver of a declaration, by brand, with its settings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Driver {
     /// A Dynamixel model.
     Dynamixel {
@@ -51,6 +53,13 @@ pub(crate) enum Driver {
         torque: Torque,
         zero: Zero,
         settings: Settings,
+    },
+    /// A CubeMars model.
+    CubeMars {
+        /// The row each actuator gets, its bus and id set at lowering.
+        row: cubemars::Actuator,
+        /// The per-actuator entries laid over `row`.
+        each: crate::cubemars::PerJoint,
     },
 }
 
@@ -63,20 +72,107 @@ impl Actuators {
 
 /// The hardware the declarations of a robot of `N` actuators name, as the Dynamixel driver
 /// takes it: at most `N` buses, since every bus carries an actuator.
-pub type DxlDeclared<const N: usize> = Declared<N, N>;
+pub type DxlDeclared<const N: usize> = DxlTable<N, N>;
 
-/// Lowers `declarations` to fixed arrays: engine index `i` is the `i`th actuator declared, and
-/// the buses are numbered in first-declared order. No I/O.
+/// The CubeMars actuators of a robot of `N` actuators, in engine order, and the CAN interface
+/// of each bus; buses past the last declared carry no actuator.
+#[cfg_attr(not(feature = "cubemars"), allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+pub struct CubeMarsDeclared<const N: usize> {
+    /// Buses in first-declared order, actuators in engine order.
+    pub(crate) table: cubemars::Table<N, N>,
+    /// Interface of each bus, `None` past the declared ones.
+    pub(crate) interfaces: [Option<&'static str>; N],
+}
+
+/// The hardware `add_actuator` declared, by brand: one brand per robot.
+#[derive(Clone, Copy, Debug)]
+pub enum Declared<const N: usize> {
+    /// Every actuator is a Dynamixel.
+    Dynamixel(DxlDeclared<N>),
+    /// Every actuator is a CubeMars.
+    CubeMars(CubeMarsDeclared<N>),
+}
+
+/// A rule of `add_actuator` the declarations break, inside [`UserError::BringUp`].
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DeclarationError {
+    /// Two brands in one robot.
+    // DECISION: a robot declared with `add_actuator` drives one brand, as its one driver
+    // member; mixing brands stays with `robot!(model = .., hardware = { .. })`.
+    #[error(
+        "the declared actuators mix Dynamixel and CubeMars; `add_actuator` drives one brand per robot, mix them with `robot!(model = .., hardware = {{ dynamixel: .., cubemars: .. }})`"
+    )]
+    MixedBrands,
+    /// A CubeMars bus bound by serial id.
+    #[error(
+        "bus `{port}` carries CubeMars actuators: name its CAN interface, `Bus::by_dev(\"can0\")`"
+    )]
+    NotAnInterface {
+        /// The serial id.
+        port: &'static str,
+    },
+    /// A baud on a CubeMars bus.
+    #[error(
+        "bus `{port}`: a CAN interface's bitrate is set by `ip link set {port} type can bitrate ..`, not by `.baud(..)`"
+    )]
+    BaudOnCan {
+        /// The interface.
+        port: &'static str,
+    },
+    /// A CubeMars actuator at an index the model marks prismatic.
+    #[error(
+        "actuator {index}: the model marks it prismatic; an AK actuator is rotary (SRS FR-2.2)"
+    )]
+    Prismatic {
+        /// Engine index.
+        index: usize,
+    },
+    /// A per-actuator list of a CubeMars declaration not one entry per actuator.
+    #[error(
+        "bus `{port}`: {setter} lists {given} entries for a declaration of {declared} actuators; give one per actuator"
+    )]
+    PerJointLength {
+        /// The declaration's bus.
+        port: &'static str,
+        /// The setter that took the list, and which of its lists when it takes two.
+        setter: &'static str,
+        /// Entries in the list.
+        given: usize,
+        /// Actuators in the declaration.
+        declared: usize,
+    },
+}
+
+/// Lowers `declarations` to fixed arrays, by brand: engine index `i` is the `i`th actuator
+/// declared, and the buses are numbered in first-declared order. No I/O.
 ///
 /// # Errors
 ///
-/// [`UserError::ActuatorCount`], [`UserError::BusWithoutBaud`], [`UserError::DuplicateBus`],
-/// then [`UserError::HardwareRejected`]: a rule of the table, or an index the model's
-/// `prismatic` bits mark (SRS FR-2.2).
+/// [`UserError::ActuatorCount`], [`UserError::DuplicateBus`], then each brand's own:
+/// [`UserError::BusWithoutBaud`] and [`UserError::HardwareRejected`] for Dynamixel;
+/// [`UserError::BringUp`] for two brands, or a CubeMars bus, row or per-actuator list refused
+/// (SRS FR-2.2, FR-6.4).
 pub(crate) fn lower<const N: usize>(
     declarations: Vec<Actuators>,
     prismatic: [u64; MASK_WORDS],
-) -> Result<DxlDeclared<N>, UserError> {
+) -> Result<Declared<N>, UserError> {
+    let cubemars = |d: &Actuators| matches!(d.driver, Driver::CubeMars { .. });
+    let live = || declarations.iter().filter(|d| d.len(N) > 0);
+    if live().all(cubemars) && live().next().is_some() {
+        lower_cubemars(declarations, prismatic).map(Declared::CubeMars)
+    } else if live().any(cubemars) {
+        count::<N>(&declarations)?;
+        Err(UserError::BringUp {
+            source: Box::new(DeclarationError::MixedBrands),
+        })
+    } else {
+        lower_dynamixel(declarations, prismatic).map(Declared::Dynamixel)
+    }
+}
+
+/// Refuses a declared count other than `N`; returns it.
+fn count<const N: usize>(declarations: &[Actuators]) -> Result<usize, UserError> {
     let declared = declarations.iter().map(|d| d.len(N)).sum();
     if declared != N {
         return Err(UserError::ActuatorCount {
@@ -84,6 +180,101 @@ pub(crate) fn lower<const N: usize>(
             expected: N,
         });
     }
+    Ok(declared)
+}
+
+/// The bus number of `handle` among `handles`, registered when new.
+///
+/// # Errors
+///
+/// [`UserError::DuplicateBus`]: another handle names its port.
+fn bus_of(handles: &mut Vec<BusHandle>, handle: BusHandle) -> Result<(usize, bool), UserError> {
+    if let Some(bus) = handles.iter().position(|seen| *seen == handle) {
+        return Ok((bus, false));
+    }
+    if handles.iter().any(|seen| seen.port() == handle.port()) {
+        return Err(UserError::DuplicateBus {
+            port: handle.port(),
+        });
+    }
+    handles.push(handle);
+    Ok((handles.len() - 1, true))
+}
+
+/// [`lower`] of CubeMars declarations only.
+fn lower_cubemars<const N: usize>(
+    declarations: Vec<Actuators>,
+    prismatic: [u64; MASK_WORDS],
+) -> Result<CubeMarsDeclared<N>, UserError> {
+    let declared = count::<N>(&declarations)?;
+    // DECISION: these refusals ride `UserError::BringUp`, whose source is any error: adding a
+    // `UserError` variant is a pub change left to the maintainer (docs/deferred.md).
+    let rejected = |source: DeclarationError| UserError::BringUp {
+        source: Box::new(source),
+    };
+    let mut handles: Vec<BusHandle> = Vec::new();
+    let mut actuators = Vec::with_capacity(N);
+    for declaration in declarations.iter().filter(|d| d.len(N) > 0) {
+        let (bus, new) = bus_of(&mut handles, declaration.bus)?;
+        if new {
+            let port = declaration.bus.port();
+            if let Port::ById(_) = declaration.bus.binding.port {
+                return Err(rejected(DeclarationError::NotAnInterface { port }));
+            }
+            if declaration.bus.binding.baud.is_some() {
+                return Err(rejected(DeclarationError::BaudOnCan { port }));
+            }
+        }
+        let Driver::CubeMars { row, each } = &declaration.driver else {
+            continue;
+        };
+        // DECISION: lists are checked after the bus refusals, and not on an empty declaration,
+        // which the loop skips as it names no actuator.
+        let declared = declaration.len(N);
+        if let Some((setter, given)) = each.lengths().find(|&(_, given)| given != declared) {
+            return Err(rejected(DeclarationError::PerJointLength {
+                port: declaration.bus.port(),
+                setter,
+                given,
+                declared,
+            }));
+        }
+        actuators.extend(declaration.ids.resolve(N).enumerate().map(|(k, id)| {
+            let mut actuator = cubemars::Actuator { bus, id, ..*row };
+            each.apply(k, &mut actuator);
+            actuator
+        }));
+    }
+    if let Some(index) = (0..actuators.len()).find(|&i| prismatic[i / 64] >> (i % 64) & 1 == 1) {
+        return Err(rejected(DeclarationError::Prismatic { index }));
+    }
+    let actuators: [cubemars::Actuator; N] =
+        actuators
+            .try_into()
+            .map_err(|_: Vec<cubemars::Actuator>| UserError::ActuatorCount {
+                declared,
+                expected: N,
+            })?;
+    let mut buses = [cubemars::Bus { label: "" }; N];
+    let mut interfaces = [None; N];
+    for ((bus, interface), handle) in buses.iter_mut().zip(&mut interfaces).zip(&handles) {
+        *bus = cubemars::Bus {
+            label: handle.port(),
+        };
+        *interface = Some(handle.port());
+    }
+    Ok(CubeMarsDeclared {
+        table: cubemars::Table { buses, actuators },
+        interfaces,
+    })
+}
+
+/// [`lower`] of Dynamixel declarations only.
+pub(crate) fn lower_dynamixel<const N: usize>(
+    declarations: Vec<Actuators>,
+    prismatic: [u64; MASK_WORDS],
+) -> Result<DxlDeclared<N>, UserError> {
+    let declared = count::<N>(&declarations)?;
     let mut handles: Vec<BusHandle> = Vec::new();
     let mut actuators = Vec::with_capacity(N);
     let mut settings = Vec::with_capacity(N);
@@ -116,7 +307,10 @@ pub(crate) fn lower<const N: usize>(
             torque,
             zero,
             settings: set,
-        } = declaration.driver;
+        } = declaration.driver
+        else {
+            continue;
+        };
         actuators.extend(declaration.ids.resolve(N).map(|id| Actuator {
             bus,
             id,
@@ -161,7 +355,7 @@ pub(crate) fn lower<const N: usize>(
     let rejected = |source| UserError::HardwareRejected {
         source: Box::new(source),
     };
-    Declared::new(Table { buses, actuators }, ports, handles.len())
+    DxlTable::new(Table { buses, actuators }, ports, handles.len())
         .map_err(rejected)?
         .check_kinds(prismatic)
         .map(|declared| declared.with_settings(settings))
@@ -195,7 +389,7 @@ mod tests {
     fn engine_order<const N: usize>() {
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
         let wrist = Plugin::by_dev("/dev/ttyUSB1").baud(57_600).build();
-        let declared = lower::<N>(
+        let declared = lower_dynamixel::<N>(
             vec![
                 Ax12a::id(9).on(wrist),
                 Xm430W210::ids(1..=2).on(arm),
@@ -232,7 +426,7 @@ mod tests {
         use kmr_adapters::dynamixel::{Gains, Settings};
 
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
-        let declared = lower::<4>(
+        let declared = lower_dynamixel::<4>(
             vec![
                 Xm430W210::ids(1..=2).gains(800, 20, 4000).led(true).on(arm),
                 Xm430W210::id(3).on(arm),
@@ -267,7 +461,7 @@ mod tests {
     #[test]
     fn voltage_limits_reach_their_declaration_in_0_1_v_rounded() {
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
-        let declared = lower::<4>(
+        let declared = lower_dynamixel::<4>(
             vec![
                 Ax12a::ids(1..=2).voltage_limits(9.5, 13.0).on(arm),
                 Ax12a::id(3).voltage_limits(9.46, 12.04).on(arm),
@@ -289,7 +483,7 @@ mod tests {
         use kmr_adapters::dynamixel::Settings;
 
         let spine = Plugin::by_id("AL02L1KL").baud(1_000_000).build();
-        let declared = lower::<4>(
+        let declared = lower_dynamixel::<4>(
             vec![
                 Ax12a::ids(1..=2)
                     .voltage_limits(9.0, 13.0)
@@ -330,7 +524,7 @@ mod tests {
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
         #[expect(clippy::reversed_empty_ranges, reason = "the empty range is the case")]
         let none = Xm430W210::ids(5..=1).on(arm);
-        let res = lower::<N>(
+        let res = lower_dynamixel::<N>(
             vec![none, Xm430W210::ids(1..=4).on(arm), filler::<N>(arm)],
             REVOLUTE,
         );
@@ -343,7 +537,7 @@ mod tests {
         let spare = Plugin::by_id("SPARE001").build();
         #[expect(clippy::reversed_empty_ranges, reason = "the empty range is the case")]
         let none = Xm430W210::ids(5..=1).on(spare);
-        let declared = lower::<1>(vec![Xm430W210::id(1).on(arm), none], REVOLUTE)
+        let declared = lower_dynamixel::<1>(vec![Xm430W210::id(1).on(arm), none], REVOLUTE)
             .expect("the empty range is ignored");
         assert_eq!(declared.live(), 1);
         assert_eq!(declared.ports(), [Port::ById("ARM00001")]);
@@ -359,8 +553,8 @@ mod tests {
     /// The `all()` test on a robot of `N` actuators.
     fn all_ids<const N: usize>() {
         let spine = Plugin::by_id("SPINE001").baud(1_000_000).build();
-        let declared =
-            lower::<N>(vec![Ax12a::all().read_only().on(spine)], REVOLUTE).expect("all of N");
+        let declared = lower_dynamixel::<N>(vec![Ax12a::all().read_only().on(spine)], REVOLUTE)
+            .expect("all of N");
         let placed = declared
             .table()
             .actuators
@@ -375,7 +569,7 @@ mod tests {
     fn all_with_another_declaration_overcounts() {
         let spine = Plugin::by_id("SPINE001").baud(1_000_000).build();
         let tail = Plugin::by_id("TAIL0001").baud(1_000_000).build();
-        let res = lower::<4>(
+        let res = lower_dynamixel::<4>(
             vec![Ax12a::all().on(spine), Ax12a::id(9).on(tail)],
             REVOLUTE,
         );
@@ -395,7 +589,7 @@ mod tests {
     fn two_snakes_with_overlapping_ids_on_two_buses() {
         let ax = Plugin::by_id("AL02L1KL").baud(1_000_000).build();
         let rx = Plugin::by_id("AL02L1EU").baud(1_000_000).build();
-        let declared = lower::<22>(
+        let declared = lower_dynamixel::<22>(
             vec![Ax12a::ids(1..=12).on(ax), Rx28::ids(1..=10).on(rx)],
             REVOLUTE,
         )
@@ -419,7 +613,7 @@ mod tests {
         let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
         let mut prismatic = REVOLUTE;
         prismatic[0] = 0b100;
-        let Err(e) = lower::<4>(vec![Xm430W210::ids(1..=4).on(arm)], prismatic) else {
+        let Err(e) = lower_dynamixel::<4>(vec![Xm430W210::ids(1..=4).on(arm)], prismatic) else {
             panic!("a prismatic Dynamixel actuator was lowered");
         };
         assert_eq!(
@@ -427,5 +621,242 @@ mod tests {
             "the declared actuators are refused: actuator 2: SRS FR-2.2: prismatic Dynamixel \
              actuator has no mm conversion"
         );
+    }
+
+    mod cubemars {
+        use super::super::*;
+        use crate::Bus as Plugin;
+        use crate::cubemars::{Ak60, Ak80};
+        use crate::{Q, Qd};
+
+        /// No prismatic actuator.
+        const REVOLUTE: [u64; MASK_WORDS] = [0; MASK_WORDS];
+
+        /// The refusal inside a `BringUp`, as text.
+        fn refusal<T: core::fmt::Debug>(res: Result<T, UserError>) -> String {
+            match res {
+                Err(UserError::BringUp { source }) => source.to_string(),
+                other => panic!("not a refusal: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn cubemars_declarations_lower_in_engine_order_with_their_settings() {
+            let leg = Plugin::by_dev("can0").build();
+            let arm = Plugin::by_dev("can1").build();
+            let declared = lower::<3>(
+                vec![
+                    Ak60::ids(1..=2)
+                        .gains(150.0, 1.0)
+                        .position_limit(Q(-0.5)..=Q(0.5))
+                        .velocity_limit(Qd(4.0))
+                        .on(leg),
+                    Ak80::id(7).reversed().start(Q(0.25)).on(arm),
+                ],
+                REVOLUTE,
+            )
+            .expect("valid declarations");
+            let Declared::CubeMars(declared) = declared else {
+                panic!("not lowered to CubeMars");
+            };
+            let rows = declared.table.actuators;
+            assert_eq!(
+                rows.map(|a| (a.bus, a.id, a.model)),
+                [
+                    (0, 1, cubemars::Model::Ak60_6),
+                    (0, 2, cubemars::Model::Ak60_6),
+                    (1, 7, cubemars::Model::Ak80_8),
+                ]
+            );
+            assert_eq!(rows[0].limits.position, Some((-0.5, 0.5)));
+            assert_eq!(rows[1].limits.velocity, Some(4.0));
+            assert!(rows[2].reversed && rows[2].start == 0.25);
+            assert_eq!(declared.interfaces, [Some("can0"), Some("can1"), None]);
+        }
+
+        #[test]
+        fn a_cubemars_bus_needs_a_can_interface_and_no_baud() {
+            let serial = Plugin::by_id("FT8ISZ6H").build();
+            let text = refusal(lower::<1>(vec![Ak60::id(1).on(serial)], REVOLUTE));
+            assert!(text.contains("Bus::by_dev"), "{text}");
+            let baud = Plugin::by_dev("can0").baud(1_000_000).build();
+            let text = refusal(lower::<1>(vec![Ak60::id(1).on(baud)], REVOLUTE));
+            assert!(text.contains("ip link"), "{text}");
+        }
+
+        #[test]
+        fn two_brands_in_one_robot_are_refused() {
+            let leg = Plugin::by_dev("can0").build();
+            let arm = Plugin::by_id("ARM00001").baud(1_000_000).build();
+            let text = refusal(lower::<2>(
+                vec![
+                    Ak60::id(1).on(leg),
+                    crate::dynamixel::Xm430W210::id(1).on(arm),
+                ],
+                REVOLUTE,
+            ));
+            assert!(text.contains("mix Dynamixel and CubeMars"), "{text}");
+        }
+
+        /// The CubeMars rows `declarations` lower to on a robot of `N` actuators.
+        fn rows<const N: usize>(declarations: Vec<Actuators>) -> [cubemars::Actuator; N] {
+            match lower::<N>(declarations, REVOLUTE).expect("valid declarations") {
+                Declared::CubeMars(declared) => declared.table.actuators,
+                Declared::Dynamixel(_) => panic!("not lowered to CubeMars"),
+            }
+        }
+
+        #[test]
+        fn per_joint_position_limits_land_on_the_ids_in_declaration_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<4>(vec![
+                Ak60::id(9).on(leg),
+                Ak60::ids(1..=3)
+                    .position_limits([-1.0, -2.0, -3.0], [1.0, 2.0, 3.0])
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.id, a.limits.position)),
+                [
+                    (9, None),
+                    (1, Some((-1.0, 1.0))),
+                    (2, Some((-2.0, 2.0))),
+                    (3, Some((-3.0, 3.0))),
+                ]
+            );
+        }
+
+        #[test]
+        fn position_limits_and_starts_take_any_list_of_numbers() {
+            let leg = Plugin::by_dev("can0").build();
+            let lo64: [f64; 2] = [-0.5, -0.25];
+            let hi32: [f32; 2] = [0.5, 0.25];
+            let from_f = Ak60::ids(1..=2).position_limits(lo64, hi32).starts(lo64);
+            let from_q = Ak60::ids(1..=2)
+                .position_limits([Q(-0.5), Q(-0.25)], vec![0.5, 0.25])
+                .starts(vec![Q(-0.5), Q(-0.25)]);
+            let rows = rows::<4>(vec![from_f.on(leg), from_q.on(leg)]);
+            assert_eq!(
+                rows.map(|a| (a.limits.position, a.start)),
+                [
+                    (Some((-0.5, 0.5)), -0.5),
+                    (Some((-0.25, 0.25)), -0.25),
+                    (Some((-0.5, 0.5)), -0.5),
+                    (Some((-0.25, 0.25)), -0.25),
+                ]
+            );
+        }
+
+        #[test]
+        fn per_joint_starts_land_on_the_ids_in_declaration_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<3>(vec![
+                Ak60::ids(4..=6).starts([Q(0.1), Q(-0.2), Q(0.3)]).on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.id, a.start)),
+                [(4, 0.1), (5, -0.2), (6, 0.3)]
+            );
+        }
+
+        #[test]
+        fn a_per_joint_entry_overrides_the_shared_setting_in_either_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<2>(vec![
+                Ak60::ids(1..=2)
+                    .position_limits([-1.0, -2.0], [1.0, 2.0])
+                    .position_limit(Q(-0.5)..=Q(0.5))
+                    .start(Q(0.7))
+                    .starts([Q(0.1), Q(0.2)])
+                    .velocity_limit(Qd(4.0))
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.limits.position, a.start, a.limits.velocity)),
+                [
+                    (Some((-1.0, 1.0)), 0.1, Some(4.0)),
+                    (Some((-2.0, 2.0)), 0.2, Some(4.0)),
+                ]
+            );
+        }
+
+        #[test]
+        fn the_position_margin_widens_every_range_whatever_the_setter_order() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<3>(vec![
+                Ak60::ids(1..=2)
+                    .position_margin(Q(0.25))
+                    .position_limits([-1.0, -2.0], [1.0, 2.0])
+                    .on(leg),
+                Ak60::id(3)
+                    .position_limit(Q(-0.5)..=Q(0.5))
+                    .position_margin(Q(0.25))
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| a.limits.position),
+                [
+                    Some((-1.25, 1.25)),
+                    Some((-2.25, 2.25)),
+                    Some((-0.75, 0.75))
+                ]
+            );
+        }
+
+        #[test]
+        fn the_position_margin_alone_sets_no_range() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<1>(vec![Ak60::id(1).position_margin(Q(0.25)).on(leg)]);
+            assert_eq!(rows[0].limits.position, None);
+        }
+
+        #[test]
+        fn per_joint_lists_follow_all_resolved_at_run() {
+            let leg = Plugin::by_dev("can0").build();
+            let rows = rows::<2>(vec![
+                Ak60::all()
+                    .starts([Q(0.1), Q(0.2)])
+                    .position_limits([-1.0, -2.0], [1.0, 2.0])
+                    .on(leg),
+            ]);
+            assert_eq!(
+                rows.map(|a| (a.id, a.start, a.limits.position)),
+                [(1, 0.1, Some((-1.0, 1.0))), (2, 0.2, Some((-2.0, 2.0)))]
+            );
+        }
+
+        #[test]
+        fn a_per_joint_list_of_the_wrong_length_is_refused_at_run() {
+            let leg = Plugin::by_dev("can0").build();
+            let short = Ak60::ids(1..=3).position_limits([-1.0, -2.0], [1.0, 2.0, 3.0]);
+            let text = refusal(lower::<3>(vec![short.on(leg)], REVOLUTE));
+            assert!(
+                text.contains("`position_limits` lows")
+                    && text.contains("2 ")
+                    && text.contains("3 "),
+                "{text}"
+            );
+            let long = Ak60::ids(1..=2).position_limits([-1.0, -2.0], [1.0, 2.0, 3.0]);
+            let text = refusal(lower::<2>(vec![long.on(leg)], REVOLUTE));
+            assert!(
+                text.contains("`position_limits` highs")
+                    && text.contains("3 ")
+                    && text.contains("2 "),
+                "{text}"
+            );
+            let long = Ak60::all().starts([Q(0.1), Q(0.2), Q(0.3)]);
+            let text = refusal(lower::<2>(vec![long.on(leg)], REVOLUTE));
+            assert!(
+                text.contains("`starts`") && text.contains("3 ") && text.contains("2 "),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn a_prismatic_cubemars_actuator_is_refused() {
+            let leg = Plugin::by_dev("can0").build();
+            let text = refusal(lower::<2>(vec![Ak60::ids(1..=2).on(leg)], [0b10]));
+            assert!(text.contains("actuator 1"), "{text}");
+        }
     }
 }

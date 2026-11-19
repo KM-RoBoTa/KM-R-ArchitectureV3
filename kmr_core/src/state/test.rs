@@ -663,6 +663,14 @@ fn every_value_type_converts_both_ways_with_f32() {
 }
 
 #[test]
+fn a_position_widens_to_f64_without_loss() {
+    let q = Q(0.1);
+    assert_eq!(f64::from(q), f64::from(0.1_f32));
+    let wide: f64 = Q(-3.25).into();
+    assert_eq!(wide, -3.25);
+}
+
+#[test]
 fn a_state_of_any_actuator_count_bounds_its_own_indices() {
     let mut robot = RobotState::<7>::default();
 

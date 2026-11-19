@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<!-- GeckoLeg: one leg of three AK60-6 (CubeMars, MIT mode), CAN ids 1..3 on can0.
+     Joint frames follow the DH table of cubemars/GeckoLeg-main (source/controller.cpp):
+     hip d = 0.060 m, knee a = 0.147 m d = 0.090 m, ankle a = 0.150 m.
+     Joint 0 is where each actuator stands at bring-up (the C++ zero posture).
+     Limits: +-1.5 rad around it, wider than one gait cycle; AK60-6 peak 9 N.m,
+     velocity cubemars_rs's AK 2.0 MIT range. -->
+<robot name="geckoleg">
+  <link name="body">
+    <inertial><origin xyz="0 0 0"/><mass value="1.0"/><inertia ixx="1e-3" ixy="0" ixz="0" iyy="1e-3" iyz="0" izz="1e-3"/></inertial>
+  </link>
+  <link name="hip_link">
+    <inertial><origin xyz="0 0 0.03"/><mass value="0.315"/><inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/></inertial>
+  </link>
+  <link name="thigh">
+    <inertial><origin xyz="0.0735 0 0"/><mass value="0.315"/><inertia ixx="1e-4" ixy="0" ixz="0" iyy="6e-4" iyz="0" izz="6e-4"/></inertial>
+  </link>
+  <link name="shank">
+    <inertial><origin xyz="0.075 0 0"/><mass value="0.1"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="2e-4" iyz="0" izz="2e-4"/></inertial>
+  </link>
+  <link name="foot">
+    <inertial><origin xyz="0 0 0"/><mass value="0.02"/><inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="hip" type="revolute">
+    <parent link="body"/>
+    <child link="hip_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5" upper="1.5" velocity="45" effort="9"/>
+  </joint>
+  <joint name="knee" type="revolute">
+    <parent link="hip_link"/>
+    <child link="thigh"/>
+    <origin xyz="0 0 0.060" rpy="-1.5708 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5" upper="1.5" velocity="45" effort="9"/>
+  </joint>
+  <joint name="ankle" type="revolute">
+    <parent link="thigh"/>
+    <child link="shank"/>
+    <origin xyz="0.147 0 0.090" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5" upper="1.5" velocity="45" effort="9"/>
+  </joint>
+  <joint name="foot_tip" type="fixed">
+    <parent link="shank"/>
+    <child link="foot"/>
+    <origin xyz="0.150 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

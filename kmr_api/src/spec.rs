@@ -8,7 +8,7 @@ use kmr_adapters::dynamixel::Placement;
 use kmr_core::hal::{Drivers, Hal, NoHardware};
 use kmr_core::{HCons, HNil};
 
-use crate::actuator::DxlDeclared;
+use crate::actuator::Declared;
 use crate::brand::{Brand, Refused};
 use crate::{Limit, Q, Qd, Tau, UserError};
 
@@ -78,7 +78,7 @@ pub trait Spec<const N: usize> {
     /// # Errors
     ///
     /// [`UserError::FeatureOff`], or [`UserError::PresetHardware`].
-    fn declare(declared: DxlDeclared<N>) -> Result<Self::Drivers, UserError>;
+    fn declare(declared: Declared<N>) -> Result<Self::Drivers, UserError>;
 }
 
 /// The limit of each actuator from the model's columns: `lower` and `upper` are `None` where
@@ -167,37 +167,184 @@ pub fn __declare_none<D>(preset: &'static str) -> Result<D, UserError> {
     Err(UserError::PresetHardware { preset })
 }
 
-/// The Dynamixel driver of `declared`, on the Dynamixel SDK, as the one member of the robot.
-/// No I/O.
+/// The driver of the actuators `add_actuator` declared, as the one member of the robot: the
+/// Dynamixel driver on the Dynamixel SDK, or the CubeMars driver on SocketCAN. No I/O.
 ///
 /// # Errors
 ///
-/// None with the `dynamixel` feature; the `Result` is the shape of [`Spec::declare`].
+/// [`UserError::FeatureOff`]: the brand's driver is not compiled in.
 #[doc(hidden)]
-#[cfg(feature = "dynamixel")]
-pub fn __declare_dynamixel<const N: usize>(
-    declared: DxlDeclared<N>,
-) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
-    use kmr_adapters::dynamixel::{DxlRsV2, Dynamixel};
-    Ok(HCons {
-        head: Dynamixel::declared(DxlRsV2::new(), declared),
-        tail: HNil,
-    })
+pub fn __declare_actuators<const N: usize>(
+    declared: Declared<N>,
+) -> Result<HCons<DeclaredActuators<N>, HNil>, UserError> {
+    match declared {
+        #[cfg(feature = "dynamixel")]
+        Declared::Dynamixel(declared) => {
+            use kmr_adapters::dynamixel::{DxlRsV2, Dynamixel};
+            let driver = Dynamixel::declared(DxlRsV2::new(), declared);
+            Ok(HCons {
+                head: DeclaredActuators::Dynamixel(driver),
+                tail: HNil,
+            })
+        }
+        #[cfg(not(feature = "dynamixel"))]
+        Declared::Dynamixel(_) => Err(UserError::FeatureOff {
+            feature: "dynamixel",
+        }),
+        #[cfg(feature = "cubemars")]
+        Declared::CubeMars(declared) => {
+            use kmr_adapters::cubemars::{CubeMars, SocketCan};
+            let driver = CubeMars::declared(SocketCan::new(), declared.table, declared.interfaces);
+            Ok(HCons {
+                head: DeclaredActuators::CubeMars(driver),
+                tail: HNil,
+            })
+        }
+        #[cfg(not(feature = "cubemars"))]
+        Declared::CubeMars(_) => Err(UserError::FeatureOff {
+            feature: "cubemars",
+        }),
+    }
 }
 
-/// Refuses the declared actuators: the Dynamixel adapter is not compiled in.
-///
-/// # Errors
-///
-/// Always [`UserError::FeatureOff`].
+/// The one member of a robot whose actuators `add_actuator` declared: the driver of their brand.
+/// Errors name it by this type, `member 0 (DeclaredActuators)`.
 #[doc(hidden)]
-#[cfg(not(feature = "dynamixel"))]
-pub fn __declare_dynamixel<const N: usize>(
-    _declared: DxlDeclared<N>,
-) -> Result<HCons<__DxlAdapter<N, N>, HNil>, UserError> {
-    Err(UserError::FeatureOff {
-        feature: "dynamixel",
-    })
+pub enum DeclaredActuators<const N: usize> {
+    /// Dynamixel actuators.
+    Dynamixel(__DxlAdapter<N, N>),
+    /// CubeMars actuators.
+    CubeMars(__CubeMarsAdapter<N, N>),
+}
+
+/// The error of [`DeclaredActuators`]: its driver's, typed, as the next
+/// [`Error::source`](core::error::Error::source) for `downcast_ref`.
+#[doc(hidden)]
+#[derive(Debug, thiserror::Error)]
+pub enum __DeclaredError<D: core::error::Error + 'static, C: core::error::Error + 'static> {
+    /// The Dynamixel driver's.
+    #[error("{0}")]
+    Dynamixel(#[source] D),
+    /// The CubeMars driver's.
+    #[error("{0}")]
+    CubeMars(#[source] C),
+}
+
+/// Calls `$method` on the driver inside `$self`; with `?`, its error wrapped in
+/// [`__DeclaredError`].
+macro_rules! delegate {
+    ($self:ident . $method:ident ( $($arg:expr),* ) ?) => {
+        match $self {
+            Self::Dynamixel(driver) => {
+                Hal::<N>::$method(driver $(, $arg)*).map_err(__DeclaredError::Dynamixel)
+            }
+            Self::CubeMars(driver) => {
+                Hal::<N>::$method(driver $(, $arg)*).map_err(__DeclaredError::CubeMars)
+            }
+        }
+    };
+    ($self:ident . $method:ident ( $($arg:expr),* )) => {
+        match $self {
+            Self::Dynamixel(driver) => Hal::<N>::$method(driver $(, $arg)*),
+            Self::CubeMars(driver) => Hal::<N>::$method(driver $(, $arg)*),
+        }
+    };
+}
+
+impl<const N: usize> kmr_core::hal::seal::Adapter for DeclaredActuators<N> {}
+
+/// Each call goes to the driver of the declared brand.
+impl<const N: usize> Hal<N> for DeclaredActuators<N> {
+    type Error = __DeclaredError<
+        <__DxlAdapter<N, N> as Hal<N>>::Error,
+        <__CubeMarsAdapter<N, N> as Hal<N>>::Error,
+    >;
+
+    fn check(
+        &mut self,
+        overrides: kmr_core::hal::Overrides,
+    ) -> Result<kmr_core::hal::Claim<N>, Self::Error> {
+        delegate!(self.check(overrides)?)
+    }
+
+    fn open(&mut self) -> Result<(), Self::Error> {
+        delegate!(self.open()?)
+    }
+
+    fn zero(&mut self) -> Result<(), Self::Error> {
+        delegate!(self.zero()?)
+    }
+
+    fn ping(&mut self) -> Result<(), Self::Error> {
+        delegate!(self.ping()?)
+    }
+
+    fn health(&mut self) -> Result<(), Self::Error> {
+        delegate!(self.health()?)
+    }
+
+    fn configure(&mut self) -> Result<(), Self::Error> {
+        delegate!(self.configure()?)
+    }
+
+    fn read_all(&mut self, sample: kmr_core::hal::Sample<'_, N>) -> Result<(), Self::Error> {
+        delegate!(self.read_all(sample)?)
+    }
+
+    fn simulates(&self) -> bool {
+        delegate!(self.simulates())
+    }
+
+    fn torque_on(&mut self) -> Result<(), Self::Error> {
+        delegate!(self.torque_on()?)
+    }
+
+    fn read(
+        &mut self,
+        sample: kmr_core::hal::Sample<'_, N>,
+        faults: &mut kmr_core::hal::Faults<N>,
+    ) -> kmr_core::hal::Mask<N> {
+        delegate!(self.read(sample, faults))
+    }
+
+    fn write(
+        &mut self,
+        command: kmr_core::hal::Command<'_, N>,
+        batch: &kmr_core::hal::Batch<'_, N>,
+        faults: &mut kmr_core::hal::Faults<N>,
+    ) {
+        delegate!(self.write(command, batch, faults));
+    }
+
+    fn telemetry(
+        &mut self,
+        telemetry: &mut kmr_core::telemetry::Telemetry<N>,
+        faults: &mut kmr_core::hal::Faults<N>,
+    ) -> kmr_core::hal::Mask<N> {
+        delegate!(self.telemetry(telemetry, faults))
+    }
+
+    #[cfg(feature = "experimental")]
+    fn present(&self) -> kmr_core::hal::Mask<N> {
+        delegate!(self.present())
+    }
+
+    #[cfg(feature = "experimental")]
+    fn upkeep(&mut self) {
+        delegate!(self.upkeep());
+    }
+
+    fn hold(&mut self, target: kmr_core::hal::Command<'_, N>) {
+        delegate!(self.hold(target));
+    }
+
+    fn torque_off(&mut self) {
+        delegate!(self.torque_off());
+    }
+
+    fn close(&mut self) {
+        delegate!(self.close());
+    }
 }
 
 /// The Dynamixel driver of a robot of `N` actuators with `NB` Dynamixel buses.
@@ -245,7 +392,7 @@ impl<const NB: usize, const M: usize, const N: usize> Brand<N> for Placement<NB,
 #[doc(hidden)]
 #[cfg(feature = "cubemars")]
 pub type __CubeMarsAdapter<const NB: usize, const N: usize> =
-    kmr_adapters::cubemars::CubeMars<kmr_adapters::cubemars::SocketCan<NB>, NB, N>;
+    kmr_adapters::cubemars::CubeMars<kmr_adapters::cubemars::SocketCan, NB, N>;
 
 /// No CubeMars driver: kmr_api is built without its `cubemars` feature.
 #[doc(hidden)]

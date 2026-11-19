@@ -98,6 +98,11 @@ impl From<Q> for f32 {
         value.0
     }
 }
+impl From<Q> for f64 {
+    fn from(value: Q) -> Self {
+        f64::from(value.0)
+    }
+}
 
 impl sealed::Slot for Qd {
     const ID: FieldId = FieldId::Qd;

@@ -75,7 +75,7 @@ pub use kmr_core::hal::NoHardware;
 mod brand;
 mod spec;
 #[doc(hidden)]
-pub use actuator::DxlDeclared as __Declared;
+pub use actuator::Declared as __Declared;
 #[doc(hidden)]
 pub use brand::{__bind, Brand, Brands, Refused, Route};
 #[doc(hidden)]
@@ -88,9 +88,11 @@ pub use kmr_core::HCons;
 /// The end of a list of drivers.
 pub use kmr_core::HNil;
 #[doc(hidden)]
+pub use spec::DeclaredActuators as __DeclaredAdapter;
+#[doc(hidden)]
 pub use spec::{
-    __CubeMarsAdapter, __DxlAdapter, __NoHardware, __bind_none, __brand, __check_coverage,
-    __declare_dynamixel, __declare_none, Spec,
+    __CubeMarsAdapter, __DeclaredError, __DxlAdapter, __NoHardware, __bind_none, __brand,
+    __check_coverage, __declare_actuators, __declare_none, Spec,
 };
 
 mod bus;
@@ -108,17 +110,7 @@ pub mod presets;
 
 pub mod dynamixel;
 
-/// The CubeMars hardware table, for `robot!(model = .., hardware = { cubemars: .. })`.
-pub mod cubemars {
-    /// The CubeMars driver [`Bound::drivers`](crate::Bound::drivers) hands out.
-    pub use kmr_adapters::cubemars::CubeMars;
-    /// Why a CubeMars bind or bring-up failed; reach it with `downcast_ref`.
-    pub use kmr_adapters::cubemars::CubeMarsError;
-    /// The SocketCAN transport of the CubeMars driver.
-    #[cfg(feature = "cubemars")]
-    pub use kmr_adapters::cubemars::SocketCan;
-    pub use kmr_adapters::cubemars::{Actuator, Bus, DEFAULT_KD, DEFAULT_KP, Placement, Table};
-}
+pub mod cubemars;
 
 #[doc(hidden)]
 pub use kmr_model::model as __model;

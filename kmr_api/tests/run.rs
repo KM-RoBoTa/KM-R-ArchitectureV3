@@ -334,7 +334,7 @@ mod urdf {
         };
         assert_eq!(
             e.to_string(),
-            "hardware bring-up failed: member 0 (Dynamixel): \
+            "hardware bring-up failed: member 0 (DeclaredActuators): \
              bus kmr-test-no-such-serial: serial kmr-test-no-such-serial names no single device; \
              check the bus plugin and the cable"
         );

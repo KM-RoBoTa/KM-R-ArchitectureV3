@@ -16,11 +16,11 @@
     adaptersDxlRs = component "kmr_adapters: DxlRs" "DxlRsV2: the Backend over dxl_rs_v2, the pure-Rust SDK, behind the dynamixel feature; every dxl_rs_v2 call and type stays in its file." "Rust, dxl_rs_v2"
     adaptersScripted = component "kmr_adapters: scripted backend" "The test Backend: refuses what DxlRsV2 refuses, logs every call, scripts answers and failures. Test builds only." "Rust, cfg(test)"
     adaptersCubeTable = component "kmr_adapters: CubeMars table" "The CubeMars hardware of a robot as a const: CAN interfaces by label; per actuator interface, CAN id and the gains sent on a tick that writes none (AK60-6 default 150 and 1). check() rejects a bad table at compile time (SRS FR-6.4)." "Rust, const fn"
-    adaptersCubeMember = component "kmr_adapters: CubeMars member" "Implements Hal for AK60-6 actuators in MIT mode, one group per CAN interface, read every tick: bring-up asked limp with the exit frame, positions offset from Init (the zero frame is never sent), enter then a start command at the measured position, one frame per actuator per tick, replies drained one tick old, exit frame at torque off (SRS FR-5.1, FR-5.3, FR-5.6)." "Rust"
-    adaptersMit = component "kmr_adapters: MIT frames" "p/v/kp/kd/t packed 16/12/12/12/12 bits over the AK60-6 ranges, signs negated both ways, ported from cubemars_rs; a value out of range is refused, never clipped." "Rust"
-    adaptersCan = component "kmr_adapters: CAN transport seam" "The private trait between the CubeMars member and the CAN bus: open, non-blocking send and receive, a bring-up wait, close." "Rust trait"
-    adaptersSocketCan = component "kmr_adapters: SocketCan" "The CAN transport on raw SocketCAN: one non-blocking CAN_RAW socket per interface, bound by name through the socketcan crate, behind the cubemars feature." "Rust, socketcan"
-    adaptersScriptedCan = component "kmr_adapters: scripted CAN bus" "Simulated AK60-6 motors answering every frame with their state, a fixed-size call log, scripted failures. Test builds only." "Rust, cfg(test)"
+    adaptersCubeMember = component "kmr_adapters: CubeMars member" "Implements Hal for AK60-6 and AK80-8 actuators in MIT mode on a cubemars_rs bus (MitAk2) per CAN interface: bring-up enters limp, positions are joint positions from the declared start (the motor's stored zero is never used nor written), one command and its reply per actuator per tick, exit at torque off (SRS FR-5.1, FR-5.3, FR-5.6)." "Rust"
+    adaptersMit = component "kmr_adapters: MIT frames" "MIT frames, zero and limits live in cubemars_rs (MitAk2): commands packed and replies unpacked over each model's ranges; a value out of range is refused, never clipped." "Rust, cubemars-rs"
+    adaptersCan = component "kmr_adapters: CAN transport seam" "The private Open trait: opens a CAN interface by name into a cubemars_rs Transport, which the member hands to a cubemars_rs bus." "Rust trait"
+    adaptersSocketCan = component "kmr_adapters: SocketCan" "Opens each CAN interface as cubemars_rs's SocketCan transport and hands it to a cubemars_rs bus (MitAk2), behind the cubemars feature." "Rust, cubemars-rs"
+    adaptersScriptedCan = component "kmr_adapters: scripted CAN bus" "A fake AK CAN bus implementing cubemars_rs Transport, with its Open: simulated motors answering every command with their state, scripted failures. Test builds only." "Rust, cfg(test)"
 
     adaptersPresets -> adaptersTable "Declares its hardware as a checked"
     adaptersPresets -> adaptersIo "Computes its declared costs with" "const evaluation"
@@ -37,8 +37,8 @@
     adaptersDxlRs -> hardware "Reads current state, writes goals and torque" "Serial, Dynamixel Protocol 1 and 2"
     adaptersCubeMember -> adaptersCubeTable "Is built from a placed"
     adaptersCubeMember -> adaptersBinding "Binds its CAN interfaces with"
-    adaptersCubeMember -> adaptersMit "Packs commands and unpacks replies with"
-    adaptersCubeMember -> adaptersCan "Talks to the CAN bus through"
+    adaptersCubeMember -> adaptersMit "Commands actuators and reads replies through"
+    adaptersCubeMember -> adaptersCan "Opens its CAN interfaces through"
     adaptersSocketCan -> adaptersCan "Implements"
     adaptersScriptedCan -> adaptersCan "Implements"
     adaptersSocketCan -> hardware "Sends MIT commands, receives state" "SocketCAN, AK60-6 MIT mode"
@@ -143,13 +143,13 @@
     }
 
     group "kmr_adapters: CubeMars member" {
-        adaptersCubeMars = component "kmr_adapters::cubemars::CubeMars" "The member over NB CAN interfaces and a transport: new, bind, and the Hal calls." "Rust struct" {
+        adaptersCubeMars = component "kmr_adapters::cubemars::CubeMars" "The member over NB CAN interfaces and an opener: new, bind, declared, and the Hal calls." "Rust struct" {
             tags "Code"
         }
         adaptersCubeError = component "kmr_adapters::cubemars::CubeMarsError" "Every bind and bring-up error, Copy, naming bus, interface, actuator index and CAN id." "Rust enum" {
             tags "Code"
         }
-        adaptersCubeTableType = component "kmr_adapters::cubemars::Table, Actuator, Bus, Placement" "NB interfaces and N actuators; check(), gains(), at() and in_order()." "Rust structs" {
+        adaptersCubeTableType = component "kmr_adapters::cubemars::Table, Actuator, Bus, Placement" "NB interfaces and N actuators, each a model with its limits; check(), gains(), check_kinds(), at() and in_order()." "Rust structs" {
             tags "Code"
         }
     }
