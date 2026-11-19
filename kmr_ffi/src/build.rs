@@ -1,17 +1,23 @@
 //! The build-script helper (feature `build`): headers, ABI file and the C/C++ compile.
 //!
 //! Run from the user's `build.rs` (D12 A, decision 0009): [`robot`] or [`model`] names the
-//! robot again, and kmr_model_core gives the same N as `robot!`. It writes `kmr.h` (C11),
-//! `kmr.hpp` (C++17) and `kmr_ffi_abi.rs` into `OUT_DIR`, all for one N and one set of engine
-//! [`Sizes`], then compiles the user's sources against those headers with `cc`. `kmr_api::c!`
-//! checks the ABI file against `robot!`, so C built for another N fails the build.
+//! robot again, and kmr_model_core gives the same N as `robot!`. Each [`Build::compile`] call is
+//! one group: it writes `kmr.h` (C11) and `kmr.hpp` (C++17) for one N and one set of engine
+//! [`Sizes`] into a folder of its own under `OUT_DIR`, compiles the user's sources against them
+//! with `cc`, and lists the functions the group defines. `kmr_ffi_abi.rs` in `OUT_DIR` maps every
+//! function of every group to the N and sizes it was built for; `kmr_api::c!` looks its function
+//! up there, so a function built for another N fails the build.
 //!
 //! The headers expose the controller API over the snapshot and nothing else: no builder, no
 //! loop, no phase, no signal bus internals, no HAL (FR-002 (SRS FR-10.1)).
 // Build-script code, never on the control path (FR-019 (SRS FR-10.3)).
 #![allow(clippy::disallowed_types)]
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// What can go wrong in the build-script helper.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +43,34 @@ pub enum Error {
     /// The C/C++ compiler failed.
     #[error("kmr_ffi: {0}")]
     Compile(String),
+    /// No `nm` could list the functions of a compiled library.
+    #[error(
+        "kmr_ffi: no nm could list the functions of the compiled C/C++ (tried {}): {detail}; \
+         install binutils or LLVM, or set NM to the nm of the target's toolchain",
+        .tried.join(", ")
+    )]
+    NoSymbolTool {
+        /// The tools tried, in order.
+        tried: Vec<String>,
+        /// Why the last one failed.
+        detail: String,
+    },
+    /// Two `compile` calls define the same function: the linker would keep one for both.
+    #[error(
+        "kmr_ffi: `{symbol}` is defined by two compile calls, one for [{}] and one for [{}]; the \
+         linker would keep one of them for both robots. Give each function its own name, and \
+         compile a source shared by both robots in one call only",
+        .first.join(", "),
+        .second.join(", ")
+    )]
+    DuplicateSymbol {
+        /// The function's symbol.
+        symbol: String,
+        /// The sources of the earlier call.
+        first: Vec<String>,
+        /// The sources of the later call.
+        second: Vec<String>,
+    },
 }
 
 /// The engine's fixed sizes the headers are written for; kmr_api fills them from the core.
@@ -131,11 +165,13 @@ impl Build {
         }
     }
 
-    /// Writes the headers and the ABI file into `OUT_DIR`, then compiles `sources` against them.
+    /// Compiles `sources` for this robot, as one group of its own.
     ///
-    /// `.c` files are compiled as C11; `.cc`, `.cpp` and `.cxx` files as C++17. Cargo reruns the
-    /// build when a file in a source's folder changes, so headers next to the sources count; a
-    /// header elsewhere needs its own `cargo:rerun-if-changed`.
+    /// Call it once per robot. `.c` files are compiled as C11; `.cc`, `.cpp` and `.cxx` files as
+    /// C++17, each against the `kmr.h` and `kmr.hpp` of this call. Cargo reruns the build when a
+    /// file in a source's folder changes, so headers next to the sources count; a header
+    /// elsewhere needs its own `cargo:rerun-if-changed`. Two calls defining the same function is
+    /// [`Error::DuplicateSymbol`].
     pub fn compile(&self, sources: &[&str]) -> Result<(), Error> {
         let n = self.n()?;
         if !(1..=crate::Mask::BITS as usize).contains(&n) {
@@ -144,35 +180,256 @@ impl Build {
         let (c, cpp) = split(sources)?;
         let out = std::env::var_os("OUT_DIR").ok_or(Error::NoOutDir)?;
         let out = Path::new(&out);
-        write(&out.join("kmr.h"), &c_header(n, self.sizes))?;
-        write(&out.join("kmr.hpp"), &cpp_header())?;
-        write(&out.join("kmr_ffi_abi.rs"), &abi_rs(n, self.sizes))?;
+        let k = NEXT_GROUP.fetch_add(1, Ordering::Relaxed);
+        let include = out.join("kmr").join(k.to_string());
+        std::fs::create_dir_all(&include).map_err(|e| Error::Write(include.clone(), e))?;
+        write(&include.join("kmr.h"), &c_header(n, self.sizes))?;
+        write(&include.join("kmr.hpp"), &cpp_header())?;
         for path in watched(sources) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
+        println!("cargo:rerun-if-env-changed=NM");
         // DECISION: every controller has the four parameters of `kmr.h`; one it does not use
-        // is not worth a warning.
-        if !c.is_empty() {
-            cc::Build::new()
-                .std("c11")
+        // is not worth a warning. `OUT_DIR` stays an include dir after the group's own, so a
+        // header the build script writes there (the embedded URDF of the Pinocchio example) is
+        // still found; the group's `kmr.h` comes first.
+        let mut libs = Vec::new();
+        for (lang, files) in [("c", &c), ("cpp", &cpp)] {
+            if files.is_empty() {
+                continue;
+            }
+            let mut build = cc::Build::new();
+            if lang == "cpp" {
+                build.cpp(true).std("c++17");
+            } else {
+                build.std("c11");
+            }
+            build
+                .include(&include)
                 .include(out)
                 .flag_if_supported("-Wno-unused-parameter")
-                .files(&c)
-                .try_compile("kmr_ffi_c")
+                .files(files.iter());
+            let name = format!("kmr_ffi_{lang}_{k}");
+            build
+                .try_compile(&name)
                 .map_err(|e| Error::Compile(e.to_string()))?;
+            let archiver = build
+                .try_get_archiver()
+                .ok()
+                .map(|cmd| PathBuf::from(cmd.get_program()));
+            libs.push((library(out, &name), archiver));
         }
-        if !cpp.is_empty() {
-            cc::Build::new()
-                .cpp(true)
-                .std("c++17")
-                .include(out)
-                .flag_if_supported("-Wno-unused-parameter")
-                .files(&cpp)
-                .try_compile("kmr_ffi_cpp")
-                .map_err(|e| Error::Compile(e.to_string()))?;
+        let mut symbols = Vec::new();
+        for (lib, archiver) in &libs {
+            let tools = nm_tools(std::env::var_os("NM"), archiver.as_deref());
+            symbols.extend(list_symbols(&tools, lib)?);
         }
-        Ok(())
+        let apple = std::env::var("CARGO_CFG_TARGET_VENDOR").is_ok_and(|v| v == "apple");
+        if apple {
+            for symbol in &mut symbols {
+                if let Some(bare) = symbol.strip_prefix('_') {
+                    *symbol = bare.to_owned();
+                }
+            }
+        }
+        symbols.sort();
+        symbols.dedup();
+        let group = Group {
+            sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+            abi: abi(n, self.sizes),
+            symbols,
+        };
+        let mut groups = GROUPS.lock().unwrap_or_else(|e| e.into_inner());
+        check_duplicates(&groups, &group)?;
+        groups.push(group);
+        write(&out.join("kmr_ffi_abi.rs"), &abi_table(&groups))
     }
+}
+
+/// The number of the next [`Build::compile`] call of this build script.
+static NEXT_GROUP: AtomicUsize = AtomicUsize::new(0);
+
+/// Every group this build script compiled so far, in call order.
+// DECISION: process-wide: a build script is one process, and its `compile` calls are the groups.
+static GROUPS: Mutex<Vec<Group>> = Mutex::new(Vec::new());
+
+/// One [`Build::compile`] call: its sources, the N and sizes it was built for, and the
+/// functions its libraries define.
+struct Group {
+    /// The sources as given.
+    sources: Vec<String>,
+    /// N, History depth, IMU slots, microphone slots and microphone window.
+    abi: [usize; 5],
+    /// The strong global functions it defines, sorted.
+    symbols: Vec<String>,
+}
+
+/// N and the sizes, in the order of `kmr_ffi_abi.rs`.
+fn abi(n: usize, sizes: Sizes) -> [usize; 5] {
+    [
+        n,
+        sizes.history_depth,
+        sizes.max_imus,
+        sizes.max_mics,
+        sizes.mic_window,
+    ]
+}
+
+/// The static library `cc` left in `out` for `name`.
+fn library(out: &Path, name: &str) -> PathBuf {
+    let unix = out.join(format!("lib{name}.a"));
+    if unix.exists() {
+        return unix;
+    }
+    out.join(format!("{name}.lib"))
+}
+
+/// The `nm` beside `archiver`: its last `ar` word swapped for `nm`, its folder kept.
+///
+/// `aarch64-linux-gnu-ar` gives `aarch64-linux-gnu-nm`, `llvm-ar-18` gives `llvm-nm-18`; a name
+/// without an `ar` word (`emar`, `lib.exe`) gives none.
+fn nm_beside(archiver: &Path) -> Option<PathBuf> {
+    let name = archiver.file_name()?.to_str()?;
+    let (stem, exe) = match name.strip_suffix(".exe") {
+        Some(stem) => (stem, ".exe"),
+        None => (name, ""),
+    };
+    let mut words: Vec<&str> = stem.split('-').collect();
+    let ar = words.iter().rposition(|w| *w == "ar")?;
+    if let Some(word) = words.get_mut(ar) {
+        *word = "nm";
+    }
+    Some(archiver.with_file_name(format!("{}{exe}", words.join("-"))))
+}
+
+/// The `nm` tools to try, in order: `NM` alone when set, else the one beside the archiver,
+/// `llvm-nm`, then `nm`.
+// DECISION: a set `NM` is the only tool tried: an override that silently falls back would hide
+// a wrong path.
+fn nm_tools(env: Option<OsString>, archiver: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(nm) = env.filter(|nm| !nm.is_empty()) {
+        return vec![PathBuf::from(nm)];
+    }
+    let mut tools = Vec::new();
+    for tool in [
+        archiver.and_then(nm_beside),
+        Some("llvm-nm".into()),
+        Some("nm".into()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !tools.contains(&tool) {
+            tools.push(tool);
+        }
+    }
+    tools
+}
+
+/// The strong global functions `lib` defines, by the first of `tools` that can read it.
+fn list_symbols(tools: &[PathBuf], lib: &Path) -> Result<Vec<String>, Error> {
+    let mut detail = String::from("none found");
+    for tool in tools {
+        let out = match Command::new(tool)
+            .args(["-P", "-g", "--defined-only"])
+            .arg(lib)
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => {
+                detail = format!("{}: {e}", tool.display());
+                continue;
+            }
+        };
+        if out.status.success() {
+            // DECISION: the tool is named on the build script's own output (target/…/output),
+            // which cargo keeps and does not print: enough to tell which nm ran.
+            println!("kmr_ffi: {} listed by {}", lib.display(), tool.display());
+            return Ok(strong_functions(&String::from_utf8_lossy(&out.stdout)));
+        }
+        let why = String::from_utf8_lossy(&out.stderr);
+        detail = format!(
+            "{}: {}",
+            tool.display(),
+            why.lines().next().unwrap_or("failed")
+        );
+    }
+    Err(Error::NoSymbolTool {
+        tried: tools.iter().map(|t| t.display().to_string()).collect(),
+        detail,
+    })
+}
+
+/// The strong global functions of `nm -P` output: GNU's `lib.a[member.o]:` headers and
+/// llvm-nm's `member.o:` headers are skipped.
+// DECISION: only `T`: a controller is a function, and the weak (`W`, `V`), unique (`u`) and
+// data symbols C++ headers emit in every object (inline functions, templates, COMDAT) repeat
+// across groups by design. Strong data is left out too: a duplicate global variable is the
+// user's C, not a controller built for another robot.
+fn strong_functions(nm: &str) -> Vec<String> {
+    nm.lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            match (words.next(), words.next()) {
+                (Some(name), Some("T")) => Some(name.to_owned()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// [`Error::DuplicateSymbol`] for the first function of `group` an earlier group defines.
+fn check_duplicates(groups: &[Group], group: &Group) -> Result<(), Error> {
+    for earlier in groups {
+        if let Some(symbol) = group
+            .symbols
+            .iter()
+            .find(|s| earlier.symbols.binary_search(s).is_ok())
+        {
+            return Err(Error::DuplicateSymbol {
+                symbol: symbol.clone(),
+                first: earlier.sources.clone(),
+                second: group.sources.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `symbol` can be what `c!(name)` names: a plain identifier, not a C++ mangled name.
+// DECISION: the table keeps only these: `c!` takes an identifier, and an Itanium-mangled `_Z…`
+// name is a C++ function, never an `extern "C"` one. The duplicate check still sees every `T`.
+fn nameable(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !symbol.starts_with("_Z")
+}
+
+/// `kmr_ffi_abi.rs`: every function of `groups` with the N and sizes it was built for, sorted
+/// by name, read by `kmr_api::c!`.
+fn abi_table(groups: &[Group]) -> String {
+    let mut rows: Vec<(&str, [usize; 5])> = groups
+        .iter()
+        .flat_map(|g| {
+            g.symbols
+                .iter()
+                .filter(|s| nameable(s))
+                .map(|s| (s.as_str(), g.abi))
+        })
+        .collect();
+    rows.sort();
+    let mut text = String::from(
+        "// Every C and C++ function build.rs compiled, with the N, History depth, IMU slots,\n\
+         // microphone slots and microphone window it was compiled for.\n&[\n",
+    );
+    for (name, [n, d, i, m, w]) in rows {
+        text.push_str(&format!("    ({name:?}, [{n}, {d}, {i}, {m}, {w}]),\n"));
+    }
+    text.push_str("]\n");
+    text
 }
 
 /// Splits `sources` into C and C++ files by extension.
@@ -304,21 +561,6 @@ pub(crate) fn c_header(n: usize, sizes: Sizes) -> String {
 /// `kmr.hpp`; it takes N and the sizes from `kmr.h`.
 pub(crate) fn cpp_header() -> String {
     cpp_header_from(FIELDS, FLAGS)
-}
-
-/// `kmr_ffi_abi.rs`: the N and sizes the sources were built for, read by `kmr_api::c!`.
-pub(crate) fn abi_rs(n: usize, sizes: Sizes) -> String {
-    let Sizes {
-        history_depth,
-        max_imus,
-        max_mics,
-        mic_window,
-    } = sizes;
-    format!(
-        "// N, History depth, IMU slots, microphone slots and microphone window the C and C++\n\
-         // sources of this build were compiled for.\n\
-         [{n}, {history_depth}, {max_imus}, {max_mics}, {mic_window}]\n"
-    )
 }
 
 /// The mask of actuators `0..n`, as a C literal.
@@ -851,7 +1093,8 @@ pub(crate) fn c_header_from(n: usize, sizes: Sizes, fields: &[Field], flags: &[&
          #define KMR_MAX_MICS {max_mics}\n\
          #define KMR_MIC_WINDOW {mic_window}\n\
          #define KMR_REASON_LEN {reason}\n\
-         #define KMR_INTERNAL_ALL {all}\n\n"
+         #define KMR_INTERNAL_ALL {all}\n\
+         #define KMR_INTERNAL_ABI abi_n{n}_h{history_depth}_i{max_imus}_m{max_mics}_w{mic_window}\n\n"
     );
     h.push_str(C_STATUS);
     h.push_str(C_TIME_TYPES);
@@ -906,7 +1149,15 @@ pub(crate) fn c_header_from(n: usize, sizes: Sizes, fields: &[Field], flags: &[&
 }
 
 /// The value types of `kmr.hpp`, before `Group` and `State`.
+// DECISION: everything inside an inline namespace named after N and the sizes
+// (`KMR_INTERNAL_ABI` of `kmr.h`). The member functions of `kmr::State` are inline, emitted weak in
+// every object, and their mangled names hold no N: two groups for two N would define
+// `kmr::State::q()` twice, and the linker would keep one for both (ODR). `kmr::State` still names
+// the class.
 const CPP_TOP: &str = r#"namespace kmr {
+/* Named after N and the sizes: two robots' groups linked into one binary never share an
+ * inline function of this header. */
+inline namespace KMR_INTERNAL_ABI {
 
 /* What a call returns: KMR_OK for Rust's Ok. */
 using Status = kmr_status;
@@ -1273,6 +1524,7 @@ void invoke(F &&f, const kmr_time *t, kmr_state *s, const kmr_sensors *se, void 
 }
 } // namespace detail
 
+} // inline namespace KMR_INTERNAL_ABI
 } // namespace kmr
 
 /* Defines the C function `name`, what kmr_api::c!(name) registers, over `function`:

@@ -126,6 +126,61 @@ pub type __CFn<const N: usize> = kmr_ffi::CFn<N, HISTORY_DEPTH, MAX_IMUS, MAX_MI
 #[doc(hidden)]
 pub const __ABI: [usize; 4] = [HISTORY_DEPTH, MAX_IMUS, MAX_MICS, MIC_WINDOW];
 
+/// The N and sizes `name` was built for, from the table of `kmr_ffi_abi.rs`; `None` when no
+/// group defines it.
+#[doc(hidden)]
+pub const fn __abi_of(table: &[(&str, [usize; 5])], name: &str) -> Option<[usize; 5]> {
+    let mut row = 0;
+    while row < table.len() {
+        let (symbol, abi) = table[row];
+        if same(symbol.as_bytes(), name.as_bytes()) {
+            return Some(abi);
+        }
+        row += 1;
+    }
+    None
+}
+
+/// Whether the row's N is `robot!`'s N; `true` without a row, which the lookup reports.
+#[doc(hidden)]
+pub const fn __same_n(abi: Option<[usize; 5]>, n: usize) -> bool {
+    match abi {
+        Some(abi) => abi[0] == n,
+        None => true,
+    }
+}
+
+/// Whether the row's sizes are this kmr's; `true` without a row or with another N, which the
+/// earlier checks report.
+#[doc(hidden)]
+pub const fn __same_sizes(abi: Option<[usize; 5]>, n: usize) -> bool {
+    match abi {
+        Some([got_n, history, imus, mics, window]) => {
+            got_n != n
+                || (history == __ABI[0]
+                    && imus == __ABI[1]
+                    && mics == __ABI[2]
+                    && window == __ABI[3])
+        }
+        None => true,
+    }
+}
+
+/// Byte-wise equality, in a const context.
+const fn same(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// A C or C++ function compiled by the build script, as a controller:
 /// `.add_controller(EachTick, kmr_api::c!(swing))`.
 ///
@@ -133,8 +188,9 @@ pub const __ABI: [usize; 4] = [HISTORY_DEPTH, MAX_IMUS, MAX_MICS, MIC_WINDOW];
 /// `ctx` null. `c!(swing, with = ctx)` gives the robot `ctx`, kept for the whole run, and the
 /// function a pointer to it: mirror its type as a `#[repr(C)]` struct.
 ///
-/// `N` from `robot!` must be in scope. The build fails with `error[E0080]` here when the
-/// sources were built for another robot (SRS FR-10.2, FR-6.1). See [the module](crate::ffi::c).
+/// `N` from `robot!` must be in scope. The build fails with `error[E0080]` here when no
+/// `compile` call of build.rs defined the function, or one built it for another robot (SRS
+/// FR-10.2, FR-6.1). See [the module](crate::ffi::c).
 // DECISION: one macro for C and C++, named after the ABI: a C++ controller is a C function
 // (`KMR_CONTROLLER` defines it), and a C++ name cannot cross without `extern "C"`. The context is
 // `with = ctx`, the word of `with(ctx, f)`, and the robot owns it as `with` does.
@@ -153,22 +209,40 @@ macro_rules! c {
 #[macro_export]
 macro_rules! __c {
     ($name:ident, $ctx:expr) => {{
-        const FFI_ABI: [usize; 5] =
+        const FFI_TABLE: &[(&str, [usize; 5])] =
             ::core::include!(::core::concat!(::core::env!("OUT_DIR"), "/kmr_ffi_abi.rs"));
+        const FFI_ABI: ::core::option::Option<[usize; 5]> =
+            $crate::ffi::c::__abi_of(FFI_TABLE, ::core::stringify!($name));
         const _: () = ::core::assert!(
-            FFI_ABI[0] == N,
-            "kmr: the C and C++ sources were built for another N; build.rs and robot! must name \
-             the same robot"
+            FFI_ABI.is_some(),
+            ::core::concat!(
+                "kmr: build.rs compiled no C or C++ function named `",
+                ::core::stringify!($name),
+                "`; add its source to a build::robot(..) or build::model(..) compile call, or fix \
+                 the name"
+            )
         );
         const _: () = ::core::assert!(
-            FFI_ABI[1] == $crate::ffi::c::__ABI[0]
-                && FFI_ABI[2] == $crate::ffi::c::__ABI[1]
-                && FFI_ABI[3] == $crate::ffi::c::__ABI[2]
-                && FFI_ABI[4] == $crate::ffi::c::__ABI[3],
-            "kmr: the C and C++ sources were built against another kmr; rebuild them"
+            $crate::ffi::c::__same_n(FFI_ABI, N),
+            ::core::concat!(
+                "kmr: `",
+                ::core::stringify!($name),
+                "` was built for another robot, another N; compile its source in the build.rs \
+                 call for the robot that robot! names here"
+            )
         );
-        // SAFETY: the build helper compiled the function against `kmr.h` of the same build,
-        // which declares exactly this signature for the N and sizes the asserts above pin.
+        const _: () = ::core::assert!(
+            $crate::ffi::c::__same_sizes(FFI_ABI, N),
+            ::core::concat!(
+                "kmr: `",
+                ::core::stringify!($name),
+                "` was built against another kmr; rebuild it (cargo clean)"
+            )
+        );
+        // SAFETY: the build helper compiled this very function against a `kmr.h` declaring
+        // exactly this signature, for the N and sizes of its row in the table; the asserts above
+        // pin that row to this robot's N and this kmr's sizes, and the helper refuses a function
+        // two groups define, so the row is the definition the linker takes.
         // Calling it stays `unsafe`: kmr_ffi's `invoke` does it, over references of these types.
         unsafe extern "C" {
             fn $name(
