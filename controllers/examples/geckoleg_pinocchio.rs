@@ -1,13 +1,13 @@
-//! The GeckoLeg walking gait of `controllers/examples/geckoleg.rs`, its controller written in C++
+//! The GeckoLeg walking gait of `examples/geckoleg.rs`, its controller written in C++
 //! with Pinocchio doing the kinematics: three AK60-6, hip id 1, knee id 2, ankle id 3, on `can0`.
 //!
 //! Rust keeps what kmr declares: the command line, the builder (5 ms tick, hold, clamp), the bus
-//! and the `Ak60` gains and limits. C++ (src/geckoleg.cpp) owns the gait, the inverse kinematics
+//! and the `Ak60` gains and limits. C++ (`cpp/geckoleg.cpp`) owns the gait, the inverse kinematics
 //! and the printout: `check_gait_cpp` on `Init` builds the Pinocchio model and simulates two
 //! cycles against [`leg::LIMITS`], the limits the actuators get, with an emergency stop before
 //! any motion when the gait leaves them; `walk_cpp` on `EachTick` writes the three goals.
 //!
-//! One URDF, `controllers/models/geckoleg.urdf`, describes the leg: `robot!` reads it for kmr's
+//! One URDF, `models/geckoleg.urdf`, describes the leg: `robot!` reads it for kmr's
 //! actuators, and build.rs embeds it in the binary for Pinocchio's `buildModelFromXML`. The
 //! binary reads no model file at run time; it loads Pinocchio's shared libraries through its
 //! rpath: Pinocchio's lib dir, or with `PINOCCHIO_RPATH` set at build time, that path instead.
@@ -19,8 +19,8 @@
 //!
 //! Needs Pinocchio through pkg-config, its include dirs in `CXXFLAGS` (kmr's build helper takes
 //! none):
-//! `CXXFLAGS="$(pkg-config --cflags pinocchio)" cargo run -p kmr_ffi_example_pinocchio
-//! --features pinocchio --release -- --dry-run`
+//! `CXXFLAGS="$(pkg-config --cflags pinocchio)" cargo run -p controllers --example
+//! geckoleg_pinocchio --features pinocchio --release -- --dry-run`
 //! `--dry-run` simulates (no CAN); `--speed X` overrides `SPEED`; add the feature `cubemars` for
 //! the leg.
 //!
@@ -28,6 +28,9 @@
 //! for aarch64 against Pinocchio's pip wheels and copies the binary with, next to it,
 //! `geckoleg_pinocchio-libs/lib/`, the libraries it loads.
 
+// DECISION: the shared module beside the example, in its own folder so Cargo does not take it
+// for an example; a crate root looks up `mod` in its own folder, hence `#[path]`.
+#[path = "geckoleg_pinocchio/leg.rs"]
 mod leg;
 
 use kmr_api::cubemars::Ak60;
@@ -35,7 +38,7 @@ use kmr_api::{Bus, EachTick, Init, Policy, Q, Qd};
 use leg::{Gait, LIMITS, PEAK, RANGE_HI, RANGE_LO};
 use std::time::Duration;
 
-kmr_api::robot!(model = "../../../controllers/models/geckoleg.urdf");
+kmr_api::robot!(model = "models/geckoleg.urdf");
 
 /// Model time = wall time x SPEED (1.0 = the C++ project's real speed). Start very low.
 const SPEED: f64 = 1.0;

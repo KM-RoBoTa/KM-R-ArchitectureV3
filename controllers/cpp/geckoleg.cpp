@@ -1,6 +1,6 @@
-// The GeckoLeg gait of controllers/examples/geckoleg.rs, its kinematics done by Pinocchio on the
-// model of controllers/models/geckoleg.urdf, which build.rs embeds as GECKOLEG_URDF. Rust keeps
-// the builder, the bus and the actuators (src/main.rs).
+// The GeckoLeg gait of examples/geckoleg.rs, its kinematics done by Pinocchio on the
+// model of models/geckoleg.urdf, which build.rs embeds as GECKOLEG_URDF. Rust keeps
+// the builder, the bus and the actuators (examples/geckoleg_pinocchio.rs).
 //
 // What replaced which Rust function:
 // - `control_points`, `bezier`, `foot`: a straight port on Eigen::Vector3d.
@@ -66,14 +66,16 @@ constexpr std::array<std::size_t, 3> JOINTS = {0, 1, 2};
 // The same joints in the URDF, by which Pinocchio's q order is looked up.
 constexpr std::array<const char *, 3> NAMES = {"hip", "knee", "ankle"};
 
-// The gait's state between ticks: the context of walk_cpp, mirrored as `Gait` in src/leg.rs.
+// The gait's state between ticks: the context of walk_cpp, mirrored as `Gait` in
+// examples/geckoleg_pinocchio/leg.rs.
 struct Gait {
     double speed;      // model time per wall second
     Motors prev;       // last goals: where the next Newton steps start
     double next_print; // wall time of the next printout, s
 };
 
-// The joint limits the actuators get: the context of check_gait_cpp, `Limits` in src/leg.rs.
+// The joint limits the actuators get: the context of check_gait_cpp, `Limits` in
+// examples/geckoleg_pinocchio/leg.rs.
 struct Limits {
     Motors lo;
     Motors hi;

@@ -6,7 +6,7 @@
 
 // The walk's half of it goes unused here.
 #[allow(dead_code)]
-#[path = "../src/leg.rs"]
+#[path = "../examples/geckoleg_pinocchio/leg.rs"]
 mod leg;
 
 use core::cell::Cell;
@@ -16,12 +16,12 @@ use std::time::Duration;
 use kmr_api::{First, Init, Policy, PostInit, Sensors, Time};
 use leg::{LIMITS, Limits, PEAK, RANGE_HI, RANGE_LO};
 
-kmr_api::robot!(model = "../../../controllers/models/geckoleg.urdf");
+kmr_api::robot!(model = "models/geckoleg.urdf");
 
 /// One run at a time: the signal bus and the Ctrl-C handler are the process's.
 static RUN: Mutex<()> = Mutex::new(());
 
-/// Runs the check with `limits`, no actuators, the 5 ms tick of src/main.rs, shutting down on
+/// Runs the check with `limits`, no actuators, the 5 ms tick of the example, shutting down on
 /// tick 0; whether `PostInit` ran.
 fn starts_with(limits: Limits) -> bool {
     let _one = RUN.lock().unwrap_or_else(|e| e.into_inner());

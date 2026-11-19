@@ -6,7 +6,7 @@
 #   scripts/build-pi.sh [example] [--deploy]
 #
 #   example    name under controllers/examples/ (default: geckoleg), or geckoleg_pinocchio:
-#              the C++ Pinocchio example (kmr_ffi/examples/pinocchio), aarch64 only
+#              the C++ Pinocchio example (controllers/examples/geckoleg_pinocchio.rs), aarch64 only
 #   --deploy   scp the binary to $PI_USER@$PI_HOST:$PI_DIR (geckoleg_pinocchio: the binary
 #              and, next to it, geckoleg_pinocchio-libs/lib/, the Pinocchio libraries it loads)
 #
@@ -130,11 +130,10 @@ env "$linker_var=$linker" \
     "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" \
     "PINOCCHIO_RPATH=$rpath" \
     cargo build --release --target "$target" \
-    -p kmr_ffi_example_pinocchio --bin kmr_ffi_example_pinocchio --features "$features"
+    -p controllers --example geckoleg_pinocchio --features "$features"
 
-release="target/$target/release"
+release="target/$target/release/examples"
 bin="$release/geckoleg_pinocchio"
-cp "$release/kmr_ffi_example_pinocchio" "$bin"
 file "$bin"
 
 # The NEEDED closure found in the prefix (lib, or lib64 for zlib); glibc, libstdc++ and libgcc

@@ -3,7 +3,7 @@
 
 // The Init check's half of it goes unused here.
 #[allow(dead_code)]
-#[path = "../src/leg.rs"]
+#[path = "../examples/geckoleg_pinocchio/leg.rs"]
 mod leg;
 
 use core::cell::Cell;
@@ -13,7 +13,7 @@ use kmr_api::test_util::{DT, Log, Recorder, Ticking, run_scripted};
 use kmr_api::{EachTick, First, HCons, HNil, Policy, Sensors, Time};
 use leg::{Gait, RANGE_HI, RANGE_LO};
 
-kmr_api::robot!(model = "../../../controllers/models/geckoleg.urdf");
+kmr_api::robot!(model = "models/geckoleg.urdf");
 
 /// Runs `walk_cpp` at model speed 1 for `ticks` ticks of [`DT`]; calls `each` with the goals of
 /// every tick, hip, knee, ankle, rad.
