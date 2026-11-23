@@ -253,15 +253,23 @@ void walk(const kmr::Time &time, kmr::State &state, const kmr::Sensors &, Gait &
         return;
     }
     if (wall >= gait.next_print) {
+        // DECISION: the header is keyed on next_print == 0 (the first printout) so `Gait`
+        // keeps its pinned layout.
+        if (gait.next_print == 0.0) {
+            std::printf("%8s | %17s | %17s | %17s\n", "model t", "hip [deg]", "knee [deg]",
+                        "ankle [deg]");
+            std::printf("%8s | %8s %8s | %8s %8s | %8s %8s\n", "[s]", "goal", "meas", "goal",
+                        "meas", "goal", "meas");
+            std::printf("---------+-------------------+-------------------+------------------\n");
+        }
         gait.next_print += 1.0;
         std::array<double, 3> measured;
         for (std::size_t j = 0; j < JOINTS.size(); ++j) {
             auto m = state.q_at(JOINTS[j]);
             measured[j] = m ? degrees(*m) : std::numeric_limits<double>::quiet_NaN();
         }
-        std::printf("t=%7.3fs goal[deg]=[%7.2f, %7.2f, %7.2f] meas[deg]=[%7.2f, %7.2f, %7.2f]\n",
-                    tau, degrees(q[0]), degrees(q[1]), degrees(q[2]), measured[0], measured[1],
-                    measured[2]);
+        std::printf("%8.3f | %8.2f %8.2f | %8.2f %8.2f | %8.2f %8.2f\n", tau, degrees(q[0]),
+                    measured[0], degrees(q[1]), measured[1], degrees(q[2]), measured[2]);
         std::fflush(stdout);
     }
 }
