@@ -60,9 +60,6 @@ trybuild.workspace = true
 # The remote peer of kmr_api/tests/zenoh.rs, in the test process.
 zenoh.workspace = true
 
-[[example]]
-name = "complete_api_example"
-
 # The XIAO's gyroscope over USB, logged by a controller.
 [[example]]
 name = "xiao_imu"

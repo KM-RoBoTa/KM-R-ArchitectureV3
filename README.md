@@ -72,7 +72,7 @@ Cargo workspace; run everything from the root.
 ```sh
 cargo build --workspace
 cargo test --workspace --no-fail-fast
-cargo run -p kmr_api --example complete_api_example
+cargo run -p kmr_api --example 01_first_robot
 ```
 
 ## Contributing

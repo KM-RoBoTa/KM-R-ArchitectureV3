@@ -171,8 +171,8 @@ registered on a tick phase because startup writes are discarded (SRS FR-2.7,
 FR-5.2). `HOME.then(f)` ramps to the pose, then hands every tick to `f`, its
 time from zero; `HOME.controller()` ramps, then holds the pose.
 
-See [`kmr_api/examples/complete_api_example.rs`](../kmr_api/examples/complete_api_example.rs)
-for a guided tour.
+See the numbered examples in [`kmr_api/examples/`](../kmr_api/examples/), from
+`01_first_robot.rs` on, for a guided tour.
 
 ## Schedules
 
