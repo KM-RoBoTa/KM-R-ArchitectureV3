@@ -68,6 +68,12 @@ fn main() {
         .set_dt(Duration::from_secs_f64(TC))
         .set_hold(HOLD)
         .set_limit_policy_all(Policy::Clamp)
+        // If you get the `OUT_DIR` error: most likely build.rs failed because pkg-config can't
+        // find Pinocchio's C++ library. Install it either in
+        // - /usr: found automatically
+        // - /usr/local or /opt/<dir>: set PKG_CONFIG_PATH to its lib/pkgconfig (also in your
+        //   editor's rust-analyzer env)
+        // and set CXXFLAGS="$(pkg-config --cflags pinocchio)".
         .add_controller(Init, kmr_api::c!(check_gait_cpp, with = LIMITS))
         .add_controller(EachTick, kmr_api::c!(walk_cpp, with = Gait::new(speed)));
     // Without actuators the run simulates.
