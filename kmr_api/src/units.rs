@@ -13,6 +13,10 @@ use crate::{Q, Qd};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Deg(pub f32);
 
+/// A length in millimetres, into `Q` as mm.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mm(pub f32);
+
 /// A length in centimetres, into `Q` as mm.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cm(pub f32);
@@ -24,6 +28,10 @@ pub struct M(pub f32);
 /// An angular speed in degrees per second, into `Qd` as rad/s.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DegPerS(pub f32);
+
+/// A speed in millimetres per second, into `Qd` as mm/s.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MmPerS(pub f32);
 
 /// A speed in centimetres per second, into `Qd` as mm/s.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,6 +55,12 @@ impl From<Deg> for Q {
     }
 }
 
+impl From<Mm> for Q {
+    fn from(v: Mm) -> Self {
+        Q(v.0)
+    }
+}
+
 impl From<Cm> for Q {
     fn from(v: Cm) -> Self {
         Q(v.0 * 10.0)
@@ -62,6 +76,12 @@ impl From<M> for Q {
 impl From<DegPerS> for Qd {
     fn from(v: DegPerS) -> Self {
         Qd(v.0.to_radians())
+    }
+}
+
+impl From<MmPerS> for Qd {
+    fn from(v: MmPerS) -> Self {
+        Qd(v.0)
     }
 }
 
@@ -92,6 +112,7 @@ mod tests {
         assert!(close(Q::from(Deg(-90.0)).0, -PI / 2.0));
         assert!(close(Q::from(M(1.0)).0, 1000.0));
         assert!(close(Q::from(Cm(1.0)).0, 10.0));
+        assert!(close(Q::from(Mm(1.0)).0, 1.0));
     }
 
     #[test]
@@ -99,6 +120,7 @@ mod tests {
         assert!(close(Qd::from(DegPerS(180.0)).0, PI));
         assert!(close(Qd::from(MPerS(1.0)).0, 1000.0));
         assert!(close(Qd::from(CmPerS(1.0)).0, 10.0));
+        assert!(close(Qd::from(MmPerS(1.0)).0, 1.0));
     }
 
     #[test]
